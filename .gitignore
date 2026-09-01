@@ -27,3 +27,4 @@ runs/
 HALT
 harness.db
 *.egg-info/
+.venv/

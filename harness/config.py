@@ -326,3 +326,11 @@ def read_secret(key: str) -> str:
     if not value:
         value = _LAST_ENV.get(key, "")
     return value
+
+
+def environ_snapshot() -> Mapping[str, str]:
+    """Return a copy of the process environment for subprocess construction.
+
+    The only sanctioned way for another module to obtain the parent environment (I-4).
+    """
+    return dict(os.environ)

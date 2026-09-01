@@ -1,0 +1,102 @@
+$ npx prisma generate
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+
+✔ Generated Prisma Client (v5.22.0) to .\node_modules\@prisma\client in 291ms
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+Tip: Want real-time updates to your database without manual polling? Discover how with Pulse.
+exit 0
+
+$ npm run lint
+
+> brightboost@0.1.0 lint
+> eslint . --max-warnings 0
+
+exit 0
+
+$ npm run typecheck
+
+> brightboost@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+src/components/Foo.tsx(12,5): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+exit 2
+
+$ backend: npm run typecheck
+
+> brightboost-backend@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+exit 0
+
+$ bash scripts/check-prisma-drift.sh
+Comparing prisma/schema.prisma against prisma/migrations ...
+Prisma schema loaded from prisma/schema.prisma
+No difference detected.
+Drift check passed.
+exit 0
+
+$ npm run test:unit
+
+> brightboost@0.1.0 test:unit
+> vitest run
+
+ RUN  v1.6.0 /runs/item-1/clone
+
+ ✓ src/utils/date.test.ts (6 tests) 11ms
+ ✓ src/utils/slug.test.ts (4 tests) 9ms
+ ✓ src/components/TeacherDashboard.test.tsx (11 tests) 208ms
+ ✓ src/components/StudentCard.test.tsx (9 tests) 129ms
+ ❯ src/components/Foo.test.tsx (5 tests | 1 failed) 84ms
+   × Foo > renders the fallback label when title is absent 23ms
+     → expected 'undefined' to be 'Untitled'
+ ✓ src/hooks/useAuth.test.ts (8 tests) 44ms
+ ✓ src/api/client.test.ts (14 tests) 95ms
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/Foo.test.tsx > Foo > renders the fallback label when title is absent
+AssertionError: expected 'undefined' to be 'Untitled' // Object.is equality
+
+- Expected
++ Received
+
+- Untitled
++ undefined
+
+ ❯ src/components/Foo.test.tsx:31:38
+     29|   it("renders the fallback label when title is absent", () => {
+     30|     render(<Foo />);
+     31|     expect(screen.getByRole("heading").textContent).toBe("Untitled");
+       |                                      ^
+     32|   });
+     33| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed | 6 passed (7)
+      Tests  1 failed | 56 passed (57)
+   Start at  04:19:07
+   Duration  6.61s (transform 830ms, setup 0ms, collect 2.14s, tests 601ms)
+
+exit 1
+
+$ npm run build
+
+> brightboost@0.1.0 build
+> vite build
+
+vite v5.4.10 building for production...
+transforming...
+✓ 1482 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     0.71 kB │ gzip:   0.40 kB
+dist/assets/index-Ck3yQ1Ns.css     41.28 kB │ gzip:   7.63 kB
+dist/assets/vendor-Dl9mQ2ab.js    142.09 kB │ gzip:  45.71 kB
+dist/assets/index-BqZ7t4Xf.js     318.44 kB │ gzip: 101.55 kB
+✓ built in 9.28s
+exit 0

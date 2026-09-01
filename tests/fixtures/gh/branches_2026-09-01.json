@@ -1,0 +1,16 @@
+[
+  "main",
+  "develop",
+  "agent-737/qtr-ceiling",
+  "agent-736/gate-parity-matrix",
+  "fix-801/ci-shell-gate-isolation",
+  "fix-681/bundle-size-esm-output",
+  "agent-a/734-required-step-coverage",
+  "agent-b/735-workflow-parity-guard",
+  "feat-b/810-teacher-dashboard-empty-state",
+  "jack/chore-640-parity-guards",
+  "jack/fix-700-seed-idempotency",
+  "dependabot/npm_and_yarn/vite-5.4.0",
+  "codex/refresh-readme",
+  "docs/setup-notes"
+]

@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "Widened the asset glob in scripts/check-bundle-size.js from dist/assets/*.js to cover .js, .mjs and .cjs, and made an empty match set exit 1 with `no bundle output found under dist/assets` instead of reporting a 0.00 KB pass. MAX_BUNDLE_KB is now parsed with Number() and validated as a positive finite number at startup, exiting 1 and naming the variable when it is not. The per-file report prints one line per matched file and an explicit overage line when the total exceeds the ceiling. Updated scripts/__tests__/check-bundle-size.test.js to cover the empty-directory, bad-ceiling and over-ceiling paths. No change to the ceiling value, the Vite config, or any workflow.\n",
+  "turns": 41,
+  "cost_usd": 0.9812,
+  "allowance_pct": 6.5,
+  "duration_ms": 402118,
+  "session_id": "fake-implement-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Implement the approved work package for issue 816 on branch harness/fix-816-bundle-size-esm."
+    },
+    {
+      "role": "assistant",
+      "content": "Edited scripts/check-bundle-size.js and scripts/__tests__/check-bundle-size.test.js."
+    }
+  ],
+  "error": null
+}

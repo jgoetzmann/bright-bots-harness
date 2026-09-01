@@ -1,0 +1,16 @@
+{
+  "number": 816,
+  "title": "Bundle size check fails on ESM output",
+  "state": "open",
+  "labels": [
+    {"id": 7301884411, "name": "harness-ok", "color": "0e8a16", "default": false}
+  ],
+  "assignee": null,
+  "assignees": [],
+  "body": "`scripts/check-bundle-size.js` globs `dist/assets/*.js` and sums the gzip size of every match. Since the Vite 5 upgrade the ESM build emits `dist/assets/*.mjs` alongside the legacy `.js` chunks, so the check sums a subset of the real payload and reports a number well under the budget.\n\nSteps to reproduce:\n\n1. `npm ci`\n2. `npm run build`\n3. `node scripts/check-bundle-size.js`\n\nExpected: the reported total matches the sum of every emitted entry chunk.\nActual: the total omits every `.mjs` chunk, so the gate passes even when the bundle grows past the budget.\n\nThe fix is probably one glob and a test, but the budget constant should be re-derived from a real build rather than kept at its current value by accident.",
+  "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/816",
+  "user": {"login": "jgoetzmann", "id": 12841556, "type": "User"},
+  "comments": 2,
+  "created_at": "2026-08-24T14:02:11Z",
+  "updated_at": "2026-08-30T09:17:45Z"
+}

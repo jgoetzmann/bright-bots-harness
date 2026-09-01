@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "The failing gate is `npm run test:unit`. scripts/__tests__/check-bundle-size.test.js still stubs readdirSync to return only index-a1b2c3.js, so the widened glob finds one file where the assertion expects two. The fix is in the test fixture, not the script: add index-d4e5f6.mjs to the stubbed directory listing and update the expected total. Do not widen the ceiling and do not mark the test skipped.\n",
+  "turns": 6,
+  "cost_usd": 0.0433,
+  "allowance_pct": 0.9,
+  "duration_ms": 21044,
+  "session_id": "fake-diagnose-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Read the gate output below and propose a fix that does not widen or skip any gate."
+    },
+    {
+      "role": "assistant",
+      "content": "npm run test:unit fails on a stale stubbed directory listing in the unit test."
+    }
+  ],
+  "error": null
+}

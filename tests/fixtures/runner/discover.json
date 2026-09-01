@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "816\n",
+  "turns": 3,
+  "cost_usd": 0.0142,
+  "allowance_pct": 0.4,
+  "duration_ms": 8421,
+  "session_id": "fake-discover-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Rank these open issues for Bright-Bots-Initiative/brightboost. One number per line."
+    },
+    {
+      "role": "assistant",
+      "content": "816\n"
+    }
+  ],
+  "error": null
+}

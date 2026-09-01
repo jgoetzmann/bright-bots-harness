@@ -1,0 +1,65 @@
+[
+  {
+    "number": 803,
+    "title": "fix(ci): isolate the shell gate so the drift check runs alone",
+    "state": "open",
+    "head": {"ref": "fix-801/ci-shell-gate-isolation"},
+    "user": {"login": "jgoetzmann"}
+  },
+  {
+    "number": 806,
+    "title": "fix(build): keep the bundle size check honest on esm output",
+    "state": "open",
+    "head": {"ref": "fix-681/bundle-size-esm-output"},
+    "user": {"login": "sri-dev"}
+  },
+  {
+    "number": 808,
+    "title": "chore(ci): raise the quarterly ceiling on the coverage gate",
+    "state": "open",
+    "head": {"ref": "agent-737/qtr-ceiling"},
+    "user": {"login": "codex-agent"}
+  },
+  {
+    "number": 809,
+    "title": "test(ci): make the gate parity matrix cover every job",
+    "state": "open",
+    "head": {"ref": "agent-736/gate-parity-matrix"},
+    "user": {"login": "codex-agent"}
+  },
+  {
+    "number": 811,
+    "title": "test(ci): cover every required step in the deploy workflow",
+    "state": "open",
+    "head": {"ref": "agent-a/734-required-step-coverage"},
+    "user": {"login": "codex-agent"}
+  },
+  {
+    "number": 813,
+    "title": "chore(ci): guard workflow parity between the two pipelines",
+    "state": "open",
+    "head": {"ref": "agent-b/735-workflow-parity-guard"},
+    "user": {"login": "codex-agent"}
+  },
+  {
+    "number": 814,
+    "title": "feat(dashboard): add an empty state to the teacher view",
+    "state": "open",
+    "head": {"ref": "feat-b/810-teacher-dashboard-empty-state"},
+    "user": {"login": "mira-b"}
+  },
+  {
+    "number": 815,
+    "title": "chore(seed): add parity guards to the seed script",
+    "state": "open",
+    "head": {"ref": "jack/chore-640-parity-guards"},
+    "user": {"login": "jgoetzmann"}
+  },
+  {
+    "number": 817,
+    "title": "fix(seed): make the seed script idempotent on rerun",
+    "state": "open",
+    "head": {"ref": "jack/fix-700-seed-idempotency"},
+    "user": {"login": "jgoetzmann"}
+  }
+]

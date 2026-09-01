@@ -1,0 +1,11 @@
+# Rename or copy this file to HALT (no extension) to stop the harness.
+#
+# The kill switch is the presence of the file named by HALT_FILE in .env, which
+# defaults to HALT at the repository root. Contents are never read. The harness
+# checks for it at the entry of every stage and in clone preflight; when it is
+# there, `harness run` releases its clone, leaves the item resumable, and exits 5.
+#
+#   harness halt     creates it
+#   harness resume   removes it
+#
+# HALT is in .gitignore. This example file is committed; the switch itself is not.

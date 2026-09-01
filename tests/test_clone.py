@@ -1,0 +1,325 @@
+"""B42-B48: harness.clone.CloneManager (HARNESS-SPEC 5.7).
+
+Clones are taken from a throwaway local git repository created under tmp_path, so nothing here
+reaches the network. The default remote URL is asserted through a recording `git_runner`.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from harness.clock import FrozenClock
+from harness.clone import CloneManager, Lease
+from harness.config import load_config
+from harness.store import Store
+
+FROZEN_AT = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+REPO = "Bright-Bots-Initiative/brightboost"
+DEFAULT_REMOTE = f"https://github.com/{REPO}.git"
+AMPLE_BYTES = 10**13
+
+ENV = {
+    "BACKEND": "fake",
+    "REPO": REPO,
+    "PERMISSION_TIER": "0",
+    "ALLOWLIST_LABEL": "harness-ok",
+    "WEEKLY_BUDGET_PCT": "40",
+    "SESSION_BUDGET_PCT": "15",
+    "RESERVE_PCT": "10",
+    "WEEKLY_RESET_DAY": "monday",
+    "MAX_CONCURRENT_CLONES": "1",
+    "MAX_TURNS_DISCOVER": "10",
+    "MAX_TURNS_PROPOSE": "30",
+    "MAX_TURNS_IMPLEMENT": "80",
+    "MAX_TURNS_PACKAGE": "10",
+    "MAX_RETRIES_GATES": "2",
+    "GITHUB_API_CEILING_PER_HOUR": "50",
+    "MIN_FREE_DISK_GB": "5",
+    "DB_PATH": "harness.db",
+    "RUNS_DIR": "runs",
+    "PACKAGES_DIR": "packages",
+    "HALT_FILE": "HALT",
+    "FULLSEND_ENABLED": "false",
+    "HARNESS_GITHUB_TOKEN": "",
+    "ANTHROPIC_API_KEY": "",
+}
+
+
+def write_env(directory, **overrides):
+    values = dict(ENV)
+    values.update(overrides)
+    path = directory / ".env"
+    body = "".join(f"{key}={value}\n" for key, value in values.items())
+    path.write_text(body, encoding="utf-8", newline="\n")
+    return path
+
+
+def git(args, cwd):
+    proc = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, f"git {args} failed: {proc.stdout}{proc.stderr}"
+    return proc.stdout.strip()
+
+
+def make_source_repo(path):
+    """A throwaway one-commit repository used as the clone source. Returns its HEAD sha."""
+    path.mkdir(parents=True, exist_ok=True)
+    git(["init", "-b", "main"], path)
+    git(["config", "user.email", "harness-test@example.invalid"], path)
+    git(["config", "user.name", "Harness Test"], path)
+    git(["config", "commit.gpgsign", "false"], path)
+    (path / "README.md").write_text("hello\n", encoding="utf-8", newline="\n")
+    git(["add", "README.md"], path)
+    git(["commit", "-m", "chore: initial commit"], path)
+    return git(["rev-parse", "HEAD"], path)
+
+
+class RecordingGit:
+    """Stands in for subprocess: records argv, creates the clone dir, answers rev-parse."""
+
+    def __init__(self, sha="a" * 40):
+        self.sha = sha
+        self.calls = []
+
+    def __call__(self, argv, cwd=None, *args, **kwargs):
+        argv = list(argv)
+        self.calls.append((argv, cwd))
+        if "clone" in argv:
+            Path(argv[-1]).mkdir(parents=True, exist_ok=True)
+        if "rev-parse" in argv:
+            return (0, self.sha + "\n", "")
+        return (0, "", "")
+
+    @property
+    def argv_words(self):
+        return [word for argv, _ in self.calls for word in argv]
+
+
+@pytest.fixture
+def clock():
+    return FrozenClock(FROZEN_AT)
+
+
+@pytest.fixture
+def config(tmp_path):
+    return load_config(env_path=write_env(tmp_path), environ={})
+
+
+@pytest.fixture
+def store(tmp_path, clock):
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    yield store
+    store.close()
+
+
+@pytest.fixture
+def item(store):
+    item_id = store.create_work_item(
+        kind="issue",
+        external_ref="issue:816",
+        title="Bundle size check fails on ESM output",
+    )
+    return store.get_work_item(item_id)
+
+
+@pytest.fixture
+def source_repo(tmp_path):
+    """(path, head_sha) of a throwaway local repository to clone from."""
+    path = tmp_path / "source"
+    return path, make_source_repo(path)
+
+
+def local_manager(config, clock, source_path):
+    return CloneManager(
+        config,
+        clock,
+        clone_url=str(source_path),
+        free_bytes=lambda path: AMPLE_BYTES,
+    )
+
+
+# --- B42: the remote URL ----------------------------------------------------------------------
+
+
+def test_B42_the_default_remote_is_the_public_https_url_of_the_repo(config, clock, item):
+    recorder = RecordingGit()
+    manager = CloneManager(config, clock, free_bytes=lambda path: AMPLE_BYTES,
+                           git_runner=recorder)
+
+    manager.acquire(item)
+
+    assert DEFAULT_REMOTE in recorder.argv_words
+
+
+def test_B42_no_git_argument_carries_a_credential_or_an_ssh_remote(config, clock, item):
+    recorder = RecordingGit()
+    manager = CloneManager(config, clock, free_bytes=lambda path: AMPLE_BYTES,
+                           git_runner=recorder)
+
+    manager.acquire(item)
+
+    words = recorder.argv_words
+    assert words, "acquire ran no git command"
+    for word in words:
+        assert not word.startswith("ssh://")
+        assert not word.startswith("git@")
+        assert "git@github.com" not in word
+        assert "x-access-token" not in word
+    remotes = [word for word in words if "github.com" in word]
+    assert remotes, "no github.com remote appeared in any git argv"
+    for remote in remotes:
+        assert remote.startswith("https://github.com/")
+        assert "@" not in remote
+        assert "ssh" not in remote
+
+
+# --- B43: where the clone lands ---------------------------------------------------------------
+
+
+def test_B43_the_clone_lands_under_runs_dir_at_run_id_clone(config, clock, item, source_repo):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+
+    lease = manager.acquire(item)
+
+    assert isinstance(lease, Lease)
+    assert lease.run_id == f"item-{item.id}"
+    assert lease.path == config.runs_dir / f"item-{item.id}" / "clone"
+    assert lease.path.is_dir()
+    assert config.runs_dir.resolve() in lease.path.resolve().parents
+
+
+def test_B43_acquire_creates_nothing_outside_runs_dir(config, clock, item, source_repo):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+    root = config.runs_dir.parent
+    before = {entry.name for entry in root.iterdir()}
+
+    manager.acquire(item)
+
+    after = {entry.name for entry in root.iterdir()}
+    created = {name for name in after - before if not name.startswith("harness.db")}
+    assert created <= {config.runs_dir.name}
+
+
+# --- B44: the base sha ------------------------------------------------------------------------
+
+
+def test_B44_base_sha_is_the_resolved_head_of_the_cloned_repository(
+    config, clock, item, source_repo
+):
+    source_path, head_sha = source_repo
+    manager = local_manager(config, clock, source_path)
+
+    lease = manager.acquire(item)
+
+    assert lease.base_sha == head_sha
+    assert len(lease.base_sha) == 40
+    assert lease.base_sha == git(["rev-parse", "HEAD"], lease.path)
+
+
+# --- B45: the branch --------------------------------------------------------------------------
+
+
+def test_B45_the_created_branch_name_starts_with_harness(config, clock, item, source_repo):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+
+    lease = manager.acquire(item)
+
+    assert lease.branch.startswith("harness/")
+    assert git(["rev-parse", "--abbrev-ref", "HEAD"], lease.path) == lease.branch
+
+
+def test_B45_the_branch_name_carries_the_type_and_issue_number(config, clock, item, source_repo):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+
+    lease = manager.acquire(item)
+
+    assert lease.branch.startswith("harness/fix-816-")
+
+
+# --- B46 / B47: preflight ---------------------------------------------------------------------
+
+
+def test_B46_preflight_reports_a_disk_blocker_when_free_space_is_short(config, clock):
+    manager = CloneManager(config, clock, free_bytes=lambda path: 1024)
+
+    blockers = manager.preflight()
+
+    assert blockers
+    assert any(blocker.startswith("disk:") for blocker in blockers)
+
+
+def test_B46_preflight_is_empty_when_disk_is_ample_and_nothing_else_blocks(config, clock):
+    manager = CloneManager(config, clock, free_bytes=lambda path: AMPLE_BYTES)
+
+    assert manager.preflight() == []
+
+
+def test_B46_preflight_reports_a_git_blocker_when_the_git_binary_is_missing(config, clock):
+    manager = CloneManager(
+        config,
+        clock,
+        git_bin="harness-no-such-git-binary",
+        free_bytes=lambda path: AMPLE_BYTES,
+    )
+
+    blockers = manager.preflight()
+
+    assert any(blocker.startswith("git:") for blocker in blockers)
+
+
+def test_B47_preflight_reports_a_halt_blocker_when_the_halt_file_exists(config, clock):
+    config.halt_file.write_text("stop\n", encoding="utf-8", newline="\n")
+    manager = CloneManager(config, clock, free_bytes=lambda path: AMPLE_BYTES)
+
+    blockers = manager.preflight()
+
+    assert any(blocker.startswith("halt:") for blocker in blockers)
+
+
+def test_B47_preflight_reports_the_halt_and_disk_blockers_together(config, clock):
+    config.halt_file.write_text("stop\n", encoding="utf-8", newline="\n")
+    manager = CloneManager(config, clock, free_bytes=lambda path: 1024)
+
+    blockers = manager.preflight()
+
+    assert any(blocker.startswith("halt:") for blocker in blockers)
+    assert any(blocker.startswith("disk:") for blocker in blockers)
+
+
+# --- B48: release -----------------------------------------------------------------------------
+
+
+def test_B48_release_keep_false_removes_the_clone_directory(config, clock, item, source_repo):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+    lease = manager.acquire(item)
+    assert lease.path.is_dir()
+
+    manager.release(lease, keep=False)
+
+    assert not lease.path.exists()
+
+
+def test_B48_release_keep_true_leaves_the_clone_and_records_the_path(
+    config, clock, item, source_repo
+):
+    source_path, _ = source_repo
+    manager = local_manager(config, clock, source_path)
+    lease = manager.acquire(item)
+
+    manager.release(lease, keep=True)
+
+    assert lease.path.is_dir()
+    kept = config.runs_dir / lease.run_id / "KEPT"
+    assert kept.is_file()
+    assert str(lease.path) in kept.read_text(encoding="utf-8")

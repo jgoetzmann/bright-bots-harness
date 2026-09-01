@@ -1,0 +1,131 @@
+[
+  {
+    "number": 816,
+    "title": "Bundle size check fails on ESM output",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "check-bundle-size.js globs dist/assets/*.js and misses every .mjs chunk emitted by the ESM build, so the gate passes on an oversized bundle.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/816",
+    "user": {"login": "jgoetzmann"}
+  },
+  {
+    "number": 826,
+    "title": "Prisma drift check exits 0 when the schema is dirty",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}, {"name": "bug", "color": "d73a4a"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "scripts/check-prisma-drift.sh swallows the non-zero exit of prisma migrate diff because the pipeline ends in tee. The gate is green whatever the schema says.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/826",
+    "user": {"login": "sri-dev"}
+  },
+  {
+    "number": 681,
+    "title": "Bundle size budget is not enforced for the ESM bundle",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}, {"name": "bug", "color": "d73a4a"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "Older report of the same family of defect as the newer bundle work. A branch is already open against this one.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/681",
+    "user": {"login": "mira-b"}
+  },
+  {
+    "number": 734,
+    "title": "Required workflow steps are not covered by the parity test",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}, {"name": "ci", "color": "1d76db"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "The parity test asserts job names only, so a removed step in the deploy job goes unnoticed until a release fails.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/734",
+    "user": {"login": "jgoetzmann"}
+  },
+  {
+    "number": 810,
+    "title": "Teacher dashboard renders nothing when a class is empty",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}, {"name": "frontend", "color": "5319e7"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "A teacher with no enrolled students sees a blank panel with no explanation and no call to action.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/810",
+    "user": {"login": "mira-b"}
+  },
+  {
+    "number": 822,
+    "title": "Add a first-good-issue walkthrough to the onboarding docs",
+    "state": "open",
+    "labels": [{"name": "intern-starter", "color": "fbca04"}, {"name": "docs", "color": "0075ca"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "Reserved for the intern cohort: a guided walkthrough from clone to first merged change.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/822",
+    "user": {"login": "nathaniel"}
+  },
+  {
+    "number": 823,
+    "title": "Migrate the API layer to a typed RPC boundary",
+    "state": "open",
+    "labels": [
+      {"name": "architecture", "color": "b60205"},
+      {"name": "large", "color": "e99695"},
+      {"name": "harness-ok", "color": "0e8a16"}
+    ],
+    "assignee": null,
+    "assignees": [],
+    "body": "Replace the hand-rolled fetch wrappers with a typed boundary shared by the frontend and the backend. Touches every route.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/823",
+    "user": {"login": "nathaniel"}
+  },
+  {
+    "number": 824,
+    "title": "Split the monolithic seed script into per-domain seeders",
+    "state": "open",
+    "labels": [{"name": "large", "color": "e99695"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "backend/scripts/seed.ts is over a thousand lines and reseeds everything on every run.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/824",
+    "user": {"login": "sri-dev"}
+  },
+  {
+    "number": 825,
+    "title": "Flaky unit test in teacher-dashboard.test.tsx",
+    "state": "open",
+    "labels": [{"name": "harness-ok", "color": "0e8a16"}, {"name": "bug", "color": "d73a4a"}],
+    "assignee": {"login": "jgoetzmann"},
+    "assignees": [{"login": "jgoetzmann"}],
+    "body": "Fails roughly one run in six on CI, always on the same waitFor. Someone is already on it.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/825",
+    "user": {"login": "mira-b"}
+  },
+  {
+    "number": 827,
+    "title": "Dark mode toggle resets on navigation",
+    "state": "open",
+    "labels": [{"name": "bug", "color": "d73a4a"}, {"name": "frontend", "color": "5319e7"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "The theme preference is held in component state rather than persisted, so every route change reverts to light.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/issues/827",
+    "user": {"login": "priya-k"}
+  },
+  {
+    "number": 828,
+    "title": "chore(deps): bump the build toolchain to the current minor",
+    "state": "open",
+    "labels": [{"name": "dependencies", "color": "0366d6"}],
+    "assignee": null,
+    "assignees": [],
+    "body": "Automated dependency bump. GitHub serves this from the issues endpoint even though it is a pull request.",
+    "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/pull/828",
+    "user": {"login": "dependabot[bot]"},
+    "pull_request": {
+      "url": "https://api.github.com/repos/Bright-Bots-Initiative/brightboost/pulls/828",
+      "html_url": "https://github.com/Bright-Bots-Initiative/brightboost/pull/828"
+    }
+  }
+]

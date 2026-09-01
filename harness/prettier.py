@@ -10,52 +10,17 @@ change never touched, which buries the real result and would rewrite files outsi
 from __future__ import annotations
 
 import logging
-import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
-log = logging.getLogger("harness")
+from harness.gates import run_command
 
-PRETTIER_TIMEOUT_S = 600
+log = logging.getLogger("harness")
 
 
 def _npx() -> str:
     return "npx.cmd" if sys.platform == "win32" else "npx"
-
-
-def _default_runner(argv: list[str], cwd: Path) -> tuple[int, str, str]:
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=str(cwd),
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=PRETTIER_TIMEOUT_S,
-        )
-    except FileNotFoundError as exc:
-        return 127, "", f"{argv[0]} not found: {exc}"
-    except subprocess.TimeoutExpired:
-        return 124, "", f"prettier timed out after {PRETTIER_TIMEOUT_S}s"
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
-
-
-def _default_git(argv: list[str], cwd: Path) -> tuple[int, str, str]:
-    try:
-        proc = subprocess.run(
-            ["git", *argv],
-            cwd=str(cwd),
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except FileNotFoundError as exc:
-        return 127, "", f"git not found: {exc}"
-    except subprocess.TimeoutExpired:
-        return 124, "", "git timed out"
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
 def changed_paths(
@@ -68,17 +33,17 @@ def changed_paths(
     Deletions are excluded (``--diff-filter=AM``) because formatting a path that no longer exists
     is an error, not a no-op.
     """
-    run = git_runner if git_runner is not None else _default_git
+    run = git_runner if git_runner is not None else run_command
     root = Path(clone)
     seen: list[str] = []
 
-    code, out, err = run(["diff", "--name-only", "--diff-filter=AM", base_sha], root)
+    code, out, err = run(["git", "diff", "--name-only", "--diff-filter=AM", base_sha], root)
     if code != 0:
         log.warning("git diff against %s failed (%s): %s", base_sha, code, err.strip()[:500])
     else:
         seen.extend(out.splitlines())
 
-    code, out, err = run(["ls-files", "--others", "--exclude-standard"], root)
+    code, out, err = run(["git", "ls-files", "--others", "--exclude-standard"], root)
     if code != 0:
         log.warning("git ls-files --others failed (%s): %s", code, err.strip()[:500])
     else:
@@ -106,7 +71,7 @@ def write_and_check(
     if not scoped:
         return True, ""
 
-    run = runner if runner is not None else _default_runner
+    run = runner if runner is not None else run_command
     root = Path(clone)
     npx = _npx()
     chunks: list[str] = []

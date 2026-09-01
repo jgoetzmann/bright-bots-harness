@@ -31,10 +31,11 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
 )
-# The key name is kept and only the value is replaced, so a redacted line stays readable (B50).
-_KEYED_VALUE = re.compile(
-    r"(?i)(authorization|api[_-]?key|secret|token|password)(\s*[:=]\s*)\S+"
-)
+# The whole match goes, key name included (B49); the rest of the line is untouched (B50).
+_KEYED_VALUE = re.compile(r"(?i)(authorization|api[_-]?key|secret|token|password)\s*[:=]\s*\S+")
+# Applied before _KEYED_VALUE so ``Authorization: Bearer <tok>`` loses the token, not just the
+# scheme word; the keyed pass then swallows what is left of the header.
+_BEARER = re.compile(r"(?i)\bbearer\s+\S+")
 
 #: The literal patterns, in application order, for anything that wants to scan with them
 #: (``HUMAN.md`` verification, package auditing).
@@ -44,6 +45,7 @@ PATTERNS: tuple[re.Pattern[str], ...] = (
     _GITHUB_PAT,
     _GITHUB_TOKEN,
     _AWS_ACCESS_KEY,
+    _BEARER,
     _KEYED_VALUE,
 )
 
@@ -75,7 +77,8 @@ def redact(text: str) -> str:
     out = _GITHUB_PAT.sub(REDACTION, out)
     out = _GITHUB_TOKEN.sub(REDACTION, out)
     out = _AWS_ACCESS_KEY.sub(REDACTION, out)
-    out = _KEYED_VALUE.sub(r"\1\2" + REDACTION, out)
+    out = _BEARER.sub(REDACTION, out)
+    out = _KEYED_VALUE.sub(REDACTION, out)
 
     # Longest first, so a value that contains another value does not leave a tail behind.
     for value in sorted(_config_secret_values(), key=len, reverse=True):

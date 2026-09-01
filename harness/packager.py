@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
 from harness.errors import PackageError, WriteOutsideAllowedRoots
+from harness.gates import run_command
 from harness.redact import allowed_roots, write_redacted
 from harness.stages.propose import parse_work_package
 
@@ -52,21 +52,7 @@ OMISSION_NOTE = (
     "> Gates not run: {names}.\n"
 )
 
-_GIT_TIMEOUT_S = 600
 _TEXT_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".patch", ".txt", ""})
-
-
-def _default_git_runner(argv: list[str], cwd: Path) -> tuple[int, str, str]:
-    """Run git with no shell, ever. Returns (exit_code, stdout, stderr)."""
-    proc = subprocess.run(
-        argv,
-        cwd=str(cwd),
-        shell=False,
-        capture_output=True,
-        text=True,
-        timeout=_GIT_TIMEOUT_S,
-    )
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
 def _read_text(path: Path) -> str:
@@ -187,7 +173,7 @@ def _prune(package_dir: Path) -> None:
 
 def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     """Assemble ``runs/<run-id>/package/`` per §7.2 and return its path."""
-    run_git = git_runner or _default_git_runner
+    run_git = git_runner or run_command
     item = ctx.store.get_work_item(item_id)
     if item is None:
         raise PackageError(f"no work item {item_id}")
@@ -198,6 +184,8 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         raise PackageError(f"base sha for item {item_id} is not a 40-character sha: {base_sha!r}")
     if not branch:
         raise PackageError(f"no branch recorded for item {item_id}")
+    if not item.spec_path or not Path(item.spec_path).is_file():
+        raise PackageError(f"no spec file for item {item_id}: {item.spec_path!r}")
 
     run_dir = ctx.run_dir
     package_dir = run_dir / "package"
@@ -207,8 +195,8 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     patches_dir = package_dir / "patches"
     patches_dir.mkdir(parents=True, exist_ok=True)
 
-    spec_text = _read_text(Path(item.spec_path)) if item.spec_path else ""
-    pkg = parse_work_package(spec_text) if spec_text.strip() else None
+    spec_text = _read_text(Path(item.spec_path))
+    pkg = parse_work_package(spec_text)
 
     baseline = _read_json_list(run_dir / "gates" / "baseline.json")
     final = _read_json_list(run_dir / "gates" / "final.json")
@@ -257,7 +245,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         raise PackageError(f"git bundle create failed ({code}): {(err or out).strip()}")
 
     created_at = iso(ctx.clock.now())
-    touched_paths = list(pkg.touched_paths) if pkg else []
+    touched_paths = list(pkg.touched_paths)
 
     # --- BASE (B74): 40 chars and a newline, nothing else.
     write_redacted(package_dir / "BASE", base_sha + "\n")
@@ -298,16 +286,16 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
 
     # --- DIAGNOSIS.md
     diagnosis: list[str] = ["# Diagnosis", ""]
-    if pkg and pkg.diagnosis.strip():
+    if pkg.diagnosis.strip():
         diagnosis.append(pkg.diagnosis.strip())
     else:
         diagnosis.append("_No diagnosis section was present in the work package._")
     diagnosis.append("")
-    if pkg and pkg.issue.strip():
+    if pkg.issue.strip():
         diagnosis.extend(["## Issue", "", pkg.issue.strip(), ""])
-    if pkg and pkg.approach.strip():
+    if pkg.approach.strip():
         diagnosis.extend(["## Approach", "", pkg.approach.strip(), ""])
-    if pkg and pkg.risks.strip():
+    if pkg.risks.strip():
         diagnosis.extend(["## Risks", "", pkg.risks.strip(), ""])
     write_redacted(package_dir / "DIAGNOSIS.md", "\n".join(diagnosis))
 
@@ -327,7 +315,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         "",
         "## From the work package",
         "",
-        _bullets(list(pkg.decisions) if pkg else []),
+        _bullets(list(pkg.decisions)),
         "",
         "## Fullsend fitness gate (HARNESS-SPEC §5.9.3)",
         "",
@@ -344,7 +332,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     write_redacted(package_dir / "DECISIONS.md", "\n".join(decisions))
 
     # --- ACCEPTANCE.md: every criterion, met or not, with the evidence for the verdict.
-    criteria = list(pkg.acceptance) if pkg else []
+    criteria = list(pkg.acceptance)
     green = _all_green(final)
     failing = _failing_names(final)
     acceptance: list[str] = [
@@ -417,7 +405,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     write_redacted(package_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n")
 
     # --- README.md: the entry point a reviewer opens first.
-    title = pkg.title.strip() if pkg and pkg.title.strip() else item.title
+    title = pkg.title.strip() or item.title
     readme: list[str] = [
         f"# Review package — {title}",
         "",

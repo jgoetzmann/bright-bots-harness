@@ -11,15 +11,16 @@ import string
 from pathlib import Path
 from typing import Any, Callable
 
+from harness.context import Context
+from harness.halt import check_halt
+from harness.runner import RunRequest, RunResult
+
 __all__ = [
     "PROMPTS_DIR",
     "STAGES",
     "StageFn",
-    "discover",
-    "implement",
     "load_prompt",
-    "package",
-    "propose",
+    "run_model",
     "system_prompt",
 ]
 
@@ -45,16 +46,65 @@ def system_prompt() -> str:
     return load_prompt("system").template
 
 
-# Imported after ``load_prompt`` is defined: the stage modules import it back out of this
-# partially-initialised package, which works only because the name already exists by now.
-from harness.stages.discover import discover  # noqa: E402
-from harness.stages.implement import implement  # noqa: E402
-from harness.stages.package import package  # noqa: E402
-from harness.stages.propose import propose  # noqa: E402
+def run_model(
+    ctx: Context,
+    *,
+    stage: str,
+    item_id: int | None,
+    prompt: str,
+    allowed_tools: tuple[str, ...],
+    disallowed_tools: tuple[str, ...],
+    timeout_s: int,
+    cwd: Path,
+    add_dirs: tuple[Path, ...] = (),
+) -> RunResult:
+    """One model call with its bookkeeping: halt check, authorization, ``stage_run`` row,
+    transcript, governor record. ``item_id=None`` (triage has no work item yet) opens no row.
+    """
+    check_halt(ctx.config.halt_file)
+    auth = ctx.governor.authorize(item_id or 0, stage)
+    ctx.run_dir.mkdir(parents=True, exist_ok=True)
+    run_id = None
+    if item_id is not None:
+        run_id = ctx.store.start_stage_run(item_id, stage, ctx.config.backend)
+    request = RunRequest(
+        stage=stage,
+        prompt=prompt,
+        system_prompt=system_prompt(),
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        max_turns=auth.max_turns,
+        cwd=cwd,
+        timeout_s=timeout_s,
+        add_dirs=add_dirs,
+    )
+    result = ctx.runner.run(request)
+    transcript_path = ctx.write_transcript(stage, result.transcript)
+    allowance = result.allowance_pct
+    if allowance is None:
+        allowance = ctx.governor.estimate(stage)
+    if run_id is not None:
+        ctx.store.finish_stage_run(
+            run_id,
+            status="ok" if result.ok else "failed",
+            turns=result.turns,
+            allowance_pct=allowance,
+            cost_usd=result.cost_usd,
+            exit_reason=result.error,
+            transcript_path=str(transcript_path),
+        )
+    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
+    return result
+
+
+# Imported after ``load_prompt`` and ``run_model`` are defined: the stage modules import them
+# back out of this partially-initialised package. Imported as modules, not functions, so that
+# ``harness.stages.implement`` stays the module whose injectables the tests monkeypatch.
+from harness.stages import discover, implement, package, propose  # noqa: E402
 
 STAGES: dict[str, StageFn] = {
-    "discover": discover,
-    "propose": propose,
-    "implement": implement,
-    "package": package,
+    "discover": discover.discover,
+    "propose": propose.propose,
+    "implement": implement.implement,
+    "package": package.package,
 }

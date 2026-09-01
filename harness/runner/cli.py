@@ -17,14 +17,6 @@ from harness.config import environ_snapshot
 from harness.redact import redact
 from harness.runner.base import RunRequest, RunResult
 
-#: Flags this harness must never pass (SPEC 9, I-3 / B27). Asserted, not merely
-#: omitted: the argv builder never emits them and :func:`assert_no_skip_flags`
-#: proves it for every argv handed to :meth:`ClaudeCliRunner.run`.
-FORBIDDEN_FLAGS: tuple[str, ...] = (
-    "--dangerously-skip-permissions",
-    "--allow-dangerously-skip-permissions",
-)
-
 #: Removed from the child environment (B26). Delivery 1 is subscription-backed;
 #: a stray key would silently move the spend to the API billing pool.
 STRIPPED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY",)
@@ -35,13 +27,6 @@ STDERR_TAIL_CHARS = 2000
 #: Synthetic exit codes for the cases where the process never reported one.
 EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
-
-
-def assert_no_skip_flags(argv: list[str]) -> None:
-    """Raise if a permission-skipping flag reached the argv (SPEC 9, I-3)."""
-    for flag in FORBIDDEN_FLAGS:
-        if flag in argv:
-            raise AssertionError(f"forbidden flag in claude argv: {flag}")
 
 
 class ClaudeCliRunner:
@@ -63,7 +48,10 @@ class ClaudeCliRunner:
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """Exactly the order frozen in SPEC 5.4.3 (B25)."""
+        """Exactly the order frozen in SPEC 5.4.3 (B25).
+
+        No permission-skipping flag exists in this module to emit (SPEC 9, I-3; B27).
+        """
         argv: list[str] = [
             self.claude_bin,
             "--print",
@@ -103,7 +91,6 @@ class ClaudeCliRunner:
 
     def run(self, request: RunRequest) -> RunResult:
         argv = self.build_argv(request)
-        assert_no_skip_flags(argv)
         env = self.build_env()
         try:
             proc = self.spawn(

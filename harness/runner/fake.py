@@ -4,9 +4,9 @@ Reads ``<fixtures_dir>/<stage>.json`` and returns it verbatim as a
 :class:`~harness.runner.base.RunResult`. It exists so the state machine, the
 governor and the packager can be exercised in CI at zero token cost.
 
-This module deliberately imports neither ``subprocess`` nor ``urllib``: the
-fake must be incapable of reaching a process or the network, not merely
-disinclined to.
+This module deliberately imports nothing that can spawn a child process or
+open a network connection: the fake must be incapable of reaching either,
+not merely disinclined to.
 """
 
 from __future__ import annotations

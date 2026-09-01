@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Sequence
+from typing import Sequence
 
 from harness.collision import claimed_issue_numbers
 from harness.context import Context
 from harness.errors import HarnessError, NotImplementedInDelivery1
 from harness.halt import check_halt
-from harness.runner import RunRequest
-from harness.stages import load_prompt, system_prompt
+from harness.stages import load_prompt, run_model
 
 __all__ = ["discover", "EXCLUDED_LABELS"]
 
@@ -151,7 +150,16 @@ def _triage(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]
     )
 
     prompt = load_prompt("discover_triage").substitute(candidates=_render_candidates(survivors))
-    result = _model_call(ctx, prompt)
+    result = run_model(
+        ctx,
+        stage="discover",
+        item_id=None,
+        prompt=prompt,
+        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
+        timeout_s=TIMEOUT_S,
+        cwd=ctx.run_dir,
+    )
     if not result.ok:
         raise HarnessError(f"triage ranking failed: {result.error or 'runner reported failure'}")
 
@@ -269,33 +277,3 @@ def _ensure_item(ctx: Context, number: int, title: str) -> int:
     )
     ctx.store.append_event(item_id, "info", f"discovered {ref} by triage ranking")
     return item_id
-
-
-# --------------------------------------------------------------------------------------------
-# the single model call
-# --------------------------------------------------------------------------------------------
-
-
-def _model_call(ctx: Context, prompt: str) -> Any:
-    """Authorize, run, record. Triage has no work item yet, so no ``stage_run`` row is opened."""
-    stage = "discover"
-    auth = ctx.governor.authorize(0, stage)
-    ctx.run_dir.mkdir(parents=True, exist_ok=True)
-    request = RunRequest(
-        stage=stage,
-        prompt=prompt,
-        system_prompt=system_prompt(),
-        allowed_tools=ALLOWED_TOOLS,
-        disallowed_tools=DISALLOWED_TOOLS,
-        max_turns=auth.max_turns,
-        cwd=ctx.run_dir,
-        timeout_s=TIMEOUT_S,
-    )
-    result = ctx.runner.run(request)
-    ctx.write_transcript(stage, result.transcript)
-    allowance = result.allowance_pct
-    if allowance is None:
-        allowance = ctx.governor.estimate(stage)
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
-    return result
-

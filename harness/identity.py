@@ -131,12 +131,13 @@ class Identity:
         """Shape errors, empty when plausible. Issues no request, ever."""
         if token is None:
             return ["no value supplied"]
-        value = str(token).strip()
+        # The raw string, unstripped: surrounding whitespace is a malformed value, not noise.
+        value = str(token)
         if value == "":
             return ["no value supplied"]
-        if FINE_GRAINED_SHAPE.match(value):
+        if FINE_GRAINED_SHAPE.fullmatch(value):
             return []
-        if CLASSIC_SHAPE.match(value):
+        if CLASSIC_SHAPE.fullmatch(value):
             return []
         errors = [
             "does not match the fine-grained shape `github_pat_` followed by 40 or more "

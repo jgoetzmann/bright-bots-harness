@@ -10,14 +10,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from harness.context import Context
 from harness.errors import GitHubError, HarnessError, RateCeilingReached, RunnerError
 from harness.halt import check_halt
 from harness.redact import write_redacted
-from harness.runner import RunRequest
-from harness.stages import load_prompt, system_prompt
+from harness.stages import load_prompt, run_model
 
 __all__ = ["WorkPackage", "parse_work_package", "propose", "SECTIONS"]
 
@@ -50,7 +48,6 @@ _LIST_FIELDS = frozenset(
 _HEADING = re.compile(r"^\s{0,3}##\s+(.+?)\s*#*\s*$")
 _TITLE = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$")
 _BULLET = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+(.*)$")
-_REF_NUMBER = re.compile(r"(\d+)")
 
 
 @dataclass
@@ -136,7 +133,7 @@ def propose(ctx: Context, item_id: int) -> Path:
     if item is None:
         raise HarnessError(f"no work item {item_id}")
 
-    number = _issue_number(item.external_ref)
+    number = item.issue_number
     body = _issue_body(ctx, number)
 
     prompt = load_prompt("propose").substitute(
@@ -145,7 +142,16 @@ def propose(ctx: Context, item_id: int) -> Path:
         issue_body=body,
         repo=ctx.config.repo,
     )
-    result = _model_call(ctx, item_id, prompt)
+    result = run_model(
+        ctx,
+        stage="propose",
+        item_id=item_id,
+        prompt=prompt,
+        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
+        timeout_s=TIMEOUT_S,
+        cwd=ctx.run_dir,
+    )
     text = (result.text or "").strip()
     if not result.ok or not text:
         raise RunnerError(
@@ -172,11 +178,6 @@ def propose(ctx: Context, item_id: int) -> Path:
     return spec_path
 
 
-def _issue_number(external_ref: str) -> int | None:
-    match = _REF_NUMBER.search(external_ref or "")
-    return int(match.group(1)) if match else None
-
-
 def _issue_body(ctx: Context, number: int | None) -> str:
     """The issue body, verbatim. A read failure is recorded, never fatal."""
     if number is None:
@@ -190,36 +191,3 @@ def _issue_body(ctx: Context, number: int | None) -> str:
         )
         return "(issue body unavailable: the unauthenticated read failed)"
     return str(issue.get("body") or "").strip() or "(the issue has an empty body)"
-
-
-def _model_call(ctx: Context, item_id: int, prompt: str) -> Any:
-    stage = "propose"
-    auth = ctx.governor.authorize(item_id, stage)
-    ctx.run_dir.mkdir(parents=True, exist_ok=True)
-    run_id = ctx.store.start_stage_run(item_id, stage, ctx.config.backend)
-    request = RunRequest(
-        stage=stage,
-        prompt=prompt,
-        system_prompt=system_prompt(),
-        allowed_tools=ALLOWED_TOOLS,
-        disallowed_tools=DISALLOWED_TOOLS,
-        max_turns=auth.max_turns,
-        cwd=ctx.run_dir,
-        timeout_s=TIMEOUT_S,
-    )
-    result = ctx.runner.run(request)
-    transcript_path = ctx.write_transcript(stage, result.transcript)
-    allowance = result.allowance_pct
-    if allowance is None:
-        allowance = ctx.governor.estimate(stage)
-    ctx.store.finish_stage_run(
-        run_id,
-        status="ok" if result.ok else "failed",
-        turns=result.turns,
-        allowance_pct=allowance,
-        cost_usd=result.cost_usd,
-        exit_reason=result.error,
-        transcript_path=str(transcript_path),
-    )
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
-    return result

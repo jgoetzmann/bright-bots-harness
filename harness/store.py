@@ -8,6 +8,7 @@ in tests yields byte-stable rows.
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +172,12 @@ class WorkItem:
     attempts: int
     created_at: str
     updated_at: str
+
+    @property
+    def issue_number(self) -> int | None:
+        """The number in an ``issue:<n>`` reference; None when the reference carries none."""
+        match = re.search(r"\d+", self.external_ref)
+        return int(match.group()) if match else None
 
 
 @dataclass(frozen=True)
@@ -535,16 +542,13 @@ class Store:
         conn = self.conn
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute(
-                "INSERT INTO budget_period (unit, period_start, period_end, allocated, consumed) "
-                "VALUES (?, ?, ?, 0, 0) ON CONFLICT (unit, period_start) DO NOTHING",
-                (unit, period_start, period_start),
-            )
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE budget_period SET consumed = consumed + ? "
                 "WHERE unit = ? AND period_start = ?",
                 (value, unit, period_start),
             )
+            if cur.rowcount == 0:
+                raise StoreError(f"no budget period {unit}/{period_start}")
             conn.execute("COMMIT")
         except sqlite3.Error as exc:
             conn.execute("ROLLBACK")
@@ -574,9 +578,6 @@ class Store:
             )
         except sqlite3.Error as exc:
             raise StoreError(f"cannot cache {url}: {exc}") from exc
-
-    def cache_delete(self, url: str) -> None:
-        self.conn.execute("DELETE FROM http_cache WHERE url = ?", (url,))
 
     # ----------------------------------------------------------------- api calls
 

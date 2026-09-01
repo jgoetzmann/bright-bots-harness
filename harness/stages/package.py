@@ -13,7 +13,6 @@ from harness.clone import Lease
 from harness.context import Context
 from harness.errors import HarnessError
 from harness.halt import check_halt
-from harness.packager import build
 
 __all__ = ["package"]
 
@@ -27,6 +26,8 @@ def package(ctx: Context, item_id: int, lease: Lease) -> Path:
     item = ctx.store.get_work_item(item_id)
     if item is None:
         raise HarnessError(f"no work item {item_id}")
+
+    from harness.packager import build  # lazy: packager imports stages.propose (S2)
 
     path = build(ctx, item_id, lease)
 

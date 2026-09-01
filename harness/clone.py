@@ -15,20 +15,18 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from harness.clock import Clock
 from harness.errors import CloneError, PreflightFailed
+from harness.gates import run_command
 from harness.store import WorkItem
 
 log = logging.getLogger("harness")
 
 _BYTES_PER_GB = 1024 ** 3
-_CLONE_TIMEOUT_S = 1800
-_GIT_TIMEOUT_S = 300
 
 
 @dataclass(frozen=True)
@@ -47,15 +45,10 @@ def _slugify(text: str) -> str:
     return slug[:40].strip("-") or "work"
 
 
-def _issue_number(external_ref: str, fallback: int) -> str:
-    match = re.search(r"(\d+)", external_ref or "")
-    return match.group(1) if match else str(fallback)
-
-
 def branch_name_for(item: WorkItem) -> str:
     """``harness/<type>-<issue>-<slug>`` — always under the ``harness/`` namespace (B45)."""
     type_ = "fix" if item.kind == "issue" else "chore"
-    return f"harness/{type_}-{_issue_number(item.external_ref, item.id)}-{_slugify(item.title)}"
+    return f"harness/{type_}-{item.issue_number or item.id}-{_slugify(item.title)}"
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:
@@ -97,24 +90,8 @@ class CloneManager:
     # -- internals ---------------------------------------------------------
 
     def _run_git(self, argv: list[str], cwd: Path) -> tuple[int, str, str]:
-        if self._git_runner is not None:
-            return self._git_runner(argv, cwd)
-        full = [self.git_bin, *argv]
-        timeout = _CLONE_TIMEOUT_S if argv and argv[0] == "clone" else _GIT_TIMEOUT_S
-        try:
-            proc = subprocess.run(
-                full,
-                cwd=str(cwd),
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except FileNotFoundError as exc:
-            raise CloneError(f"git binary not found: {self.git_bin}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CloneError(f"git {' '.join(argv)} timed out after {timeout}s") from exc
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        run = self._git_runner if self._git_runner is not None else run_command
+        return run([self.git_bin, *argv], cwd)
 
     def _free_gb(self) -> float:
         probe = Path(self.config.runs_dir)

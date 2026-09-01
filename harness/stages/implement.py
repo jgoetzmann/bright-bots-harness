@@ -11,7 +11,6 @@ import dataclasses
 import json
 import logging
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -30,8 +29,7 @@ from harness.errors import (
 )
 from harness.halt import check_halt
 from harness.redact import write_redacted
-from harness.runner import RunRequest
-from harness.stages import load_prompt, system_prompt
+from harness.stages import load_prompt, run_model
 from harness.stages.propose import WorkPackage, parse_work_package
 
 __all__ = [
@@ -88,37 +86,18 @@ FORBIDDEN_ADDITIONS = (
 
 _TIMEOUT_NUMBER = re.compile(r"(?i)timeout[^0-9\n]{0,24}(\d+)")
 _TITLE_HEADER = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?!?:\s*(?P<subject>.+)$")
-_REF_NUMBER = re.compile(r"(\d+)")
-
-
-def _git(clone: Path, argv: Sequence[str]) -> tuple[int, str, str]:
-    """Run a read-only-ish git command inside the clone. Never touches a remote."""
-    try:
-        proc = subprocess.run(
-            ["git", *argv],
-            cwd=str(clone),
-            shell=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=600,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 1, "", str(exc)
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
 def _commit(clone: Path, message: str) -> None:
     """Stage everything in the clone and commit it with the given message."""
-    code, _, err = _git(clone, ["add", "-A"])
+    code, _, err = gates.run_command(["git", "add", "-A"], clone)
     if code != 0:
         raise HarnessError(f"git add failed in {clone}: {err.strip()}")
     msg_path = clone / ".git" / "HARNESS_COMMIT_MSG"
     msg_path.write_text(message, encoding="utf-8", newline="\n")
-    code, out, err = _git(
-        clone,
+    code, out, err = gates.run_command(
         [
+            "git",
             "-c",
             "user.name=Bright Bots Harness",
             "-c",
@@ -127,6 +106,7 @@ def _commit(clone: Path, message: str) -> None:
             "-F",
             str(msg_path),
         ],
+        clone,
     )
     if code != 0 and "nothing to commit" not in (out + err).lower():
         raise HarnessError(f"git commit failed in {clone}: {(err or out).strip()}")
@@ -226,7 +206,17 @@ def implement(ctx: Context, item_id: int) -> Lease:
     prompt = load_prompt(prompt_name).substitute(
         spec_text=spec_text, repo=ctx.config.repo, branch=lease.branch
     )
-    result = _model_call(ctx, item_id, prompt, lease)
+    result = run_model(
+        ctx,
+        stage="implement",
+        item_id=item_id,
+        prompt=prompt,
+        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
+        timeout_s=TIMEOUT_S,
+        cwd=lease.path,
+        add_dirs=(lease.path,),
+    )
     if not result.ok:
         _block(ctx, item_id, lease, f"implementation call failed: {result.error or 'unknown'}")
         raise RunnerError(f"implement call failed for item {item_id}: {result.error or 'unknown'}")
@@ -234,7 +224,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
     changed = _guarded_changed_paths(ctx, item_id, lease)
     _reject_forbidden_diff(ctx, item_id, lease, changed)
 
-    _format_and_commit(ctx, item_id, pkg, item.external_ref, lease, changed, first=True)
+    _format_and_commit(ctx, item_id, pkg, item, lease, changed, first=True)
 
     final = list(GATE_RUNNER(lease.path, baseline=False))
     _write_gates(ctx, "final", final)
@@ -261,7 +251,6 @@ def implement(ctx: Context, item_id: int) -> Lease:
             )
             break
         attempts += 1
-        check_halt(ctx.config.halt_file)
         ctx.record_decision(
             f"diagnose cycle {attempts}: red gates "
             + ", ".join(r.name for r in new_failures)
@@ -293,7 +282,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
 
 
 def _recheck_collision(ctx: Context, item: Any) -> None:
-    number = _issue_number(item.external_ref)
+    number = item.issue_number
     if number is None:
         return
     try:
@@ -405,7 +394,7 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
     """Added and removed lines of the working diff, plus every line of each untracked file."""
     added: list[str] = []
     removed: list[str] = []
-    code, out, _ = _git(lease.path, ["diff", "--unified=0", lease.base_sha])
+    code, out, _ = gates.run_command(["git", "diff", "--unified=0", lease.base_sha], lease.path)
     if code == 0:
         for line in out.splitlines():
             if line.startswith("+++") or line.startswith("---"):
@@ -415,7 +404,9 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
             elif line.startswith("-"):
                 removed.append(line[1:])
 
-    code, out, _ = _git(lease.path, ["ls-files", "--others", "--exclude-standard"])
+    code, out, _ = gates.run_command(
+        ["git", "ls-files", "--others", "--exclude-standard"], lease.path
+    )
     if code == 0:
         for rel in out.splitlines():
             rel = rel.strip()
@@ -448,7 +439,7 @@ def _format_and_commit(
     ctx: Context,
     item_id: int,
     pkg: WorkPackage,
-    external_ref: str,
+    item: Any,
     lease: Lease,
     changed: Sequence[str],
     *,
@@ -463,7 +454,7 @@ def _format_and_commit(
         + (f" — {output.strip()[:300]}" if output and not ok else "")
     )
 
-    message = _commit_message(pkg, external_ref, first=first)
+    message = _commit_message(pkg, item, first=first)
     problems = commitmsg.validate(message)
     if problems:
         ctx.record_decision(
@@ -474,7 +465,7 @@ def _format_and_commit(
         message = commitmsg.build(
             "chore",
             "harness",
-            f"apply approved change for {external_ref}",
+            f"apply approved change for {item.external_ref}",
             "Generated by the Bright Bots Harness from an approved work package.",
             [],
         )
@@ -482,14 +473,14 @@ def _format_and_commit(
     ctx.record_decision(f"committed on {lease.branch}: {message.splitlines()[0]}")
 
 
-def _commit_message(pkg: WorkPackage, external_ref: str, *, first: bool) -> str:
+def _commit_message(pkg: WorkPackage, item: Any, *, first: bool) -> str:
     type_, scope, subject = _split_title(pkg.title)
     if not first:
-        subject = f"address gate failures for {external_ref}"
+        subject = f"address gate failures for {item.external_ref}"
         type_ = "fix"
     body = pkg.approach.strip() or pkg.diagnosis.strip() or "Applies the approved work package."
     footers: list[str] = []
-    number = _issue_number(external_ref)
+    number = item.issue_number
     if number is not None:
         footers.append(f"Refs: #{number}")
     return commitmsg.build(type_, scope, subject, body, footers)
@@ -517,14 +508,24 @@ def _diagnose_cycle(
     prompt = load_prompt("diagnose_gate_failure").substitute(
         gate_output=_render_gate_output(failures), spec_text=spec_text
     )
-    result = _model_call(ctx, item_id, prompt, lease, stage_prompt="diagnose")
+    result = run_model(
+        ctx,
+        stage="implement",
+        item_id=item_id,
+        prompt=prompt,
+        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
+        timeout_s=TIMEOUT_S,
+        cwd=lease.path,
+        add_dirs=(lease.path,),
+    )
     if not result.ok:
         ctx.record_decision(f"diagnose call failed: {result.error or 'unknown'}")
         return list(GATE_RUNNER(lease.path, baseline=False))
 
     changed = list(CHANGED_PATHS(lease.path, lease.base_sha))
     _reject_forbidden_diff(ctx, item_id, lease, changed)
-    _format_and_commit(ctx, item_id, pkg, item.external_ref, lease, changed, first=False)
+    _format_and_commit(ctx, item_id, pkg, item, lease, changed, first=False)
     return list(GATE_RUNNER(lease.path, baseline=False))
 
 
@@ -563,49 +564,3 @@ def _block(ctx: Context, item_id: int, lease: Lease, reason: str) -> None:
         ctx.record_decision(f"could not transition item {item_id} to blocked: {exc}")
     ctx.clones.release(lease, keep=True)
     ctx.record_decision(f"clone kept at {lease.path} for inspection")
-
-
-def _issue_number(external_ref: str) -> int | None:
-    match = _REF_NUMBER.search(external_ref or "")
-    return int(match.group(1)) if match else None
-
-
-def _model_call(
-    ctx: Context,
-    item_id: int,
-    prompt: str,
-    lease: Lease,
-    *,
-    stage_prompt: str = "implement",
-) -> Any:
-    stage = "implement"
-    auth = ctx.governor.authorize(item_id, stage)
-    ctx.run_dir.mkdir(parents=True, exist_ok=True)
-    run_id = ctx.store.start_stage_run(item_id, stage, ctx.config.backend)
-    request = RunRequest(
-        stage=stage,
-        prompt=prompt,
-        system_prompt=system_prompt(),
-        allowed_tools=ALLOWED_TOOLS,
-        disallowed_tools=DISALLOWED_TOOLS,
-        max_turns=auth.max_turns,
-        cwd=lease.path,
-        timeout_s=TIMEOUT_S,
-        add_dirs=(lease.path,),
-    )
-    result = ctx.runner.run(request)
-    transcript_path = ctx.write_transcript(stage, result.transcript)
-    allowance = result.allowance_pct
-    if allowance is None:
-        allowance = ctx.governor.estimate(stage)
-    ctx.store.finish_stage_run(
-        run_id,
-        status="ok" if result.ok else "failed",
-        turns=result.turns,
-        allowance_pct=allowance,
-        cost_usd=result.cost_usd,
-        exit_reason=result.error or stage_prompt,
-        transcript_path=str(transcript_path),
-    )
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
-    return result

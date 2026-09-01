@@ -58,7 +58,10 @@ def _tail(text: str) -> str:
     return text[-TAIL_CHARS:]
 
 
-def _default_runner(argv: list[str], cwd: Path) -> tuple[int, str, str]:
+def run_command(
+    argv: list[str], cwd: Path, *, timeout_s: int = GATE_TIMEOUT_S
+) -> tuple[int, str, str]:
+    """``(exit_code, stdout, stderr)`` of one subprocess. No shell, ever."""
     try:
         proc = subprocess.run(
             argv,
@@ -66,19 +69,19 @@ def _default_runner(argv: list[str], cwd: Path) -> tuple[int, str, str]:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=GATE_TIMEOUT_S,
+            timeout=timeout_s,
         )
     except FileNotFoundError as exc:
         return 127, "", f"{argv[0]} not found: {exc}"
     except subprocess.TimeoutExpired as exc:
-        # A gate that times out is a red gate. It is never retried with a longer timeout.
+        # A command that times out is red. It is never retried with a longer timeout.
         out = exc.stdout or ""
         err = exc.stderr or ""
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
-        return 124, out, err + f"\ngate timed out after {GATE_TIMEOUT_S}s"
+        return 124, out, err + f"\n{argv[0]} timed out after {timeout_s}s"
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
@@ -94,7 +97,7 @@ def run_sequence(
     change which gates run or how they are judged. A baseline red is pre-existing and belongs in
     the evidence, not in a justification for loosening anything.
     """
-    run = runner if runner is not None else _default_runner
+    run = runner if runner is not None else run_command
     root = Path(clone)
     label = "baseline" if baseline else "post-change"
     results: list[GateResult] = []

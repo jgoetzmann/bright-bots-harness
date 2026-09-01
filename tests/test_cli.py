@@ -444,3 +444,19 @@ def test_B72_archive_with_transcript_also_refuses_an_approved_item(
     assert cli.main(["archive", str(item_id), "--with-transcript"]) == 1
     assert list((tmp_path / "packages").iterdir()) == []
     assert item_state(tmp_path, item_id) == "approved"
+
+
+def test_B69_run_exits_5_when_the_halt_file_is_present_even_with_an_empty_queue(
+    tmp_path, monkeypatch, capsys
+):
+    """B69: the kill switch is checked before the queue is consulted, not per stage only."""
+    monkeypatch.chdir(tmp_path)
+    write_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    (tmp_path / "HALT").write_text("", encoding="utf-8", newline="\n")
+    forbid_clone(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["run"]) == 5
+    assert stage_run_count(tmp_path) == 0
+    assert not list((tmp_path / "runs").glob("*/clone"))

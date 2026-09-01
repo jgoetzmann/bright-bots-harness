@@ -521,6 +521,8 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     config = _load(args)
+    # B69: the kill switch is honoured before anything is selected, queue or no queue.
+    check_halt(config.halt_file)
     until = _parse_hhmm(args.until) if args.until else None
 
     listing_ctx = build_context(config, run_id="run")

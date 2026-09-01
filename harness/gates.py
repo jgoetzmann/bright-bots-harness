@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -36,10 +37,32 @@ _SEQUENCE: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("npm run build", ("npm", "run", "build"), ""),
 )
 
+def _git_bash() -> str | None:
+    """Git for Windows' bash, found relative to ``git`` itself, or None."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    for parent in Path(git).resolve().parents:
+        for candidate in (parent / "bin" / "bash.exe", parent / "usr" / "bin" / "bash.exe"):
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def _resolve_argv(argv: Sequence[str]) -> tuple[str, ...]:
-    """On Windows the node shims are batch files, so npm and npx need the .cmd suffix."""
-    if sys.platform == "win32" and argv and argv[0] in ("npm", "npx"):
+    """Windows: node shims are batch files (.cmd), and bare ``bash`` is the WSL launcher.
+
+    ``C:\Windows\System32\bash.exe`` precedes Git Bash on PATH and fails without a WSL distro,
+    so the product's ``bash scripts/*.sh`` gates run under the bash that ships with git.
+    """
+    if sys.platform != "win32" or not argv:
+        return tuple(argv)
+    if argv[0] in ("npm", "npx"):
         return (argv[0] + ".cmd", *argv[1:])
+    if argv[0] == "bash":
+        found = _git_bash()
+        if found:
+            return (found, *argv[1:])
     return tuple(argv)
 
 

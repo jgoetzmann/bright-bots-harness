@@ -58,7 +58,9 @@ class Context:
     def write_transcript(self, stage: str, transcript: Iterable[Mapping[str, object]]) -> Path:
         """Write `transcript/<stage>.jsonl`, redacted, and return the path."""
         path = self.run_dir / "transcript" / f"{stage}.jsonl"
-        lines = [json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) for entry in transcript]
+        lines = [
+            json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) for entry in transcript
+        ]
         body = "".join(f"{line}\n" for line in lines)
         redact.write_redacted(path, body)
         return path

@@ -199,6 +199,14 @@ git checkout "$(cat ../BASE)"
 git am ../patches/*.patch
 ```
 
+On a machine whose global git config sets `core.autocrlf=true` (this Windows host does), a
+fresh clone comes up with a dirty working tree and the `checkout` refuses. Clone with the
+flag off instead:
+
+```bash
+git -c core.autocrlf=false clone https://github.com/Bright-Bots-Initiative/brightboost.git r
+```
+
 and obtain a tree identical to the harness's, with no network access to anything but the
 public product repository.
 

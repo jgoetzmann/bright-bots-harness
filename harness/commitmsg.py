@@ -24,7 +24,9 @@ TYPES: tuple[str, ...] = (
     "test",
 )
 
-_HEADER_RE = re.compile(r"^(?P<type>[a-zA-Z]+)(?:\((?P<scope>[^()]*)\))?(?P<bang>!)?: (?P<subject>.*)$")
+_HEADER_RE = re.compile(
+    r"^(?P<type>[a-zA-Z]+)(?:\((?P<scope>[^()]*)\))?(?P<bang>!)?: (?P<subject>.*)$"
+)
 
 
 def _normalise_subject(subject: str) -> str:

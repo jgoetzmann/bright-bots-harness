@@ -25,6 +25,12 @@ any kind against GitHub. That is enforced by structure, not by policy — see
 
 No runtime Python dependencies. Standard library only, on purpose.
 
+On Windows, `claude`, `npm` and `npx` are `.CMD` shims; the harness resolves them through
+`PATHEXT` itself, so nothing needs to be on `PATH` as an `.exe`. This machine's global
+`core.autocrlf=true` dirties fresh clones of the product repo; the harness's own repo pins
+`core.autocrlf=false` locally, and the reconstruction commands in
+[docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) show the flag to pass.
+
 ## Install
 
 ```bash
@@ -88,6 +94,17 @@ harness archive 1 --with-transcript  # includes the full redacted model transcri
 
 Other commands: `harness status [--json]` for the queue and remaining budget,
 `harness halt` and `harness resume` for the kill switch.
+
+## Gates and the install step
+
+`harness run` clones the product repo fresh, so before the baseline it runs `npm ci` at the
+root and in `backend/` wherever a `package-lock.json` exists. That is an install, not a gate:
+it checks nothing, it is recorded in `EVIDENCE.md` under its own heading, and the seven gates
+of the spec run unchanged after it. Without it every gate is vacuously red on an empty tree.
+
+A gate red in the baseline is pre-existing. It is carried into the post-change evidence as
+what it is and never attributed to the change — but the harness also never calls such a
+sequence "green". `DECISIONS.md` in the run directory says which it was.
 
 ## The fake backend
 

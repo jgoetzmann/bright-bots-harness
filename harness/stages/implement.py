@@ -17,6 +17,7 @@ from harness.context import Context
 from harness.errors import (
     GateFailed,
     GitHubError,
+    Halted,
     HarnessError,
     PreflightFailed,
     RateCeilingReached,
@@ -24,6 +25,7 @@ from harness.errors import (
 )
 from harness.halt import check_halt
 from harness.redact import write_redacted
+from harness.store import WorkItem
 from harness.stages import load_prompt, run_model
 from harness.stages.propose import WorkPackage, parse_work_package
 
@@ -122,7 +124,7 @@ def evaluate_fullsend_gate(pkg: WorkPackage, config: Config) -> dict[str, bool]:
 FULLSEND_REASONS = {
     "F1": "fewer than three independently describable slices",
     "F2": "fewer than fifteen numbered behaviors",
-    "F3": "the proposal still carries open questions, so it is discovery rather than a decided spec",
+    "F3": "the proposal still carries open questions: discovery rather than a decided spec",
     "F4": "the change set touches prisma, migrations, predeploy scripts, or CI workflows",
     "F5": "fullsend_enabled is false in .env",
 }
@@ -162,6 +164,16 @@ def implement(ctx: Context, item_id: int) -> Lease:
         raise PreflightFailed("; ".join(blockers))
 
     lease = ctx.clones.acquire(item)
+    try:
+        return _implement_leased(ctx, item_id, item, lease)
+    except Halted:
+        # R7.7 / A10: a halt mid-stage releases the clone and leaves the item resumable.
+        _release_on_halt(ctx, item_id, lease)
+        raise
+
+
+def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) -> Lease:
+    """The part of implement that holds a clone. Halt is checked at every expensive boundary."""
     ctx.store.update_work_item(item_id, base_sha=lease.base_sha, branch_name=lease.branch)
     ctx.store.transition(item_id, "implementing", reason="implement acquired a clone")
     ctx.record_decision(
@@ -172,6 +184,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
     # in the evidence as what it is.
     prep = list(PREPARE(lease.path))
     _write_gates(ctx, "prepare", prep)
+    check_halt(ctx.config.halt_file)
     if prep:
         ctx.record_decision(
             "prepared the clone: "
@@ -184,6 +197,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
     # B62: the untouched tree is measured before anything changes, and recorded separately.
     baseline = list(GATE_RUNNER(lease.path, baseline=True))
     _write_gates(ctx, "baseline", baseline)
+    check_halt(ctx.config.halt_file)
     pre_existing = sorted({r.name for r in baseline if r.exit_code != 0})
     if pre_existing:
         ctx.record_decision(
@@ -229,6 +243,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
     attempts = 0
     seen: set[str] = set()
     while True:
+        check_halt(ctx.config.halt_file)
         new_failures = _new_failures(baseline, final)
         if not new_failures:
             break
@@ -361,7 +376,9 @@ def _guarded_changed_paths(ctx: Context, lease: Lease) -> list[str]:
     return changed
 
 
-def _reject_forbidden_diff(ctx: Context, item_id: int, lease: Lease, changed: Sequence[str]) -> None:
+def _reject_forbidden_diff(
+    ctx: Context, item_id: int, lease: Lease, changed: Sequence[str]
+) -> None:
     """B64. A diff that widens a check is rejected whole; the item is blocked."""
     violations: list[str] = []
     for path in changed:
@@ -562,6 +579,19 @@ def _write_gates(ctx: Context, name: str, results: Sequence[Any]) -> Path:
     payload = [dataclasses.asdict(r) for r in results]
     write_redacted(path, json.dumps(payload, indent=2, default=list) + "\n")
     return path
+
+
+def _release_on_halt(ctx: Context, item_id: int, lease: Lease) -> None:
+    """Halt appeared while a clone was held: reset to approved, drop the clone, record it."""
+    ctx.record_decision(
+        f"halt file appeared during implement; clone {lease.path} released and item {item_id} "
+        "reset to approved for a later run"
+    )
+    try:
+        ctx.store.transition(item_id, "approved", reason="halted mid-implement")
+    except HarnessError as exc:  # already terminal — record, do not mask the halt
+        ctx.record_decision(f"could not reset item {item_id} to approved on halt: {exc}")
+    ctx.clones.release(lease, keep=False)
 
 
 def _block(ctx: Context, item_id: int, lease: Lease, reason: str) -> None:

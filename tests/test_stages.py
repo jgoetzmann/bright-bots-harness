@@ -1009,3 +1009,34 @@ def test_B62_dependency_install_runs_before_the_baseline_and_is_recorded(tmp_pat
     assert [r["name"] for r in recorded] == ["prepare: npm ci"]
     baseline = json.loads((rig.ctx.run_dir / "gates" / "baseline.json").read_text("utf-8"))
     assert all(r["name"] != "prepare: npm ci" for r in baseline)
+
+
+# --------------------------------------------------------------------------
+# B69 — halt is honoured mid-stage: clone released, item left resumable
+# --------------------------------------------------------------------------
+
+
+def test_B69_a_halt_file_appearing_mid_implement_releases_the_clone_and_resets_the_item(
+    tmp_path, monkeypatch
+):
+    from harness.errors import Halted
+
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.log.clear()
+
+    def gate_runner(clone, *, baseline, runner=None):
+        rig.log.append(f"gates(baseline={baseline})")
+        rig.ctx.config.halt_file.write_text("", encoding="utf-8")
+        return list(GREEN)
+
+    stub_implement_side_effects(monkeypatch, rig.log, gate_runner=gate_runner)
+
+    with pytest.raises(Halted):
+        implement(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "approved"
+    assert rig.log.count("gates(baseline=True)") == 1
+    assert "commit" not in rig.log
+    assert [keep for _lease, keep in rig.clones.released] == [False]

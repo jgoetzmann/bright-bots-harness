@@ -83,7 +83,7 @@ class ClaudeCliRunner:
     def build_env(self) -> dict[str, str]:
         """The parent environment minus every key in :data:`STRIPPED_ENV_KEYS` (B26).
 
-        ``os.environ`` is read only by ``harness.config`` (SPEC 9, I-4), so the
+        The process environment is read only by ``harness.config`` (SPEC 9, I-4), so the
         snapshot comes from there.
         """
         base = environ_snapshot()

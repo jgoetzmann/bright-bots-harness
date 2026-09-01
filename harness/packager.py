@@ -145,7 +145,7 @@ def _bullets(items: list[str]) -> str:
 
 
 def _prune(package_dir: Path) -> None:
-    """B73: delete anything in the package directory that §7.2 does not name."""
+    """B73: remove anything in the package directory that §7.2 does not name."""
     for entry in package_dir.iterdir():
         if entry.name in PACKAGE_ENTRIES:
             continue
@@ -297,7 +297,10 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         "F1": "F1 — at least 3 independently describable slices",
         "F2": "F2 — at least 15 numbered behaviors",
         "F3": "F3 — no open questions",
-        "F4": "F4 — no path under prisma/, migrations/, backend/scripts/predeploy*, .github/workflows/",
+        "F4": (
+            "F4 — no path under prisma/, migrations/, backend/scripts/predeploy*, "
+            ".github/workflows/"
+        ),
         "F5": "F5 — fullsend enabled in config",
     }
     fullsend_taken = all(gate_flags.values())

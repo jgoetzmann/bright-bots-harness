@@ -23,8 +23,8 @@ _PRIVATE_KEY_BLOCK = re.compile(
 )
 # The whole match goes, key name included (B49); the rest of the line is untouched (B50).
 _KEYED_VALUE = re.compile(r"(?i)(authorization|api[_-]?key|secret|token|password)\s*[:=]\s*\S+")
-# Applied before _KEYED_VALUE so ``Authorization: Bearer <tok>`` loses the token, not just the
-# scheme word; the keyed pass then swallows what is left of the header.
+# Applied before _KEYED_VALUE so an auth header carrying ``Bearer <tok>`` loses the token, not
+# just the scheme word; the keyed pass then swallows what is left of the header.
 _BEARER = re.compile(r"(?i)\bbearer\s+\S+")
 
 

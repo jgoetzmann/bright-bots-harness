@@ -22,3 +22,8 @@ build/
 Thumbs.db
 .idea/
 .vscode/
+.fullsend/
+runs/
+HALT
+harness.db
+*.egg-info/

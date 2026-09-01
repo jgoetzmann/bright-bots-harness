@@ -103,6 +103,8 @@ class ClaudeCliRunner:
                 shell=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except subprocess.TimeoutExpired as exc:
             tail = _as_text(getattr(exc, "stderr", None))

@@ -256,6 +256,8 @@ def _probe_claude_version() -> tuple[str | None, str]:
             [claude, "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             shell=False,
         )
@@ -278,6 +280,8 @@ def _probe_max_turns() -> tuple[bool, str]:
             [claude, *MAX_TURNS_PROBE_ARGV[1:]],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             shell=False,
         )

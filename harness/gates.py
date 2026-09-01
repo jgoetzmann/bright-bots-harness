@@ -58,6 +58,8 @@ def run_command(argv: list[str], cwd: Path) -> tuple[int, str, str]:
             shell=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=GATE_TIMEOUT_S,
         )
     except FileNotFoundError as exc:

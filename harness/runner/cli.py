@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,17 @@ EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
 
 
+def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+    """Default spawn: resolve argv[0] on PATH first.
+
+    On Windows the ``claude`` entry point is a ``.CMD`` shim, and CreateProcess only finds
+    bare names with an ``.exe`` extension; ``shutil.which`` applies PATHEXT. Injected spawns
+    receive the unresolved argv so argv construction stays testable (B25).
+    """
+    resolved = shutil.which(argv[0]) or argv[0]
+    return subprocess.run([resolved, *argv[1:]], **kwargs)  # type: ignore[call-overload]
+
+
 class ClaudeCliRunner:
     """Runs one stage by shelling out to the ``claude`` binary."""
 
@@ -34,7 +46,7 @@ class ClaudeCliRunner:
         spawn: Callable[..., subprocess.CompletedProcess] | None = None,
     ) -> None:
         self.claude_bin = claude_bin
-        self.spawn = spawn if spawn is not None else subprocess.run
+        self.spawn = spawn if spawn is not None else _spawn_resolved
 
     # -- argv and environment ------------------------------------------------
 

@@ -246,11 +246,14 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def _probe_claude_version() -> tuple[str | None, str]:
-    if WHICH("claude") is None:
+    claude = WHICH("claude")
+    if claude is None:
         return None, "claude not on PATH"
     try:
+        # The resolved path: on Windows ``claude`` is a .CMD shim that CreateProcess cannot
+        # find by bare name.
         proc = RUN(
-            ["claude", "--version"],
+            [claude, "--version"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -267,11 +270,12 @@ def _probe_claude_version() -> tuple[str | None, str]:
 
 def _probe_max_turns() -> tuple[bool, str]:
     """B70 / §3.1: --max-turns is accepted but undocumented, so it is probed, never trusted."""
-    if WHICH("claude") is None:
+    claude = WHICH("claude")
+    if claude is None:
         return False, "claude not on PATH; --max-turns unprobed"
     try:
         proc = RUN(
-            list(MAX_TURNS_PROBE_ARGV),
+            [claude, *MAX_TURNS_PROBE_ARGV[1:]],
             capture_output=True,
             text=True,
             timeout=120,

@@ -918,3 +918,94 @@ def test_B11_implement_on_an_item_that_is_not_approved_raises_illegal_transition
         implement(rig.ctx, item_id)
 
     assert rig.store.get_work_item(item_id).state == "proposed"
+
+
+# --------------------------------------------------------------------------
+# B64 — the diff-text arms: continue-on-error, .skip(, a raised timeout
+# --------------------------------------------------------------------------
+
+
+def _implement_with_diff(tmp_path, monkeypatch, added, removed):
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.log.clear()
+
+    def gate_runner(clone, *, baseline, runner=None):
+        rig.log.append(f"gates(baseline={baseline})")
+        return list(GREEN)
+
+    stub_implement_side_effects(
+        monkeypatch, rig.log, gate_runner=gate_runner, changed=["src/lib/bundle.ts"]
+    )
+    monkeypatch.setattr(implement_mod, "DIFF_LINES", lambda lease, changed: (added, removed))
+    try:
+        implement(rig.ctx, item_id)
+    except HarnessError:
+        pass
+    return rig, item_id
+
+
+def test_B64_a_diff_adding_continue_on_error_blocks_the_item(tmp_path, monkeypatch):
+    rig, item_id = _implement_with_diff(
+        tmp_path, monkeypatch, added=["    continue-on-error: true"], removed=[]
+    )
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
+def test_B64_a_diff_adding_a_skipped_test_blocks_the_item(tmp_path, monkeypatch):
+    rig, item_id = _implement_with_diff(
+        tmp_path, monkeypatch, added=["it.skip('flaky', () => {})"], removed=[]
+    )
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
+def test_B64_a_diff_raising_a_timeout_blocks_the_item(tmp_path, monkeypatch):
+    rig, item_id = _implement_with_diff(
+        tmp_path, monkeypatch, added=["  timeout: 60000,"], removed=["  timeout: 10000,"]
+    )
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
+def test_B64_a_diff_lowering_a_timeout_is_not_blocked(tmp_path, monkeypatch):
+    rig, item_id = _implement_with_diff(
+        tmp_path, monkeypatch, added=["  timeout: 5000,"], removed=["  timeout: 10000,"]
+    )
+    assert rig.store.get_work_item(item_id).state == "implementing"
+    assert "commit" in rig.log
+
+
+# --------------------------------------------------------------------------
+# B62 — dependency install precedes the baseline and is recorded separately
+# --------------------------------------------------------------------------
+
+
+def test_B62_dependency_install_runs_before_the_baseline_and_is_recorded(tmp_path, monkeypatch):
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.log.clear()
+
+    def gate_runner(clone, *, baseline, runner=None):
+        rig.log.append(f"gates(baseline={baseline})")
+        return list(GREEN)
+
+    def prepare(clone, *, runner=None):
+        rig.log.append("prepare")
+        return [GateResult("prepare: npm ci", ("npm", "ci"), 0, "added 1200 packages", "")]
+
+    stub_implement_side_effects(
+        monkeypatch, rig.log, gate_runner=gate_runner, changed=["src/lib/bundle.ts"]
+    )
+    monkeypatch.setattr(implement_mod, "PREPARE", prepare)
+
+    implement(rig.ctx, item_id)
+
+    assert rig.log.index("prepare") < rig.log.index("gates(baseline=True)")
+    recorded = json.loads((rig.ctx.run_dir / "gates" / "prepare.json").read_text("utf-8"))
+    assert [r["name"] for r in recorded] == ["prepare: npm ci"]
+    baseline = json.loads((rig.ctx.run_dir / "gates" / "baseline.json").read_text("utf-8"))
+    assert all(r["name"] != "prepare: npm ci" for r in baseline)

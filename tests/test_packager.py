@@ -708,3 +708,37 @@ def test_b75_build_raises_package_error_when_the_lease_path_is_not_a_git_repo(st
     )
     with pytest.raises(PackageError):
         packager.build(state.ctx, state.item_id, bad_lease)
+
+
+# --------------------------------------------------------------------------------------
+# B77 — the dependency-install step, when it ran, is in the evidence verbatim and apart
+# --------------------------------------------------------------------------------------
+
+
+PREPARE_GATES = [
+    {
+        "name": "prepare: npm ci",
+        "argv": ["npm", "ci", "--no-audit", "--no-fund"],
+        "exit_code": 0,
+        "stdout_tail": "added 1843 packages in 41s",
+        "stderr_tail": "npm warn EBADENGINE Unsupported engine { node: '20.x' }",
+    }
+]
+
+
+def test_b77_evidence_carries_the_prepare_step_verbatim_and_before_the_baseline(state):
+    _write(
+        state.ctx.run_dir / "gates" / "prepare.json", json.dumps(PREPARE_GATES, indent=2)
+    )
+    package = Path(packager.build(state.ctx, state.item_id, state.lease))
+    evidence = (package / "EVIDENCE.md").read_text(encoding="utf-8")
+    assert PREPARE_GATES[0]["stdout_tail"] in evidence
+    assert PREPARE_GATES[0]["stderr_tail"] in evidence
+    assert evidence.index("Preparation") < evidence.index("Baseline")
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    assert all(g["name"] != "prepare: npm ci" for g in manifest["gates"])
+
+
+def test_b77_evidence_has_no_preparation_section_when_nothing_was_installed(built):
+    evidence = (built.package / "EVIDENCE.md").read_text(encoding="utf-8")
+    assert "Preparation" not in evidence

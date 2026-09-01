@@ -29,8 +29,10 @@ from harness.stages.propose import WorkPackage, parse_work_package
 
 __all__ = [
     "CHANGED_PATHS",
+    "DIFF_LINES",
     "COMMIT",
     "GATE_RUNNER",
+    "PREPARE",
     "PRETTIER",
     "evaluate_fullsend_gate",
     "implement",
@@ -95,6 +97,7 @@ def _commit(clone: Path, message: str) -> None:
 
 # Module-level injectables. Tests replace these; production uses the real thing.
 GATE_RUNNER = gates.run_sequence
+PREPARE = gates.prepare
 PRETTIER = prettier.write_and_check
 CHANGED_PATHS = prettier.changed_paths
 COMMIT = _commit
@@ -164,6 +167,19 @@ def implement(ctx: Context, item_id: int) -> Lease:
     ctx.record_decision(
         f"acquired clone {lease.path} on branch {lease.branch} at base {lease.base_sha}"
     )
+
+    # Dependencies first, or every gate is vacuously red on a fresh clone. Not a gate; recorded
+    # in the evidence as what it is.
+    prep = list(PREPARE(lease.path))
+    _write_gates(ctx, "prepare", prep)
+    if prep:
+        ctx.record_decision(
+            "prepared the clone: "
+            + ", ".join(f"{r.name} (exit {r.exit_code})" for r in prep)
+            + "; an install step, not a gate, and not part of the gate sequence"
+        )
+    else:
+        ctx.record_decision("no package-lock.json in the clone; dependency install skipped")
 
     # B62: the untouched tree is measured before anything changes, and recorded separately.
     baseline = list(GATE_RUNNER(lease.path, baseline=True))
@@ -249,10 +265,20 @@ def implement(ctx: Context, item_id: int) -> Lease:
         )
 
     ctx.store.update_work_item(item_id, attempts=item.attempts + 1)
-    ctx.record_decision(
-        f"gate sequence green for item {item_id} on {lease.branch} "
-        f"after {attempts} diagnose cycles; no gate was widened, skipped or retimed"
-    )
+    still_red = sorted({r.name for r in final if r.exit_code != 0})
+    if still_red:
+        # Pre-existing reds are carried, not cured. Saying "green" here would be a lie.
+        ctx.record_decision(
+            f"no new gate failures versus baseline for item {item_id} on {lease.branch} "
+            f"after {attempts} diagnose cycles; the sequence is NOT green: "
+            f"{len(still_red)} pre-existing red(s) carried ({', '.join(still_red)}); "
+            "no gate was widened, skipped or retimed"
+        )
+    else:
+        ctx.record_decision(
+            f"gate sequence green for item {item_id} on {lease.branch} "
+            f"after {attempts} diagnose cycles; no gate was widened, skipped or retimed"
+        )
     log.info("implemented item %s on %s", item_id, lease.branch)
     return lease
 
@@ -343,7 +369,7 @@ def _reject_forbidden_diff(ctx: Context, item_id: int, lease: Lease, changed: Se
         if any(marker in text for marker in FORBIDDEN_DIFF_PATHS):
             violations.append(f"{path} is a CI workflow and may never be modified")
 
-    added, removed = _diff_lines(lease, changed)
+    added, removed = DIFF_LINES(lease, changed)
     for needle, description in FORBIDDEN_ADDITIONS:
         for line in added:
             if needle in line:
@@ -403,6 +429,10 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
             except OSError:
                 continue
     return added, removed
+
+
+#: Injectable so the diff-text arms of B64 can be exercised without a git repository.
+DIFF_LINES = _diff_lines
 
 
 def _timeout_numbers(lines: Sequence[str]) -> list[int]:

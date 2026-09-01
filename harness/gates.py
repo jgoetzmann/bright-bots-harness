@@ -74,6 +74,46 @@ def run_command(argv: list[str], cwd: Path) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+#: Dependency install, run once per clone before the baseline. Not a gate: it changes nothing
+#: about what the seven gates check, it only gives them a tree with ``node_modules`` in it —
+#: the product's own pre-push hook runs with ``--skip-install`` for the same reason.
+_PREPARE: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("prepare: npm ci", ("npm", "ci", "--no-audit", "--no-fund"), ""),
+    ("prepare: backend npm ci", ("npm", "ci", "--no-audit", "--no-fund"), "backend"),
+)
+
+
+def prepare(
+    clone: Path,
+    *,
+    runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+) -> list[GateResult]:
+    """Install pinned dependencies where a ``package-lock.json`` exists. Skipped otherwise.
+
+    Returns one result per install actually attempted, in the same shape as a gate so the
+    evidence can carry it verbatim. An empty list means nothing needed installing.
+    """
+    run = runner if runner is not None else run_command
+    root = Path(clone)
+    results: list[GateResult] = []
+    for name, argv, subdir in _PREPARE:
+        cwd = root / subdir if subdir else root
+        if not (cwd / "package-lock.json").is_file():
+            continue
+        resolved = _resolve_argv(argv)
+        code, out, err = run(list(resolved), cwd)
+        result = GateResult(
+            name=name,
+            argv=resolved,
+            exit_code=int(code),
+            stdout_tail=_tail(out),
+            stderr_tail=_tail(err),
+        )
+        results.append(result)
+        log.info("%s exit=%s", name, result.exit_code)
+    return results
+
+
 def run_sequence(
     clone: Path,
     *,

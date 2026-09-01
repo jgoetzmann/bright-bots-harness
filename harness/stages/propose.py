@@ -111,6 +111,9 @@ def _as_list(block: str) -> list[str]:
         if match is None:
             continue
         entry = match.group(1).strip()
+        if entry.startswith("`") and entry.endswith("`") and entry.count("`") == 2:
+            # A path written as `scripts/x.js` is the path, not the backticks.
+            entry = entry[1:-1].strip()
         if entry:
             items.append(entry)
     return items

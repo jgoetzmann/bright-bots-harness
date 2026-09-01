@@ -182,6 +182,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     spec_text = _read_text(Path(item.spec_path))
     pkg = parse_work_package(spec_text)
 
+    prep = _read_json_list(run_dir / "gates" / "prepare.json")
     baseline = _read_json_list(run_dir / "gates" / "baseline.json")
     final = _read_json_list(run_dir / "gates" / "final.json")
     run_decisions = _read_text(run_dir / "DECISIONS.md")
@@ -250,6 +251,14 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     note = _omission_note(final or baseline)
     if note:
         evidence.append(note)
+        evidence.append("")
+    if prep:
+        evidence.append(_gate_section("Preparation — dependency install, not a gate", prep))
+        evidence.append("")
+        evidence.append(
+            "`npm ci` against the pinned lockfile so the gates run on an installed tree. It "
+            "checks nothing and is not part of the gate sequence."
+        )
         evidence.append("")
     evidence.append(_gate_section("Baseline — untouched tree at BASE", baseline))
     evidence.append("")

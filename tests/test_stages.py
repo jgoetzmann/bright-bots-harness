@@ -438,6 +438,7 @@ def test_B55_triage_excludes_an_assigned_issue(tmp_path):
 
 
 def test_B56_triage_excludes_an_issue_claimed_by_a_branch_name(tmp_path):
+    """B56: an issue whose number appears in an in-flight branch name is never queued."""
     rig = triage_rig(
         tmp_path,
         issues=(gh_issue(101), gh_issue(102)),
@@ -451,6 +452,7 @@ def test_B56_triage_excludes_an_issue_claimed_by_a_branch_name(tmp_path):
 
 
 def test_B56_triage_excludes_an_issue_claimed_by_a_pr_title(tmp_path):
+    """B56: an issue referenced by an open PR title is never queued."""
     rig = triage_rig(
         tmp_path,
         issues=(gh_issue(101), gh_issue(102)),
@@ -465,6 +467,7 @@ def test_B56_triage_excludes_an_issue_claimed_by_a_pr_title(tmp_path):
 
 
 def test_B57_triage_excludes_the_intern_starter_label(tmp_path):
+    """B57: the intern-starter label excludes an issue from triage."""
     rig = triage_rig(
         tmp_path,
         issues=(gh_issue(101), gh_issue(102, labels=("harness-ok", "intern-starter"))),
@@ -477,6 +480,7 @@ def test_B57_triage_excludes_the_intern_starter_label(tmp_path):
 
 
 def test_B57_triage_excludes_the_large_label(tmp_path):
+    """B57: the large label excludes an issue from triage."""
     rig = triage_rig(
         tmp_path,
         issues=(gh_issue(101), gh_issue(102, labels=("harness-ok", "large"))),
@@ -489,6 +493,7 @@ def test_B57_triage_excludes_the_large_label(tmp_path):
 
 
 def test_B57_triage_excludes_the_architecture_label(tmp_path):
+    """B57: the architecture label excludes an issue from triage."""
     rig = triage_rig(
         tmp_path,
         issues=(gh_issue(101), gh_issue(102, labels=("harness-ok", "architecture"))),

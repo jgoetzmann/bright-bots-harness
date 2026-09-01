@@ -105,6 +105,9 @@ def build_context(
             config.halt_file,
             root / "HUMAN.md",
             root / ".env",
+            # The CLI treats its cwd as the repository root (setup writes HUMAN.md there).
+            Path.cwd() / "HUMAN.md",
+            Path.cwd() / ".env",
         ]
     )
 

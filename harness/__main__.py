@@ -40,7 +40,7 @@ from harness.errors import (
 from harness.halt import check_halt, disengage, engage, halted
 from harness.identity import Identity, write_human_doc
 from harness.packager import archive as archive_package
-from harness.redact import guarded_write
+from harness.redact import guarded_write, set_write_roots
 from harness.stages import STAGES
 
 LOG = logging.getLogger("harness")
@@ -214,6 +214,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         # B66: never overwrite an existing .env.
         LOG.debug("init: %s already exists, leaving it alone", env_path)
     elif example.exists():
+        # No config exists yet, so no context has set the write roots (I-8). Admit exactly
+        # the file init is about to create; build_context below replaces the roots.
+        set_write_roots([env_path])
         guarded_write(env_path, example.read_text(encoding="utf-8"))
         created_env = True
     else:

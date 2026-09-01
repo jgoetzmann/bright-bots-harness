@@ -1,8 +1,4 @@
-"""Budget periods, spend estimates and admission control.
-
-No stage may spend without an :class:`Authorization` issued here. All persistence goes through
-:class:`harness.store.Store`; this module contains no SQL (invariant I-5).
-"""
+"""Budget periods, spend estimates and admission control (SPEC §5.3)."""
 
 from __future__ import annotations
 
@@ -67,10 +63,7 @@ class Governor:
     def current_period(self) -> tuple[str, str]:
         """The week bounded by ``config.weekly_reset_day``, as ``(start_iso, end_iso)``."""
         now = self.clock.now()
-        day = str(self.config.weekly_reset_day).strip().lower()
-        if day not in WEEKDAYS:
-            raise ConfigError(f"weekly_reset_day must be a lowercase weekday name, got {day!r}")
-        reset_index = WEEKDAYS.index(day)
+        reset_index = WEEKDAYS.index(self.config.weekly_reset_day)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         back = (midnight.weekday() - reset_index) % 7
         start = midnight - timedelta(days=back)
@@ -104,8 +97,6 @@ class Governor:
         observed = [float(v) for v in self.store.completed_allowances(stage)]
         if len(observed) >= MIN_OBSERVATIONS:
             return float(statistics.median(observed))
-        if stage not in STATIC_ESTIMATES:
-            raise ConfigError(f"unknown stage {stage!r}")
         return STATIC_ESTIMATES[stage]
 
     def can_fund(self, stage: str) -> bool:

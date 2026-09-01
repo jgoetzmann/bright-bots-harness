@@ -1,9 +1,4 @@
-"""`.env` parsing into a frozen :class:`Config`.
-
-This is the only module in the package permitted to read ``os.environ`` (§9, I-4).
-Everything else receives values through :class:`Config` or through
-:func:`secret_values` / :func:`read_secret`.
-"""
+"""`.env` parsing into a frozen :class:`Config`; the only module that reads ``os.environ`` (I-4)."""
 
 from __future__ import annotations
 
@@ -106,8 +101,6 @@ def parse_env_text(text: str) -> dict[str, str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
         if "=" not in line:
             raise ConfigError(f".env line {lineno} is not KEY=VALUE: {raw_line!r}")
         key, _, value = line.partition("=")
@@ -251,9 +244,6 @@ def load_config(
         if value < 1:
             raise ConfigError(f"{key} must be at least 1; got {value}")
         turns[stage] = value
-    missing_stages = [stage for stage in _STAGE_KEYS if stage not in turns]
-    if missing_stages:
-        raise ConfigError(f"max_turns is missing stage keys: {', '.join(missing_stages)}")
     max_turns: Mapping[str, int] = MappingProxyType(turns)
 
     max_retries_gates = _require_int(values, "MAX_RETRIES_GATES")

@@ -1,10 +1,4 @@
-"""The product repository's own gate sequence (SPEC §5.11).
-
-Seven gates, in a fixed order, run against a clone this module never modifies. The whole point of
-the module is that it is boring and honest: it does not widen a gate, skip one, extend a timeout,
-or stop early when one goes red. Every gate runs on every invocation so the reviewer sees the
-complete picture, and a red the harness cannot fix stays red.
-"""
+"""The product repository's own gate sequence (SPEC §5.11). Never widened, skipped, or retimed."""
 
 from __future__ import annotations
 
@@ -42,9 +36,6 @@ _SEQUENCE: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("npm run build", ("npm", "run", "build"), ""),
 )
 
-GATE_NAMES: tuple[str, ...] = tuple(name for name, _argv, _sub in _SEQUENCE)
-
-
 def _resolve_argv(argv: Sequence[str]) -> tuple[str, ...]:
     """On Windows the node shims are batch files, so npm and npx need the .cmd suffix."""
     if sys.platform == "win32" and argv and argv[0] in ("npm", "npx"):
@@ -58,9 +49,7 @@ def _tail(text: str) -> str:
     return text[-TAIL_CHARS:]
 
 
-def run_command(
-    argv: list[str], cwd: Path, *, timeout_s: int = GATE_TIMEOUT_S
-) -> tuple[int, str, str]:
+def run_command(argv: list[str], cwd: Path) -> tuple[int, str, str]:
     """``(exit_code, stdout, stderr)`` of one subprocess. No shell, ever."""
     try:
         proc = subprocess.run(
@@ -69,7 +58,7 @@ def run_command(
             shell=False,
             capture_output=True,
             text=True,
-            timeout=timeout_s,
+            timeout=GATE_TIMEOUT_S,
         )
     except FileNotFoundError as exc:
         return 127, "", f"{argv[0]} not found: {exc}"
@@ -81,7 +70,7 @@ def run_command(
             out = out.decode("utf-8", "replace")
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
-        return 124, out, err + f"\n{argv[0]} timed out after {timeout_s}s"
+        return 124, out, err + f"\n{argv[0]} timed out after {GATE_TIMEOUT_S}s"
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
@@ -139,7 +128,3 @@ def signature(results: Sequence[GateResult]) -> str:
         return ""
     payload = "\n".join(f"{r.name}|{_first_error_line(r)}" for r in failing)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def is_green(results: Sequence[GateResult]) -> bool:
-    return all(r.exit_code == 0 for r in results)

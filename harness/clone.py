@@ -1,12 +1,4 @@
-"""Disposable clone lifecycle (SPEC §5.7).
-
-The clone is the only place the harness ever writes code. It is created under ``runs_dir``, over
-https with no credential, and it is thrown away when the item is done. Two properties are load
-bearing and are asserted rather than assumed:
-
-* the remote URL is unauthenticated https, never ssh and never credential-bearing (B42);
-* nothing outside ``config.runs_dir`` is ever created or removed (I-8).
-"""
+"""Disposable clone lifecycle (SPEC §5.7): https only, under ``runs_dir`` only."""
 
 from __future__ import annotations
 

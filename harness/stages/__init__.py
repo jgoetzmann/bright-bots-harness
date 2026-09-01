@@ -1,9 +1,4 @@
-"""Stage registry and prompt loading.
-
-A stage is a callable taking a :class:`harness.context.Context` plus stage-specific arguments.
-Prompts are data: they live in ``prompts/`` as Markdown and are rendered with a strict
-``string.Template`` substitution so a stray brace in repository content cannot break rendering.
-"""
+"""Stage registry and prompt loading (``string.Template``, never f-strings)."""
 
 from __future__ import annotations
 

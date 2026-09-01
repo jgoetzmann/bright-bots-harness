@@ -1,9 +1,4 @@
-"""SQLite persistence for the harness: schema, migrations and every query.
-
-Invariant I-5: no SQL string exists anywhere in the package outside this module.
-Every timestamp written here is produced by ``harness.clock.iso`` so a frozen clock
-in tests yields byte-stable rows.
-"""
+"""SQLite persistence: schema, migrations and every query (I-5: no SQL outside this module)."""
 
 from __future__ import annotations
 
@@ -98,16 +93,6 @@ CREATE INDEX idx_stage_run_item  ON stage_run(work_item_id);
 CREATE INDEX idx_event_item      ON event(work_item_id);
 CREATE INDEX idx_api_call_ts     ON api_call(ts);
 """
-
-TABLES: tuple[str, ...] = (
-    "schema_version",
-    "work_item",
-    "stage_run",
-    "budget_period",
-    "event",
-    "http_cache",
-    "api_call",
-)
 
 STATES: tuple[str, ...] = (
     "discovered",
@@ -252,10 +237,6 @@ class Store:
             raise StoreError("store is closed")
         return self._conn
 
-    @property
-    def clock(self) -> Clock:
-        return self._clock
-
     def _now(self) -> str:
         return iso(self._clock.now())
 
@@ -263,12 +244,6 @@ class Store:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
-
-    def __enter__(self) -> Store:
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.close()
 
     # ----------------------------------------------------------------- migration
 
@@ -286,25 +261,6 @@ class Store:
         except sqlite3.Error as exc:
             raise StoreError(f"migration failed: {exc}") from exc
         conn.execute("PRAGMA foreign_keys=ON")
-
-    def schema_version(self) -> int:
-        """Current schema version; 0 when the database has never been migrated."""
-        conn = self.conn
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-        ).fetchone()
-        if row is None:
-            return 0
-        version = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
-        if version is None or version["v"] is None:
-            return 0
-        return int(version["v"])
-
-    def tables(self) -> list[str]:
-        rows = self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
-        return [r["name"] for r in rows]
 
     # ---------------------------------------------------------------- work items
 
@@ -453,10 +409,6 @@ class Store:
         if cur.rowcount == 0:
             raise StoreError(f"no stage run {run_id}")
 
-    def get_stage_run(self, run_id: int) -> StageRun | None:
-        row = self.conn.execute("SELECT * FROM stage_run WHERE id = ?", (run_id,)).fetchone()
-        return _stage_run(row) if row is not None else None
-
     def list_stage_runs(
         self, work_item_id: int | None = None, status: str | None = None
     ) -> list[StageRun]:
@@ -596,22 +548,6 @@ class Store:
         ).fetchone()
         return int(row["n"]) if row is not None else 0
 
-    def list_api_calls(self) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM api_call ORDER BY id").fetchall()
-        return [dict(r) for r in rows]
-
-    # ------------------------------------------------------------------ counting
-
-    def counts_by_state(self) -> dict[str, int]:
-        """Queue depth per state, every state present even at zero."""
-        counts: dict[str, int] = {state: 0 for state in STATES}
-        rows = self.conn.execute(
-            "SELECT state, COUNT(*) AS n FROM work_item GROUP BY state"
-        ).fetchall()
-        for row in rows:
-            counts[row["state"]] = int(row["n"])
-        return counts
-
 
 def open_store(db_path: Path, clock: Clock | None = None) -> Store:
     """Open and migrate in one step; the common case for callers outside tests."""
@@ -624,7 +560,6 @@ __all__ = [
     "SCHEMA_SQL",
     "SCHEMA_VERSION",
     "STATES",
-    "TABLES",
     "LEGAL_TRANSITIONS",
     "WORK_ITEM_COLUMNS",
     "UPDATABLE_COLUMNS",

@@ -1,13 +1,4 @@
-"""Deterministic fixture-backed runner (SPEC 5.4.2).
-
-Reads ``<fixtures_dir>/<stage>.json`` and returns it verbatim as a
-:class:`~harness.runner.base.RunResult`. It exists so the state machine, the
-governor and the packager can be exercised in CI at zero token cost.
-
-This module deliberately imports nothing that can spawn a child process or
-open a network connection: the fake must be incapable of reaching either,
-not merely disinclined to.
-"""
+"""Deterministic fixture-backed runner (SPEC 5.4.2). No child process, no network."""
 
 from __future__ import annotations
 
@@ -21,20 +12,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 #: Where the canned results live when no directory is injected.
 DEFAULT_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "runner"
-
-#: The exact top-level keys a fixture may carry: the RunResult field names.
-FIXTURE_FIELDS: tuple[str, ...] = (
-    "ok",
-    "text",
-    "turns",
-    "cost_usd",
-    "allowance_pct",
-    "duration_ms",
-    "session_id",
-    "exit_code",
-    "transcript",
-    "error",
-)
 
 
 class FakeRunner:

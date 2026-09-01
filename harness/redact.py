@@ -1,14 +1,4 @@
-"""Secret redaction (SPEC §5.8) and the I-8 write guard.
-
-Every artifact the harness writes to disk routes through this module. Two entry points:
-
-* ``write_redacted`` — scrub the text, then write it under the guard.
-* ``guarded_write``  — write already-safe bytes (patches, bundles metadata) under the guard.
-
-The guard exists because I-8 says no file may be written outside ``runs_dir``, ``packages_dir``,
-the configured db path, or ``HUMAN.md``. Rather than trusting every call site, the roots are
-declared once at context-build time and every write is checked against them.
-"""
+"""Secret redaction (SPEC §5.8) and the I-8 write guard every artifact write routes through."""
 
 from __future__ import annotations
 
@@ -37,40 +27,12 @@ _KEYED_VALUE = re.compile(r"(?i)(authorization|api[_-]?key|secret|token|password
 # scheme word; the keyed pass then swallows what is left of the header.
 _BEARER = re.compile(r"(?i)\bbearer\s+\S+")
 
-#: The literal patterns, in application order, for anything that wants to scan with them
-#: (``HUMAN.md`` verification, package auditing).
-PATTERNS: tuple[re.Pattern[str], ...] = (
-    _PRIVATE_KEY_BLOCK,
-    _ANTHROPIC_KEY,
-    _GITHUB_PAT,
-    _GITHUB_TOKEN,
-    _AWS_ACCESS_KEY,
-    _BEARER,
-    _KEYED_VALUE,
-)
-
-
-def _config_secret_values() -> tuple[str, ...]:
-    """Values of the secret-bearing env keys, if config is importable.
-
-    Imported lazily and defensively: ``redact`` is used by modules that ``config`` itself may
-    end up importing, and redaction must never be the thing that breaks a run.
-    """
-    try:
-        from harness import config as _config
-    except ImportError:
-        return ()
-    try:
-        values = _config.secret_values()
-    except Exception:
-        return ()
-    return tuple(v for v in values if isinstance(v, str) and v.strip())
-
 
 def redact(text: str) -> str:
     """Replace every §5.8 pattern, and every live secret value, with ``[REDACTED]``."""
-    if not isinstance(text, str) or not text:
+    if not text:
         return text
+    from harness import config as _config  # lazy: config is imported by modules redact serves
 
     out = _PRIVATE_KEY_BLOCK.sub(REDACTION, text)
     out = _ANTHROPIC_KEY.sub(REDACTION, out)
@@ -81,7 +43,7 @@ def redact(text: str) -> str:
     out = _KEYED_VALUE.sub(REDACTION, out)
 
     # Longest first, so a value that contains another value does not leave a tail behind.
-    for value in sorted(_config_secret_values(), key=len, reverse=True):
+    for value in sorted(_config.secret_values(), key=len, reverse=True):
         if value in out:
             out = out.replace(value, REDACTION)
     return out

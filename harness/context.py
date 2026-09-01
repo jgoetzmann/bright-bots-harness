@@ -1,9 +1,4 @@
-"""The :class:`Context` handed to every stage, and the wiring that builds one.
-
-`build_context` is the single place where the store, governor, runner, GitHub
-client and clone manager are constructed, and the only place the I-8 write guard
-is armed with the roots this process may touch.
-"""
+"""The :class:`Context` handed to every stage, and the wiring that builds one."""
 
 from __future__ import annotations
 

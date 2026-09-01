@@ -1,9 +1,4 @@
-"""The implement stage: clone, baseline, model call, format, commit, gates, diagnose, block.
-
-The one rule this module exists to enforce: **a gate is never widened to reach green**. A red the
-harness cannot fix honestly leaves a blocked item with a kept clone and a full record, which is a
-successful outcome for a Tier 0 harness, not a failure to paper over.
-"""
+"""The implement stage: clone, baseline, model call, format, commit, gates, diagnose, block."""
 
 from __future__ import annotations
 
@@ -46,20 +41,6 @@ log = logging.getLogger("harness")
 ALLOWED_TOOLS = ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
 DISALLOWED_TOOLS = ("WebFetch", "WebSearch")
 TIMEOUT_S = 3600
-
-CONVENTIONAL_TYPES = (
-    "build",
-    "chore",
-    "ci",
-    "docs",
-    "feat",
-    "fix",
-    "perf",
-    "refactor",
-    "revert",
-    "style",
-    "test",
-)
 
 #: Paths that keep a proposal off the fullsend path (F4) — infrastructure others depend on.
 FULLSEND_FORBIDDEN_PATHS = (
@@ -221,10 +202,10 @@ def implement(ctx: Context, item_id: int) -> Lease:
         _block(ctx, item_id, lease, f"implementation call failed: {result.error or 'unknown'}")
         raise RunnerError(f"implement call failed for item {item_id}: {result.error or 'unknown'}")
 
-    changed = _guarded_changed_paths(ctx, item_id, lease)
+    changed = _guarded_changed_paths(ctx, lease)
     _reject_forbidden_diff(ctx, item_id, lease, changed)
 
-    _format_and_commit(ctx, item_id, pkg, item, lease, changed, first=True)
+    _format_and_commit(ctx, pkg, item, lease, changed, first=True)
 
     final = list(GATE_RUNNER(lease.path, baseline=False))
     _write_gates(ctx, "final", final)
@@ -256,7 +237,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
             + ", ".join(r.name for r in new_failures)
             + f" (signature {signature[:12]})"
         )
-        final = _diagnose_cycle(ctx, item_id, pkg, item, lease, new_failures, spec_text, baseline)
+        final = _diagnose_cycle(ctx, item_id, pkg, item, lease, new_failures, spec_text)
         _write_gates(ctx, "final", final)
 
     remaining = _new_failures(baseline, final)
@@ -341,7 +322,7 @@ def _read_spec(ctx: Context, item: Any) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _guarded_changed_paths(ctx: Context, item_id: int, lease: Lease) -> list[str]:
+def _guarded_changed_paths(ctx: Context, lease: Lease) -> list[str]:
     changed = list(CHANGED_PATHS(lease.path, lease.base_sha))
     ctx.record_decision(
         f"changed paths versus {lease.base_sha[:12]}: "
@@ -437,7 +418,6 @@ def _timeout_numbers(lines: Sequence[str]) -> list[int]:
 
 def _format_and_commit(
     ctx: Context,
-    item_id: int,
     pkg: WorkPackage,
     item: Any,
     lease: Lease,
@@ -489,7 +469,7 @@ def _commit_message(pkg: WorkPackage, item: Any, *, first: bool) -> str:
 def _split_title(title: str) -> tuple[str, str | None, str]:
     text = (title or "").strip()
     match = _TITLE_HEADER.match(text)
-    if match is not None and match.group("type") in CONVENTIONAL_TYPES:
+    if match is not None and match.group("type") in commitmsg.TYPES:
         scope = (match.group("scope") or "").strip() or None
         return match.group("type"), scope, match.group("subject").strip()
     return "fix", None, text or "apply the approved work package"
@@ -503,7 +483,6 @@ def _diagnose_cycle(
     lease: Lease,
     failures: Sequence[Any],
     spec_text: str,
-    baseline: Sequence[Any],
 ) -> list[Any]:
     prompt = load_prompt("diagnose_gate_failure").substitute(
         gate_output=_render_gate_output(failures), spec_text=spec_text
@@ -525,7 +504,7 @@ def _diagnose_cycle(
 
     changed = list(CHANGED_PATHS(lease.path, lease.base_sha))
     _reject_forbidden_diff(ctx, item_id, lease, changed)
-    _format_and_commit(ctx, item_id, pkg, item, lease, changed, first=False)
+    _format_and_commit(ctx, pkg, item, lease, changed, first=False)
     return list(GATE_RUNNER(lease.path, baseline=False))
 
 

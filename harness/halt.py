@@ -1,9 +1,4 @@
-"""The kill switch.
-
-A single file whose mere existence stops the harness. Checked at every stage
-boundary so an operator can stop an overnight run with `harness halt` (or by
-touching the file by hand) without racing the process.
-"""
+"""The kill switch: a file whose existence stops the harness at the next stage boundary."""
 
 from __future__ import annotations
 

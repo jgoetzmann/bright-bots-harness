@@ -1,15 +1,4 @@
-"""The discover stage.
-
-Three modes:
-
-``directed``
-    Fetch one issue and create (or return) its work item. At most one GitHub read, no model call.
-``triage``
-    Fetch open issues, pull requests and branches; filter mechanically; then one model call to rank
-    the survivors.
-``audit``
-    Not implemented in delivery 1. Raises before anything is fetched or spent.
-"""
+"""The discover stage: directed, triage, and the refused audit mode (SPEC §5.9.1)."""
 
 from __future__ import annotations
 
@@ -214,26 +203,12 @@ def _is_assigned(issue: dict) -> bool:
 
 
 def _label_names(issue: dict) -> set[str]:
-    names: set[str] = set()
-    for label in issue.get("labels") or ():
-        if isinstance(label, dict):
-            name = label.get("name")
-        else:
-            name = label
-        if name:
-            names.add(str(name))
-    return names
+    return {str(label["name"]) for label in issue.get("labels") or () if label.get("name")}
 
 
 def _issue_number(issue: dict) -> int | None:
     raw = issue.get("number")
-    if isinstance(raw, bool):
-        return None
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, str) and raw.strip().isdigit():
-        return int(raw.strip())
-    return None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
 
 
 def _render_candidates(issues: Sequence[dict]) -> str:

@@ -1,13 +1,4 @@
-"""Bot-identity readiness detection and ``HUMAN.md`` generation (spec §13).
-
-Delivery 1 detects and reports; it never authenticates. ``load_token`` is the
-only function that would return the secret and at Tier 0 it always refuses
-(B80) — the refusal lives in code, not in a policy document, because the whole
-Tier 0 argument is that the harness cannot leak what it was never given.
-
-``render_human_doc`` is pure: it reads the ``Readiness`` and nothing else, so
-the generated document can never interpolate an environment value (§9, I-10).
-"""
+"""Bot-identity readiness detection and ``HUMAN.md`` generation (spec §13). Never authenticates."""
 
 from __future__ import annotations
 
@@ -129,8 +120,6 @@ class Identity:
 
     def validate_shape(self, token: str) -> list[str]:
         """Shape errors, empty when plausible. Issues no request, ever."""
-        if token is None:
-            return ["no value supplied"]
         # The raw string, unstripped: surrounding whitespace is a malformed value, not noise.
         value = str(token)
         if value == "":

@@ -1,9 +1,4 @@
-"""Exception hierarchy for the harness.
-
-Every exception the harness raises deliberately derives from :class:`HarnessError`
-so a caller — most importantly ``harness.__main__`` — can map the whole family onto
-a process exit code without catching bare ``Exception``.
-"""
+"""Exception hierarchy; everything derives from :class:`HarnessError`."""
 
 from __future__ import annotations
 

@@ -1,12 +1,4 @@
-"""Branch and title -> claimed issue numbers (spec §5.6).
-
-Pure functions, no I/O. As of 2026-09-01 eight of the nine open pull requests on
-``Bright-Bots-Initiative/brightboost`` carry no ``closingIssuesReferences`` at
-all, yet six of them are plainly working an open issue that is identifiable only
-from the branch name. Selecting on GitHub's link graph alone would duplicate
-another contributor's in-flight work, so the branch names are the source of
-truth here.
-"""
+"""Branch and title -> claimed issue numbers (spec §5.6). Pure functions, no I/O."""
 
 from __future__ import annotations
 

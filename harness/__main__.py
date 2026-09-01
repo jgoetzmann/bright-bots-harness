@@ -42,6 +42,7 @@ from harness.identity import Identity, write_human_doc
 from harness.packager import archive as archive_package
 from harness.redact import guarded_write, set_write_roots
 from harness.stages import STAGES
+from harness.store import STATES
 
 LOG = logging.getLogger("harness")
 
@@ -58,17 +59,6 @@ EXIT_HALTED = 5
 EXIT_SETUP_OUTSTANDING = 6
 
 REQUIRED_BINARIES = ("git", "claude", "node", "npm", "npx")
-
-WORK_STATES = (
-    "discovered",
-    "proposed",
-    "approved",
-    "implementing",
-    "packaged",
-    "shipped",
-    "blocked",
-    "abandoned",
-)
 
 MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "json", ""]
 
@@ -438,7 +428,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = build_context(config, run_id="status")
 
-    queue: dict[str, int] = {state: 0 for state in WORK_STATES}
+    queue: dict[str, int] = {state: 0 for state in STATES}
     for item in ctx.store.list_work_items():
         queue[item.state] = queue.get(item.state, 0) + 1
 
@@ -453,7 +443,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     payload = {"queue": queue, "budget": budget, "in_flight": in_flight}
 
     lines = ["queue:"]
-    lines.extend(f"  {state:<12} {queue[state]}" for state in WORK_STATES)
+    lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.append("budget:")
     lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
     lines.append(f"  session remaining {budget['session_remaining_pct']:.2f}%")
@@ -663,13 +653,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
 
-    handler = COMMANDS.get(args.command)
-    if handler is None:
-        print(f"unknown command: {args.command}", file=sys.stderr)
-        return EXIT_ERROR
-
     try:
-        return handler(args)
+        return COMMANDS[args.command](args)
     except NotImplementedInDelivery1 as exc:
         print(str(exc) or "not implemented in delivery 1", file=sys.stderr)
         return EXIT_UNIMPLEMENTED
@@ -679,9 +664,6 @@ def main(argv: list[str] | None = None) -> int:
     except BudgetExhausted as exc:
         print(f"budget exhausted: {exc}", file=sys.stderr)
         return EXIT_BUDGET
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return EXIT_ERROR
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

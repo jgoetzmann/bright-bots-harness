@@ -1,10 +1,4 @@
-"""Unauthenticated, cached, read-only GitHub client (spec §5.5).
-
-Delivery 1 is Tier 0: this module never sets an ``Authorization`` header, never
-imports ``subprocess``, never imports ``harness.identity``, and only ever reads.
-Every retrieval is recorded in the ``api_call`` table and metered against the
-configured hourly ceiling before the socket is opened.
-"""
+"""Unauthenticated, cached, read-only GitHub client (spec §5.5)."""
 
 from __future__ import annotations
 
@@ -33,13 +27,8 @@ def _header(headers: Any, name: str) -> str | None:
     """Read one header off any object exposing ``.get`` (or nothing at all)."""
     if headers is None:
         return None
-    getter = getattr(headers, "get", None)
-    if getter is None:
-        return None
-    value = getter(name)
-    if value is None:
-        return None
-    return str(value)
+    value = headers.get(name)
+    return None if value is None else str(value)
 
 
 def _next_link(headers: Any) -> str | None:
@@ -178,7 +167,6 @@ class GitHubReadOnly:
 
         self.store.record_api_call(url, code, False)
         self._raise_for_status(url, code, _body_text(exc), error_headers)
-        raise GitHubError(f"github returned {code} for {url}")
 
     def _raise_for_status(self, url: str, status: int, body: str, headers: Any) -> None:
         if status == 403:
@@ -211,8 +199,6 @@ class GitHubReadOnly:
             data, headers = self._fetch(url)
             if isinstance(data, list):
                 collected.extend(item for item in data if isinstance(item, dict))
-            elif isinstance(data, dict):
-                collected.append(data)
             url = _next_link(headers)
         return collected
 

@@ -1,8 +1,4 @@
-"""The package stage: build the review package and move the item to ``packaged``.
-
-No model call and no spend. Everything the package contains already exists on disk by the time this
-runs; this stage is assembly, and the assembling lives in :mod:`harness.packager`.
-"""
+"""The package stage: build the review package and move the item to ``packaged``."""
 
 from __future__ import annotations
 

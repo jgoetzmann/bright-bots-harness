@@ -1,11 +1,4 @@
-"""PR-scoped prettier invocation (SPEC §5.11).
-
-Scoped to the files this change actually added or modified, matching the product repo's own
-``scripts/pr-review-prettier-check.sh``. It is never pointed at the whole tree and never at the
-repo-wide formatting npm script (§9, I-7): with ``core.autocrlf=true`` and no ``.gitattributes``
-on this machine, a tree-wide run reports hundreds of line-ending-only differences in files the
-change never touched, which buries the real result and would rewrite files outside the diff.
-"""
+"""PR-scoped prettier invocation (SPEC §5.11). Never pointed at the whole tree (I-7)."""
 
 from __future__ import annotations
 

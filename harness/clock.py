@@ -1,20 +1,15 @@
-"""Injectable time source.
-
-Every timestamp the harness stores anywhere is produced by :func:`iso`, so tests
-never sleep and never read the wall clock.
-"""
+"""Injectable time source; every stored timestamp comes from :func:`iso`."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 __all__ = ["Clock", "SystemClock", "FrozenClock", "iso", "parse_iso"]
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
-@runtime_checkable
 class Clock(Protocol):
     """A source of the current time, always timezone-aware and always UTC."""
 

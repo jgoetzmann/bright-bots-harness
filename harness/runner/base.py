@@ -1,10 +1,4 @@
-"""Runner protocol and the two frozen result shapes (SPEC 5.4.1).
-
-Pure declarations plus the backend factory. This module performs no I/O: the
-concrete backends are imported lazily inside :func:`get_runner` so that
-``harness.runner.base`` stays importable without touching the filesystem, the
-environment, or ``subprocess``.
-"""
+"""Runner protocol, the two frozen result shapes, and the backend factory (SPEC 5.4.1)."""
 
 from __future__ import annotations
 

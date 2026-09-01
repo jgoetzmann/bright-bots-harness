@@ -1,8 +1,4 @@
-"""The propose stage: one model call producing the work package of the spec's §7.1.
-
-Also home to the work-package parser, because the parser and the prompt that produces the format
-have to move together.
-"""
+"""The propose stage (one model call -> a §7.1 work package) and the work-package parser."""
 
 from __future__ import annotations
 

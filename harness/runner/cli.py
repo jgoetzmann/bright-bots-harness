@@ -1,16 +1,10 @@
-"""The ``claude`` CLI backend (SPEC 5.4.3).
-
-Builds a frozen argv, strips the API key from the child environment, and parses
-the JSON result defensively. Every failure path -- non-zero exit, timeout,
-unparseable stdout, missing binary -- yields ``ok=False`` with a redacted stderr
-tail rather than an exception (B30).
-"""
+"""The ``claude`` CLI backend (SPEC 5.4.3)."""
 
 from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from harness.config import environ_snapshot
@@ -38,12 +32,9 @@ class ClaudeCliRunner:
         self,
         claude_bin: str = "claude",
         spawn: Callable[..., subprocess.CompletedProcess] | None = None,
-        *,
-        base_env: Mapping[str, str] | None = None,
     ) -> None:
         self.claude_bin = claude_bin
         self.spawn = spawn if spawn is not None else subprocess.run
-        self.base_env = base_env
 
     # -- argv and environment ------------------------------------------------
 
@@ -81,10 +72,9 @@ class ClaudeCliRunner:
         """The parent environment minus every key in :data:`STRIPPED_ENV_KEYS` (B26).
 
         ``os.environ`` is read only by ``harness.config`` (SPEC 9, I-4), so the
-        snapshot comes from there. An explicit ``base_env`` overrides it, which
-        is how a test asserts the stripping without mutating the real process.
+        snapshot comes from there.
         """
-        base = self.base_env if self.base_env is not None else environ_snapshot()
+        base = environ_snapshot()
         return {key: value for key, value in base.items() if key not in STRIPPED_ENV_KEYS}
 
     # -- the call ------------------------------------------------------------

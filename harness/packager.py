@@ -1,16 +1,10 @@
-"""Builds the review package of HARNESS-SPEC §7.2 and promotes it into ``packages/``.
-
-The package is the whole product of a run: a maintainer with nothing but this directory
-must be able to reconstruct the tree, read why every decision was taken, and see the
-repository's own gates pass in their own words. Nothing here summarises gate output and
-nothing here invents evidence.
-"""
+"""Builds the review package of HARNESS-SPEC §7.2 and promotes it into ``packages/``."""
 
 from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 from harness import __version__
@@ -72,17 +66,7 @@ def _read_json_list(path: Path) -> list[dict]:
         return []
     if isinstance(loaded, list):
         return [row for row in loaded if isinstance(row, dict)]
-    if isinstance(loaded, dict):
-        return [loaded]
     return []
-
-
-def _as_dict(row: object) -> dict:
-    if isinstance(row, dict):
-        return dict(row)
-    if is_dataclass(row) and not isinstance(row, type):
-        return asdict(row)
-    return {}
 
 
 def _fence(text: str) -> str:
@@ -214,7 +198,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
             for key in gate_flags:
                 gate_flags[key] = bool(loaded.get(key, False))
 
-    stage_rows = [_as_dict(row) for row in ctx.store.list_stage_runs(work_item_id=item_id)]
+    stage_rows = [asdict(row) for row in ctx.store.list_stage_runs(work_item_id=item_id)]
     stages = [
         {
             "stage": row.get("stage"),
@@ -490,11 +474,7 @@ def _guard_binary_dest(dest: Path) -> None:
         return
     resolved = dest.resolve()
     for root in roots:
-        try:
-            root_resolved = Path(root).resolve()
-        except OSError:
-            continue
-        if resolved == root_resolved or root_resolved in resolved.parents:
+        if resolved == root or root in resolved.parents:
             return
     raise WriteOutsideAllowedRoots(f"refusing to write outside the allowed roots: {dest}")
 

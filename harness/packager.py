@@ -520,6 +520,12 @@ def archive(ctx: Context, item_id: int, *, with_transcript: bool) -> Path:
 
     stamp = iso(ctx.clock.now()).replace("-", "").replace(":", "")
     destination = ctx.config.packages_dir / f"{item_id}-{stamp}"
+    # The stamp has one-second resolution; a second archive in the same second must not land
+    # inside the first.
+    suffix = 1
+    while destination.exists():
+        suffix += 1
+        destination = ctx.config.packages_dir / f"{item_id}-{stamp}-{suffix}"
     destination.mkdir(parents=True, exist_ok=True)
 
     for name in PACKAGE_FILES:

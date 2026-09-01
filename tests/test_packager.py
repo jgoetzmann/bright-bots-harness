@@ -742,3 +742,12 @@ def test_b77_evidence_carries_the_prepare_step_verbatim_and_before_the_baseline(
 def test_b77_evidence_has_no_preparation_section_when_nothing_was_installed(built):
     evidence = (built.package / "EVIDENCE.md").read_text(encoding="utf-8")
     assert "Preparation" not in evidence
+
+
+def test_b78_two_archives_in_the_same_second_land_in_two_directories(built):
+    first = Path(packager.archive(built.ctx, built.item_id, with_transcript=False))
+    second = Path(packager.archive(built.ctx, built.item_id, with_transcript=True))
+    assert first != second
+    assert first.parent == second.parent == built.ctx.config.packages_dir
+    assert not (first / "transcript.jsonl").exists()
+    assert (second / "transcript.jsonl").exists()

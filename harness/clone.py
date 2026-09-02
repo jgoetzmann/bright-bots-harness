@@ -287,8 +287,8 @@ def sync_fork(
 
     git(["clone", "--bare", "--no-tags", fork_url, str(bare)], workdir)
     git(["remote", "add", "upstream", upstream_url], bare)
-    git(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], bare)
-    git(["fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], bare)
+    git(["fetch", "origin", "refs/heads/main:refs/remotes/origin/main"], bare)
+    git(["fetch", "upstream", "refs/heads/main:refs/remotes/upstream/main"], bare)
     fork_sha = git(["rev-parse", "origin/main"], bare)
     upstream_sha = git(["rev-parse", "upstream/main"], bare)
 

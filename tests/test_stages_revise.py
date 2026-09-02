@@ -642,7 +642,7 @@ def quiet_implement(monkeypatch):
     monkeypatch.setattr(implement, "PRETTIER", lambda *a, **k: (True, ""))
     monkeypatch.setattr(implement, "CHANGED_PATHS", lambda *a, **k: ["src/pages/Dashboard.tsx"])
     monkeypatch.setattr(implement, "COMMIT", lambda *a, **k: None)
-    monkeypatch.setattr(implement, "DIFF_LINES", lambda *a, **k: "", raising=False)
+    monkeypatch.setattr(implement, "DIFF_LINES", lambda *a, **k: ([], []), raising=False)
     return implement
 
 

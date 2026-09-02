@@ -337,7 +337,14 @@ class GitHubStore:
         state = _state_of(issue)
         if state is None:
             return None
-        return _item_from(issue, self._meta(item_id), state)
+        meta = dict(self._meta(item_id))
+        # Without a credential the meta marker is never posted; the scratch mirror carries it.
+        mirror = self.scratch.get_work_item(item_id)
+        if mirror is not None:
+            for field in ("spec_path", "base_sha", "branch_name", "package_path", "attempts"):
+                if meta.get(field) in (None, "", 0) and getattr(mirror, field) not in (None, ""):
+                    meta[field] = getattr(mirror, field)
+        return _item_from(issue, meta, state)
 
     def find_by_ref(self, external_ref: str) -> WorkItem | None:
         """``self:<n>`` is issue n; anything else matches the ref the item was created with."""
@@ -389,7 +396,9 @@ class GitHubStore:
                 raise StoreError(f"unknown state {new_state!r} for work item {item_id}")
             self._set_state_label(issue, str(new_state))
             state = str(new_state)
-        self.gh.comment(self.self_repo, item_id, redact(_meta_marker(meta)))
+        if getattr(self.gh, "can_write", False):
+            # The marker is a cache of scratch; without a credential scratch alone carries it.
+            self.gh.comment(self.self_repo, item_id, redact(_meta_marker(meta)))
         self.scratch._mirror_work_item(_item_from(issue, meta, state))
 
     # ------------------------------------------------------------- delivery 2 seam

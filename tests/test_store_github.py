@@ -548,6 +548,7 @@ def test_B101_transition_comment_names_stage_state_run_url_and_cost(gh, store):
 def test_B101_transition_without_a_stage_run_still_comments_with_a_dollar_cost(gh, store):
     """B101: with no stage run in this process the comment still carries the URL and $0.00."""
     n = _create(store)
+    store.transition(n, "proposing", reason="x")  # discovered->blocked is not a legal pair (D1 5.2.2)
     comments_before = _comment_calls(gh)
     store.transition(n, "blocked", reason="operator hold")
     assert _comment_calls(gh) - comments_before == 1
@@ -823,6 +824,7 @@ def test_B147_reconcile_ignores_old_items_that_are_not_in_flight(gh, store, cloc
     store.transition(n, "proposed", reason="x")
     store.transition(n, "approved", reason="merged proposal")
     m = _create(store, ref="issue:900", title="parked")
+    store.transition(m, "proposing", reason="x")  # discovered->blocked is not a legal pair (D1 5.2.2)
     store.transition(m, "blocked", reason="hold")
     clock.advance(24 * 3600)
     assert store.reconcile_stale_running(iso(clock.now() - timedelta(hours=3))) == []

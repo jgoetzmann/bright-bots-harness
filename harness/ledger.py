@@ -7,11 +7,12 @@ import os
 import re
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from harness.clock import iso, parse_iso
+from harness.clock import as_utc, iso, parse_iso
+from harness.errors import HarnessError
 from harness.redact import guarded_write
 
 __all__ = ["Ledger", "load", "save", "rebuild", "HISTORY_CAP", "EPOCH"]
@@ -51,12 +52,6 @@ def _empty_window(period_start: str) -> dict:
 
 def _empty_cursors() -> dict:
     return {"notifications_last_seen": None, "seen_comment_ids": [], "keyword_denied": {}}
-
-
-def _as_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def _usd(value: object) -> float:
@@ -144,7 +139,7 @@ class Ledger:
 
     def roll_window(self, now: datetime, reset_day: str) -> bool:
         """Start a fresh window once ``now >= period_start + 7d``; True when it rolled."""
-        current = _as_utc(now)
+        current = as_utc(now)
         try:
             start = parse_iso(str(self.window.get("period_start") or EPOCH))
         except ValueError:
@@ -222,9 +217,10 @@ class Ledger:
 
     @classmethod
     def from_json(cls, text: str) -> "Ledger":
-        raw = json.loads(text) if text.strip() else {}
-        if not isinstance(raw, dict):
-            raw = {}
+        raw = json.loads(text)
+        schema = raw.get("schema") if isinstance(raw, dict) else None
+        if schema != SCHEMA:
+            raise HarnessError(f"ledger schema must be {SCHEMA}; got {schema!r}")
         window = _empty_window(EPOCH)
         window.update(dict(raw.get("window") or {}))
         cursors = _empty_cursors()
@@ -232,7 +228,7 @@ class Ledger:
         observations = {str(k): dict(v) for k, v in dict(raw.get("observations") or {}).items()}
         history = [dict(entry) for entry in list(raw.get("history") or [])]
         ledger = cls(
-            schema=int(raw.get("schema", SCHEMA)),
+            schema=SCHEMA,
             window=window,
             observations=observations,
             cursors=cursors,

@@ -228,36 +228,23 @@ LABELS: dict[str, str] = {
     "abandoned": "harness:abandoned",
 }
 
-# RUN-DECISIONS-D2 section 3, the unified table. ``"new"`` is the pseudo-state of a row that does
-# not exist yet.
+# The one transition table, shared by both stores: RUN-DECISIONS-D2 section 3 minus the three
+# pairs Delivery 1 pins illegal (B11: discovered->blocked, approved->blocked,
+# shipped->abandoned). ``"new"`` is the pseudo-state of a row that does not exist yet.
 TRANSITIONS: dict[str, frozenset[str]] = {
     "new": frozenset({"discovered"}),
-    "discovered": frozenset({"proposing", "proposed", "blocked", "abandoned"}),
+    "discovered": frozenset({"proposing", "proposed", "abandoned"}),
     "proposing": frozenset({"proposed", "discovered", "blocked", "abandoned"}),
     "proposed": frozenset({"approved", "proposing", "discovered", "blocked", "abandoned"}),
-    "approved": frozenset({"implementing", "discovered", "blocked", "abandoned"}),
+    "approved": frozenset({"implementing", "discovered", "abandoned"}),
     "implementing": frozenset({"packaged", "approved", "blocked", "abandoned"}),
     "packaged": frozenset({"shipped", "revising", "approved", "blocked", "abandoned"}),
-    "shipped": frozenset({"revising", "merged", "needs-human", "blocked", "abandoned"}),
+    "shipped": frozenset({"revising", "merged", "needs-human", "blocked"}),
     "revising": frozenset({"shipped", "needs-human", "blocked", "abandoned"}),
     "needs-human": frozenset({"revising", "shipped", "abandoned"}),
     "blocked": frozenset({"approved", "discovered", "abandoned"}),
     "merged": frozenset(),
     "abandoned": frozenset(),
-}
-
-# HARNESS-SPEC 5.2.2 is frozen by tests/test_store.py (B11 ILLEGAL_PAIRS): these three pairs of
-# the unified table are refused by the SQLite backing so Delivery 1's oracle keeps passing.
-_SQLITE_REFUSED: dict[str, frozenset[str]] = {
-    "discovered": frozenset({"blocked"}),
-    "approved": frozenset({"blocked"}),
-    "shipped": frozenset({"abandoned"}),
-}
-
-# The SQLite backing's table. ``None`` is the pseudo-state of a row that does not exist yet.
-LEGAL_TRANSITIONS: dict[str | None, frozenset[str]] = {
-    (None if state == "new" else state): targets - _SQLITE_REFUSED.get(state, frozenset())
-    for state, targets in TRANSITIONS.items()
 }
 
 # B147: where a stage left mid-flight returns to.
@@ -497,8 +484,12 @@ class SqliteStore:
         external_ref: str,
         title: str,
         tier_required: int = 0,
+        body: str = "",
     ) -> int:
-        """Insert a new item in state ``discovered``. B9: duplicate ref -> DuplicateWorkItem."""
+        """Insert a new item in state ``discovered``. B9: duplicate ref -> DuplicateWorkItem.
+
+        ``body`` has no column; a non-empty one is kept as an event row (S11).
+        """
         now = self._now()
         try:
             cur = self.conn.execute(
@@ -515,7 +506,10 @@ class SqliteStore:
             raise StoreError(f"cannot create work item {external_ref}: {exc}") from exc
         except sqlite3.Error as exc:
             raise StoreError(f"cannot create work item {external_ref}: {exc}") from exc
-        return int(cur.lastrowid)
+        item_id = int(cur.lastrowid)
+        if body:
+            self.append_event(item_id, "info", f"body: {body}")
+        return item_id
 
     def get_work_item(self, item_id: int) -> WorkItem | None:
         row = self.conn.execute("SELECT * FROM work_item WHERE id = ?", (item_id,)).fetchone()
@@ -542,7 +536,7 @@ class SqliteStore:
         if item is None:
             raise StoreError(f"no work item {item_id}")
         from_state = item.state
-        allowed = LEGAL_TRANSITIONS.get(from_state, frozenset())
+        allowed = TRANSITIONS.get(from_state, frozenset())
         if to_state not in allowed:
             raise IllegalTransition(
                 f"illegal transition {from_state} -> {to_state} for work item {item_id}"
@@ -870,14 +864,6 @@ class SqliteStore:
 Store = SqliteStore
 
 
-def open_store(db_path: Path, clock: Clock | None = None) -> SqliteStore:
-    """Open and migrate in one step (Delivery 1 helper; the package-level ``open_store`` takes a
-    ``Config`` and picks the backing)."""
-    store = SqliteStore(db_path, clock)
-    store.migrate()
-    return store
-
-
 __all__ = [
     "SCHEMA_SQL",
     "SCHEMA_SQL_V2",
@@ -886,7 +872,6 @@ __all__ = [
     "STATES",
     "LABELS",
     "TRANSITIONS",
-    "LEGAL_TRANSITIONS",
     "STALE_PREVIOUS",
     "WORK_ITEM_COLUMNS",
     "STAGE_RUN_COLUMNS",
@@ -896,5 +881,4 @@ __all__ = [
     "SqliteStore",
     "Store",
     "bare_filename",
-    "open_store",
 ]

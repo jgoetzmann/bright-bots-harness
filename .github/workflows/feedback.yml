@@ -37,7 +37,7 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: sweep actions (revise/propose) may call the model
     steps:
-      # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+        # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
       - name: HALT check (.harness/HALT on the default branch)
         id: halt
         shell: bash
@@ -137,19 +137,19 @@ jobs:
           print(".env written; keys:", " ".join(keys))
           PY
 
-      # B127: verify the environment before spending anything.
+        # B127: verify the environment before spending anything.
       - name: harness doctor
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: harness doctor
 
-      # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
+        # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
       - name: harness sync-fork
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: harness sync-fork
 
-      # B121/B122: printed for the record; the sweep and the reconciler act on their own rules.
+        # B121/B122: printed for the record; the sweep and the reconciler act on their own rules.
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -157,9 +157,9 @@ jobs:
           mkdir -p runs
           harness dispatch | tee runs/dispatch-plan.json
 
-      # B140/B141: one notifications call since the ledger cursor; keywords are authorised (B131)
-      # before they are parsed (B133) and acted on at most once (B135). The sweep itself spends
-      # nothing; the actions it enqueues (revise/propose) are budgeted by the stages they call.
+        # B140/B141: one notifications call since the ledger cursor; keywords are authorised (B131)
+        # before they are parsed (B133) and acted on at most once (B135). The sweep itself spends
+        # nothing; the actions it enqueues (revise/propose) are budgeted by the stages they call.
       - name: Sweep keywords (harness sweep; may run revise/propose)
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -168,14 +168,14 @@ jobs:
           mkdir -p runs
           harness sweep | tee runs/sweep.jsonl
 
-      # B147: reconciliation lives at the entry of `harness run` — items in harness:running (and
-      # revising/proposing) with no live workflow run for 3 hours go back to their previous label.
+        # B147: reconciliation lives at the entry of `harness run` — items in harness:running (and
+        # revising/proposing) with no live workflow run for 3 hours go back to their previous label.
       - name: Reconcile stale harness:running items (harness run)
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: harness run
 
-      # B115/B118: commit the ledger with [skip ci]; runs even when a step failed, never when halted.
+        # B115/B118: commit the ledger with [skip ci]; runs even when a step failed, never when halted.
       - name: Commit state/ledger.json
         if: always() && steps.halt.outputs.halted != 'true'
         shell: bash
@@ -206,7 +206,7 @@ jobs:
           echo "::error::could not push the ledger after 3 attempts"
           exit 1
 
-      # B126: evidence survives a cancelled or timed-out run.
+        # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4

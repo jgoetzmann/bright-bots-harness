@@ -809,12 +809,33 @@ def test_i2_prime_the_gh_cli_is_never_invoked_and_gh_py_is_the_only_transport():
 
 
 def test_i11_authorization_header_is_built_in_gh_py_only():
-    """I-11 (handoff §12, D2-R3.2): `Authorization` appears in harness/gh.py and nowhere else."""
-    with_header = sorted(_rel(path) for path in _harness_sources() if "Authorization" in _read(path))
+    """I-11 (handoff §12, D2-R3.2): the string `Authorization` — the header an authenticated
+    request carries — is built in harness/gh.py and nowhere else.
 
-    assert with_header == ["harness/gh.py"], (
-        "I-11 violated: Authorization must appear in harness/gh.py only; found in "
-        + ", ".join(with_header)
+    Corrected at Delivery 2 reconcile (.fullsend/notes/test-corrections-d2.md): the scan reads
+    string constants and f-string parts, not identifiers, because HARNESS-SPEC §5.3 froze the
+    `governor.Authorization` dataclass in Delivery 1 and I-11 is about the request header.
+    Docstrings are prose, not a header, and are skipped.
+    """
+    scopes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    with_header: set[str] = set()
+    for path in _harness_sources():
+        tree = _parse(path)
+        docstrings: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, scopes) and node.body and isinstance(node.body[0], ast.Expr):
+                first = node.body[0].value
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    docstrings.add(id(first))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if "Authorization" in node.value and id(node) not in docstrings:
+                with_header.add(_rel(path))
+
+    assert sorted(with_header) == ["harness/gh.py"], (
+        "I-11 violated: the Authorization header string must be built in harness/gh.py only; "
+        "found in " + ", ".join(sorted(with_header))
     )
 
 
@@ -1298,8 +1319,12 @@ def test_b143_pin_and_repo_halt_are_outside_allowed_roots_while_state_and_propos
     tmp_path, write_env
 ):
     """B143 / RUN-DECISIONS-D2 R-E (handoff §10.4, D2-R11.7, R11.8): build_context adds exactly
-    two roots — state/ and proposals/ — to Delivery 1's six; .harness/PIN and .harness/HALT are
-    not roots and lie under none."""
+    two roots — state/ and proposals/ — to Delivery 1's eight (runs, packages, the db parent,
+    the halt file, and the package-root and cwd HUMAN.md/.env pairs); .harness/PIN and
+    .harness/HALT are not roots and lie under none.
+
+    Corrected at Delivery 2 reconcile (.fullsend/notes/test-corrections-d2.md): the count was
+    written as 6 + 2; Delivery 1's `context.py` already registers eight."""
     from harness import redact
     from harness.config import load_config
     from harness.context import build_context
@@ -1315,7 +1340,9 @@ def test_b143_pin_and_repo_halt_are_outside_allowed_roots_while_state_and_propos
         redact.set_write_roots(list(previous))
 
     env_root = tmp_path.resolve()
-    assert len(roots) == 8, f"expected Delivery 1's six roots plus state/ and proposals/: {roots}"
+    assert len(roots) == 10, (
+        f"expected Delivery 1's eight roots plus state/ and proposals/, nothing else: {roots}"
+    )
     assert env_root / "state" in roots
     assert env_root / "proposals" in roots
 

@@ -2,8 +2,9 @@
 pull request from the review package, request trusted reviewers, and ship the item.
 
 Everything that leaves this machine goes through ``harness.gh`` (I-11) and through ``redact``
-(I-13). Nothing here merges, approves, or dismisses anything (I-12). Nothing here inspects the
-diff for forbidden paths: that is B64 in ``implement.py``, and there is exactly one copy of it.
+(I-13). Nothing here acts on a review or takes a pull request past review (I-12). Nothing here
+inspects the diff for forbidden paths: that is B64 in ``implement.py``, and there is exactly one
+copy of it.
 """
 
 from __future__ import annotations
@@ -18,14 +19,14 @@ from harness import clone as clone_mod
 from harness import gates, redact
 from harness.clone import Lease
 from harness.context import Context
-from harness.errors import GitHubError, HarnessError
+from harness.errors import GitHubError, HarnessError, IllegalTransition
 from harness.halt import check_halt
 from harness.redact import write_redacted
 from harness.stages.propose import parse_work_package
 
 __all__ = [
-    "GIT",
     "MAX_BODY_CHARS",
+    "PUSH_BRANCH",
     "SYNC_FORK",
     "build_pr_body",
     "build_pr_title",
@@ -53,15 +54,11 @@ GIT_IDENTITY = (
     "user.email=harness@brightboost-harness",
 )
 
-
-def _sync_fork(config: Any, *, workdir: Path, push: Callable[[Path, str], None]) -> str:
-    """B105: fast-forward the fork's main from upstream, or raise ``ForkDiverged``."""
-    return clone_mod.sync_fork(config, workdir=workdir, push=push)
-
-
-# Module-level injectables, as in ``implement.py``. Tests replace these; production uses git.
-GIT = gates.run_command
-SYNC_FORK = _sync_fork
+# Module-level injectables, as in ``implement.py``. Tests replace these; production uses the real
+# fork sync and, with ``PUSH_BRANCH`` None, ``ctx.gh.push_branch``. Every git command in this
+# module runs through ``gates.run_command`` inside the lease's clone.
+SYNC_FORK = clone_mod.sync_fork
+PUSH_BRANCH: Callable[..., None] | None = None
 
 
 # --------------------------------------------------------------------------------------------
@@ -194,7 +191,8 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 
     Returns ``""`` when the client cannot write: the branch stays in the clone for the host to
     push and ``runs/<id>/DELIVER.json`` records what would have been sent. ``lease`` is passed
-    by ``revise`` when the clone is already held; otherwise it is rebuilt from the store.
+    by ``revise`` when the clone is already held — rebased and force-pushed by it (B139) — so
+    the sync, rebase and push steps are skipped and only the pull request is opened.
     """
     check_halt(ctx.config.halt_file)
 
@@ -202,9 +200,9 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     if item is None:
         raise HarnessError(f"no work item {item_id}")
     if item.state not in ("packaged", "revising"):
-        raise HarnessError(
-            f"item {item_id} is in state {item.state!r}; deliver requires packaged "
-            "(or revising, from a revise cycle)"
+        raise IllegalTransition(
+            f"illegal transition {item.state} -> shipped for work item {item_id}: deliver "
+            "requires packaged (or revising, from a revise cycle)"
         )
     nested = lease is not None
     the_lease = lease if lease is not None else lease_from_store(ctx, item)
@@ -262,40 +260,42 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         )
         return ""
 
-    # 1. sync-fork (B105): fast-forward only, loud on divergence, nothing pushed otherwise.
-    fork_sha = SYNC_FORK(
-        ctx.config,
-        workdir=ctx.run_dir / "fork-sync",
-        push=lambda path, refspec: ctx.gh.push_ref(path, refspec, remote_repo=fork),
-    )
-    ctx.record_decision(f"fork main is a fast-forward of upstream at {fork_sha}")
-    check_halt(ctx.config.halt_file)
-
-    # 2. rebase the work branch onto the fork's main.
     default_branch = _default_branch(ctx, upstream)
     record["base"] = default_branch
-    conflicted = _rebase(the_lease, default_branch)
-    if conflicted:
-        ctx.record_decision(
-            f"rebase onto {default_branch} conflicted in {len(conflicted)} file(s): "
-            + ", ".join(conflicted)
-        )
-        if nested:
-            raise HarnessError(
-                f"item {item_id}: rebase conflicted again after a revise cycle; leaving the "
-                "clone mid-rebase for inspection"
+    if not nested:
+        # 1. sync-fork (B105): fast-forward only, loud on divergence, nothing pushed otherwise.
+        #    A clone whose origin is not on github.com (local remotes) has no fork to sync and
+        #    must never reach the network.
+        if _github_origin(the_lease):
+            fork_sha = SYNC_FORK(
+                ctx.config,
+                workdir=ctx.run_dir / "fork-sync",
+                push=lambda path, refspec: ctx.gh.push_ref(path, refspec, remote_repo=fork),
             )
-        from harness.stages.revise import revise  # lazy: revise imports deliver
+            ctx.record_decision(f"fork main is a fast-forward of upstream at {fork_sha}")
+        check_halt(ctx.config.halt_file)
 
-        revise(ctx, item_id, source="conflict", lease=the_lease)
-        return _recorded_url(ctx)
-    ctx.record_decision(f"rebased {the_lease.branch} onto {default_branch} cleanly")
-    check_halt(ctx.config.halt_file)
+        # 2. rebase the work branch onto upstream's default branch, inside the clone.
+        conflicted = _rebase(the_lease, upstream, default_branch)
+        if conflicted:
+            ctx.record_decision(
+                f"rebase onto {default_branch} conflicted in {len(conflicted)} file(s): "
+                + ", ".join(conflicted)
+            )
+            from harness.stages.revise import revise  # lazy: revise imports deliver
 
-    # 3. push the branch to the fork — never to upstream (§5.3).
-    ctx.gh.push_branch(the_lease.path, the_lease.branch, remote_repo=fork)
+            revise(ctx, item_id, source="conflict", lease=the_lease)
+            return _recorded_url(ctx)
+        ctx.record_decision(
+            f"rebased {the_lease.branch} onto upstream/{default_branch} cleanly"
+        )
+        check_halt(ctx.config.halt_file)
+
+        # 3. push the branch to the fork — never to upstream (§5.3).
+        push = PUSH_BRANCH if PUSH_BRANCH is not None else ctx.gh.push_branch
+        push(the_lease.path, the_lease.branch, remote_repo=fork)
+        ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
     record["pushed"] = True
-    ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
 
     # 4. the pull request, fork -> upstream default branch; reused when one is already open.
     existing = _find_open_pull(ctx, upstream, head)
@@ -320,7 +320,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     record["pr_number"] = number or None
     record["pr_url"] = url
 
-    # 5. reviewers = every trusted handle. A refusal (not a collaborator yet) is recorded, not fatal.
+    # 5. reviewers = every trusted handle. A refusal (not a collaborator yet) is recorded.
     if reviewers and number:
         try:
             ctx.gh.request_reviewers(upstream, number, reviewers)
@@ -341,25 +341,48 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def _rebase(lease: Lease, default_branch: str) -> list[str]:
-    """Rebase the branch onto ``origin/<default_branch>``. Returns the conflicted paths, and
-    leaves the rebase in progress when there are any so ``revise`` can resolve them."""
-    code, _, err = GIT(["git", "fetch", "origin", default_branch], lease.path)
+def _github_origin(lease: Lease) -> bool:
+    """True when the clone's ``origin`` is on github.com — a real run. A test clone's origin is
+    a local path, and nothing here may reach the network on its behalf."""
+    code, out, _ = gates.run_command(["git", "remote", "get-url", "origin"], lease.path)
+    return code == 0 and out.strip().startswith("https://github.com/")
+
+
+def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
+    """Rebase the branch onto upstream's default branch, fetched into the clone. Returns the
+    conflicted paths, and leaves the rebase in progress when there are any so ``revise`` can
+    resolve them. A real clone comes from the fork and gains the ``upstream`` remote here; a
+    test clone brings its own."""
+    code, _, _ = gates.run_command(["git", "remote", "get-url", "upstream"], lease.path)
+    if code != 0 and _github_origin(lease):
+        gates.run_command(
+            ["git", "remote", "add", "upstream", f"https://github.com/{upstream_repo}.git"],
+            lease.path,
+        )
+    code, _, err = gates.run_command(["git", "fetch", "upstream", default_branch], lease.path)
     if code != 0:
-        raise HarnessError(f"git fetch origin {default_branch} failed: {err.strip()[-2000:]}")
-    code, out, err = GIT(["git", *GIT_IDENTITY, "rebase", "FETCH_HEAD"], lease.path)
+        raise HarnessError(f"git fetch upstream {default_branch} failed: {err.strip()[-2000:]}")
+    code, out, err = gates.run_command(["git", *GIT_IDENTITY, "rebase", "FETCH_HEAD"], lease.path)
     if code == 0:
         return []
-    code2, names, _ = GIT(["git", "diff", "--name-only", "--diff-filter=U"], lease.path)
-    conflicted = [n.strip() for n in names.splitlines() if n.strip()] if code2 == 0 else []
+    conflicted = _conflicted_files(lease)
     if conflicted:
         return conflicted
-    GIT(["git", "rebase", "--abort"], lease.path)
+    gates.run_command(["git", "rebase", "--abort"], lease.path)
     raise HarnessError(f"git rebase failed without conflicts: {(err or out).strip()[-2000:]}")
 
 
+def _conflicted_files(lease: Lease) -> list[str]:
+    code, out, _ = gates.run_command(
+        ["git", "diff", "--name-only", "--diff-filter=U"], lease.path
+    )
+    if code != 0:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def _tip_sha(lease: Lease) -> str:
-    code, out, _ = GIT(["git", "rev-parse", "HEAD"], lease.path)
+    code, out, _ = gates.run_command(["git", "rev-parse", "HEAD"], lease.path)
     return out.strip()[:12] if code == 0 else ""
 
 

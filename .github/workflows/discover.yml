@@ -27,7 +27,7 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: passed through to the claude CLI
     steps:
-      # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+        # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
       - name: HALT check (.harness/HALT on the default branch)
         id: halt
         shell: bash
@@ -127,20 +127,20 @@ jobs:
           print(".env written; keys:", " ".join(keys))
           PY
 
-      # B127: verify the environment before spending anything.
+        # B127: verify the environment before spending anything.
       - name: harness doctor
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: harness doctor
 
-      # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
+        # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
       - name: harness sync-fork
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: harness sync-fork
 
-      # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate
-      # (rate limited / halted / reserve → propose nothing this run).
+        # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate
+        # (rate limited / halted / reserve → propose nothing this run).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
@@ -230,7 +230,7 @@ jobs:
           done
           exit "$failed"
 
-      # B115/B118: commit the ledger with [skip ci]; runs even when a propose failed, never when halted.
+        # B115/B118: commit the ledger with [skip ci]; runs even when a propose failed, never when halted.
       - name: Commit state/ledger.json
         if: always() && steps.halt.outputs.halted != 'true'
         shell: bash
@@ -261,7 +261,7 @@ jobs:
           echo "::error::could not push the ledger after 3 attempts"
           exit 1
 
-      # B126: evidence survives a cancelled or timed-out run.
+        # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4

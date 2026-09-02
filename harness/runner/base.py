@@ -72,19 +72,10 @@ class Runner(Protocol):
 def is_rate_limited(result: RunResult) -> bool:
     """True when a failed result is the CLI saying "come back later", not "I failed".
 
-    Pure: reads ``ok``, ``reset_at``, ``error`` and ``text`` off the result and nothing else.
-    A ``reset_at`` set by the backend is conclusive; otherwise the text is matched against
-    :data:`RATE_LIMIT_PATTERN`. A successful result is never rate-limited.
+    Pure: a ``reset_at`` set by the backend is conclusive; otherwise ``error`` is matched
+    against :data:`RATE_LIMIT_PATTERN` (RUN-DECISIONS-D2 section 12).
     """
-    if getattr(result, "ok", False):
-        return False
-    if getattr(result, "reset_at", None) is not None:
-        return True
-    parts = (getattr(result, "error", None), getattr(result, "text", None))
-    haystack = "\n".join(part for part in parts if isinstance(part, str) and part)
-    if not haystack:
-        return False
-    return RATE_LIMIT_PATTERN.search(haystack) is not None
+    return result.reset_at is not None or bool(RATE_LIMIT_PATTERN.search(result.error or ""))
 
 
 def get_runner(config: "Config") -> Runner:

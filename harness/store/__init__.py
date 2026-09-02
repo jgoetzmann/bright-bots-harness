@@ -33,7 +33,13 @@ class StoreProtocol(Protocol):
     def close(self) -> None: ...
 
     def create_work_item(
-        self, *, kind: str, external_ref: str, title: str, tier_required: int = 0
+        self,
+        *,
+        kind: str,
+        external_ref: str,
+        title: str,
+        tier_required: int = 0,
+        body: str = "",
     ) -> int: ...
 
     def get_work_item(self, item_id: int) -> WorkItem | None: ...

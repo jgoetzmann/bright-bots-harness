@@ -25,10 +25,6 @@ STDERR_TAIL_CHARS = 2000
 EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
 
-#: What ``reset_at`` says when the CLI names no reset time at all: one hour, the smallest
-#: window the CLI itself advertises. The stage adds it to its clock.
-DEFAULT_RESET_AT = "+PT60M"
-
 _ISO_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
 )
@@ -48,12 +44,12 @@ def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedPr
     return subprocess.run([resolved, *argv[1:]], **kwargs)  # type: ignore[call-overload]
 
 
-def parse_reset_at(text: str) -> str:
+def parse_reset_at(text: str) -> str | None:
     """The reset marker inside a usage-limit message (B119).
 
     An ISO-8601 timestamp wins and is normalised to UTC ``Z``. ``resets in N minutes|hours``
     becomes a relative ISO duration (``+PT30M``, ``+PT2H``) for the stage to add to its clock.
-    Anything else is :data:`DEFAULT_RESET_AT`.
+    A phrase naming no reset time at all gives ``None`` ("when present", B119).
     """
     haystack = text or ""
     match = _ISO_TIMESTAMP.search(haystack)
@@ -64,7 +60,7 @@ def parse_reset_at(text: str) -> str:
         amount = int(match.group(1))
         unit = match.group(2).lower()
         return f"+PT{amount}H" if unit.startswith("h") else f"+PT{amount}M"
-    return DEFAULT_RESET_AT
+    return None
 
 
 def _normalise_iso(raw: str) -> str:

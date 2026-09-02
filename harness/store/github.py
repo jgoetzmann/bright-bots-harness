@@ -190,9 +190,6 @@ class GitHubStore:
 
     # ------------------------------------------------------------------ plumbing
 
-    def _now(self) -> str:
-        return iso(self._clock.now())
-
     def _pages(self, path: str) -> list[dict]:
         """Every page of a list endpoint. Page 1 is the bare path; later pages add ``&page=N``."""
         collected: list[dict] = []
@@ -262,7 +259,7 @@ class GitHubStore:
         meta = self._meta(item_id)
         meta.update(dict(extra_meta or {}))
         meta["previous_state"] = from_state
-        meta["ts"] = self._now()
+        meta["ts"] = iso(self._clock.now())
         self._set_state_label(issue, to_state)
         stage, usd = self._last_run.get(item_id, ("-", 0.0))
         body = (
@@ -302,20 +299,30 @@ class GitHubStore:
         external_ref: str,
         title: str,
         tier_required: int = 0,
+        body: str = "",
     ) -> int:
-        """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number."""
+        """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number.
+
+        The issue body is ``external_ref`` on its first line (the duplicate check and
+        ``find_by_ref`` read it back), then ``body`` when given, then ``Parent: #N`` for a
+        ``sub:N:i`` reference (S11; the caller never appends it).
+        """
         for issue in self._issues(state="open"):
             if _origin_ref(issue) == external_ref:
                 raise DuplicateWorkItem(
                     f"work item already exists for {external_ref}: #{issue.get('number')}"
                 )
-        body = external_ref
+        text = f"{external_ref}\n\n{body}" if body else external_ref
         sub = _SUB_REF_RE.match(external_ref)
         if sub:
-            body = f"{external_ref}\n\nParent: #{sub.group(1)}"
-        created = self.gh.create_issue(title, redact(body), [LABELS["discovered"]])
+            text = f"{text}\n\nParent: #{sub.group(1)}"
+        created = self.gh.create_issue(title, redact(text), [LABELS["discovered"]])
         number = int(created["number"])
-        meta: dict[str, Any] = {"external_ref": external_ref, "kind": kind, "ts": self._now()}
+        meta: dict[str, Any] = {
+            "external_ref": external_ref,
+            "kind": kind,
+            "ts": iso(self._clock.now()),
+        }
         if tier_required:
             meta["tier_required"] = int(tier_required)
         if sub:
@@ -376,7 +383,7 @@ class GitHubStore:
             if name in ("state", "updated_at"):
                 continue
             meta[name] = value
-        meta["ts"] = self._now()
+        meta["ts"] = iso(self._clock.now())
         if new_state is not None and new_state != state:
             if new_state not in LABELS:
                 raise StoreError(f"unknown state {new_state!r} for work item {item_id}")

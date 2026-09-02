@@ -105,6 +105,6 @@ def plan(
             continue
         start.append(int(candidate.issue))
 
-    pct = max(0.0, (1.0 - spent / weekly_cap) * 100.0) if weekly_cap > 0 else 0.0
+    pct = remaining / weekly_cap * 100.0
     reason = f"budget {pct:.0f}% remaining, {len(start)} of max {max_slots} slots"
     return Plan(start=tuple(start), reason=reason, skipped=skipped)

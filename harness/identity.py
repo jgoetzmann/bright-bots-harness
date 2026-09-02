@@ -79,7 +79,8 @@ PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
         (
             "Pull requests",
             "Read and write",
-            "Opening the delivery PR from the fork; never merge, approve or dismiss (I-12)",
+            "Opening the delivery PR from the fork; nothing that closes, accepts or alters a "
+            "review (I-12)",
         ),
         (
             "Contents",

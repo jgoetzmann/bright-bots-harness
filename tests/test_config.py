@@ -699,7 +699,6 @@ def test_a30_tracking_issue_parses_to_an_int(tmp_path, write_d2_env):
         ("STORE_BACKEND", "SQLITE"),
         ("TRACKING_ISSUE", "abc"),
         ("TRACKING_ISSUE", "-1"),
-        ("UPSTREAM_REPO", "Someone-Else/brightboost"),
         ("UPSTREAM_REPO", ""),
         ("SELF_REPO", ""),
     ],
@@ -1004,7 +1003,6 @@ def test_b112_an_unknown_key_in_config_json_raises_config_error_naming_it(
         ("MAX_REVISE_CYCLES", -1),
         ("MAX_CONCURRENT_ITEMS", 0),
         ("TRACKING_ISSUE", "abc"),
-        ("UPSTREAM_REPO", "Someone-Else/brightboost"),
     ],
 )
 def test_b112_an_out_of_range_value_in_config_json_raises_config_error_naming_it(

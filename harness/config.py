@@ -166,16 +166,6 @@ class Config:
     store_backend: Literal["sqlite", "github"]
     repo_root: Path
 
-    @property
-    def token_present(self) -> bool:
-        """``github_token_present`` under a name free of the token substring (for identity.py)."""
-        return self.github_token_present
-
-    @property
-    def token_shape_ok(self) -> bool:
-        """``github_token_shape_ok`` under a name free of the token substring (for identity.py)."""
-        return self.github_token_shape_ok
-
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
 #: succeeds; reset at the start of every load so a failed load closes the token door.
@@ -444,8 +434,6 @@ def load_config(
         raise ConfigError(f"FORK_REPO must be owner/name or empty; got {fork_repo!r}")
 
     upstream_repo = _require_repo(values, "UPSTREAM_REPO")
-    if upstream_repo != repo:
-        raise ConfigError(f"UPSTREAM_REPO must equal REPO ({repo}); got {upstream_repo!r}")
 
     trust_file = _require_path(values, "TRUST_FILE", base_dir)
 
@@ -473,7 +461,7 @@ def load_config(
                 f"TRACKING_ISSUE must be a positive issue number; got {tracking_issue}"
             )
 
-    store_backend_raw = values["STORE_BACKEND"].strip().lower()
+    store_backend_raw = values["STORE_BACKEND"].strip()
     if store_backend_raw not in _STORE_BACKENDS:
         raise ConfigError(
             f"STORE_BACKEND must be one of sqlite, github; got {values['STORE_BACKEND']!r}"

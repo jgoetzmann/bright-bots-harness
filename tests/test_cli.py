@@ -496,8 +496,7 @@ SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
 STORE_BACKEND=sqlite
 """
-D2_ENV_BODY = ENV_BODY + D2_ENV_LINES
-
+D2_ENV_BODY = ENV_BODY  # ENV_BODY already carries the D2 keys (DECISIONS D22)
 # Handoff §6.5 — the keys `doctor` must name (A30).
 D2_DOCTOR_KEYS = (
     "WEEKLY_CAP_USD",

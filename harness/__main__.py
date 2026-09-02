@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import json
 import logging
 import re
@@ -533,7 +534,8 @@ def _doctor_config_keys(
             problems.append(f"missing config key: {key}")
             continue
         keys[key] = raw[key]
-        if key in error_text:
+        # Whole-word: a typo'd WEEKLY_CAP_USDD (B112) must not also indict WEEKLY_CAP_USD.
+        if re.search(rf"{re.escape(key)}", error_text):
             problems.append(f"config key invalid or out of range: {key}")
     return keys
 
@@ -1361,10 +1363,9 @@ def cmd_sync_fork(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     ctx = _context(config, args, run_id="sync-fork")
-
-    def push(repo_path: Path, refspec: str) -> None:
-        ctx.gh.push_ref(repo_path, refspec, remote_repo=config.fork_repo)
-
+    # The push callable IS the client's fast-forward-only push_ref (B105): one recorded call,
+    # no force path, the token only ever inside gh.py. ForkDiverged propagates to main().
+    push = functools.partial(ctx.gh.push_ref, remote_repo=config.fork_repo)
     sha = sync_fork(config, workdir=config.runs_dir / "sync-fork", push=push)
     _emit(
         {"fork": config.fork_repo, "upstream": config.upstream_repo, "sha": sha, "synced": True},

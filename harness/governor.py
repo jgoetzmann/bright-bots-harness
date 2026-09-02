@@ -9,7 +9,7 @@ from datetime import timedelta
 
 from harness.clock import Clock, iso
 from harness.config import Config
-from harness.dispatcher import STATIC_USD
+from harness.dispatcher import estimate_usd
 from harness.errors import BudgetExhausted, ConfigError
 from harness.ledger import Ledger
 from harness.store import Store
@@ -109,14 +109,6 @@ class Governor:
     def _spend_ceiling_usd(self) -> float:
         return self._weekly_cap_usd() * (1.0 - float(self.config.reserve_pct) / 100.0)
 
-    def estimate_usd(self, stage: str) -> float:
-        """The ledger median for ``stage`` once three observations exist, else the static USD."""
-        assert self.ledger is not None
-        observed = self.ledger.median_usd(stage)
-        if observed:
-            return float(observed)
-        return float(STATIC_USD[stage])
-
     # -- remaining -------------------------------------------------------------------------
 
     def remaining_weekly_pct(self) -> float:
@@ -146,7 +138,7 @@ class Governor:
             cap = self._weekly_cap_usd()
             if cap <= 0:
                 return 0.0
-            return self.estimate_usd(stage) / cap * 100.0
+            return estimate_usd(self.ledger, stage) / cap * 100.0
         observed = [float(v) for v in self.store.completed_allowances(stage)]
         if len(observed) >= MIN_OBSERVATIONS:
             return float(statistics.median(observed))
@@ -156,7 +148,8 @@ class Governor:
         if self.ledger is not None:
             if self.ledger.rate_limited(iso(self.clock.now())):
                 return False
-            return self._spent_usd() + self.estimate_usd(stage) <= self._spend_ceiling_usd()
+            needed = self._spent_usd() + estimate_usd(self.ledger, stage)
+            return needed <= self._spend_ceiling_usd()
         return self.estimate(stage) <= self.spendable_pct()
 
     # -- admission -------------------------------------------------------------------------
@@ -176,7 +169,7 @@ class Governor:
             if self.ledger.rate_limited(now_iso):
                 until = self.ledger.window.get("rate_limited_until")
                 raise BudgetExhausted(f"rate limited until {until}")
-            needed_usd = self.estimate_usd(stage)
+            needed_usd = estimate_usd(self.ledger, stage)
             spent = self._spent_usd()
             ceiling = self._spend_ceiling_usd()
             if spent + needed_usd > ceiling:

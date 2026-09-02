@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-__all__ = ["Clock", "SystemClock", "FrozenClock", "iso", "parse_iso"]
+__all__ = ["Clock", "SystemClock", "FrozenClock", "as_utc", "iso", "parse_iso"]
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -29,7 +29,7 @@ class FrozenClock:
     """A clock that only moves when a test moves it."""
 
     def __init__(self, at: datetime) -> None:
-        self._at = _as_utc(at)
+        self._at = as_utc(at)
 
     def now(self) -> datetime:
         return self._at
@@ -40,10 +40,10 @@ class FrozenClock:
 
     def set(self, at: datetime) -> None:
         """Pin the clock to ``at``; a naive value is read as UTC."""
-        self._at = _as_utc(at)
+        self._at = as_utc(at)
 
 
-def _as_utc(dt: datetime) -> datetime:
+def as_utc(dt: datetime) -> datetime:
     """Coerce ``dt`` to a tz-aware UTC datetime; a naive value is assumed UTC."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -52,7 +52,7 @@ def _as_utc(dt: datetime) -> datetime:
 
 def iso(dt: datetime) -> str:
     """Render ``dt`` as ``YYYY-MM-DDTHH:MM:SSZ``, always UTC, always with the ``Z``."""
-    return _as_utc(dt).strftime(ISO_FORMAT)
+    return as_utc(dt).strftime(ISO_FORMAT)
 
 
 def parse_iso(s: str) -> datetime:
@@ -64,4 +64,4 @@ def parse_iso(s: str) -> datetime:
         parsed = datetime.fromisoformat(text)
     except ValueError as exc:
         raise ValueError(f"not an ISO timestamp: {s!r}") from exc
-    return _as_utc(parsed)
+    return as_utc(parsed)

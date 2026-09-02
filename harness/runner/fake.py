@@ -13,16 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 #: Where the canned results live when no directory is injected.
 DEFAULT_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "runner"
 
-#: ``reset_at`` for a ``"rate_limited": true`` fixture that names none (D2 §12).
-DEFAULT_RESET_AT = "+PT30M"
-
 
 class FakeRunner:
     """Returns the fixture for ``request.stage``, unchanged, every time.
 
     A fixture carrying ``"rate_limited": true`` replays the exhaustion outcome (B119/B120):
-    ``ok`` is False whatever the file says and ``reset_at`` is copied, defaulting to
-    :data:`DEFAULT_RESET_AT`. Fixtures may omit ``reset_at`` entirely.
+    ``ok`` is False whatever the file says and ``reset_at`` is copied as given, ``None``
+    when the fixture names none (D2 §12).
     """
 
     name = "fake"
@@ -48,8 +45,6 @@ class FakeRunner:
 
         rate_limited = bool(data.get("rate_limited", False))
         reset_at = data.get("reset_at")
-        if rate_limited and not reset_at:
-            reset_at = DEFAULT_RESET_AT
 
         return RunResult(
             ok=False if rate_limited else bool(data.get("ok", False)),

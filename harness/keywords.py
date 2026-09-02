@@ -23,7 +23,7 @@ VERBS: tuple[str, ...] = ("revise", "reject", "fix", "rebase", "stop", "split", 
 
 SURFACES: tuple[str, ...] = ("proposal_pr", "delivery_pr", "issue")
 
-_COMMAND_RE = re.compile(r"^\s*/harness\s+(\w+)\s*(.*)$", re.MULTILINE)
+_COMMAND_RE = re.compile(r"^\s*/harness\s+(\w+)([^\n]*)", re.MULTILINE)
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
 

@@ -1,0 +1,27 @@
+{
+  "_comment": "Operational settings for local mode (the bb container). Edit with bb-configure.py (python bb-configure.py explain). Anything whose change would alter what the harness concludes - the gate sequence, redaction, the proposal schema, the pinned files - is NOT here on purpose (B112, platform P12): that is a code change, reviewed as one.",
+  "container": {
+    "cpus": 4,
+    "memory_gb": 8,
+    "pids_limit": 512,
+    "cpu_shares": 256
+  },
+  "run": {
+    "loop_seconds": 300,
+    "max_items_per_unit": 1
+  },
+  "watchdog": {
+    "poll_seconds": 10,
+    "heartbeat_stale_seconds": 180,
+    "min_free_gb": 5,
+    "push_minutes": 10,
+    "battery_guard": true,
+    "cpu_pause_high_percent": 50,
+    "cpu_pause_low_percent": 30,
+    "cpu_pause_sustain_seconds": 30
+  },
+  "watcher": {
+    "refresh_seconds": 5,
+    "events_tail": 25
+  }
+}

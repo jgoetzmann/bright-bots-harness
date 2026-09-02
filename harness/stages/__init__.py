@@ -1,20 +1,31 @@
-"""Stage registry and prompt loading (``string.Template``, never f-strings)."""
+"""Stage registry, prompt loading (``string.Template``, never f-strings), and the one model-call
+wrapper every stage goes through — including the B120 rate-limit sequence."""
 
 from __future__ import annotations
 
+import re
 import string
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from harness import errors
+from harness.clock import iso
 from harness.context import Context
+from harness.errors import HarnessError
 from harness.halt import check_halt
 from harness.runner import RunRequest, RunResult
+from harness.runner import base as runner_base
 
 __all__ = [
+    "DEFAULT_ENTRY_STATE",
+    "DEFAULT_RESET_DELAY",
     "PROMPTS_DIR",
     "STAGES",
     "StageFn",
+    "is_rate_limited",
     "load_prompt",
+    "resolve_reset",
     "run_model",
     "system_prompt",
 ]
@@ -23,6 +34,24 @@ StageFn = Callable[..., Any]
 
 #: ``<repo root>/prompts`` — this file is ``<repo root>/harness/stages/__init__.py``.
 PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
+
+#: The state an item is returned to on a rate limit when the calling stage did not say (B120).
+#: ``implement`` and ``package`` are frozen Delivery 1 files and cannot be edited to pass one.
+DEFAULT_ENTRY_STATE: dict[str, str] = {
+    "propose": "discovered",
+    "implement": "approved",
+    "package": "implementing",
+    "revise": "shipped",
+}
+
+#: When the runner reports a rate limit without a usable reset time, the dispatcher is held off
+#: for this long rather than for nothing at all.
+DEFAULT_RESET_DELAY = timedelta(hours=1)
+
+_RATE_LIMIT_TEXT = re.compile(
+    r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in))"
+)
+_DURATION = re.compile(r"^\+?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 
 
 def load_prompt(name: str) -> string.Template:
@@ -41,6 +70,40 @@ def system_prompt() -> str:
     return load_prompt("system").template
 
 
+def is_rate_limited(result: RunResult) -> bool:
+    """B119/B120: did this call hit the usage limit? Delegates to ``runner.base`` when present."""
+    checker = getattr(runner_base, "is_rate_limited", None)
+    if checker is not None:
+        return bool(checker(result))
+    if getattr(result, "ok", False):
+        return False
+    if getattr(result, "reset_at", None) is not None:
+        return True
+    return bool(_RATE_LIMIT_TEXT.search(str(getattr(result, "error", "") or "")))
+
+
+def resolve_reset(raw: str | None, now: datetime) -> str:
+    """Turn a runner's ``reset_at`` into ISO-Z.
+
+    Accepts an ISO-8601 timestamp (any offset), a ``+PT30M``-style duration relative to ``now``,
+    or nothing at all — in which case the reset is ``now + DEFAULT_RESET_DELAY``.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return iso(now + DEFAULT_RESET_DELAY)
+    match = _DURATION.match(text)
+    if match is not None and any(group is not None for group in match.groups()):
+        days, hours, minutes, seconds = (int(group or 0) for group in match.groups())
+        return iso(now + timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return iso(now + DEFAULT_RESET_DELAY)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return iso(parsed.astimezone(timezone.utc))
+
+
 def run_model(
     ctx: Context,
     *,
@@ -52,9 +115,14 @@ def run_model(
     timeout_s: int,
     cwd: Path,
     add_dirs: tuple[Path, ...] = (),
+    entry_state: str | None = None,
 ) -> RunResult:
     """One model call with its bookkeeping: halt check, authorization, ``stage_run`` row,
-    transcript, governor record. ``item_id=None`` (triage has no work item yet) opens no row.
+    transcript, governor record, and the rate-limit outcome (B120).
+
+    ``item_id=None`` (triage has no work item yet) opens no row. ``entry_state`` is the state the
+    item had when the stage began; on a rate limit the item is returned there, the ledger records
+    the reset, and :class:`~harness.errors.RateLimited` is raised for the CLI to map to exit 0.
     """
     check_halt(ctx.config.halt_file)
     auth = ctx.governor.authorize(item_id or 0, stage)
@@ -72,9 +140,16 @@ def run_model(
         cwd=cwd,
         timeout_s=timeout_s,
         add_dirs=add_dirs,
+        max_budget_usd=auth.max_budget_usd,
     )
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)
+
+    limited = is_rate_limited(result)
+    reset_iso: str | None = None
+    if limited:
+        reset_iso = resolve_reset(getattr(result, "reset_at", None), ctx.clock.now())
+
     allowance = result.allowance_pct
     if allowance is None:
         allowance = ctx.governor.estimate(stage)
@@ -85,21 +160,76 @@ def run_model(
             turns=result.turns,
             allowance_pct=allowance,
             cost_usd=result.cost_usd,
-            exit_reason=result.error,
+            exit_reason=f"rate limited until {reset_iso}" if limited else result.error,
             transcript_path=str(transcript_path),
         )
     ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
+
+    if limited:
+        _rate_limited(
+            ctx,
+            stage=stage,
+            item_id=item_id,
+            reset_iso=str(reset_iso),
+            entry_state=entry_state if entry_state is not None else DEFAULT_ENTRY_STATE.get(stage),
+        )
     return result
+
+
+def _rate_limited(
+    ctx: Context, *, stage: str, item_id: int | None, reset_iso: str, entry_state: str | None
+) -> None:
+    """B120: back to the entry state, reset time into the ledger, event, comment, raise."""
+    if item_id is not None and entry_state:
+        item = ctx.store.get_work_item(item_id)
+        if item is not None and item.state != entry_state:
+            try:
+                # The transition's reason is the store's comment on the issue (B101), so the
+                # reset time reaches the thread without a second write.
+                ctx.store.transition(
+                    item_id,
+                    entry_state,
+                    reason=(
+                        f"rate limited until {reset_iso}; returned from {item.state} to "
+                        f"{entry_state} so {stage} is retried after the reset"
+                    ),
+                )
+            except HarnessError as exc:
+                ctx.record_decision(
+                    f"rate limited but could not return item {item_id} to {entry_state}: {exc}"
+                )
+    ctx.ledger.set_rate_limited(reset_iso)
+    try:
+        ctx.save_ledger()
+    except (HarnessError, OSError) as exc:
+        ctx.record_decision(f"could not persist the ledger after a rate limit: {exc}")
+    ctx.store.append_event(item_id, "warn", f"{stage} rate limited until {reset_iso}")
+    ctx.record_decision(
+        f"{stage} hit the usage limit; nothing was retried, the item was returned to its "
+        f"entry state, and the dispatcher is held until {reset_iso}"
+    )
+    raise errors.RateLimited(f"{stage} rate limited until {reset_iso}", reset_at=reset_iso)
 
 
 # Imported after ``load_prompt`` and ``run_model`` are defined: the stage modules import them
 # back out of this partially-initialised package. Imported as modules, not functions, so that
 # ``harness.stages.implement`` stays the module whose injectables the tests monkeypatch.
-from harness.stages import discover, implement, package, propose  # noqa: E402
+from harness.stages import (  # noqa: E402
+    decompose,
+    deliver,
+    discover,
+    implement,
+    package,
+    propose,
+    revise,
+)
 
 STAGES: dict[str, StageFn] = {
     "discover": discover.discover,
     "propose": propose.propose,
     "implement": implement.implement,
     "package": package.package,
+    "deliver": deliver.deliver,
+    "revise": revise.revise,
+    "decompose": decompose.decompose,
 }

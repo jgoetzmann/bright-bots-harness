@@ -588,3 +588,408 @@ def test_b30_a_non_zero_exit_with_parseable_json_is_still_not_ok(tmp_path):
 
     assert result.ok is False
     assert result.exit_code == 1
+
+
+# --------------------------------------------------------------------------
+# Delivery 2 — B119 (handoff §6.3) and RUN-DECISIONS-D2 §1, §12: --max-budget-usd, rate-limit
+# classification, RunResult.reset_at, runner.base.is_rate_limited, FakeRunner replay.
+# Appended by the D2 spec-tester (T3); additions only (D2-R12.3).
+# --------------------------------------------------------------------------
+
+RESET_AT = "2026-09-02T18:00:00Z"
+USAGE_LIMIT_STDERR = "You've hit your usage limit. Resets at 2026-09-02T18:00:00Z\n"
+D2_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "runner"
+
+
+def budgeted_request(cwd: Path, budget: float | None) -> RunRequest:
+    return dataclasses.replace(minimal_request(cwd), max_budget_usd=budget)
+
+
+def run_result(**overrides) -> RunResult:
+    """A RunResult built field by field, so a missing `reset_at` field fails loudly."""
+    fields = {
+        "ok": True,
+        "text": "done",
+        "turns": 1,
+        "cost_usd": 0.01,
+        "allowance_pct": None,
+        "duration_ms": 10,
+        "session_id": "s",
+        "exit_code": 0,
+        "transcript": (),
+        "error": None,
+        "reset_at": None,
+    }
+    fields.update(overrides)
+    return RunResult(**fields)
+
+
+def rate_limited_payload(**overrides) -> dict:
+    """RUN-DECISIONS-D2 §12: a FakeRunner fixture carrying "rate_limited": true."""
+    payload = {
+        "ok": False,
+        "text": "",
+        "turns": 0,
+        "cost_usd": 0.0,
+        "allowance_pct": None,
+        "duration_ms": 12,
+        "session_id": None,
+        "exit_code": 1,
+        "transcript": [],
+        "error": USAGE_LIMIT_STDERR.strip(),
+        "rate_limited": True,
+        "reset_at": RESET_AT,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def fake_runner_with(tmp_path: Path, stage: str, payload: dict) -> FakeRunner:
+    directory = tmp_path / "d2_fixtures"
+    directory.mkdir(exist_ok=True)
+    (directory / f"{stage}.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8", newline="\n"
+    )
+    return FakeRunner(directory)
+
+
+def implement_request(cwd: Path) -> RunRequest:
+    return dataclasses.replace(minimal_request(cwd), stage="implement")
+
+
+# --------------------------------------------------------------------------
+# B119 - --max-budget-usd sits right after --max-turns, and only when requested
+# --------------------------------------------------------------------------
+
+
+def test_b119_max_budget_usd_follows_max_turns_in_argv(tmp_path):
+    """B119 / RUN-DECISIONS-D2 §12: `--max-budget-usd 3.0` immediately after `--max-turns 30`."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(budgeted_request(tmp_path, 3.0))
+
+    index = spawn.argv.index("--max-turns")
+    assert spawn.argv[index : index + 4] == ["--max-turns", "30", "--max-budget-usd", "3.0"]
+    assert spawn.argv.count("--max-budget-usd") == 1
+
+
+def test_b119_max_budget_usd_is_rendered_as_a_decimal_string(tmp_path):
+    """B119: the amount reaches claude as text, e.g. 2.5 → "2.5"."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(budgeted_request(tmp_path, 2.5))
+
+    index = spawn.argv.index("--max-budget-usd")
+    assert spawn.argv[index + 1] == "2.5"
+    assert all(isinstance(entry, str) for entry in spawn.argv)
+
+
+def test_b119_the_rest_of_argv_is_unchanged_by_the_budget_flag(tmp_path):
+    """B119 / B25: the flag is inserted, not substituted — everything else stays in order."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(budgeted_request(tmp_path, 3.0))
+
+    assert spawn.argv == [
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--max-turns",
+        "30",
+        "--max-budget-usd",
+        "3.0",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowed-tools",
+        "Read,Glob,Grep",
+        "--",
+        "do the thing",
+    ]
+
+
+def test_b119_max_budget_usd_flag_is_omitted_when_none(tmp_path):
+    """B119 / RUN-DECISIONS-D2 §12: max_budget_usd=None → no flag, no "None" in argv."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(budgeted_request(tmp_path, None))
+
+    assert "--max-budget-usd" not in spawn.argv
+    assert "None" not in spawn.argv
+
+
+def test_b119_a_request_that_never_set_the_budget_omits_the_flag(tmp_path):
+    """B119: the D1 request shape (no budget) still produces the D1 argv."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert "--max-budget-usd" not in spawn.argv
+
+
+def test_b119_run_request_gains_max_budget_usd_as_its_last_field_defaulting_to_none(tmp_path):
+    """RUN-DECISIONS-D2 §12: RunRequest.max_budget_usd is the last field, default None."""
+    last = dataclasses.fields(RunRequest)[-1]
+
+    assert last.name == "max_budget_usd"
+    assert last.default is None
+    assert minimal_request(tmp_path).max_budget_usd is None
+
+
+def test_b119_run_result_gains_reset_at_as_its_last_field_defaulting_to_none(tmp_path):
+    """RUN-DECISIONS-D2 §12: RunResult.reset_at is the last field, default None."""
+    last = dataclasses.fields(RunResult)[-1]
+
+    assert last.name == "reset_at"
+    assert last.default is None
+
+
+# --------------------------------------------------------------------------
+# B119 - a usage-limit exit is classified, the reset extracted, nothing raised
+# --------------------------------------------------------------------------
+
+
+def test_b119_a_successful_run_has_no_reset_at_and_is_not_rate_limited(tmp_path):
+    """B119: the happy path carries reset_at=None and is_rate_limited() is False."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok", num_turns=1))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.reset_at is None
+    assert is_rate_limited(result) is False
+
+
+def test_b119_usage_limit_on_stderr_is_classified_and_the_reset_extracted(tmp_path):
+    """B119 (handoff §6.3): non-zero exit + the CLI's usage-limit signature → ok=False,
+    reset_at = the ISO timestamp, is_rate_limited() True — and no exception."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(returncode=1, stdout="", stderr=USAGE_LIMIT_STDERR)
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.exit_code == 1
+    assert result.reset_at == RESET_AT
+    assert result.error is not None
+    assert is_rate_limited(result) is True
+
+
+def test_b119_usage_limit_on_stdout_is_also_classified(tmp_path):
+    """B119 / RUN-DECISIONS-D2 §12: the signature is matched on stderr or stdout."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(returncode=1, stdout=USAGE_LIMIT_STDERR, stderr="")
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at == RESET_AT
+    assert is_rate_limited(result) is True
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Rate limit exceeded\n",
+        "RATE LIMIT hit for this account\n",
+        "Too many requests\n",
+        "limit reached for the current window\n",
+        "You've hit your usage limit.\n",
+    ],
+)
+def test_b119_a_limit_phrase_without_a_timestamp_is_rate_limited_with_no_reset(tmp_path, stderr):
+    """B119 / RUN-DECISIONS-D2 §12: the pattern is case-insensitive; without a reset time the
+    result is still rate-limited, reset_at None."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(returncode=1, stdout="", stderr=stderr)
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at is None
+    assert is_rate_limited(result) is True
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("Usage limit reached. Resets in 30 minutes.\n", "+PT30M"),
+        ("Usage limit reached. Resets in 2 hours.\n", "+PT2H"),
+    ],
+)
+def test_b119_a_relative_reset_becomes_an_iso_duration(tmp_path, phrase, expected):
+    """B119 / RUN-DECISIONS-D2 §12: `resets in N (minutes|hours)` → "+PT30M"-style duration;
+    the runner has no clock, so the stage resolves it."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(returncode=1, stdout="", stderr=phrase)
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at == expected
+    assert is_rate_limited(result) is True
+
+
+def test_b119_a_plain_failure_is_not_rate_limited(tmp_path):
+    """B119 / B30: an ordinary non-zero exit keeps reset_at None and is_rate_limited() False."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(returncode=2, stdout="", stderr="claude: something went wrong\n")
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at is None
+    assert is_rate_limited(result) is False
+
+
+def test_b119_a_zero_exit_whose_text_mentions_limits_is_not_rate_limited(tmp_path):
+    """B119: classification is for non-zero exits only; a successful reply about limits is a
+    successful reply."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(
+        returncode=0,
+        stdout=json.dumps({"result": "Note: resets at 2026-09-02T18:00:00Z is a usage limit."}),
+    )
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.reset_at is None
+    assert is_rate_limited(result) is False
+
+
+def test_b119_the_error_tail_is_still_redacted_when_rate_limited(tmp_path):
+    """B119 / B30: classification does not bypass redaction of the stderr tail."""
+    stderr = f"token {SK_ANT_SECRET} rejected: You've hit your usage limit. Resets at {RESET_AT}\n"
+    spawn = SpawnRecorder(returncode=1, stdout="", stderr=stderr)
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.reset_at == RESET_AT
+    assert result.error is not None
+    assert SK_ANT_SECRET not in result.error
+    assert "[REDACTED]" in result.error
+
+
+def test_b119_rate_limited_error_carries_reset_at():
+    """RUN-DECISIONS-D2 §1: RateLimited(msg, reset_at=None) is a HarnessError with reset_at."""
+    from harness.errors import HarnessError, RateLimited
+
+    assert issubclass(RateLimited, HarnessError)
+    assert RateLimited("limited").reset_at is None
+    assert RateLimited("limited", reset_at=RESET_AT).reset_at == RESET_AT
+
+
+def test_b119_is_rate_limited_reads_reset_at_or_the_error_text():
+    """RUN-DECISIONS-D2 §12: is_rate_limited(result) is pure — True when reset_at is set or the
+    error text carries the signature; False for a plain failure or a success."""
+    from harness.runner.base import is_rate_limited
+
+    assert is_rate_limited(run_result(ok=False, exit_code=1, error="boom", reset_at=RESET_AT))
+    assert is_rate_limited(run_result(ok=False, exit_code=1, error="Too many requests"))
+    assert is_rate_limited(run_result(ok=False, exit_code=1, error="usage limit reached"))
+    assert not is_rate_limited(run_result(ok=False, exit_code=1, error="segfault"))
+    assert not is_rate_limited(run_result(ok=False, exit_code=1, error=None))
+    assert not is_rate_limited(run_result(ok=True))
+
+
+# --------------------------------------------------------------------------
+# B119 / RUN-DECISIONS-D2 §12 - the fake runner replays a rate-limit outcome
+# --------------------------------------------------------------------------
+
+
+def test_b119_fake_runner_replays_a_rate_limited_fixture(tmp_path):
+    """RUN-DECISIONS-D2 §12: a fixture with "rate_limited": true → ok=False, reset_at copied."""
+    from harness.runner.base import is_rate_limited
+
+    runner = fake_runner_with(tmp_path, "implement", rate_limited_payload())
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at == RESET_AT
+    assert is_rate_limited(result) is True
+
+
+def test_b119_fake_runner_rate_limited_fixture_without_a_reset_has_reset_at_none(tmp_path):
+    """RUN-DECISIONS-D2 §12: the flag alone marks the outcome; reset_at is copied as given."""
+    from harness.runner.base import is_rate_limited
+
+    runner = fake_runner_with(tmp_path, "implement", rate_limited_payload(reset_at=None))
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is False
+    assert result.reset_at is None
+    assert is_rate_limited(result) is True
+
+
+def test_b119_fake_runner_without_the_flag_is_not_rate_limited(tmp_path):
+    """RUN-DECISIONS-D2 §12: an ordinary fixture has reset_at None and is not rate-limited."""
+    from harness.runner.base import is_rate_limited
+
+    payload = rate_limited_payload(ok=True, exit_code=0, error=None, text="implemented")
+    payload.pop("rate_limited")
+    payload.pop("reset_at")
+    runner = fake_runner_with(tmp_path, "implement", payload)
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is True
+    assert result.reset_at is None
+    assert is_rate_limited(result) is False
+
+
+def test_b119_the_shipped_rate_limited_fixture_replays_as_rate_limited(tmp_path):
+    """Handoff §3 / RUN-DECISIONS-D2 §12: tests/fixtures/runner/rate_limited.json ships with
+    "rate_limited": true and replays as a rate-limited implement outcome."""
+    from harness.runner.base import is_rate_limited
+
+    shipped = D2_FIXTURES_DIR / "rate_limited.json"
+    assert shipped.is_file(), "tests/fixtures/runner/rate_limited.json must ship (handoff §3)"
+    payload = json.loads(shipped.read_text(encoding="utf-8"))
+    assert payload.get("rate_limited") is True
+    assert payload.get("ok") is False
+
+    runner = fake_runner_with(tmp_path, "implement", payload)
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is False
+    assert is_rate_limited(result) is True
+
+
+def test_b119_the_shipped_revise_fixture_replays_as_a_successful_revise(tmp_path):
+    """Handoff §3 / RUN-DECISIONS-D2 §12: tests/fixtures/runner/revise.json ships and is a
+    successful RunResult for the revise stage."""
+    shipped = D2_FIXTURES_DIR / "revise.json"
+    assert shipped.is_file(), "tests/fixtures/runner/revise.json must ship (handoff §3)"
+    payload = json.loads(shipped.read_text(encoding="utf-8"))
+    assert payload.get("ok") is True
+
+    runner = FakeRunner(D2_FIXTURES_DIR)
+    result = runner.run(dataclasses.replace(minimal_request(tmp_path), stage="revise"))
+
+    assert result.ok is True
+    assert result.reset_at is None
+    assert result.text.strip() != ""

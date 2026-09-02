@@ -1,16 +1,18 @@
-"""The ``claude`` CLI backend (SPEC 5.4.3)."""
+"""The ``claude`` CLI backend (SPEC 5.4.3; D2 §6.1 budget flag and §6.3 rate-limit outcome)."""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from harness.config import environ_snapshot
 from harness.redact import redact
-from harness.runner.base import RunRequest, RunResult
+from harness.runner.base import RATE_LIMIT_PATTERN, RunRequest, RunResult
 
 #: Removed from the child environment (B26). Delivery 1 is subscription-backed;
 #: a stray key would silently move the spend to the API billing pool.
@@ -23,6 +25,17 @@ STDERR_TAIL_CHARS = 2000
 EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
 
+#: What ``reset_at`` says when the CLI names no reset time at all: one hour, the smallest
+#: window the CLI itself advertises. The stage adds it to its clock.
+DEFAULT_RESET_AT = "+PT60M"
+
+_ISO_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+_RELATIVE_RESET = re.compile(
+    r"(?i)resets?\s+in\s+(?:about\s+|~\s*)?(\d+)\s*(minutes?|mins?|hours?|hrs?|h|m)\b"
+)
+
 
 def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
     """Default spawn: resolve argv[0] on PATH first.
@@ -33,6 +46,35 @@ def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedPr
     """
     resolved = shutil.which(argv[0]) or argv[0]
     return subprocess.run([resolved, *argv[1:]], **kwargs)  # type: ignore[call-overload]
+
+
+def parse_reset_at(text: str) -> str:
+    """The reset marker inside a usage-limit message (B119).
+
+    An ISO-8601 timestamp wins and is normalised to UTC ``Z``. ``resets in N minutes|hours``
+    becomes a relative ISO duration (``+PT30M``, ``+PT2H``) for the stage to add to its clock.
+    Anything else is :data:`DEFAULT_RESET_AT`.
+    """
+    haystack = text or ""
+    match = _ISO_TIMESTAMP.search(haystack)
+    if match:
+        return _normalise_iso(match.group(0))
+    match = _RELATIVE_RESET.search(haystack)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        return f"+PT{amount}H" if unit.startswith("h") else f"+PT{amount}M"
+    return DEFAULT_RESET_AT
+
+
+def _normalise_iso(raw: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class ClaudeCliRunner:
@@ -51,7 +93,8 @@ class ClaudeCliRunner:
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """Exactly the order frozen in SPEC 5.4.3 (B25).
+        """Exactly the order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` right after
+        ``--max-turns`` when the request carries a budget (D2 §6.1).
 
         No permission-skipping flag exists in this module to emit (SPEC 9, I-3; B27).
         """
@@ -62,11 +105,18 @@ class ClaudeCliRunner:
             "json",
             "--max-turns",
             str(request.max_turns),
-            "--permission-mode",
-            "acceptEdits",
-            "--allowed-tools",
-            ",".join(request.allowed_tools),
         ]
+        if request.max_budget_usd is not None:
+            argv.append("--max-budget-usd")
+            argv.append(str(request.max_budget_usd))
+        argv.extend(
+            [
+                "--permission-mode",
+                "acceptEdits",
+                "--allowed-tools",
+                ",".join(request.allowed_tools),
+            ]
+        )
         if request.disallowed_tools:
             argv.append("--disallowed-tools")
             argv.append(",".join(request.disallowed_tools))
@@ -119,6 +169,12 @@ class ClaudeCliRunner:
         exit_code = int(getattr(proc, "returncode", 0) or 0)
 
         if exit_code != 0:
+            # B119: exhaustion is an outcome with a reset time, not a generic failure.
+            combined = f"{stdout}\n{stderr}"
+            if RATE_LIMIT_PATTERN.search(combined):
+                return self._failure(
+                    request, exit_code, stderr or stdout, reset_at=parse_reset_at(combined)
+                )
             return self._failure(request, exit_code, stderr or stdout)
 
         try:
@@ -141,8 +197,13 @@ class ClaudeCliRunner:
             text = ""
         is_error = bool(data.get("is_error", False))
         error = None
+        reset_at = None
         if is_error:
             error = redact(stderr[-STDERR_TAIL_CHARS:]) if stderr else "claude reported is_error"
+            # The CLI may report exhaustion as a JSON error with exit 0; same outcome (B119).
+            signal = f"{text}\n{stderr}"
+            if RATE_LIMIT_PATTERN.search(signal):
+                reset_at = parse_reset_at(signal)
         return RunResult(
             ok=not is_error,
             text=text,
@@ -158,9 +219,17 @@ class ClaudeCliRunner:
                 {"raw": data},
             ),
             error=error,
+            reset_at=reset_at,
         )
 
-    def _failure(self, request: RunRequest, exit_code: int, stderr: str) -> RunResult:
+    def _failure(
+        self,
+        request: RunRequest,
+        exit_code: int,
+        stderr: str,
+        *,
+        reset_at: str | None = None,
+    ) -> RunResult:
         """The single failure shape: ``ok=False`` and a redacted stderr tail (B30)."""
         return RunResult(
             ok=False,
@@ -173,6 +242,7 @@ class ClaudeCliRunner:
             exit_code=exit_code,
             transcript=({"role": "user", "content": request.prompt},),
             error=redact(stderr[-STDERR_TAIL_CHARS:]),
+            reset_at=reset_at,
         )
 
 

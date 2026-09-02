@@ -1,0 +1,8 @@
+# .github/CODEOWNERS — handoff §5.5, RUN-DECISIONS-D2 §15.
+# These paths change what the harness concludes or whom it trusts; a change needs the owner's review.
+/.harness/          @jgoetzmann
+/prompts/           @jgoetzmann
+/.github/           @jgoetzmann
+/harness/gates.py   @jgoetzmann
+/harness/redact.py  @jgoetzmann
+/proposals/         @jgoetzmann

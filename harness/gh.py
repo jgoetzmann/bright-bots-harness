@@ -1,19 +1,34 @@
-"""Unauthenticated, cached, read-only GitHub client (spec §5.5)."""
+"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface (D2 §5.3).
+
+``GitHubReadOnly`` is Delivery 1, unchanged. ``GitHubClient`` extends it and is the only
+authenticated request path in the package (I-11): every write passes its payload through
+``redact.redact_json`` before it is encoded (I-13), is recorded on ``sent``, and refuses to run
+without a token (``TierViolation``). Issues are only ever created in ``self_repo`` (I-14). No
+method here can change a pull request's state beyond closing it, nor act on a review's verdict
+(I-12).
+"""
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from harness import __version__
+from harness import redact
 from harness.clock import Clock, iso
-from harness.errors import GitHubError, RateCeilingReached
+from harness.errors import GitHubError, RateCeilingReached, TierViolation
+from harness.gates import run_command
 from harness.store import Store
+
+log = logging.getLogger("harness")
 
 API_BASE = "https://api.github.com"
 ACCEPT = "application/vnd.github+json"
@@ -21,6 +36,9 @@ USER_AGENT = f"bright-bots-harness/{__version__}"
 PER_PAGE = 100
 
 _LINK_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"', re.IGNORECASE)
+
+#: The sha a dry run reports for anything it pretended to create.
+DRY_RUN_SHA = "0" * 40
 
 
 def _header(headers: Any, name: str) -> str | None:
@@ -231,3 +249,428 @@ class GitHubReadOnly:
             if isinstance(name, str) and name:
                 names.append(name)
         return names
+
+
+# ======================================================================================
+# Delivery 2 — the one authenticated client (I-11)
+# ======================================================================================
+
+
+class GitHubClient(GitHubReadOnly):
+    """Reads with or without a token; writes only with one.
+
+    ``can_write`` is ``bool(token)``. Every request carries ``Authorization: token <t>`` iff
+    ``can_write``. Every write records ``{"method", "url", "payload"}`` on ``sent`` — in
+    ``dry_run`` mode as well, where nothing is opened and a plausible synthetic body comes back.
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        store: Store,
+        clock: Clock,
+        ceiling_per_hour: int,
+        *,
+        token: str = "",
+        self_repo: str = "",
+        dry_run: bool = False,
+        opener: Callable[[urllib.request.Request], Any] | None = None,
+    ) -> None:
+        super().__init__(repo, store, clock, ceiling_per_hour, opener=opener)
+        # Every read and write in the base class goes through self._opener; wrapping it is how
+        # the header reaches reads while ETag/304/ceiling logic stays exactly as Delivery 1 is.
+        self._raw_opener = self._opener
+        self._opener = self._open
+        self._token = (token or "").strip()
+        self.self_repo = self_repo or ""
+        self.dry_run = bool(dry_run)
+        self.sent: list[dict] = []
+
+    def __repr__(self) -> str:
+        return (
+            f"GitHubClient(repo={self.repo!r}, self_repo={self.self_repo!r}, "
+            f"can_write={self.can_write}, dry_run={self.dry_run})"
+        )
+
+    # ---------------------------------------------------------------- plumbing
+
+    @property
+    def can_write(self) -> bool:
+        return bool(self._token)
+
+    def _open(self, request: urllib.request.Request) -> Any:
+        """The only place the token meets a request. Unredirected: never forwarded off-host."""
+        if self.can_write:
+            request.add_unredirected_header("Authorization", f"token {self._token}")
+        return self._raw_opener(request)
+
+    def _require_write(self, action: str) -> None:
+        if not self.can_write:
+            raise TierViolation(
+                f"{action} needs a write-capable client; no token is configured "
+                "(permission tier 2 is required for any GitHub write)"
+            )
+
+    def _record(self, method: str, url: str, payload: Any) -> None:
+        self.sent.append({"method": method, "url": url, "payload": payload})
+
+    def _send(self, method: str, path: str, payload: Any) -> Any:
+        """One authenticated non-GET request: ceiling, api_call row, status handling."""
+        url = self._url(path)
+        self._check_ceiling(url)
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {"User-Agent": USER_AGENT, "Accept": ACCEPT}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            response = self._opener(request)
+        except urllib.error.HTTPError as exc:
+            code = int(getattr(exc, "code", 0) or 0)
+            self.store.record_api_call(url, code, False)
+            self._raise_for_status(url, code, _body_text(exc), getattr(exc, "headers", None))
+            raise GitHubError(f"github returned {code} for {url}")
+        status = int(getattr(response, "status", 200) or 200)
+        text = _body_text(response)
+        _close(response)
+        self.store.record_api_call(url, status, False)
+        if status >= 400:
+            self._raise_for_status(url, status, text, getattr(response, "headers", None))
+        return _decode(text, url)
+
+    def _write(self, method: str, path: str, payload: Any, dry_result: Any) -> Any:
+        """Record, then either pretend (dry run) or send. ``payload`` is already redacted."""
+        self._record(method, self._url(path), payload)
+        if self.dry_run:
+            return dry_result
+        return self._send(method, path, payload)
+
+    # ------------------------------------------------------------------ writes
+
+    def comment(self, repo: str, number: int, body: str) -> dict:
+        self._require_write("comment")
+        n = int(number)
+        payload = redact.redact_json({"body": str(body)})
+        data = self._write(
+            "POST",
+            f"/repos/{repo}/issues/{n}/comments",
+            payload,
+            {
+                "id": 0,
+                "html_url": f"https://github.com/{repo}/issues/{n}#issuecomment-0",
+                "body": payload["body"],
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def set_labels(self, repo: str, number: int, labels: Sequence[str]) -> list[dict]:
+        self._require_write("set_labels")
+        n = int(number)
+        payload = redact.redact_json({"labels": [str(label) for label in labels]})
+        data = self._write(
+            "PUT",
+            f"/repos/{repo}/issues/{n}/labels",
+            payload,
+            [{"name": name} for name in payload["labels"]],
+        )
+        if not isinstance(data, list):
+            return []
+        return [row for row in data if isinstance(row, dict)]
+
+    def create_issue(self, title: str, body: str, labels: Sequence[str]) -> dict:
+        """Always in ``self.self_repo`` — there is no repo parameter (I-14)."""
+        self._require_write("create_issue")
+        if not self.self_repo:
+            raise GitHubError("create_issue: SELF_REPO is not configured; refusing to guess")
+        payload = redact.redact_json(
+            {"title": str(title), "body": str(body), "labels": [str(label) for label in labels]}
+        )
+        data = self._write(
+            "POST",
+            f"/repos/{self.self_repo}/issues",
+            payload,
+            {
+                "number": 0,
+                "html_url": f"https://github.com/{self.self_repo}/issues/0",
+                "title": payload["title"],
+                "body": payload["body"],
+                "labels": [{"name": name} for name in payload["labels"]],
+                "state": "open",
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def create_pull(self, repo: str, *, head: str, base: str, title: str, body: str) -> dict:
+        self._require_write("create_pull")
+        payload = redact.redact_json(
+            {"title": str(title), "head": str(head), "base": str(base), "body": str(body)}
+        )
+        data = self._write(
+            "POST",
+            f"/repos/{repo}/pulls",
+            payload,
+            {
+                "number": 0,
+                "html_url": f"https://github.com/{repo}/pull/0",
+                "title": payload["title"],
+                "head": {"ref": payload["head"], "label": payload["head"]},
+                "base": {"ref": payload["base"]},
+                "state": "open",
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def request_reviewers(self, repo: str, number: int, reviewers: Sequence[str]) -> dict:
+        self._require_write("request_reviewers")
+        n = int(number)
+        payload = redact.redact_json(
+            {"reviewers": [str(handle) for handle in reviewers if str(handle)]}
+        )
+        if not payload["reviewers"]:
+            return {}
+        data = self._write(
+            "POST",
+            f"/repos/{repo}/pulls/{n}/requested_reviewers",
+            payload,
+            {
+                "number": n,
+                "html_url": f"https://github.com/{repo}/pull/{n}",
+                "requested_reviewers": [{"login": handle} for handle in payload["reviewers"]],
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def close_pull(self, repo: str, number: int) -> dict:
+        self._require_write("close_pull")
+        n = int(number)
+        payload = redact.redact_json({"state": "closed"})
+        data = self._write(
+            "PATCH",
+            f"/repos/{repo}/pulls/{n}",
+            payload,
+            {"number": n, "html_url": f"https://github.com/{repo}/pull/{n}", "state": "closed"},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def create_branch_file(
+        self,
+        repo: str,
+        *,
+        branch: str,
+        path: str,
+        content: str,
+        message: str,
+        base: str = "main",
+    ) -> dict:
+        """Refs + contents API: GET the base ref, POST the branch ref, PUT the file on it.
+
+        An already-existing branch is reused, and an already-existing file is updated (its
+        blob sha is fetched so the PUT is accepted). The text is redacted before base64.
+        """
+        self._require_write("create_branch_file")
+        clean = redact.redact_json(
+            {"message": str(message), "content": str(content), "branch": str(branch)}
+        )
+        encoded = base64.b64encode(clean["content"].encode("utf-8")).decode("ascii")
+        ref_name = f"refs/heads/{clean['branch']}"
+        quoted_path = urllib.parse.quote(str(path).lstrip("/"))
+        refs_path = f"/repos/{repo}/git/refs"
+        contents_path = f"/repos/{repo}/contents/{quoted_path}"
+
+        if self.dry_run:
+            self._record("POST", self._url(refs_path), {"ref": ref_name, "sha": DRY_RUN_SHA})
+            self._record(
+                "PUT",
+                self._url(contents_path),
+                {"message": clean["message"], "content": encoded, "branch": clean["branch"]},
+            )
+            return {
+                "content": {
+                    "path": str(path),
+                    "html_url": f"https://github.com/{repo}/blob/{clean['branch']}/{path}",
+                },
+                "commit": {"sha": DRY_RUN_SHA},
+            }
+
+        ref = self.get(f"/repos/{repo}/git/ref/heads/{base}")
+        base_sha = ""
+        if isinstance(ref, dict):
+            obj = ref.get("object")
+            if isinstance(obj, dict):
+                base_sha = str(obj.get("sha") or "")
+        if not base_sha:
+            raise GitHubError(f"could not resolve {base} on {repo}; refusing to branch blind")
+
+        ref_payload = redact.redact_json({"ref": ref_name, "sha": base_sha})
+        try:
+            self._write("POST", refs_path, ref_payload, {})
+        except GitHubError as exc:
+            # 422 "Reference already exists": the branch is there from a previous cycle.
+            if "returned 422" not in str(exc):
+                raise
+            log.info("branch %s already exists on %s; reusing it", clean["branch"], repo)
+
+        existing_sha = ""
+        try:
+            existing = self.get(f"{contents_path}?{_query([('ref', clean['branch'])])}")
+        except GitHubError:
+            existing = None
+        if isinstance(existing, dict):
+            existing_sha = str(existing.get("sha") or "")
+
+        put_payload: dict[str, Any] = {
+            "message": clean["message"],
+            "content": encoded,
+            "branch": clean["branch"],
+        }
+        if existing_sha:
+            put_payload["sha"] = existing_sha
+        data = self._write("PUT", contents_path, put_payload, {})
+        return data if isinstance(data, dict) else {}
+
+    def push_branch(
+        self,
+        clone: Path,
+        branch: str,
+        *,
+        remote_repo: str,
+        force: bool = False,
+        git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+    ) -> None:
+        """Push a work branch to the fork. ``force`` uses ``--force-with-lease``, never ``-f``."""
+        self._require_write("push_branch")
+        self._git_push(
+            Path(clone),
+            str(branch),
+            remote_repo=remote_repo,
+            force=bool(force),
+            git_runner=git_runner,
+        )
+
+    def push_ref(
+        self,
+        repo_path: Path,
+        refspec: str,
+        *,
+        remote_repo: str,
+        git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+    ) -> None:
+        """Fast-forward-only push of one refspec (used by ``clone.sync_fork``). No force path."""
+        self._require_write("push_ref")
+        self._git_push(
+            Path(repo_path),
+            str(refspec),
+            remote_repo=remote_repo,
+            force=False,
+            git_runner=git_runner,
+        )
+
+    def _git_push(
+        self,
+        cwd: Path,
+        refspec: str,
+        *,
+        remote_repo: str,
+        force: bool,
+        git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None,
+    ) -> None:
+        """``git push`` over https with the token in an ``http.extraheader`` — never in the URL.
+
+        The header value is base64 of ``x-access-token:<token>``; it appears in argv only,
+        never in a log line, and is scrubbed from any error text before it is raised.
+        """
+        remote_url = f"https://github.com/{remote_repo}.git"
+        record = redact.redact_json({"refspec": refspec, "force": force, "cwd": str(cwd)})
+        self._record("git push", remote_url, record)
+        if self.dry_run:
+            return
+
+        credential = base64.b64encode(f"x-access-token:{self._token}".encode("utf-8")).decode(
+            "ascii"
+        )
+        argv = [
+            "git",
+            "-c",
+            f"http.extraheader=Authorization: basic {credential}",
+            "push",
+            "--force-with-lease" if force else "--",
+            remote_url,
+            refspec,
+        ]
+        run = git_runner if git_runner is not None else run_command
+        code, out, err = run(argv, cwd)
+        if code != 0:
+            detail = (err or out or "").replace(credential, redact.REDACTION)
+            detail = redact.redact(detail).strip()[-2000:]
+            raise GitHubError(f"git push {refspec} to {remote_repo} failed ({code}): {detail}")
+        log.info("pushed %s to %s force=%s", refspec, remote_repo, force)
+
+    # ------------------------------------------------------------------- reads
+
+    def notifications(self, since_iso: str | None) -> list[dict]:
+        pairs: list[tuple[str, str]] = []
+        if since_iso:
+            pairs.append(("since", str(since_iso)))
+        pairs.append(("all", "false"))
+        pairs.append(("per_page", str(PER_PAGE)))
+        return self._paginate(f"/notifications?{_query(pairs)}")
+
+    def issue_comments(self, repo: str, number: int) -> list[dict]:
+        pairs = [("per_page", str(PER_PAGE))]
+        return self._paginate(f"/repos/{repo}/issues/{int(number)}/comments?{_query(pairs)}")
+
+    def pull(self, repo: str, number: int) -> dict:
+        data = self.get(f"/repos/{repo}/pulls/{int(number)}")
+        if not isinstance(data, dict):
+            raise GitHubError(f"expected an object for pull {number}, got a list")
+        return data
+
+    def pull_reviews(self, repo: str, number: int) -> list[dict]:
+        pairs = [("per_page", str(PER_PAGE))]
+        return self._paginate(f"/repos/{repo}/pulls/{int(number)}/reviews?{_query(pairs)}")
+
+    def pull_review_comments(self, repo: str, number: int) -> list[dict]:
+        pairs = [("per_page", str(PER_PAGE))]
+        return self._paginate(f"/repos/{repo}/pulls/{int(number)}/comments?{_query(pairs)}")
+
+    def check_runs(self, repo: str, ref: str) -> list[dict]:
+        """``/repos/{r}/commits/{ref}/check-runs`` — the ``check_runs`` list, every page."""
+        pairs = [("per_page", str(PER_PAGE))]
+        url: str | None = self._url(f"/repos/{repo}/commits/{ref}/check-runs?{_query(pairs)}")
+        runs: list[dict] = []
+        seen: set[str] = set()
+        while url and url not in seen:
+            seen.add(url)
+            data, headers = self._fetch(url)
+            if isinstance(data, dict):
+                rows = data.get("check_runs")
+                if isinstance(rows, list):
+                    runs.extend(row for row in rows if isinstance(row, dict))
+            url = _next_link(headers)
+        return runs
+
+    def user(self) -> dict:
+        """``GET /user`` — the authenticated account (the machine account at tier 2)."""
+        data = self.get("/user")
+        if not isinstance(data, dict):
+            raise GitHubError("expected an object from /user, got a list")
+        return data
+
+
+def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:
+    """Construct the client from a loaded ``Config``.
+
+    The token door (I-11) is opened here and nowhere else: the getter is imported inside this
+    function so the module never holds a reference to it, and it returns ``""`` unless the
+    last-loaded config is at permission tier 2.
+    """
+    from harness.config import github_token
+
+    return GitHubClient(
+        config.repo,
+        store,
+        clock,
+        config.github_api_ceiling_per_hour,
+        token=github_token(),
+        self_repo=getattr(config, "self_repo", "") or "",
+    )

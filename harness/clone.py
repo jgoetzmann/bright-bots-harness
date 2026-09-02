@@ -1,4 +1,9 @@
-"""Disposable clone lifecycle (SPEC §5.7): https only, under ``runs_dir`` only."""
+"""Disposable clone lifecycle (SPEC §5.7): https only, under ``runs_dir`` only.
+
+Delivery 2 (handoff §4.4): clones come from the fork when ``FORK_REPO`` is set, a revise cycle
+re-acquires an existing branch instead of cutting a new one, and :func:`sync_fork` fast-forwards
+the fork's main from upstream or refuses without touching anything (B105).
+"""
 
 from __future__ import annotations
 
@@ -12,13 +17,18 @@ from pathlib import Path
 from typing import Callable
 
 from harness.clock import Clock
-from harness.errors import CloneError, PreflightFailed
+from harness.errors import CloneError, ForkDiverged, PreflightFailed
 from harness.gates import run_command
 from harness.store import WorkItem
 
 log = logging.getLogger("harness")
 
 _BYTES_PER_GB = 1024 ** 3
+
+#: The one refspec ``sync_fork`` ever hands to ``push``: upstream's main onto the fork's main.
+FORK_SYNC_REFSPEC = "upstream/main:refs/heads/main"
+
+GitRunner = Callable[[list[str], Path], tuple[int, str, str]]
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,12 @@ def branch_name_for(item: WorkItem) -> str:
     """``harness/<type>-<issue>-<slug>`` — always under the ``harness/`` namespace (B45)."""
     type_ = "fix" if item.kind == "issue" else "chore"
     return f"harness/{type_}-{item.issue_number or item.id}-{_slugify(item.title)}"
+
+
+def _source_repo(config) -> str:
+    """The repository clones come from: the fork when configured (D2 §4.4), else the product."""
+    fork = getattr(config, "fork_repo", "") or ""
+    return fork.strip() or config.repo
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:
@@ -68,14 +84,15 @@ class CloneManager:
         git_bin: str = "git",
         clone_url: str | None = None,
         free_bytes: Callable[[Path], int] | None = None,
-        git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
+        git_runner: GitRunner | None = None,
     ) -> None:
         self.config = config
         self.clock = clock
         self.git_bin = git_bin
-        # The default is unauthenticated https. There is no ssh branch and no credential branch:
-        # the only way to point this elsewhere is an explicit override, used by tests.
-        self.clone_url = clone_url or f"https://github.com/{config.repo}.git"
+        # The default is unauthenticated https to the fork when one is configured, else to the
+        # product repository. There is no ssh branch and no credential branch: the only way to
+        # point this elsewhere is an explicit override, used by tests.
+        self.clone_url = clone_url or f"https://github.com/{_source_repo(config)}.git"
         self._free_bytes = free_bytes
         self._git_runner = git_runner
 
@@ -104,6 +121,15 @@ class CloneManager:
             raise CloneError(f"refusing to touch {target}; outside runs_dir {runs_dir}")
         return target
 
+    def _fork_point(self, clone_path: Path, main_sha: str, item: WorkItem) -> str:
+        """The base of a re-acquired branch: where it left main, else what the store recorded."""
+        code, out, _err = self._run_git(["merge-base", "HEAD", main_sha], clone_path)
+        sha = out.strip() if code == 0 else ""
+        if sha:
+            return sha
+        recorded = getattr(item, "base_sha", None)
+        return str(recorded) if recorded else main_sha
+
     # -- surface -----------------------------------------------------------
 
     def preflight(self) -> list[str]:
@@ -131,7 +157,20 @@ class CloneManager:
 
         return blockers
 
-    def acquire(self, item: WorkItem) -> Lease:
+    def acquire(
+        self,
+        item: WorkItem,
+        *,
+        branch: str | None = None,
+        from_fork: bool = False,
+    ) -> Lease:
+        """Fresh clone under ``runs_dir/item-<id>/clone``.
+
+        Without ``branch``: cut ``branch_name_for(item)`` from the clone's HEAD (Delivery 1).
+        With ``branch``: fetch and switch to that existing branch — a revise cycle continues
+        the work already pushed rather than starting over (D2 §9). ``from_fork`` records the
+        caller's intent; the clone source is the fork whenever ``FORK_REPO`` is configured.
+        """
         blockers = self.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))
@@ -153,17 +192,39 @@ class CloneManager:
         code, out, err = self._run_git(["rev-parse", "HEAD"], clone_path)
         if code != 0:
             raise CloneError(f"git rev-parse HEAD failed ({code}): {err.strip()[-2000:]}")
-        base_sha = out.strip()
-        if not base_sha:
+        head_sha = out.strip()
+        if not head_sha:
             raise CloneError("git rev-parse HEAD produced no sha")
 
-        branch = branch_name_for(item)
-        code, _out, err = self._run_git(["switch", "-c", branch], clone_path)
-        if code != 0:
-            raise CloneError(f"git switch -c {branch} failed ({code}): {err.strip()[-2000:]}")
+        if branch:
+            code, _out, err = self._run_git(["fetch", "origin", branch], clone_path)
+            if code != 0:
+                raise CloneError(
+                    f"git fetch origin {branch} failed ({code}): {err.strip()[-2000:]}"
+                )
+            code, _out, err = self._run_git(["switch", branch], clone_path)
+            if code != 0:
+                raise CloneError(f"git switch {branch} failed ({code}): {err.strip()[-2000:]}")
+            base_sha = self._fork_point(clone_path, head_sha, item)
+            branch_name = branch
+        else:
+            base_sha = head_sha
+            branch_name = branch_name_for(item)
+            code, _out, err = self._run_git(["switch", "-c", branch_name], clone_path)
+            if code != 0:
+                raise CloneError(
+                    f"git switch -c {branch_name} failed ({code}): {err.strip()[-2000:]}"
+                )
 
-        log.info("clone acquired run_id=%s base_sha=%s branch=%s", run_id, base_sha, branch)
-        return Lease(run_id=run_id, path=clone_path, base_sha=base_sha, branch=branch)
+        log.info(
+            "clone acquired run_id=%s base_sha=%s branch=%s existing=%s from_fork=%s",
+            run_id,
+            base_sha,
+            branch_name,
+            bool(branch),
+            from_fork,
+        )
+        return Lease(run_id=run_id, path=clone_path, base_sha=base_sha, branch=branch_name)
 
     def release(self, lease: Lease, *, keep: bool) -> None:
         path = self._assert_under_runs_dir(Path(lease.path))
@@ -180,3 +241,68 @@ class CloneManager:
         if path.exists():
             shutil.rmtree(path, onexc=_on_rmtree_error)
         log.info("clone released run_id=%s", lease.run_id)
+
+
+# -- fork sync (D2 §4.4, B105) -------------------------------------------------------------
+
+
+def sync_fork(
+    config,
+    *,
+    workdir: Path,
+    push: Callable[[Path, str], None],
+    git_runner: GitRunner | None = None,
+) -> str:
+    """Fast-forward the fork's ``main`` from upstream, or refuse. Returns the resulting sha.
+
+    A bare clone of the fork lands in ``workdir/fork.git`` with ``upstream`` added; both mains
+    are fetched. Equal → nothing to do. Fork behind upstream → ``push(bare, "upstream/main:
+    refs/heads/main")`` (the caller supplies the authenticated push) and the new sha comes back.
+    Anything else is :class:`ForkDiverged`, raised with both shas and nothing pushed (B105):
+    a fork main that is not an ancestor of upstream's would silently break every pinned
+    ``base_sha`` downstream.
+    """
+    fork_repo = (getattr(config, "fork_repo", "") or "").strip()
+    if not fork_repo:
+        raise CloneError("sync_fork: FORK_REPO is not configured; there is no fork to sync")
+    upstream_repo = (getattr(config, "upstream_repo", "") or "").strip() or config.repo
+    run = git_runner if git_runner is not None else run_command
+
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    bare = workdir / "fork.git"
+    if bare.exists():
+        shutil.rmtree(bare, onexc=_on_rmtree_error)
+
+    fork_url = f"https://github.com/{fork_repo}.git"
+    upstream_url = f"https://github.com/{upstream_repo}.git"
+
+    def git(argv: list[str], cwd: Path) -> str:
+        code, out, err = run(["git", *argv], cwd)
+        if code != 0:
+            raise CloneError(
+                f"sync_fork: git {' '.join(argv[:2])} failed ({code}): {err.strip()[-2000:]}"
+            )
+        return out.strip()
+
+    git(["clone", "--bare", "--no-tags", fork_url, str(bare)], workdir)
+    git(["remote", "add", "upstream", upstream_url], bare)
+    git(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], bare)
+    git(["fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"], bare)
+    fork_sha = git(["rev-parse", "origin/main"], bare)
+    upstream_sha = git(["rev-parse", "upstream/main"], bare)
+
+    if fork_sha == upstream_sha:
+        log.info("sync_fork: %s main already at upstream %s", fork_repo, fork_sha)
+        return fork_sha
+
+    code, _out, _err = run(["git", "merge-base", "--is-ancestor", fork_sha, upstream_sha], bare)
+    if code != 0:
+        raise ForkDiverged(
+            f"fork {fork_repo} main is at {fork_sha} but upstream {upstream_repo} main is at "
+            f"{upstream_sha}; not a fast-forward, nothing pushed (B105)"
+        )
+
+    push(bare, FORK_SYNC_REFSPEC)
+    log.info("sync_fork: %s main fast-forwarded %s -> %s", fork_repo, fork_sha, upstream_sha)
+    return upstream_sha

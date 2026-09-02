@@ -1,0 +1,142 @@
+# ops.yml — on a failed spending run: open or update the ops issue, retry once on transient causes only.
+# Spends nothing. Handoff §11.2 (B145, B146); RUN-DECISIONS-D2 §15.
+# The harness package may not shell out to `gh`; a workflow may use actions/github-script, and this one does.
+name: ops
+
+on:
+  workflow_run:
+    workflows: [discover, implement, feedback]
+    types: [completed]
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  triage:
+    name: ops triage
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120          # B125
+    permissions:
+      contents: read
+      issues: write               # the ops issue and its comments/labels
+      actions: write              # read jobs and logs of the failed run; re-run failed jobs once
+    steps:
+      - name: Alert and bounded retry
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const wfName = run.name;
+            const attempt = run.run_attempt || 1;
+
+            // --- what failed -------------------------------------------------------------
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner, repo, run_id: run.id, filter: 'latest', per_page: 100,
+            });
+            const failedJob =
+              jobs.find(j => j.conclusion === 'failure') ||
+              jobs.find(j => j.conclusion && !['success', 'skipped', 'neutral'].includes(j.conclusion)) ||
+              null;
+            let failingStep = '(none identified)';
+            if (failedJob) {
+              const s = (failedJob.steps || []).find(st => st.conclusion === 'failure');
+              if (s) failingStep = s.name;
+            }
+
+            // --- last 50 log lines, redacted ---------------------------------------------
+            const redact = (line) => line
+              .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, '[REDACTED:token]')
+              .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '[REDACTED:token]')
+              .replace(/sk-ant-[A-Za-z0-9_\-]{20,}/g, '[REDACTED:key]')
+              .replace(/(Authorization\s*:\s*)(Bearer|token|Basic)\s+\S+/gi, '$1$2 [REDACTED]')
+              .replace(/(https?:\/\/)[^\/\s:@]+:[^@\s]+@/g, '$1[REDACTED]@')
+              .replace(/([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*)\S+/g, '$1[REDACTED]');
+            let tail = '(log unavailable)';
+            if (failedJob) {
+              try {
+                const r = await github.rest.actions.downloadJobLogsForWorkflowRun({ owner, repo, job_id: failedJob.id });
+                const text = typeof r.data === 'string' ? r.data : Buffer.from(r.data).toString('utf8');
+                const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+                tail = lines.slice(-50).map(redact).join('\n');
+              } catch (e) {
+                tail = `(log unavailable: ${e.message})`;
+              }
+            }
+
+            // --- classification (B146) ---------------------------------------------------
+            // Never retry a failure inside a model call or a gate: those step names carry run/revise/propose/gate.
+            const modelOrGate = /run|revise|propose|gate/i.test(failingStep);
+            const transientRe = new RegExp([
+              'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'socket hang up',
+              'npm ERR! (network|fetch|ERR_SOCKET|E5\\d\\d)', 'registry\\.npmjs\\.org.*\\b5\\d\\d\\b',
+              'Internal Server Error', 'Bad Gateway', 'Service Unavailable', 'Gateway Time-?out',
+              'HTTP(S)?\\s*5\\d\\d', 'status(:| code)?\\s*5\\d\\d',
+              'received a shutdown signal', 'lost communication with the server', 'runner has been evicted',
+              'Connection reset by peer', 'TLS handshake timeout', 'Could not resolve host',
+              'Temporary failure in name resolution',
+            ].join('|'), 'i');
+            const transient = !modelOrGate && transientRe.test(tail);
+
+            // --- the ops issue: open or update ------------------------------------------
+            const title = `ops: ${wfName} failed`;
+            const ensureLabel = async (name, color, description) => {
+              try { await github.rest.issues.getLabel({ owner, repo, name }); }
+              catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name, color, description }); else throw e; }
+            };
+            await ensureLabel('harness:ops', 'b60205', 'harness: a spending workflow failed');
+            await ensureLabel('retried', 'fbca04', 'harness: the one automatic retry has been spent');
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: 'harness:ops', per_page: 100,
+            });
+            let issue = open.find(i => !i.pull_request && i.title === title) || null;
+            const alreadyRetried = !!(issue && issue.labels.some(l => (l.name || l) === 'retried'));
+
+            let action;
+            if (transient && !alreadyRetried && attempt === 1) {
+              action = 'transient failure on the first attempt: re-dispatching the failed jobs once (attempt 2). No further automatic retry for this issue.';
+            } else if (transient && alreadyRetried) {
+              action = 'transient failure, but the one automatic retry for this issue is already spent: left for a human.';
+            } else if (transient && attempt > 1) {
+              action = `transient failure on attempt ${attempt}: retries are capped at one per run; left for a human.`;
+            } else if (modelOrGate) {
+              action = `failure inside "${failingStep}" (a model call or a gate): information, not a transient; left for a human (B146).`;
+            } else {
+              action = 'not classified as transient: left for a human.';
+            }
+
+            const body = [
+              `## ${title}`,
+              ``,
+              `- run: ${run.html_url} (attempt ${attempt}, event \`${run.event}\`, branch \`${run.head_branch}\`, sha \`${run.head_sha}\`)`,
+              `- failing job: ${failedJob ? `${failedJob.name} (${failedJob.html_url})` : '(none identified)'}`,
+              `- failing step: ${failingStep}`,
+              `- classification: ${transient ? 'transient' : 'not transient'}`,
+              `- action: ${action}`,
+              ``,
+              `<details><summary>last 50 log lines (redacted)</summary>`,
+              ``,
+              '```',
+              tail,
+              '```',
+              `</details>`,
+              ``,
+              `_See docs/OPERATIONS.md. Close this issue once handled; the next failure opens a fresh one._`,
+            ].join('\n');
+
+            if (issue) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
+              core.info(`updated ops issue #${issue.number}`);
+            } else {
+              const created = await github.rest.issues.create({ owner, repo, title, body, labels: ['harness:ops'] });
+              issue = created.data;
+              core.info(`opened ops issue #${issue.number}`);
+            }
+
+            // --- bounded retry (B145 step 2, B146) --------------------------------------
+            if (transient && !alreadyRetried && attempt === 1) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['retried'] });
+              await github.rest.actions.reRunWorkflowRunFailedJobs({ owner, repo, run_id: run.id });
+              core.info(`re-dispatched failed jobs of run ${run.id} once`);
+            }

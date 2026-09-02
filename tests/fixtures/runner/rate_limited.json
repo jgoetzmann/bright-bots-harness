@@ -1,0 +1,14 @@
+{
+  "rate_limited": true,
+  "ok": false,
+  "text": "",
+  "turns": 0,
+  "cost_usd": null,
+  "allowance_pct": null,
+  "duration_ms": 1180,
+  "session_id": "fake-rate-limited-0001",
+  "exit_code": 1,
+  "transcript": [],
+  "error": "You've hit your usage limit. Resets at 2026-09-02T18:00:00Z",
+  "reset_at": "2026-09-02T18:00:00Z"
+}

@@ -1,0 +1,283 @@
+# discover.yml — weekly: triage queued issues in this repository into proposal PRs.
+# Spends capacity (propose is a model call). Handoff §7.1/§7.2; RUN-DECISIONS-D2 §15.
+# Order is frozen: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
+name: discover
+
+on:
+  schedule:
+    - cron: "17 7 * * 0"          # B124: non-zero, non-round minute
+  workflow_dispatch: {}
+
+# B118: every workflow that writes state/ledger.json shares one group and never cancels a run.
+concurrency:
+  group: harness-ledger
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  discover:
+    name: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 120          # B125
+    permissions:
+      contents: write             # read .harness/HALT; push the ledger commit. Issue/PR writes use the machine account's PAT via .env, never this token.
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: passed through to the claude CLI
+    steps:
+      # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+      - name: HALT check (.harness/HALT on the default branch)
+        id: halt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          mkdir -p .harness
+          code="$(curl -sS -o .harness/HALT -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${REPO}/contents/.harness/HALT?ref=${REF}" || echo 000)"
+          if [ "${code}" != "200" ]; then rm -f .harness/HALT; fi
+          if test -f .harness/HALT; then
+            echo "halted by .harness/HALT"
+            echo "halted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "halted=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.halt.outputs.halted != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        if: steps.halt.outputs.halted != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        if: steps.halt.outputs.halted != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install harness and the claude CLI
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: |
+          python -m pip install -e .
+          npm i -g @anthropic-ai/claude-code
+          claude --version
+
+      - name: Write .env from .env.example and repository configuration
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        env:
+          HARNESS_GITHUB_TOKEN: ${{ secrets.HARNESS_GITHUB_TOKEN }}
+          FORK_REPO: ${{ vars.FORK_REPO }}
+          SELF_REPO: ${{ github.repository }}
+          TRACKING_ISSUE: ${{ vars.TRACKING_ISSUE }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re
+          src = pathlib.Path(".env.example").read_text(encoding="utf-8").splitlines()
+          env = os.environ
+          over = {
+              "BACKEND": "cli",
+              "PERMISSION_TIER": "2",
+              "STORE_BACKEND": "github",
+              "HARNESS_GITHUB_TOKEN": env.get("HARNESS_GITHUB_TOKEN", ""),
+              "FORK_REPO": env.get("FORK_REPO", ""),
+              "SELF_REPO": env.get("SELF_REPO", ""),
+              "TRACKING_ISSUE": env.get("TRACKING_ISSUE", ""),
+              "ANTHROPIC_API_KEY": "",
+          }
+          out, seen = [], set()
+          for line in src:
+              m = re.match(r"^([A-Z0-9_]+)=", line)
+              if m and m.group(1) in over:
+                  out.append(f"{m.group(1)}={over[m.group(1)]}")
+                  seen.add(m.group(1))
+              else:
+                  out.append(line)
+          for k, v in over.items():
+              if k not in seen:
+                  out.append(f"{k}={v}")
+          pathlib.Path(".env").write_text("\n".join(out) + "\n", encoding="utf-8")
+          # Repository variables fill .harness/config.json only where the committed file leaves a knob empty.
+          cfg_path = pathlib.Path(".harness/config.json")
+          if cfg_path.exists():
+              cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+              changed = False
+              if not cfg.get("FORK_REPO") and over["FORK_REPO"]:
+                  cfg["FORK_REPO"] = over["FORK_REPO"]
+                  changed = True
+              if cfg.get("TRACKING_ISSUE") in (None, "") and over["TRACKING_ISSUE"]:
+                  cfg["TRACKING_ISSUE"] = int(over["TRACKING_ISSUE"])
+                  changed = True
+              if changed:
+                  cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+          keys = [m.group(1) for m in (re.match(r"^([A-Z0-9_]+)=", l) for l in out) if m]
+          print(".env written; keys:", " ".join(keys))
+          PY
+
+      # B127: verify the environment before spending anything.
+      - name: harness doctor
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: harness doctor
+
+      # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
+      - name: harness sync-fork
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: harness sync-fork
+
+      # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate
+      # (rate limited / halted / reserve → propose nothing this run).
+      - name: harness dispatch
+        if: steps.halt.outputs.halted != 'true'
+        id: dispatch
+        shell: bash
+        run: |
+          mkdir -p runs
+          plan="$(harness dispatch)"
+          printf '%s\n' "$plan" | tee runs/dispatch-plan.json
+          reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          case "$reason" in
+            "rate limited"*|halted|reserve)
+              echo "dispatcher says: ${reason}; discover will not spend this run"
+              echo "proceed=false" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "proceed=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Discover and propose (harness discover, harness propose)
+        if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs
+          harness discover --mode triage | tee runs/discover.out
+          cat > runs/pick_ids.py <<'PY'
+          import json, pathlib, subprocess
+          ids = []
+          def add(n):
+              try:
+                  n = int(n)
+              except (TypeError, ValueError):
+                  return
+              if n not in ids:
+                  ids.append(n)
+          def from_json(text):
+              try:
+                  return json.loads(text)
+              except ValueError:
+                  return None
+          def take(node):
+              for k in ("id", "item_id", "issue", "number"):
+                  if k in node:
+                      add(node[k])
+                      return
+          def walk(node):
+              if isinstance(node, dict):
+                  if node.get("state") == "discovered":
+                      take(node)
+                  for v in node.values():
+                      walk(v)
+              elif isinstance(node, list):
+                  for v in node:
+                      walk(v)
+          data = from_json(pathlib.Path("runs/discover.out").read_text(encoding="utf-8", errors="replace"))
+          if isinstance(data, list):
+              for it in data:
+                  if isinstance(it, int):
+                      add(it)
+                  elif isinstance(it, dict):
+                      take(it)
+          elif data is not None:
+              walk(data)
+          if not ids:
+              status = subprocess.run(["harness", "status", "--json"], capture_output=True, text=True)
+              data = from_json(status.stdout)
+              if data is not None:
+                  walk(data)
+          print(" ".join(str(i) for i in ids))
+          PY
+          ids="$(python runs/pick_ids.py)"
+          if [ -z "${ids// }" ]; then
+            echo "no discovered items to propose"
+            exit 0
+          fi
+          echo "proposing: ${ids}"
+          failed=0
+          for n in $ids; do
+            echo "::group::harness propose ${n}"
+            if harness propose "$n"; then
+              echo "item ${n}: proposed"
+            else
+              echo "::error::harness propose ${n} exited non-zero"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      # B115/B118: commit the ledger with [skip ci]; runs even when a propose failed, never when halted.
+      - name: Commit state/ledger.json
+        if: always() && steps.halt.outputs.halted != 'true'
+        shell: bash
+        env:
+          WORKFLOW: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ ! -f state/ledger.json ]; then echo "no ledger file; nothing to commit"; exit 0; fi
+          if git diff --quiet -- state/ledger.json && [ -z "$(git ls-files --others --exclude-standard -- state/ledger.json)" ]; then
+            echo "ledger unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/ledger.json && git commit -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${BRANCH}"; then echo "ledger pushed"; exit 0; fi
+            echo "push rejected (attempt ${attempt}); rebasing onto origin/${BRANCH}"
+            git fetch origin "${BRANCH}"
+            if ! git rebase --autostash "origin/${BRANCH}"; then
+              git rebase --abort || true
+              echo "::error::ledger rebase conflicted; run 'harness ledger --rebuild' and commit the result by hand (B117)"
+              exit 1
+            fi
+          done
+          echo "::error::could not push the ledger after 3 attempts"
+          exit 1
+
+      # B126: evidence survives a cancelled or timed-out run.
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discover-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            runs/item-*/
+            runs/dispatch-plan.json
+            runs/discover.out
+            runs/**/*.md
+            runs/**/*.json
+            runs/**/*.log
+            runs/**/*.txt
+            !runs/**/node_modules/**
+            !runs/**/.git/**
+            !runs/**/clone/**
+            !runs/**/workspace/**

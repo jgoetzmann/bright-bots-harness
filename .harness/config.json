@@ -1,0 +1,13 @@
+{
+  "WEEKLY_CAP_USD": 25.00,
+  "PER_CALL_CAP_USD": 3.00,
+  "RESERVE_PCT": 10,
+  "MAX_CONCURRENT_ITEMS": 1,
+  "MAX_REVISE_CYCLES": 3,
+  "NOTIFY_POLL_HOURS": 3,
+  "MAX_SUBISSUES": 8,
+  "TRACKING_ISSUE": null,
+  "FORK_REPO": "",
+  "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
+  "TRUST_FILE": ".harness/trust.txt"
+}

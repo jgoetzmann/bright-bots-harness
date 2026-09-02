@@ -28,3 +28,7 @@ HALT
 harness.db
 *.egg-info/
 .venv/
+
+# Delivery 2 — local mode working state and the container env file
+bb-work/
+local/.env

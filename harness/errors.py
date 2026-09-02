@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Sequence
+
 __all__ = [
     "HarnessError",
     "ConfigError",
@@ -20,6 +22,12 @@ __all__ = [
     "PackageError",
     "NotImplementedInDelivery1",
     "WriteOutsideAllowedRoots",
+    "RateLimited",
+    "TrustDenied",
+    "ForkDiverged",
+    "ProposalInvalid",
+    "PinMismatch",
+    "RepoHalted",
 ]
 
 
@@ -89,3 +97,51 @@ class NotImplementedInDelivery1(HarnessError):
 
 class WriteOutsideAllowedRoots(HarnessError):
     """A write was attempted outside the roots the harness is permitted to touch (I-8)."""
+
+
+class RateLimited(HarnessError):
+    """The model runner reported a usage or rate limit (B119/B120).
+
+    ``reset_at`` is the ISO-Z instant the limit lifts, an ISO-8601 duration such as
+    ``"+PT30M"`` when the runner only saw a relative phrase, or ``None`` when unknown.
+    """
+
+    def __init__(self, message: str = "rate limited", reset_at: str | None = None) -> None:
+        super().__init__(message)
+        self.reset_at: str | None = reset_at
+
+
+class TrustDenied(HarnessError):
+    """A keyword command came from an actor who is not trusted (B131)."""
+
+
+class ForkDiverged(HarnessError):
+    """The fork's default branch is not an ancestor of upstream's; nothing was pushed (B105)."""
+
+
+class ProposalInvalid(HarnessError):
+    """A proposal's front matter failed schema validation (B103/B104).
+
+    ``errors`` lists every violation. Accepts ``ProposalInvalid(errors)`` with a list, or
+    ``ProposalInvalid(message, errors=[...])``.
+    """
+
+    def __init__(
+        self, message: object = "", errors: Sequence[str] | None = None
+    ) -> None:
+        if errors is None and not isinstance(message, str):
+            errors = [str(item) for item in message]
+            message = ""
+        self.errors: list[str] = [str(item) for item in (errors or [])]
+        text = str(message) if message else "invalid proposal"
+        if self.errors and not message:
+            text = "invalid proposal: " + "; ".join(self.errors)
+        super().__init__(text)
+
+
+class PinMismatch(HarnessError):
+    """The SHA-256 over the pinned set does not match ``.harness/PIN`` (B142)."""
+
+
+class RepoHalted(HarnessError):
+    """``.harness/HALT`` exists on the repository; distinct from the Delivery 1 ``Halted``."""

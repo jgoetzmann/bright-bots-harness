@@ -512,3 +512,413 @@ def test_b23_the_refined_estimate_drives_admission(governor, store, item_id):
     assert governor.can_fund("propose") is False
     with pytest.raises(BudgetExhausted):
         governor.authorize(item_id, "propose")
+
+
+# --------------------------------------------------------------------------
+# Delivery 2 — RUN-DECISIONS-D2 §11 (the ledger-backed governor), handoff §6.
+# Appended by the D2 spec-tester (T3); additions only (D2-R12.3).
+#
+# Cap 25.00 USD, reserve 10 % → the reserve line is 22.50. The static USD table of
+# RUN-DECISIONS-D2 §5 gives implement 2.50, so spent 20.00 funds implement exactly and
+# spent 20.01 refuses it.
+# --------------------------------------------------------------------------
+
+# RUN-DECISIONS-D2 §2 — the D2 keys (inline; duplicated on purpose).
+D2_GOV_ENV: dict[str, str] = {
+    "WEEKLY_CAP_USD": "25.00",
+    "PER_CALL_CAP_USD": "3.00",
+    "MAX_CONCURRENT_ITEMS": "1",
+    "MAX_REVISE_CYCLES": "3",
+    "FORK_REPO": "",
+    "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
+    "TRUST_FILE": ".harness/trust.txt",
+    "NOTIFY_POLL_HOURS": "3",
+    "MAX_SUBISSUES": "8",
+    "SELF_REPO": "jgoetzmann/bright-bots-harness",
+    "TRACKING_ISSUE": "",
+    "STORE_BACKEND": "sqlite",
+    "RESERVE_PCT": "10",
+}
+# RUN-DECISIONS-D2 §5 — the static USD estimates, and their share of a 25.00 cap.
+STATIC_USD = {
+    "discover": 0.20,
+    "propose": 0.50,
+    "implement": 2.50,
+    "revise": 1.00,
+    "decompose": 0.30,
+    "package": 0.05,
+}
+CAP_USD = 25.0
+RESERVE_LINE_USD = 22.5
+
+
+@pytest.fixture
+def d2_config(tmp_path, write_env):
+    """A Config carrying the D2 keys with the .env.example values (cap 25, reserve 10)."""
+    path = write_env(tmp_path / "d2" / ".env", **D2_GOV_ENV)
+    return load_config(env_path=path, environ={})
+
+
+@pytest.fixture
+def ledger():
+    """An empty Ledger whose window is the frozen clock's period."""
+    from harness.ledger import Ledger
+
+    return Ledger.empty(PERIOD_START)
+
+
+@pytest.fixture
+def ledger_governor(store, d2_config, frozen_clock, ledger):
+    return Governor(store, d2_config, frozen_clock, ledger=ledger)
+
+
+def spend(ledger, usd: float) -> None:
+    ledger.window["spent_usd"] = usd
+
+
+# --------------------------------------------------------------------------
+# §11 - authorize refuses past the reserve line and while rate limited
+# --------------------------------------------------------------------------
+
+
+def test_s11_authorize_raises_when_spent_plus_estimate_exceeds_the_reserve_line(
+    ledger_governor, ledger, item_id
+):
+    """RUN-DECISIONS-D2 §11 (handoff §6.4): 20.50 + 2.50 > 22.50 → BudgetExhausted."""
+    spend(ledger, 20.5)
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+
+def test_s11_authorize_funds_a_stage_exactly_at_the_reserve_line(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: the rule is strictly greater — 20.00 + 2.50 == 22.50 still funds."""
+    spend(ledger, 20.0)
+
+    auth = ledger_governor.authorize(item_id, "implement")
+
+    assert isinstance(auth, Authorization)
+    assert auth.stage == "implement"
+    assert auth.work_item_id == item_id
+
+
+def test_s11_authorize_refuses_one_cent_past_the_reserve_line(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: 20.01 + 2.50 > 22.50 → BudgetExhausted."""
+    spend(ledger, 20.01)
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+
+@pytest.mark.parametrize("stage", sorted(STATIC_USD))
+def test_s11_no_stage_is_fundable_once_the_window_reaches_the_reserve(
+    ledger_governor, ledger, item_id, stage
+):
+    """RUN-DECISIONS-D2 §11 (handoff §6.4 step 3): at spent == reserve line every stage refuses."""
+    spend(ledger, RESERVE_LINE_USD)
+
+    assert ledger_governor.can_fund(stage) is False
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, stage)
+
+
+def test_s11_the_cheapest_stage_is_still_fundable_just_below_the_reserve(
+    ledger_governor, ledger, item_id
+):
+    """RUN-DECISIONS-D2 §11: package (0.05) fits when 0.05 remains; implement (2.50) does not."""
+    spend(ledger, RESERVE_LINE_USD - 0.05)
+
+    assert isinstance(ledger_governor.authorize(item_id, "package"), Authorization)
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+
+def test_s11_authorize_raises_while_rate_limited(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11 / B121: ledger.rate_limited(now) → BudgetExhausted, even with the
+    whole window unspent."""
+    ledger.set_rate_limited("2026-09-01T18:00:00Z")
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "discover")
+
+
+def test_s11_authorize_raises_one_second_inside_the_rate_limit(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: the clock is the injected one — 12:00:00 < 12:00:01 is limited."""
+    ledger.set_rate_limited("2026-09-01T12:00:01Z")
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "discover")
+
+
+def test_s11_authorize_funds_once_the_rate_limit_has_passed(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: a reset time already behind the clock does not block."""
+    ledger.set_rate_limited("2026-09-01T11:59:59Z")
+
+    assert isinstance(ledger_governor.authorize(item_id, "discover"), Authorization)
+
+
+def test_s11_authorize_funds_when_the_rate_limit_is_cleared(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §4/§11: set_rate_limited(None) clears the block."""
+    ledger.set_rate_limited("2026-09-01T18:00:00Z")
+    ledger.set_rate_limited(None)
+
+    assert isinstance(ledger_governor.authorize(item_id, "discover"), Authorization)
+
+
+def test_s11_a_refused_authorize_leaves_the_ledger_and_the_store_untouched(
+    ledger_governor, ledger, store, item_id
+):
+    """RUN-DECISIONS-D2 §11 / B19: a refusal spends nothing anywhere."""
+    spend(ledger, 21.0)
+    calls_before = ledger.window["calls"]
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+    assert ledger.window["spent_usd"] == pytest.approx(21.0)
+    assert ledger.window["calls"] == calls_before
+    assert ledger.history == []
+    assert store.list_stage_runs(work_item_id=item_id) == []
+
+
+def test_s11_a_rate_limited_refusal_leaves_the_ledger_untouched(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: refusing on a rate limit does not touch spend or history."""
+    ledger.set_rate_limited("2026-09-01T18:00:00Z")
+
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+    assert ledger.window["spent_usd"] == pytest.approx(0.0)
+    assert ledger.history == []
+
+
+# --------------------------------------------------------------------------
+# §11 - record adds cost_usd to the window (and still charges the D1 store)
+# --------------------------------------------------------------------------
+
+
+def test_s11_record_adds_cost_usd_to_the_window(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11 / B116: record(auth, ..., cost_usd=2.31) → window.spent_usd 2.31."""
+    auth = ledger_governor.authorize(item_id, "implement")
+
+    ledger_governor.record(auth, allowance_pct=None, cost_usd=2.31)
+
+    assert ledger.window["spent_usd"] == pytest.approx(2.31)
+
+
+def test_s11_record_accumulates_spend_counts_calls_and_appends_history(
+    ledger_governor, ledger, item_id
+):
+    """RUN-DECISIONS-D2 §4, §11: each record adds to spent_usd, bumps calls, appends history."""
+    first = ledger_governor.authorize(item_id, "implement")
+    ledger_governor.record(first, allowance_pct=None, cost_usd=2.31)
+    second = ledger_governor.authorize(item_id, "propose")
+    ledger_governor.record(second, allowance_pct=None, cost_usd=0.5)
+
+    assert ledger.window["spent_usd"] == pytest.approx(2.81)
+    assert ledger.window["calls"] == 2
+    assert len(ledger.history) == 2
+    assert ledger.history[-1]["stage"] == "propose"
+    assert ledger.history[-1]["usd"] == pytest.approx(0.5)
+    assert ledger.history[0]["stage"] == "implement"
+    assert ledger.history[0]["usd"] == pytest.approx(2.31)
+
+
+def test_s11_record_with_no_cost_adds_zero(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: cost_usd=None records 0.0 — never the estimate."""
+    auth = ledger_governor.authorize(item_id, "implement")
+
+    ledger_governor.record(auth, allowance_pct=None, cost_usd=None)
+
+    assert ledger.window["spent_usd"] == pytest.approx(0.0)
+    assert len(ledger.history) == 1
+    assert ledger.history[0]["usd"] == pytest.approx(0.0)
+
+
+def test_s11_record_still_charges_the_delivery_1_store_ledger(ledger_governor, store, item_id):
+    """RUN-DECISIONS-D2 §11 / B21: the D1 allowance_pct path is kept alongside the ledger."""
+    auth = ledger_governor.authorize(item_id, "implement")
+
+    ledger_governor.record(auth, allowance_pct=1.25, cost_usd=0.44)
+
+    assert store.budget_period("allowance_pct", PERIOD_START)[1] == pytest.approx(1.25)
+
+
+def test_s11_recorded_spend_feeds_the_next_admission_decision(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: what record() adds is what authorize() sees next time."""
+    for _ in range(8):
+        auth = ledger_governor.authorize(item_id, "implement")
+        ledger_governor.record(auth, allowance_pct=None, cost_usd=2.5)
+    assert ledger.window["spent_usd"] == pytest.approx(20.0)
+
+    assert isinstance(ledger_governor.authorize(item_id, "implement"), Authorization)
+    ledger_governor.record(
+        ledger_governor.authorize(item_id, "implement"), allowance_pct=None, cost_usd=0.01
+    )
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+
+# --------------------------------------------------------------------------
+# §11 - Authorization.max_budget_usd is the per-call cap
+# --------------------------------------------------------------------------
+
+
+def test_s11_authorization_carries_per_call_cap_as_max_budget_usd(ledger_governor, d2_config, item_id):
+    """RUN-DECISIONS-D2 §11 (handoff §6.1 "enforced twice"): max_budget_usd == per_call_cap_usd."""
+    auth = ledger_governor.authorize(item_id, "implement")
+
+    assert auth.max_budget_usd == pytest.approx(d2_config.per_call_cap_usd)
+    assert auth.max_budget_usd == pytest.approx(3.0)
+
+
+def test_s11_authorization_max_budget_usd_without_a_ledger(store, d2_config, frozen_clock, item_id):
+    """RUN-DECISIONS-D2 §11: the field is on every Authorization, ledger or not."""
+    governor = Governor(store, d2_config, frozen_clock)
+
+    assert governor.authorize(item_id, "propose").max_budget_usd == pytest.approx(3.0)
+
+
+def test_s11_max_budget_usd_tracks_the_configured_cap(store, frozen_clock, item_id, write_env, tmp_path):
+    """RUN-DECISIONS-D2 §11: the value is read from config, not a constant."""
+    path = write_env(tmp_path / "cap" / ".env", **{**D2_GOV_ENV, "PER_CALL_CAP_USD": "1.75"})
+    config = load_config(env_path=path, environ={})
+    governor = Governor(store, config, frozen_clock)
+
+    assert governor.authorize(item_id, "propose").max_budget_usd == pytest.approx(1.75)
+
+
+# --------------------------------------------------------------------------
+# §11 - remaining_weekly_pct and estimate become spend-based with a ledger
+# --------------------------------------------------------------------------
+
+
+def test_s11_remaining_weekly_pct_is_derived_from_spend_over_cap(ledger_governor, ledger):
+    """RUN-DECISIONS-D2 §11: (1 − spent/cap) × 100 — 5.00 of 25.00 leaves 80 %."""
+    spend(ledger, 5.0)
+
+    assert ledger_governor.remaining_weekly_pct() == pytest.approx(80.0)
+
+
+def test_s11_remaining_weekly_pct_is_100_when_nothing_is_spent(ledger_governor):
+    """RUN-DECISIONS-D2 §11: an untouched ledger is 100 %, not the D1 weekly_budget_pct."""
+    assert ledger_governor.remaining_weekly_pct() == pytest.approx(100.0)
+
+
+def test_s11_remaining_weekly_pct_clamps_at_zero(ledger_governor, ledger):
+    """RUN-DECISIONS-D2 §11: overspend reads 0, never negative."""
+    spend(ledger, 30.0)
+
+    assert ledger_governor.remaining_weekly_pct() == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(("stage", "usd"), sorted(STATIC_USD.items()))
+def test_s11_estimate_starts_from_the_static_usd_table_as_a_share_of_the_cap(
+    ledger_governor, stage, usd
+):
+    """RUN-DECISIONS-D2 §5, §11: estimate = STATIC_USD[stage] / weekly_cap_usd × 100."""
+    assert ledger_governor.estimate(stage) == pytest.approx(usd / CAP_USD * 100.0)
+
+
+def test_s11_estimate_uses_the_ledger_median_after_three_observations(
+    ledger_governor, ledger, item_id
+):
+    """RUN-DECISIONS-D2 §4, §11 / B23: three implement records of 1.0, 2.0, 3.0 → median 2.0 →
+    8 % of the cap, replacing the static 10 %."""
+    for usd in (1.0, 2.0, 3.0):
+        auth = ledger_governor.authorize(item_id, "implement")
+        ledger_governor.record(auth, allowance_pct=None, cost_usd=usd)
+
+    assert ledger.median_usd("implement") == pytest.approx(2.0)
+    assert ledger_governor.estimate("implement") == pytest.approx(8.0)
+
+
+def test_s11_two_observations_keep_the_static_estimate(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §4: median_usd is None below three observations, so the static table holds."""
+    for usd in (1.0, 3.0):
+        auth = ledger_governor.authorize(item_id, "implement")
+        ledger_governor.record(auth, allowance_pct=None, cost_usd=usd)
+
+    assert ledger.median_usd("implement") is None
+    assert ledger_governor.estimate("implement") == pytest.approx(10.0)
+
+
+def test_s11_observations_are_scoped_to_the_stage(ledger_governor, item_id):
+    """RUN-DECISIONS-D2 §11: three implement observations do not move the propose estimate."""
+    for usd in (1.0, 2.0, 3.0):
+        auth = ledger_governor.authorize(item_id, "implement")
+        ledger_governor.record(auth, allowance_pct=None, cost_usd=usd)
+
+    assert ledger_governor.estimate("propose") == pytest.approx(2.0)
+
+
+def test_s11_the_observed_median_drives_admission(ledger_governor, ledger, item_id):
+    """RUN-DECISIONS-D2 §11: with an observed implement median of 3.00, spent 20.00 refuses
+    (20 + 3 > 22.5) where the static 2.50 would have funded."""
+    for _ in range(3):
+        auth = ledger_governor.authorize(item_id, "implement")
+        ledger_governor.record(auth, allowance_pct=None, cost_usd=3.0)
+    spend(ledger, 20.0)
+
+    assert ledger_governor.can_fund("implement") is False
+    with pytest.raises(BudgetExhausted):
+        ledger_governor.authorize(item_id, "implement")
+
+
+def test_s11_can_fund_is_the_non_raising_form_with_a_ledger(ledger_governor, ledger):
+    """RUN-DECISIONS-D2 §11 / B19: can_fund mirrors authorize's admission test."""
+    assert ledger_governor.can_fund("implement") is True
+    spend(ledger, RESERVE_LINE_USD)
+    assert ledger_governor.can_fund("implement") is False
+    assert ledger_governor.can_fund("package") is False
+
+
+def test_s11_governor_accepts_the_ledger_positionally(store, d2_config, frozen_clock, item_id):
+    """RUN-DECISIONS-D2 §11: Governor(store, config, clock, ledger) — fourth positional."""
+    from harness.ledger import Ledger
+
+    ledger = Ledger.empty(PERIOD_START)
+    ledger.window["spent_usd"] = RESERVE_LINE_USD
+    governor = Governor(store, d2_config, frozen_clock, ledger)
+
+    with pytest.raises(BudgetExhausted):
+        governor.authorize(item_id, "implement")
+
+
+# --------------------------------------------------------------------------
+# §11 - without a ledger the Delivery 1 behaviour is untouched
+# --------------------------------------------------------------------------
+
+
+def test_s11_without_a_ledger_estimates_stay_the_d1_percentages(store, d2_config, frozen_clock):
+    """RUN-DECISIONS-D2 §11: no ledger → D1 exactly — implement 8.0 %, propose 2.0 %."""
+    governor = Governor(store, d2_config, frozen_clock)
+
+    assert governor.estimate("implement") == pytest.approx(8.0)
+    assert governor.estimate("propose") == pytest.approx(2.0)
+    assert governor.estimate("discover") == pytest.approx(0.5)
+    assert governor.estimate("package") == pytest.approx(0.5)
+
+
+def test_s11_without_a_ledger_the_weekly_and_spendable_percentages_are_d1(
+    store, d2_config, frozen_clock, item_id
+):
+    """RUN-DECISIONS-D2 §11 / B16, B18: weekly 40, session 15, reserve 10 → spendable 11.0."""
+    governor = Governor(store, d2_config, frozen_clock)
+
+    assert governor.remaining_weekly_pct() == pytest.approx(40.0)
+    assert governor.spendable_pct() == pytest.approx(DEFAULT_SPENDABLE)
+    assert isinstance(governor.authorize(item_id, "implement"), Authorization)
+
+
+def test_s11_without_a_ledger_a_weekly_cap_in_usd_does_not_change_admission(
+    store, frozen_clock, item_id, write_env, tmp_path
+):
+    """RUN-DECISIONS-D2 §11: WEEKLY_CAP_USD is read only through the ledger; without one the D1
+    percentage ledger alone decides."""
+    path = write_env(tmp_path / "tiny" / ".env", **{**D2_GOV_ENV, "WEEKLY_CAP_USD": "0.01"})
+    config = load_config(env_path=path, environ={})
+    governor = Governor(store, config, frozen_clock)
+
+    assert governor.can_fund("implement") is True
+    assert isinstance(governor.authorize(item_id, "implement"), Authorization)

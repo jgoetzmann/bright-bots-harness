@@ -1,17 +1,21 @@
 """Command line entry point for the Bright Bots harness.
 
-Every subcommand of HARNESS-SPEC §5.10 is parsed and dispatched here. The module owns
-the exit-code contract and nothing else: all real work lives in the stage modules.
+Every subcommand of HARNESS-SPEC §5.10 and DELIVERY-2-HANDOFF §3.2 is parsed and
+dispatched here. The module owns the exit-code contract and nothing else: all real work
+lives in the stage modules.
 
 Exit codes
 ----------
-0   success
-1   any other ``HarnessError``
+0   success; also ``RepoHalted`` (``.harness/HALT``, B149) and ``RateLimited`` (B120)
+1   any other ``HarnessError`` (``ForkDiverged`` names both shas on stderr)
 2   ``NotImplementedInDelivery1`` (``discover --mode audit``)
 3   ``doctor`` degraded
 4   ``BudgetExhausted``
-5   ``Halted``
+5   ``Halted`` (the Delivery 1 ``HALT`` file)
 6   ``setup`` has outstanding prerequisites
+
+Order of checks in every spending command (B150): ``.harness/HALT`` first, before the
+config is even loaded; then the Delivery 1 ``HALT`` file; then the stages.
 """
 
 from __future__ import annotations
@@ -20,35 +24,47 @@ import argparse
 import dataclasses
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, time as dtime
+import time
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from harness import __version__
-from harness.clone import Lease
+from harness import __version__, keywords, verify_pin
+from harness import ledger as ledger_mod
+from harness.clock import iso
+from harness.clone import Lease, sync_fork
 from harness.config import load_config
 from harness.context import build_context
+from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
 from harness.errors import (
     BudgetExhausted,
     ConfigError,
+    ForkDiverged,
     Halted,
     HarnessError,
     NotImplementedInDelivery1,
+    PinMismatch,
+    RateLimited,
+    RepoHalted,
+    TrustDenied,
 )
-from harness.halt import check_halt, disengage, engage, halted
+from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness.packager import archive as archive_package
-from harness.redact import guarded_write, set_write_roots
+from harness.redact import allowed_roots, guarded_write, set_write_roots
 from harness.stages import STAGES
-from harness.store import STATES
+from harness.store import LABELS, STATES
+from harness.trust import load_trust
 
 LOG = logging.getLogger("harness")
 
 # Injectables. Tests monkeypatch these rather than the stdlib.
 WHICH = shutil.which
 RUN = subprocess.run
+SLEEP = time.sleep
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -62,6 +78,50 @@ REQUIRED_BINARIES = ("git", "claude", "node", "npm", "npx")
 
 MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "json", ""]
 
+# Handoff §6.5 (A30) plus the §2 additions: every key doctor must name, with the Config field
+# that carries it once the config has loaded.
+CONFIG_KEYS: tuple[tuple[str, str], ...] = (
+    ("WEEKLY_CAP_USD", "weekly_cap_usd"),
+    ("PER_CALL_CAP_USD", "per_call_cap_usd"),
+    ("RESERVE_PCT", "reserve_pct"),
+    ("MAX_CONCURRENT_ITEMS", "max_concurrent_items"),
+    ("MAX_REVISE_CYCLES", "max_revise_cycles"),
+    ("FORK_REPO", "fork_repo"),
+    ("UPSTREAM_REPO", "upstream_repo"),
+    ("TRUST_FILE", "trust_file"),
+    ("NOTIFY_POLL_HOURS", "notify_poll_hours"),
+    ("MAX_SUBISSUES", "max_subissues"),
+    ("SELF_REPO", "self_repo"),
+    ("TRACKING_ISSUE", "tracking_issue"),
+    ("STORE_BACKEND", "store_backend"),
+)
+
+# `init --labels`: one colour per state label, so a freshly created queue is readable.
+LABEL_COLORS: dict[str, str] = {
+    "harness:queued": "c5def5",
+    "harness:proposing": "bfdadc",
+    "harness:proposed": "0e8a16",
+    "harness:approved": "1d76db",
+    "harness:running": "fbca04",
+    "harness:packaged": "5319e7",
+    "harness:shipped": "0052cc",
+    "harness:revising": "d93f0b",
+    "harness:merged": "6f42c1",
+    "harness:blocked": "b60205",
+    "harness:needs-human": "e99695",
+    "harness:abandoned": "cccccc",
+}
+
+# B147: an item left in a running state longer than this with no live run is reset.
+STALE_RUNNING_HOURS = 3
+
+# local-loop: HEARTBEAT cadence while sleeping between units (§16).
+HEARTBEAT_SLICE_S = 10
+DEFAULT_LOOP_SECONDS = 300
+
+PROPOSE_BRANCH_RE = re.compile(r"harness/propose-(\d+)$")
+EXTERNAL_REF_RE = re.compile(r"^[a-z]+:(\d+)$")
+
 
 # --------------------------------------------------------------------------------------
 # parser
@@ -71,16 +131,27 @@ MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness",
-        description="Bright Bots harness - discovery through review package, Tier 0.",
+        description="Bright Bots harness - discovery through delivery PR.",
     )
     parser.add_argument("--config", metavar="PATH", default=None, help="path to the .env file")
     parser.add_argument("--verbose", action="store_true", help="debug logging to stderr")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="record every GitHub write instead of sending it",
+    )
     parser.add_argument("--version", action="version", version=f"bright-bots-harness {__version__}")
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    sub.add_parser("init", help="create db, dirs and .env from .env.example when absent")
+    init = sub.add_parser("init", help="create db, dirs and .env from .env.example when absent")
+    init.add_argument(
+        "--labels",
+        action="store_true",
+        help="also create the harness:* state labels in SELF_REPO (idempotent)",
+    )
 
     doctor = sub.add_parser("doctor", help="probe binaries, versions, --max-turns, disk, halt")
     doctor.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -119,6 +190,49 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("halt", help="create the halt file")
     sub.add_parser("resume", help="remove the halt file")
 
+    # Delivery 2 (handoff §3.2)
+    sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
+
+    deliver = sub.add_parser("deliver", help="push the branch and open the upstream PR")
+    deliver.add_argument("item_id", type=int, metavar="item-id")
+
+    revise = sub.add_parser("revise", help="one bounded revision cycle")
+    revise.add_argument("item_id", type=int, metavar="item-id")
+    revise.add_argument("--source", required=True, choices=("ci", "conflict", "review"))
+    revise.add_argument("--notes", default="", metavar="TEXT")
+
+    decompose = sub.add_parser("decompose", help="split one issue into sub-issues")
+    decompose.add_argument("issue", type=int, metavar="issue")
+
+    sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
+
+    ledger = sub.add_parser("ledger", help="print spend, medians, window state")
+    ledger.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    ledger.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="regenerate the ledger from SELF_REPO issue comments, then save it",
+    )
+
+    sub.add_parser("sync-fork", help="fast-forward the fork from upstream; loud on divergence")
+
+    local_loop = sub.add_parser("local-loop", help="container loop: dispatch, run, sleep")
+    local_loop.add_argument("--once", action="store_true", help="run one unit and exit")
+    local_loop.add_argument(
+        "--loop-seconds",
+        type=int,
+        default=DEFAULT_LOOP_SECONDS,
+        dest="loop_seconds",
+        metavar="N",
+        help=f"sleep between units (default {DEFAULT_LOOP_SECONDS})",
+    )
+    local_loop.add_argument(
+        "--work",
+        default=None,
+        metavar="PATH",
+        help="directory holding HEARTBEAT and STOP (default: cwd)",
+    )
+
     return parser
 
 
@@ -143,8 +257,37 @@ def _env_path(args: argparse.Namespace) -> Path:
     return Path.cwd() / ".env"
 
 
+def _repo_root(args: argparse.Namespace, config=None) -> Path:
+    """The directory holding .env, .harness/ and state/.
+
+    Taken from the loaded config when there is one; otherwise derived from ``--config`` or
+    the cwd, because the ``.harness/HALT`` check (B150) runs before the config can load.
+    """
+    if config is not None:
+        return Path(config.repo_root)
+    if getattr(args, "config", None):
+        return Path(args.config).resolve().parent
+    return Path.cwd()
+
+
 def _load(args: argparse.Namespace):
     return load_config(Path(args.config) if getattr(args, "config", None) else None)
+
+
+def _context(config, args: argparse.Namespace, *, run_id: str):
+    """build_context plus the global ``--dry-run`` switch on the GitHub client."""
+    ctx = build_context(config, run_id=run_id)
+    if getattr(args, "dry_run", False):
+        ctx.gh.dry_run = True
+    return ctx
+
+
+def _save_ledger(ctx) -> None:
+    """Persist the ledger; a failure to save must never mask the error that got us here."""
+    try:
+        ctx.save_ledger()
+    except HarnessError as exc:
+        LOG.warning("ledger not saved: %s", exc)
 
 
 def _wants_json(args: argparse.Namespace) -> bool:
@@ -191,9 +334,69 @@ def _require_item(ctx, item_id: int):
     return item
 
 
+def _read_env_raw(path: Path) -> dict[str, str]:
+    """KEY=VALUE lines of a .env, for doctor's per-key report when the config cannot load."""
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def _read_knob_overrides(root: Path) -> dict[str, str]:
+    """`.harness/config.json` values as strings, for the same report. Unparseable → nothing."""
+    path = root / ".harness" / "config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): "" if value is None else str(value) for key, value in data.items()}
+
+
 # --------------------------------------------------------------------------------------
 # init
 # --------------------------------------------------------------------------------------
+
+
+def _ensure_labels(ctx, config) -> dict:
+    """Create every missing `harness:*` state label in SELF_REPO. Idempotent (§14)."""
+    if not ctx.gh.can_write:
+        return {
+            "created": [],
+            "existing": [],
+            "skipped": "no write credential; labels not created",
+        }
+    listing = ctx.gh.get(f"/repos/{config.self_repo}/labels?per_page=100")
+    existing = {str(row.get("name", "")) for row in listing if isinstance(row, dict)}
+    created: list[str] = []
+    for state in STATES:
+        name = LABELS[state]
+        if name in existing:
+            continue
+        ctx.gh.create_label(
+            config.self_repo,
+            name=name,
+            color=LABEL_COLORS.get(name, "ededed"),
+            description=f"harness state: {state}",
+        )
+        created.append(name)
+    return {
+        "created": created,
+        "existing": sorted(existing & set(LABELS.values())),
+        "skipped": None,
+    }
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -218,7 +421,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if str(config.db_path) != ":memory:":
         config.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ctx = build_context(config, run_id="init")
+    ctx = _context(config, args, run_id="init")
     ctx.store.migrate()
 
     payload = {
@@ -234,8 +437,21 @@ def cmd_init(args: argparse.Namespace) -> int:
         f"runs_dir     {config.runs_dir}",
         f"packages_dir {config.packages_dir}",
         f"db           {config.db_path}",
-        "initialised",
     ]
+
+    if getattr(args, "labels", False):
+        labels = _ensure_labels(ctx, config)
+        payload["labels"] = labels
+        if labels["skipped"]:
+            lines.append(f"labels       {labels['skipped']}")
+        else:
+            lines.append(
+                f"labels       {len(labels['created'])} created, "
+                f"{len(labels['existing'])} already present in {config.self_repo}"
+            )
+            lines.extend(f"  + {name}" for name in labels["created"])
+
+    lines.append("initialised")
     _emit(payload, "\n".join(lines), args)
     return EXIT_OK
 
@@ -293,6 +509,50 @@ def _probe_max_turns() -> tuple[bool, str]:
     return True, "claude accepts --max-turns"
 
 
+def _doctor_config_keys(
+    args: argparse.Namespace, config, config_error: str | None, problems: list[str]
+) -> dict[str, str | None]:
+    """A30: one entry per §6.5 key.
+
+    With a loaded config the values are the parsed ones. Without one they come straight
+    from .env + .harness/config.json, so a missing key is still named rather than hidden
+    behind the parse failure.
+    """
+    keys: dict[str, str | None] = {}
+    if config is not None:
+        for key, attr in CONFIG_KEYS:
+            value = getattr(config, attr, None)
+            keys[key] = "" if value is None else str(value)
+        return keys
+    root = _repo_root(args)
+    raw = {**_read_env_raw(_env_path(args)), **_read_knob_overrides(root)}
+    error_text = config_error or ""
+    for key, _attr in CONFIG_KEYS:
+        if key not in raw:
+            keys[key] = None
+            problems.append(f"missing config key: {key}")
+            continue
+        keys[key] = raw[key]
+        if key in error_text:
+            problems.append(f"config key invalid or out of range: {key}")
+    return keys
+
+
+def _doctor_pin(root: Path, problems: list[str]) -> str:
+    pin_path = root / ".harness" / "PIN"
+    if not pin_path.exists():
+        return "absent"
+    try:
+        verify_pin.check(root)
+    except PinMismatch as exc:
+        problems.append(f".harness/PIN mismatch: {exc}")
+        return f"MISMATCH - {exc}"
+    except HarnessError as exc:
+        problems.append(f".harness/PIN check failed: {exc}")
+        return f"error - {exc}"
+    return "ok"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     problems: list[str] = []
 
@@ -343,6 +603,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if halt_present:
             problems.append(f"halt file present: {config.halt_file}")
 
+    # Delivery 2: §6.5 keys (A30), .harness/HALT, .harness/PIN, the trust file.
+    root = _repo_root(args, config)
+    config_keys = _doctor_config_keys(args, config, config_error, problems)
+    repo_halt_present = repo_halted(root)
+    if repo_halt_present:
+        problems.append(f".harness/HALT present under {root}")
+    pin_state = _doctor_pin(root, problems)
+    trust_path = config.trust_file if config is not None else root / ".harness" / "trust.txt"
+    trusted = load_trust(Path(trust_path))
+
     payload = {
         "harness_version": __version__,
         "ok": not problems,
@@ -352,6 +622,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "max_turns_probe": {"accepted": max_turns_ok, "detail": max_turns_detail},
         "disk": disk,
         "halt_present": halt_present,
+        "repo_halt_present": repo_halt_present,
         "config": {
             "valid": config_error is None,
             "error": config_error,
@@ -359,6 +630,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "repo": None if config is None else config.repo,
             "permission_tier": None if config is None else config.permission_tier,
         },
+        "config_keys": config_keys,
+        "pin": pin_state,
+        "trust": {"path": str(trust_path), "handles": len(trusted)},
         "problems": problems,
     }
 
@@ -377,8 +651,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             lines.append(f"  disk: {disk['free_gb']} GB free (min {disk['min_free_gb']})")
     lines.append(f"  halt file: {'PRESENT' if halt_present else 'absent'}")
+    lines.append(f"  .harness/HALT: {'PRESENT' if repo_halt_present else 'absent'}")
     config_word = "ok" if config_error is None else f"INVALID - {config_error}"
     lines.append(f"  config: {config_word}")
+    lines.append("  config keys:")
+    for key, _attr in CONFIG_KEYS:
+        value = config_keys.get(key)
+        shown = "MISSING" if value is None else (value if value != "" else "(empty)")
+        lines.append(f"    {key:<21} {shown}")
+    lines.append(f"  .harness/PIN: {pin_state}")
+    lines.append(f"  trust file: {len(trusted)} handle(s) ({trust_path})")
     if problems:
         lines.append("degraded:")
         lines.extend(f"  - {p}" for p in problems)
@@ -396,7 +678,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     config = _load(args)
-    ctx = build_context(config, run_id="setup")
+    ctx = _context(config, args, run_id="setup")
     identity = Identity(config, ctx.gh)
     readiness = identity.assess(args.tier)
     content = identity.render_human_doc(readiness)
@@ -434,7 +716,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
-    ctx = build_context(config, run_id="status")
+    ctx = _context(config, args, run_id="status")
 
     queue: dict[str, int] = {state: 0 for state in STATES}
     for item in ctx.store.list_work_items():
@@ -472,15 +754,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
     config = _load(args)
-    ctx = build_context(config, run_id="discover")
-    ids = STAGES["discover"](
-        ctx,
-        mode=args.mode,
-        target=args.target,
-        lens=args.lens,
-        ignore_allowlist=args.ignore_allowlist,
-    )
+    ctx = _context(config, args, run_id="discover")
+    try:
+        ids = STAGES["discover"](
+            ctx,
+            mode=args.mode,
+            target=args.target,
+            lens=args.lens,
+            ignore_allowlist=args.ignore_allowlist,
+        )
+    finally:
+        _save_ledger(ctx)
     if _wants_json(args):
         print(json.dumps({"created": list(ids)}, indent=2))
     else:
@@ -490,17 +776,21 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
 
 def cmd_propose(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
     config = _load(args)
-    ctx = build_context(config, run_id=f"item-{args.item_id}")
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
     _require_item(ctx, args.item_id)
-    spec_path = STAGES["propose"](ctx, args.item_id)
+    try:
+        spec_path = STAGES["propose"](ctx, args.item_id)
+    finally:
+        _save_ledger(ctx)
     _emit({"item_id": args.item_id, "spec_path": str(spec_path)}, str(spec_path), args)
     return EXIT_OK
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
     config = _load(args)
-    ctx = build_context(config, run_id=f"item-{args.item_id}")
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
     item = _require_item(ctx, args.item_id)
     if item.state != "proposed":
         raise HarnessError(f"item {args.item_id} is {item.state}; approve requires state proposed")
@@ -520,12 +810,20 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    # B149/B150: the repo-level kill switch precedes even the config load.
+    check_repo_halt(_repo_root(args))
     config = _load(args)
     # B69: the kill switch is honoured before anything is selected, queue or no queue.
     check_halt(config.halt_file)
     until = _parse_hhmm(args.until) if args.until else None
 
-    listing_ctx = build_context(config, run_id="run")
+    listing_ctx = _context(config, args, run_id="run")
+    # B147: a crashed job cannot strand an item in a running state beyond three hours.
+    stale_before = iso(listing_ctx.clock.now() - timedelta(hours=STALE_RUNNING_HOURS))
+    reset_ids = list(listing_ctx.store.reconcile_stale_running(stale_before))
+    if reset_ids:
+        LOG.info("run: reset %d stale running item(s): %s", len(reset_ids), reset_ids)
+
     if args.item is not None:
         item = listing_ctx.store.get_work_item(args.item)
         if item is None:
@@ -537,42 +835,85 @@ def cmd_run(args: argparse.Namespace) -> int:
         item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
 
     if not item_ids:
-        _emit({"ran": [], "packages": [], "stopped_at_deadline": False},
-              "nothing approved to run", args)
+        _emit(
+            {
+                "ran": [],
+                "packages": [],
+                "delivered": [],
+                "reset": reset_ids,
+                "stopped_at_deadline": False,
+                "rate_limited_until": None,
+            },
+            "nothing approved to run",
+            args,
+        )
         return EXIT_OK
 
     ran: list[int] = []
     packages: list[str] = []
+    delivered: list[str] = []
     stopped_at_deadline = False
+    rate_limited_until: str | None = None
+    ctx = None
 
-    for item_id in item_ids:
-        ctx = build_context(config, run_id=f"item-{item_id}")
-        if args.session_pct is not None:
-            ctx.governor.begin_session(args.session_pct)
+    try:
+        for item_id in item_ids:
+            ctx = _context(config, args, run_id=f"item-{item_id}")
+            if args.session_pct is not None:
+                ctx.governor.begin_session(args.session_pct)
 
-        # implement
-        check_halt(config.halt_file)
-        if _past_until(until, ctx):
-            stopped_at_deadline = True
-            break
-        LOG.debug("run: implement item %s", item_id)
-        lease = STAGES["implement"](ctx, item_id)
+            # implement
+            check_halt(config.halt_file)
+            if _past_until(until, ctx):
+                stopped_at_deadline = True
+                break
+            LOG.debug("run: implement item %s", item_id)
+            lease = STAGES["implement"](ctx, item_id)
 
-        # package
-        check_halt(config.halt_file)
-        if _past_until(until, ctx):
-            stopped_at_deadline = True
+            # package
+            check_halt(config.halt_file)
+            if _past_until(until, ctx):
+                stopped_at_deadline = True
+                ran.append(item_id)
+                break
+            LOG.debug("run: package item %s", item_id)
+            package_dir = STAGES["package"](ctx, item_id, lease)
+
             ran.append(item_id)
-            break
-        LOG.debug("run: package item %s", item_id)
-        package_dir = STAGES["package"](ctx, item_id, lease)
+            packages.append(str(package_dir))
 
-        ran.append(item_id)
-        packages.append(str(package_dir))
+            # deliver (§14): only when a write credential exists; the branch is left for
+            # the host otherwise.
+            if ctx.gh.can_write:
+                check_halt(config.halt_file)
+                if _past_until(until, ctx):
+                    stopped_at_deadline = True
+                    break
+                LOG.debug("run: deliver item %s", item_id)
+                pr_url = STAGES["deliver"](ctx, item_id)
+                if pr_url:
+                    delivered.append(pr_url)
+            _save_ledger(ctx)
+    except RateLimited as exc:
+        # B120: a rate limit is a normal condition. The stage already returned the item to
+        # its prior state and wrote rate_limited_until; report and succeed.
+        rate_limited_until = exc.reset_at or "unknown"
+        print(f"rate limited until {rate_limited_until}; no further stage started")
+    finally:
+        if ctx is not None:
+            _save_ledger(ctx)
 
-    payload = {"ran": ran, "packages": packages, "stopped_at_deadline": stopped_at_deadline}
+    payload = {
+        "ran": ran,
+        "packages": packages,
+        "delivered": delivered,
+        "reset": reset_ids,
+        "stopped_at_deadline": stopped_at_deadline,
+        "rate_limited_until": rate_limited_until,
+    }
     lines = [f"ran {len(ran)} item(s)"]
     lines.extend(f"  {p}" for p in packages)
+    lines.extend(f"  delivered {url}" for url in delivered)
     if stopped_at_deadline:
         lines.append(f"stopped: --until {args.until} reached; no new stage started")
     _emit(payload, "\n".join(lines), args)
@@ -586,7 +927,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_package(args: argparse.Namespace) -> int:
     config = _load(args)
-    ctx = build_context(config, run_id=f"item-{args.item_id}")
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
     item = _require_item(ctx, args.item_id)
     lease = _lease_for(ctx, item)
     package_dir = STAGES["package"](ctx, args.item_id, lease)
@@ -596,7 +937,7 @@ def cmd_package(args: argparse.Namespace) -> int:
 
 def cmd_archive(args: argparse.Namespace) -> int:
     config = _load(args)
-    ctx = build_context(config, run_id=f"item-{args.item_id}")
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
     _require_item(ctx, args.item_id)
     dest = archive_package(ctx, args.item_id, with_transcript=bool(args.with_transcript))
     _emit(
@@ -638,6 +979,485 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --------------------------------------------------------------------------------------
+# dispatch (B122 / A33)
+# --------------------------------------------------------------------------------------
+
+
+def _front_matter_depends_on(text: str) -> tuple[int, ...]:
+    """`depends_on` from a proposal's YAML front matter (§4.3), inline or block list.
+
+    A hand-rolled reader: the schema is bounded and the only value needed here is a list
+    of ints, so a YAML parser would be a dependency for nothing (I-17).
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ()
+    found: list[int] = []
+    in_block = False
+    for raw in lines[1:]:
+        line = raw.rstrip()
+        if line.strip() == "---":
+            break
+        if in_block:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                token = stripped[2:].split("#", 1)[0].strip()
+                if token.isdigit():
+                    found.append(int(token))
+                continue
+            if stripped == "" or line.startswith(" "):
+                continue
+            break
+        if line.startswith("depends_on:"):
+            value = line[len("depends_on:"):].split("#", 1)[0].strip()
+            if value.startswith("["):
+                inner = value.strip("[]")
+                for token in inner.split(","):
+                    token = token.strip()
+                    if token.isdigit():
+                        found.append(int(token))
+                break
+            if value == "":
+                in_block = True
+                continue
+            if value.isdigit():
+                found.append(int(value))
+            break
+    return tuple(found)
+
+
+def _proposal_numbers(item) -> list[int]:
+    """Numbers a proposal file for this item may be named after: the item id, then the
+    number inside external_ref (`issue:816`, `self:42`)."""
+    numbers = [int(item.id)]
+    match = EXTERNAL_REF_RE.match(str(getattr(item, "external_ref", "") or ""))
+    if match:
+        number = int(match.group(1))
+        if number not in numbers:
+            numbers.append(number)
+    return numbers
+
+
+def _depends_on(config, item) -> tuple[int, ...]:
+    """The item's `depends_on` from its proposal under proposals/, else ()."""
+    dirs = [Path(config.repo_root) / "proposals"]
+    if str(config.db_path) != ":memory:":
+        scratch = Path(config.db_path).parent / "proposals"
+        if scratch not in dirs:
+            dirs.append(scratch)
+    for directory in dirs:
+        if not directory.is_dir():
+            continue
+        for number in _proposal_numbers(item):
+            matches = sorted(directory.glob(f"{number}-*.md"))
+            if not matches:
+                continue
+            try:
+                text = matches[0].read_text(encoding="utf-8")
+            except OSError:
+                continue
+            return _front_matter_depends_on(text)
+    return ()
+
+
+def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
+    items = ctx.store.list_work_items(state="approved")
+    candidates = [
+        Candidate(
+            issue=int(item.id),
+            depends_on=_depends_on(config, item),
+            stage="implement",
+            created_at=str(getattr(item, "created_at", "") or ""),
+        )
+        for item in items
+    ]
+    return plan_dispatch(
+        now=ctx.clock.now(),
+        ledger=ctx.ledger,
+        config=config,
+        candidates=candidates,
+        merged=ctx.store.merged_issues(),
+        halted=repo_halted(_repo_root(args, config)) or halted(config.halt_file),
+    )
+
+
+def cmd_dispatch(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    ctx = _context(config, args, run_id="dispatch")
+    print(_build_plan(ctx, config, args).to_json())
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# deliver / revise / decompose
+# --------------------------------------------------------------------------------------
+
+
+def cmd_deliver(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
+    _require_item(ctx, args.item_id)
+    try:
+        pr_url = STAGES["deliver"](ctx, args.item_id)
+    finally:
+        _save_ledger(ctx)
+    if pr_url:
+        text = pr_url
+    else:
+        text = (
+            f"item {args.item_id}: no write credential; branch left for the host "
+            f"(runs/item-{args.item_id}/DELIVER.json)"
+        )
+    _emit({"item_id": args.item_id, "pr_url": pr_url, "delivered": bool(pr_url)}, text, args)
+    return EXIT_OK
+
+
+def cmd_revise(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id=f"item-{args.item_id}")
+    _require_item(ctx, args.item_id)
+    try:
+        lease = STAGES["revise"](ctx, args.item_id, source=args.source, notes=args.notes or "")
+    finally:
+        _save_ledger(ctx)
+    item = ctx.store.get_work_item(args.item_id)
+    state = item.state if item is not None else "unknown"
+    branch = lease.branch if lease is not None else None
+    payload = {
+        "item_id": args.item_id,
+        "source": args.source,
+        "revised": lease is not None,
+        "branch": branch,
+        "state": state,
+    }
+    if lease is not None:
+        text = f"item {args.item_id} revised ({args.source}) on {branch}; state {state}"
+    else:
+        text = f"item {args.item_id} not revised ({args.source}); state {state}"
+    _emit(payload, text, args)
+    return EXIT_OK
+
+
+def cmd_decompose(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id=f"item-{args.issue}")
+    try:
+        ids = list(STAGES["decompose"](ctx, args.issue))
+    finally:
+        _save_ledger(ctx)
+    if _wants_json(args):
+        print(json.dumps({"parent": args.issue, "created": ids}, indent=2))
+    else:
+        for item_id in ids:
+            print(item_id)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# sweep (B140 / B141 / §8.3)
+# --------------------------------------------------------------------------------------
+
+
+def _item_for_command(ctx, config, cmd) -> int | None:
+    """Map a keyword command's thread to a work item id.
+
+    issue        → the number is the item (GitHub store) or item id (sqlite).
+    proposal_pr  → head branch `harness/propose-<id>`.
+    delivery_pr  → the item whose branch_name is the PR's head branch.
+    """
+    if cmd.surface == "issue":
+        return int(cmd.number)
+    repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
+    pull = ctx.gh.pull(repo, cmd.number)
+    head = pull.get("head") if isinstance(pull, dict) else None
+    head_ref = str((head or {}).get("ref") or "")
+    if cmd.surface == "proposal_pr":
+        match = PROPOSE_BRANCH_RE.search(head_ref)
+        return int(match.group(1)) if match else None
+    if not head_ref:
+        return None
+    for item in ctx.store.list_work_items():
+        if item.branch_name and item.branch_name == head_ref:
+            return int(item.id)
+    return None
+
+
+def _act_on_command(ctx, config, cmd) -> str:
+    """Apply one authorised keyword command (§8.3 table). Returns a one-line result."""
+    reason = f"/harness {cmd.verb} by {cmd.actor}"
+    if cmd.args:
+        reason = f"{reason}: {cmd.args}"
+
+    if cmd.verb == "queue":
+        item = ctx.store.get_work_item(int(cmd.number))
+        if item is None:
+            return f"no work item {cmd.number}"
+        if item.state == "discovered":
+            return "already queued"
+        ctx.store.transition(int(cmd.number), "discovered", reason=reason)
+        return "discovered"
+
+    if cmd.verb == "split":
+        created = list(STAGES["decompose"](ctx, int(cmd.number)))
+        return f"decomposed into {created}"
+
+    item_id = _item_for_command(ctx, config, cmd)
+    if item_id is None:
+        return "no work item for this thread"
+
+    if cmd.verb in ("stop", "reject"):
+        repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
+        closed = False
+        if cmd.surface in ("proposal_pr", "delivery_pr") and ctx.gh.can_write:
+            ctx.gh.close_pull(repo, cmd.number)
+            closed = True
+        ctx.store.transition(item_id, "abandoned", reason=reason)
+        return f"item {item_id} abandoned" + ("; PR closed" if closed else "")
+
+    if cmd.verb == "revise":
+        ctx.store.transition(item_id, "proposing", reason=reason)
+        spec_path = STAGES["propose"](ctx, item_id, notes=cmd.args)
+        return f"item {item_id} re-proposed: {spec_path}"
+
+    if cmd.verb == "fix":
+        lease = STAGES["revise"](ctx, item_id, source="review", notes=cmd.args or "/harness fix")
+        return f"item {item_id} revise(review): {'revised' if lease else 'not revised'}"
+
+    if cmd.verb == "rebase":
+        notes = cmd.args or "/harness rebase"
+        lease = STAGES["revise"](ctx, item_id, source="conflict", notes=notes)
+        return f"item {item_id} revise(conflict): {'revised' if lease else 'not revised'}"
+
+    return f"unknown verb {cmd.verb}"
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id="sweep")
+    try:
+        commands = keywords.sweep(
+            ctx.gh,
+            ledger=ctx.ledger,
+            trusted=ctx.trusted,
+            now_iso=iso(ctx.clock.now()),
+            self_repo=config.self_repo,
+            upstream_repo=config.upstream_repo,
+        )
+        for cmd in commands:
+            record = {
+                "verb": cmd.verb,
+                "args": cmd.args,
+                "surface": cmd.surface,
+                "number": cmd.number,
+                "comment_id": cmd.comment_id,
+                "actor": cmd.actor,
+                "result": "",
+            }
+            try:
+                record["result"] = _act_on_command(ctx, config, cmd)
+            except Halted:
+                raise
+            except RateLimited as exc:
+                record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
+                print(json.dumps(record, sort_keys=False))
+                break
+            except HarnessError as exc:
+                record["result"] = f"error: {exc}"
+            print(json.dumps(record, sort_keys=False))
+    finally:
+        _save_ledger(ctx)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# ledger (B116 / B117)
+# --------------------------------------------------------------------------------------
+
+
+def _self_repo_comments(ctx, config) -> list[dict]:
+    """Every comment on every issue of SELF_REPO, shaped for `ledger.rebuild`."""
+    listing = ctx.gh.get(f"/repos/{config.self_repo}/issues?state=all&per_page=100")
+    comments: list[dict] = []
+    for issue in listing if isinstance(listing, list) else []:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        number = int(issue.get("number", 0) or 0)
+        if number <= 0:
+            continue
+        for comment in ctx.gh.issue_comments(config.self_repo, number):
+            comments.append(
+                {
+                    "body": str(comment.get("body", "") or ""),
+                    "created_at": str(comment.get("created_at", "") or ""),
+                    "issue": number,
+                }
+            )
+    return comments
+
+
+def cmd_ledger(args: argparse.Namespace) -> int:
+    config = _load(args)
+    ctx = _context(config, args, run_id="ledger")
+    led = ctx.ledger
+    rebuilt = False
+    if getattr(args, "rebuild", False):
+        led = ledger_mod.rebuild(_self_repo_comments(ctx, config))
+        ledger_mod.save(led, ctx.ledger_path)
+        rebuilt = True
+
+    if _wants_json(args):
+        print(led.to_json())
+        return EXIT_OK
+
+    now_iso = iso(ctx.clock.now())
+    window = dict(led.window)
+    lines = [f"ledger {ctx.ledger_path}" + ("  (rebuilt)" if rebuilt else "")]
+    lines.append("window:")
+    lines.append(f"  period_start        {window.get('period_start')}")
+    lines.append(f"  spent_usd           {float(window.get('spent_usd') or 0.0):.2f}")
+    lines.append(f"  calls               {int(window.get('calls') or 0)}")
+    lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
+    lines.append("observations:")
+    if led.observations:
+        for stage in sorted(led.observations):
+            row = led.observations[stage]
+            lines.append(
+                f"  {stage:<12} n={int(row.get('n') or 0):<4} "
+                f"median_usd={float(row.get('median_usd') or 0.0):.2f}"
+            )
+    else:
+        lines.append("  (none)")
+    limited = "yes" if led.rate_limited(now_iso) else "no"
+    lines.append(f"rate limited now: {limited} (now {now_iso})")
+    lines.append(f"history: {len(led.history)} entr{'y' if len(led.history) == 1 else 'ies'}")
+    cursor = (led.cursors or {}).get("notifications_last_seen")
+    lines.append(f"notifications cursor: {cursor or 'none'}")
+    print("\n".join(lines))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# sync-fork (B105 / A36)
+# --------------------------------------------------------------------------------------
+
+
+def cmd_sync_fork(args: argparse.Namespace) -> int:
+    config = _load(args)
+    if not config.fork_repo:
+        _emit(
+            {"fork": "", "upstream": config.upstream_repo, "sha": None, "synced": False},
+            "no FORK_REPO configured; nothing to sync",
+            args,
+        )
+        return EXIT_OK
+    ctx = _context(config, args, run_id="sync-fork")
+
+    def push(repo_path: Path, refspec: str) -> None:
+        ctx.gh.push_ref(repo_path, refspec, remote_repo=config.fork_repo)
+
+    sha = sync_fork(config, workdir=config.runs_dir / "sync-fork", push=push)
+    _emit(
+        {"fork": config.fork_repo, "upstream": config.upstream_repo, "sha": sha, "synced": True},
+        f"fork {config.fork_repo} main at {sha} (upstream {config.upstream_repo})",
+        args,
+    )
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# local-loop (§10 / RUN-DECISIONS-D2 §16)
+# --------------------------------------------------------------------------------------
+
+
+def _write_heartbeat(work: Path) -> None:
+    """Write `<work>/HEARTBEAT` (ISO-Z). Synchronous by design: no thread under harness/."""
+    roots = allowed_roots()
+    if roots:
+        resolved = work.resolve()
+        inside = False
+        for root in roots:
+            root_resolved = Path(root).resolve()
+            if resolved == root_resolved or root_resolved in resolved.parents:
+                inside = True
+                break
+        if not inside:
+            set_write_roots([*roots, work])
+    guarded_write(work / "HEARTBEAT", iso(datetime.now(timezone.utc)) + "\n")
+
+
+def _stop_requested(work: Path) -> bool:
+    return (work / "STOP").exists()
+
+
+def _local_unit(args: argparse.Namespace, work: Path) -> None:
+    """One unit: dispatch, then `run --item` (implement → package → deliver) per plan."""
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id="dispatch")
+    unit_plan = _build_plan(ctx, config, args)
+    print(unit_plan.to_json())
+    for item_id in unit_plan.start:
+        if _stop_requested(work):
+            print("STOP present; unit cut short")
+            return
+        _write_heartbeat(work)
+        run_args = argparse.Namespace(
+            config=args.config,
+            verbose=getattr(args, "verbose", False),
+            json=False,
+            dry_run=getattr(args, "dry_run", False),
+            item=int(item_id),
+            session_pct=None,
+            until=None,
+        )
+        try:
+            cmd_run(run_args)
+        except (Halted, RepoHalted):
+            raise
+        except BudgetExhausted as exc:
+            print(f"budget exhausted: {exc}; unit ends")
+            return
+        except HarnessError as exc:
+            print(f"item {item_id} failed: {exc}", file=sys.stderr)
+        _write_heartbeat(work)
+
+
+def cmd_local_loop(args: argparse.Namespace) -> int:
+    check_repo_halt(_repo_root(args))
+    work = Path(args.work) if args.work else Path.cwd()
+    loop_seconds = max(0, int(args.loop_seconds))
+    _write_heartbeat(work)
+    while True:
+        if _stop_requested(work):
+            print("STOP present; exiting")
+            return EXIT_OK
+        if repo_halted(_repo_root(args)):
+            print("halted by .harness/HALT")
+            return EXIT_OK
+        _write_heartbeat(work)
+        _local_unit(args, work)
+        if args.once:
+            return EXIT_OK
+        slept = 0
+        while slept < loop_seconds:
+            if _stop_requested(work):
+                print("STOP present; exiting")
+                return EXIT_OK
+            SLEEP(min(HEARTBEAT_SLICE_S, loop_seconds - slept))
+            slept += HEARTBEAT_SLICE_S
+            _write_heartbeat(work)
+
+
 COMMANDS = {
     "init": cmd_init,
     "doctor": cmd_doctor,
@@ -651,6 +1471,14 @@ COMMANDS = {
     "archive": cmd_archive,
     "halt": cmd_halt,
     "resume": cmd_resume,
+    "dispatch": cmd_dispatch,
+    "deliver": cmd_deliver,
+    "revise": cmd_revise,
+    "decompose": cmd_decompose,
+    "sweep": cmd_sweep,
+    "ledger": cmd_ledger,
+    "sync-fork": cmd_sync_fork,
+    "local-loop": cmd_local_loop,
 }
 
 
@@ -668,12 +1496,26 @@ def main(argv: list[str] | None = None) -> int:
     except NotImplementedInDelivery1 as exc:
         print(str(exc) or "not implemented in delivery 1", file=sys.stderr)
         return EXIT_UNIMPLEMENTED
+    except RepoHalted:
+        # B149: the repo-level kill switch is a normal outcome, not an error.
+        print("halted by .harness/HALT")
+        return EXIT_OK
     except Halted as exc:
         print(f"halted: {exc}", file=sys.stderr)
         return EXIT_HALTED
     except BudgetExhausted as exc:
         print(f"budget exhausted: {exc}", file=sys.stderr)
         return EXIT_BUDGET
+    except RateLimited as exc:
+        # B120: the stage already returned the item to its prior state.
+        print(f"rate limited until {exc.reset_at or 'unknown'}")
+        return EXIT_OK
+    except TrustDenied:
+        # B132: denial is silent. No reply, no reaction, no message.
+        return EXIT_OK
+    except ForkDiverged as exc:
+        print(f"fork diverged: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

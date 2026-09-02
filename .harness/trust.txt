@@ -1,0 +1,5 @@
+# .harness/trust.txt — GitHub handles whose keyword commands are honoured.
+# One handle per line. '#' starts a comment. Case-insensitive.
+# Changing this file requires a reviewed PR (see .github/CODEOWNERS).
+jgoetzmann
+<NATHAN_HANDLE>

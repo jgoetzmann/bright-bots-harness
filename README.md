@@ -1,45 +1,60 @@
 # bright-bots-harness
 
-A locally-run, manually-started Python service that takes work on the
+A Python service that takes work on
 [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost)
-repository from discovery through to a human-reviewable package, spending a metered
-amount of Claude capacity and touching nothing outside its own directory.
+from an issue through a diagnosis, an implementation checked by the product repository's own
+gates, and a review package pinned to an exact base commit — and, in Delivery 2, delivers it
+as a pull request that a human merges. Two human gates, both ordinary PRs, both usable from
+a phone. The model never merges anything.
 
-It does not push. It does not open pull requests. It does not comment. It holds no
-credentials at all. What it produces is a directory on your disk containing a diagnosis,
-a patch series pinned to an exact base commit, verbatim evidence that the repository's
-own gates pass, and a log of every decision taken to get there. Applying any of it is a
-human action.
+## Two ways to run it
 
-Delivery 1 is **Tier 0**: the harness performs no authenticated request and no write of
-any kind against GitHub. That is enforced by structure, not by policy — see
-[docs/SAFETY.md](docs/SAFETY.md).
+| | **Actions mode — the product** | **Local mode — proof of concept, debugger** |
+|---|---|---|
+| Queue | GitHub issues in this repository, one `harness:*` label each | `harness.db` (SQLite) on your disk |
+| Scheduler | `.github/workflows/`: discover weekly, implement every 6 h, feedback every 3 h | you, at a terminal — or the `bb` container's loop |
+| Credentials | `HARNESS_GITHUB_TOKEN` (machine account, `public_repo` only) and `CLAUDE_CODE_OAUTH_TOKEN`, as repo secrets | the Claude token only; the GitHub token is filtered out of the container |
+| Publishes | pushes to a fork it owns, opens PRs upstream, comments here | nothing; the package stays on disk |
+| `.env` | `PERMISSION_TIER=2`, `STORE_BACKEND=github` | `PERMISSION_TIER=0`, `STORE_BACKEND=sqlite` — the defaults |
+| Read | [docs/OPERATIONS.md](docs/OPERATIONS.md) | [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) |
+
+One codebase. No module above the store knows which mode it is in (invariant I-16); the only
+differences are which store is opened and who runs the dispatcher. Start in local mode: the
+five commands below work with no token, no network, and no spend.
+
+## The two human gates
+
+1. **Proposal.** `propose` opens a PR into `proposals/` here: a bounded front matter and a
+   diagnosis with file and line citations. **Merging it is approval.** Nothing implements
+   until you do. Reject proposals; if none are rejected, the gate is decorative.
+2. **Delivery.** `deliver` pushes a branch to the machine account's fork and opens a PR
+   upstream with the verbatim gate evidence in its body. Merging it is Nathan's or yours.
+   The code to merge, approve, or dismiss a review does not exist (I-12).
+
+Everything between the gates is bounded: a per-call cap (`PER_CALL_CAP_USD`), a weekly cap
+(`WEEKLY_CAP_USD`) with a reserve, a revise cap (`MAX_REVISE_CYCLES`), a pinned gate
+sequence, and a trust list for anyone who wants to steer it. See [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements
 
-- Python 3.13
-- `git` on `PATH`
-- `node`, `npm`, `npx` — used only inside the disposable clone, to run the product
-  repository's own gates
-- The `claude` CLI, only if you run the `cli` backend. The `fake` backend needs nothing.
+- Python 3.13, `git` on `PATH`
+- `node`, `npm`, `npx` — used only inside the disposable clone, to run the product's gates
+- The `claude` CLI, only for `BACKEND=cli`. The `fake` backend needs nothing.
+- Docker Desktop, only for the `bb` container.
 
-No runtime Python dependencies. Standard library only, on purpose.
+No runtime Python dependencies. Standard library only, on purpose (I-17).
 
 On Windows, `claude`, `npm` and `npx` are `.CMD` shims; the harness resolves them through
-`PATHEXT` itself, so nothing needs to be on `PATH` as an `.exe`. This machine's global
-`core.autocrlf=true` dirties fresh clones of the product repo; the harness's own repo pins
-`core.autocrlf=false` locally, and the reconstruction commands in
+`PATHEXT` itself. This machine's global `core.autocrlf=true` dirties fresh clones of the
+product repo; the reconstruction commands in
 [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) show the flag to pass.
 
 ## Install
 
 ```bash
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # macOS / Linux
 pip install -e ".[dev]"
 ```
 
@@ -47,19 +62,19 @@ pip install -e ".[dev]"
 
 ```bash
 harness init      # creates harness.db, runs/, packages/, and .env from .env.example
-harness doctor    # probes git, claude, node, npm, npx, disk, the halt file, and config
-harness setup     # assesses bot-identity readiness and writes HUMAN.md
+harness doctor    # probes git, claude, node, npm, npx, disk, the halt files, the pin, config
+harness setup     # assesses machine-account readiness and writes HUMAN.md
 ```
 
-`harness init` never overwrites an existing `.env`. `harness doctor` exits 3 when
-anything is missing or degraded and names what; it also probes whether this `claude`
-build accepts `--max-turns`, which is undocumented in `claude --help` at 2.1.251 and so
-must be checked rather than assumed. `harness setup` exits 6 while any human prerequisite
-is outstanding and writes them into `HUMAN.md` as a gap report.
+`harness init` never overwrites an existing `.env`. `harness doctor` exits 3 when anything is
+missing or degraded and names it — every Delivery 2 key included (A30). `harness setup`
+exits 6 while any human prerequisite is outstanding and lists them in `HUMAN.md`.
 
 Edit `.env` before doing anything real. `BACKEND=fake` is the default and spends nothing.
 
 ## The five-command walkthrough
+
+Local mode, unchanged from Delivery 1, still the fastest way to see the whole state machine:
 
 ```bash
 harness discover --mode directed --target 816
@@ -69,107 +84,100 @@ harness run --item 1
 harness package 1
 ```
 
-1. **discover** creates one work item for issue 816. Directed mode makes no model call —
-   it reads the issue over the unauthenticated public API and stores it.
-2. **propose** makes one model call and writes a work package: diagnosis with file and
-   line citations, approach, slices, numbered behaviors, acceptance criteria, decisions,
-   open questions, touched paths, risks. Read it. This is the cheapest place to disagree.
-3. **approve** is you, deliberately, moving the item from `proposed` to `approved`.
-   Nothing implements without it.
-4. **run** clones the repository into `runs/item-1/clone`, runs the gate sequence on the
-   untouched tree first as a baseline, implements, prettiers only the changed files,
-   commits under the repository's conventional-commit rules, and runs the gates again.
-   Green is done. Red gets a bounded number of diagnose-and-fix cycles, and a repeated
-   failure signature stops it immediately. Still red means the item is marked `blocked`
-   with everything recorded — never a widened gate.
-5. **package** assembles `runs/item-1/package/`, the review package described in
+1. **discover** creates one work item for issue 816. No model call in directed mode.
+2. **propose** makes one model call and writes the work package — diagnosis, approach,
+   slices, behaviors, acceptance criteria, decisions, open questions, touched paths, risks —
+   now with the validated front matter, to `proposals/`. Read it. This is the cheapest place
+   to disagree.
+3. **approve** is you, deliberately. In Actions mode this step is merging the proposal PR.
+4. **run** clones into `runs/item-1/clone`, runs the gate sequence on the untouched tree as
+   a baseline, implements, prettiers only the changed files, commits under the product's
+   conventional-commit rules, and runs the gates again. Red gets bounded diagnose-and-fix
+   cycles; a repeated failure signature stops it; still red means `blocked`, never a widened
+   gate.
+5. **package** assembles `runs/item-1/package/`, described in
    [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md).
 
-Then, when you want to keep it:
+Then `harness archive 1 [--with-transcript]` promotes it into `packages/`.
+
+## The Delivery 2 commands
 
 ```bash
-harness archive 1                    # promotes it into packages/, without the transcript
-harness archive 1 --with-transcript  # includes the full redacted model transcript
+harness dispatch                  # JSON plan of what may start now; starts nothing
+harness deliver 1                 # push the branch to the fork, open the upstream PR
+harness revise 1 --source ci      # one bounded revision cycle: ci | conflict | review
+harness decompose 42              # split issue 42 into sub-issues, here only
+harness sweep                     # poll notifications, parse trusted keywords, enqueue
+harness ledger [--json] [--rebuild]   # spend, medians, window, rate-limit state
+harness sync-fork                 # fast-forward the fork from upstream; exit 1 on divergence
+harness init --labels             # create the twelve harness:* labels, idempotently
+harness --dry-run <command>       # record every GitHub write in gh.sent, send none
 ```
 
-Other commands: `harness status [--json]` for the queue and remaining budget,
-`harness halt` and `harness resume` for the kill switch.
+Every one of them runs under `BACKEND=fake` with no network. In Actions mode the workflows
+run them in a fixed order: `.harness/HALT` check, `doctor`, `sync-fork`, `dispatch`, then
+`run`/`package`/`deliver` per item, then a `[skip ci]` commit of `state/ledger.json`.
 
-## Gates and the install step
-
-`harness run` clones the product repo fresh, so before the baseline it runs `npm ci` at the
-root and in `backend/` wherever a `package-lock.json` exists. That is an install, not a gate:
-it checks nothing, it is recorded in `EVIDENCE.md` under its own heading, and the seven gates
-of the spec run unchanged after it. Without it every gate is vacuously red on an empty tree.
-
-A gate red in the baseline is pre-existing. It is carried into the post-change evidence as
-what it is and never attributed to the change — but the harness also never calls such a
-sequence "green". `DECISIONS.md` in the run directory says which it was.
-
-## The fake backend
-
-`BACKEND=fake` replays canned runner results from `tests/fixtures/runner/` instead of
-calling a model. The whole state machine — discovery, proposal, the governor, the gate
-loop, the packager — runs end to end at zero token cost and with no network. Use it to
-try the five commands, to reproduce a bug, and in CI. Nothing in the fake path imports
-`subprocess` or `urllib`.
+Steering, from a trusted handle only: `/harness revise|reject` on a proposal PR,
+`/harness fix|rebase|stop` on a delivery PR, `/harness split|queue` on an issue here.
+Comments on the product repository are polled, not pushed, so they take up to
+`NOTIFY_POLL_HOURS` — see OPERATIONS §9 before reporting that as a bug.
 
 ## Budget
 
-Every stage asks the governor for an authorization before it spends anything, and the
-governor refuses when the estimate exceeds what is spendable. Budgets are expressed as
-percentages of your weekly Claude allowance: `WEEKLY_BUDGET_PCT` for the week,
-`SESSION_BUDGET_PCT` for one `harness run`, and `RESERVE_PCT` held back and never spent.
-Estimates start from a static table and switch to the observed median once a stage has
-three completed runs behind it.
+Every stage asks the governor before it spends. Delivery 2 backs the governor with
+`state/ledger.json`: accumulated `total_cost_usd` per window against `WEEKLY_CAP_USD`,
+`RESERVE_PCT` held back, a median per stage once three observations exist, and
+`rate_limited_until` when the CLI reports a usage limit — which returns the item to its
+previous state and exits 0, not an incident. No module claims to know the remaining
+subscription allowance, because nothing exposes it (B114).
 
 ## The kill switch
 
-Create the file named by `HALT_FILE` (default `HALT` at the repository root) and the
-harness stops at the next stage boundary: the clone is released, the item stays
-resumable, and `harness run` exits 5. `harness halt` creates it, `harness resume` removes
-it. See [HALT.example](HALT.example).
+Actions mode: commit `.harness/HALT` to `main`; it is the first step of every spending job.
+Local: `harness halt` / `harness resume` (`HALT` at the root, exit 5). Container:
+`.\bb-stop.ps1`. All three in [docs/OPERATIONS.md](docs/OPERATIONS.md) §8.
 
 ## Safety, in brief
 
-- **Tier 0.** No authenticated request, no write to GitHub, in Delivery 1. The code to
-  push, open a PR, or comment does not exist yet.
-- **No credentials.** The harness holds none. A `HARNESS_GITHUB_TOKEN` in `.env` is
-  refused in code while `PERMISSION_TIER=0`, even when the token is perfectly valid.
-- **No `gh` CLI.** `gh` authenticates transparently with your token, which would void
-  Tier 0 without anyone noticing. Every GitHub read goes through `urllib.request` with no
-  `Authorization` header.
-- **No writes outside its own directories.** Every write path is guarded and rejects any
-  destination that is not under `runs/`, `packages/`, the configured database, `HUMAN.md`,
-  or `.env`.
-- **Everything redacted before it hits disk.** Transcripts, logs, and every file in a
-  package pass through the secret scrubber first.
-- **Gates are never widened.** No skipped check, no lengthened timeout, no
-  `continue-on-error`, no touched CI workflow. A red the harness cannot fix honestly is a
-  blocked item, not a passed one.
+- **Tier 2, scoped.** A classic PAT with `public_repo` only, on a machine account that owns
+  nothing but the fork and is not a collaborator upstream. No `workflow` scope, so GitHub
+  itself refuses any push touching `.github/workflows/` (I-15).
+- **One authenticated module.** `harness/gh.py` is the only file that sends an
+  `Authorization` header, and the only one that can read the token (I-11). The `gh` CLI
+  stays banned (I-2′).
+- **Never merges.** No merge, approve, or dismiss endpoint exists (I-12).
+- **Trust gate.** A `/harness` command is honoured only from a handle in
+  `.harness/trust.txt` with `author_association` OWNER/MEMBER/COLLABORATOR; anything else
+  is silently ignored and its body never reaches a prompt (B131–B133).
+- **Everything redacted** before disk and before GitHub (I-13).
+- **Gates pinned.** `gates.py`, `packager.py`, `redact.py` and `prompts/` are hashed into
+  `.harness/PIN`; a mismatch stops both modes before they spend (B142).
+- **Tier 0 still holds.** With `PERMISSION_TIER=0` no request carries a token, exactly as
+  in Delivery 1 — and that is what the container runs at.
 
-The full list, with how each is enforced and how to verify it yourself, is in
-[docs/SAFETY.md](docs/SAFETY.md).
+The full list, each with a verify-it-yourself command, is in [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `harness/` | The package. Config, store, governor, runner, GitHub client, stages, packager |
-| `prompts/` | Prompts as data, one file per stage, loaded by filename |
-| `tests/` | pytest suite; every behavior in the spec is cited by at least one test |
-| `docs/SAFETY.md` | The invariants, written for a maintainer with no prior context |
-| `docs/PACKAGE-FORMAT.md` | The work package and the review package, and how to rebuild a tree from one |
-| `HUMAN.md` | Generated by `harness setup`: the things only a human can do |
-| `runs/` | Disposable clones, transcripts, working state. Never committed |
-| `packages/` | Promoted review packages. Committed |
-| `HARNESS-SPEC.md` | The frozen implementation spec |
-| `HARNESS-REVIEW.md` | The runnable acceptance protocol |
+| `harness/` | The package. `store/` (sqlite + github behind one protocol), `dispatcher.py`, `ledger.py`, `trust.py`, `keywords.py`, `gh.py`, `stages/` |
+| `prompts/` | Prompts as data, one file per stage, pinned |
+| `.github/workflows/` | discover, implement, feedback, ops, heartbeat, selftest |
+| `.harness/` | Operator-only: `trust.txt`, `config.json`, `PIN`, `HALT`. Not writable by the harness |
+| `proposals/` | Merged proposals — the approved queue |
+| `state/ledger.json` | The one persistent state file |
+| `local/`, `bb-*.ps1`, `bb-config.json` | The container control plane — [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) |
+| `docs/` | `SAFETY.md`, `OPERATIONS.md`, `PACKAGE-FORMAT.md`, `LOCAL-MODE.md` |
+| `tests/` | pytest; every behavior B1–B150 is cited by at least one test |
+| `HUMAN.md` | Generated by `harness setup`: the sixteen things only a human can do |
+| `DELIVERY-2-HANDOFF.md`, `DELIVERY-2-REVIEW.md` | The frozen spec and its runnable acceptance protocol |
+| `HARNESS-SPEC.md`, `HARNESS-REVIEW.md` | Delivery 1, still true |
 
 ## What this does not do
 
-No push, no pull request, no comment, no issue filing. No concurrency above one clone.
-No audit discovery mode. No sub-issue decomposition. No API runner backend. No web UI, no
-scheduler, no daemon. No multi-repository support. Any use of the `brightboost-harness`
-bot identity — it is fully specified and its readiness is detected and reported, but it
-cannot be used before the tier that needs it is agreed.
+No merge, no review approval, no auto-merge on green. No push to the product repository —
+only to the fork. No issue on the product repository. No edit to `.github/**` anywhere. No
+second fork, no stacked branches. No web UI; GitHub is the UI. No concurrency above one in
+local mode. No measurement of remaining subscription allowance. No self-hosted runners.

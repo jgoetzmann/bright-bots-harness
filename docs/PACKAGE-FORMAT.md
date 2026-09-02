@@ -5,6 +5,11 @@ plan, in Markdown, that a human reads and approves before anything is implemente
 `harness package` produces the **review package**: a directory a reviewer can act on
 without having ever seen the harness.
 
+In Delivery 2 both artifacts also travel as pull requests. The work package is the file in
+a proposal PR against this repository (gate 1); the review package is the body of the
+delivery PR against the product repository (gate 2, §6 below). The formats on disk are
+unchanged; the PRs are made from them, not the other way round.
+
 This document is extracted from the implementation spec so a reviewer need not read it.
 
 ---
@@ -56,6 +61,42 @@ are carried verbatim into the review package. `Touched paths` is compared agains
 actual diff at package time, which is how a change that quietly grew beyond its plan is
 caught.
 
+### 1.1 The proposal file (Delivery 2)
+
+In Delivery 2 the same work package is also written as `proposals/<issue>-<slug>.md` on a
+branch `harness/propose-<issue>` and opened as a PR against this repository. **Merging that
+PR is approval** — not reviewing it, not commenting on it. The file is the Delivery 1 body
+above, preceded by YAML front matter with a bounded schema: every field required, every enum
+closed, unknown keys rejected.
+
+```yaml
+---
+issue: 816                      # int, must match an open issue in this repo
+upstream_issue: 816             # int or null — the product repo issue, if any
+title: "…"                      # str, 1..120
+kind: fix | chore | test | docs # closed enum
+slices: 1                       # int, 1..5
+risk: low | medium | high       # closed enum
+touched_paths:                  # list[str], 1..40, each must exist in the product repo
+  - src/…
+depends_on: []                  # list[int] — issue numbers that must reach harness:merged first
+estimated_turns: 40             # int, 1..MAX_TURNS_IMPLEMENT
+gate_expectation: green | known-red   # closed enum; known-red requires baseline_red below
+baseline_red: []                # list[str] — gate names already red before the change
+---
+```
+
+A proposal whose front matter fails validation is never opened as a PR: the stage retries
+once with the errors appended to the prompt, then marks the item `harness:blocked` with the
+errors in a comment (B103). Every `touched_paths` entry is checked against the product
+repository at the pinned base commit; a path that does not exist fails validation (B104).
+`depends_on` is read by the dispatcher, which will not start the item until every listed
+issue is `harness:merged` (B107). The front matter is the only place the model's output
+becomes an instruction, which is why it is a closed schema and not free text.
+
+Under the sqlite store (local mode) the same file is written under `proposals/` next to the
+database and no PR is opened; `harness approve <id>` is the gate instead.
+
 ---
 
 ## 2. The review package — output of `package`
@@ -83,8 +124,10 @@ before it finishes, so a stray scratch file cannot ride along into a review.
 
 **`README.md`** — the entry point. Names the work item and external reference, the base
 commit, the branch, the patch count and filenames, the paths the work package expected to
-touch, and the two ways to reconstruct the tree. It states plainly that the harness holds
-no credentials and cannot push, and that applying any of this is a human action.
+touch, and the two ways to reconstruct the tree. It states plainly that applying any of this
+is a human action. That stays true in Delivery 2: `deliver` pushes the branch to a fork the
+machine account owns and opens a PR from it, but nothing reaches the product repository's
+default branch except by a human merge.
 
 **`DIAGNOSIS.md`** — the `Diagnosis`, `Issue`, `Approach` and `Risks` sections of the work
 package, carried through. This is the "what is actually wrong" half, with citations.
@@ -118,7 +161,9 @@ with the failing gates named. The harness does not mark its own work met on asse
 The declared touched paths are listed at the end for comparison against the diff.
 
 **`BASE`** — the 40-character base commit sha and a trailing newline. Nothing else, so
-`git checkout "$(cat BASE)"` works without cleanup.
+`git checkout "$(cat BASE)"` works without cleanup. In Delivery 2 this commit always exists
+**upstream**, not only on the fork, because the fork's default branch is fast-forward-only
+(B105) and every work branch is cut from it at a commit upstream already has (B106).
 
 **`patches/`** — the series produced by `git format-patch <BASE>..HEAD`. Applies cleanly
 onto `BASE` with `git am`, and onto no other commit. Zero patches is a legitimate outcome
@@ -159,8 +204,8 @@ Written with `indent=2`, keys in this order:
 | Key | Meaning |
 |---|---|
 | `schema` | Format version of this manifest. `1`. |
-| `item_id` | The harness's internal work-item id |
-| `external_ref` | `issue:<n>` — the upstream thing being worked |
+| `item_id` | The harness's internal work-item id. Under the GitHub store, the issue number in this repository |
+| `external_ref` | `issue:<n>` — the upstream thing being worked; `self:<n>` for an item that is an issue here; `sub:<parent>:<i>` for a decomposed child |
 | `repo` | The product repository, `owner/name` |
 | `base_sha` | The 40-char commit the patches apply to. Matches `BASE` |
 | `branch` | The branch inside the bundle |
@@ -220,6 +265,17 @@ git clone bundle.gitbundle -b <branch> r
 Both routes produce the same tree. The bundle is there so that a package which has outlived
 its branch, or a reviewer behind a firewall, still reconstructs.
 
+In Delivery 2 there is a third route, which is just git: the branch is on the fork.
+
+```bash
+git clone https://github.com/Bright-Bots-Initiative/brightboost.git r && cd r
+git fetch https://github.com/<machine-account>/brightboost.git <branch>
+git checkout FETCH_HEAD
+```
+
+It produces the same tree as the other two, because the branch tip is exactly `BASE` plus
+the patch series. If it does not, trust the patches and open a bug against the harness.
+
 ---
 
 ## 4. Promotion — `harness archive`
@@ -242,6 +298,11 @@ Two rules:
 Every text file is re-scrubbed through the redactor on the way in, so a promoted package is
 safe to commit by construction rather than by inspection.
 
+In Actions mode the whole `runs/item-<n>/` directory is also uploaded as a workflow artifact
+with `if: always()` (B126), so a cancelled or timed-out run still leaves its evidence, kept
+for the artifact retention period. The artifact is for post-mortems; the package that matters
+is the one in the PR body and, if archived, in `packages/`.
+
 ---
 
 ## 5. How to review one
@@ -256,3 +317,50 @@ safe to commit by construction rather than by inspection.
 6. Reconstruct the tree with the commands above and read the diff.
 
 If steps 4 and 6 disagree, trust step 6 and open a bug against the harness.
+
+---
+
+## 6. The delivery PR — the package as a PR body (Delivery 2)
+
+`harness deliver <id>` runs only on an item in state `packaged` whose gates are green, or
+honestly known-red per the proposal's `baseline_red`. It syncs the fork, rebases the work
+branch onto the fork's main (a conflict here becomes a `revise --source conflict` item, not
+a failure), pushes the branch to the fork, opens a PR from
+`<machine-account>:harness/<kind>-<issue>-<slug>` into the product repository's default
+branch, requests review from every handle in `.harness/trust.txt`, comments the PR URL on
+the harness issue, and sets `harness:shipped`.
+
+**The PR body is generated from the review package** (B108). It is not written by the
+model; it is the package's own files, concatenated in this order and redacted by
+`redact.py` before it is sent (I-13):
+
+| # | Section | Source | What a reviewer gets |
+|---|---|---|---|
+| 1 | Summary | `README.md` | the work item and external reference, the **base commit**, the branch, the patch count and filenames, the declared touched paths |
+| 2 | Diagnosis | `DIAGNOSIS.md` | the `Diagnosis`, `Issue`, `Approach` and `Risks` sections, with file and line citations |
+| 3 | Evidence | `EVIDENCE.md` | the gate sequence **verbatim** — baseline and post-change, each gate with argv, exit code, verdict, and output tails — including the omission note when the database gates did not run |
+| 4 | Reconstruction | §3 of this document | the clone/checkout/`git am` commands, the `core.autocrlf=false` variant, and the bundle commands, **included verbatim** with `BASE` and the branch name filled in |
+
+Nothing is summarised on the way in. If the evidence is long, the PR body is long; a short
+PR body would be an opinion about the gates, and an opinion is not evidence.
+
+What is **not** in the PR body, and stays in the package on disk (and in `packages/` after
+`harness archive`): `DECISIONS.md`, `ACCEPTANCE.md`, `manifest.json`, `patches/`,
+`bundle.gitbundle`, `transcript.jsonl`. The PR's own diff is the patch series; the
+reconstruction commands let a reviewer rebuild it without trusting the diff view.
+
+Reviewing a delivery PR is §5 with the file names mapped to the sections above, and step 6
+answered by any of the three routes in §3. The base commit named in section 1 exists
+upstream — that is B105/B106 — so `git checkout <BASE>` in a plain upstream clone works
+without touching the fork at all.
+
+Three things the PR cannot do, so a reviewer need not check for them: it cannot be merged,
+approved, or have a review dismissed by the harness (I-12); it cannot contain a change under
+`.github/**` (I-15 — the token lacks the `workflow` scope and GitHub refuses the push); and
+its evidence cannot come from a widened gate, because the sequence that produced it is pinned
+by hash (`.harness/PIN`) and a mismatch stops the harness before it spends.
+
+Feedback on the PR — a failing check, a merge conflict, or a review comment from a trusted
+handle — becomes one bounded `revise` cycle that re-runs the **complete** gate sequence and
+force-pushes the branch only if its tip is still a commit the harness authored (B136, B139).
+A revised PR carries a fresh body built the same way from the fresh package.

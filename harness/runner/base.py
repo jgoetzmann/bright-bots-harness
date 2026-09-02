@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -10,6 +11,13 @@ from harness.errors import ConfigError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from harness.config import Config
+
+
+#: The CLI's usage-limit signature (D2 handoff §6.3, B119). Matched case-insensitively against
+#: stdout and stderr of a non-zero exit; a hit is an outcome with a reset time, not a failure.
+RATE_LIMIT_PATTERN = re.compile(
+    r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in))"
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +33,8 @@ class RunRequest:
     cwd: Path
     timeout_s: int
     add_dirs: tuple[Path, ...] = ()
+    #: ``claude --max-budget-usd``; omitted from argv when ``None`` (D2 §6.1, B119).
+    max_budget_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,10 @@ class RunResult:
     exit_code: int
     transcript: tuple[dict, ...]
     error: str | None
+    #: When the call was refused for exhaustion: an ISO-Z timestamp, or a relative ISO
+    #: duration such as ``"+PT30M"`` for the stage to add to its clock (D2 §12). ``None``
+    #: on every other outcome.
+    reset_at: str | None = None
 
 
 class Runner(Protocol):
@@ -53,6 +67,24 @@ class Runner(Protocol):
     name: str
 
     def run(self, request: RunRequest) -> RunResult: ...
+
+
+def is_rate_limited(result: RunResult) -> bool:
+    """True when a failed result is the CLI saying "come back later", not "I failed".
+
+    Pure: reads ``ok``, ``reset_at``, ``error`` and ``text`` off the result and nothing else.
+    A ``reset_at`` set by the backend is conclusive; otherwise the text is matched against
+    :data:`RATE_LIMIT_PATTERN`. A successful result is never rate-limited.
+    """
+    if getattr(result, "ok", False):
+        return False
+    if getattr(result, "reset_at", None) is not None:
+        return True
+    parts = (getattr(result, "error", None), getattr(result, "text", None))
+    haystack = "\n".join(part for part in parts if isinstance(part, str) and part)
+    if not haystack:
+        return False
+    return RATE_LIMIT_PATTERN.search(haystack) is not None
 
 
 def get_runner(config: "Config") -> Runner:

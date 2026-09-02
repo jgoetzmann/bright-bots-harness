@@ -1,14 +1,135 @@
-"""The store seam (Delivery 2 §2): one queue protocol, two backings.
+"""The store seam (Delivery 2 section 2): one queue protocol, two backings.
 
-`Store` is the SQLite class (Delivery 1's `harness/store.py`, moved verbatim to `sqlite.py`) so every
-existing call site and test keeps working. `StoreProtocol` is the structural type the stages are
-written against; `GitHubStore` (Delivery 2) is the second implementation.
+``Store`` is the SQLite class (Delivery 1's ``harness/store.py``, moved verbatim to ``sqlite.py``)
+so every existing call site and test keeps working. ``StoreProtocol`` is the structural type the
+stages are written against; ``GitHubStore`` is the second implementation. ``open_store`` picks the
+backing from ``config.store_backend``. Nothing here reads an execution-mode environment variable
+(I-16).
 """
 
 from __future__ import annotations
 
-from harness.store.sqlite import STATES, StageRun, Store, WorkItem
+from pathlib import Path
+from typing import Any, Protocol
 
-SqliteStore = Store
+from harness.errors import StoreError
+from harness.store.github import GitHubStore
+from harness.store.sqlite import (
+    LABELS,
+    STATES,
+    TRANSITIONS,
+    SqliteStore,
+    StageRun,
+    WorkItem,
+)
+from harness.store.sqlite import SqliteStore as Store
 
-__all__ = ["STATES", "SqliteStore", "StageRun", "Store", "WorkItem"]
+
+class StoreProtocol(Protocol):
+    """Every public method of :class:`SqliteStore`, plus the three Delivery 2 seam methods."""
+
+    def migrate(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def create_work_item(
+        self, *, kind: str, external_ref: str, title: str, tier_required: int = 0
+    ) -> int: ...
+
+    def get_work_item(self, item_id: int) -> WorkItem | None: ...
+
+    def find_by_ref(self, external_ref: str) -> WorkItem | None: ...
+
+    def list_work_items(self, *, state: str | None = None) -> list[WorkItem]: ...
+
+    def transition(self, item_id: int, to_state: str, *, reason: str) -> None: ...
+
+    def update_work_item(self, item_id: int, **fields: object) -> None: ...
+
+    def start_stage_run(self, work_item_id: int, stage: str, backend: str) -> int: ...
+
+    def finish_stage_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        turns: int | None,
+        allowance_pct: float | None,
+        cost_usd: float | None,
+        exit_reason: str | None,
+        transcript_path: str | None,
+    ) -> None: ...
+
+    def list_stage_runs(
+        self, work_item_id: int | None = None, status: str | None = None
+    ) -> list[StageRun]: ...
+
+    def completed_allowances(self, stage: str) -> list[float]: ...
+
+    def append_event(self, work_item_id: int | None, level: str, message: str) -> None: ...
+
+    def events(self, work_item_id: int | None = None) -> list[dict]: ...
+
+    def ensure_budget_period(
+        self, unit: str, period_start: str, period_end: str, allocated: float
+    ) -> None: ...
+
+    def budget_period(self, unit: str, period_start: str) -> tuple[float, float]: ...
+
+    def consume_budget(self, unit: str, period_start: str, amount: float) -> None: ...
+
+    def cache_get(self, url: str) -> tuple[str | None, str] | None: ...
+
+    def cache_put(self, url: str, etag: str | None, body: str) -> None: ...
+
+    def record_api_call(self, url: str, status: int, cached: bool) -> None: ...
+
+    def api_calls_since(self, iso_ts: str) -> int: ...
+
+    # Delivery 2 (RUN-DECISIONS-D2 section 3)
+
+    def publish_proposal(self, item_id: int, filename: str, text: str) -> str: ...
+
+    def merged_issues(self) -> set[int]: ...
+
+    def reconcile_stale_running(self, older_than_iso: str) -> list[int]: ...
+
+
+def open_store(config: Any, clock: Any, gh: Any = None, *, run_url: str = "") -> StoreProtocol:
+    """``sqlite`` -> a migrated :class:`SqliteStore`; ``github`` -> :class:`GitHubStore` over it.
+
+    The SQLite database is ``config.db_path`` in both cases (per-run scratch for the GitHub
+    backing); proposals are written under ``config.repo_root / "proposals"`` when the config
+    carries a ``repo_root``. ``run_url`` (the workflow run, supplied by the CLI) goes into every
+    B101 comment.
+    """
+    repo_root = getattr(config, "repo_root", None)
+    proposals_dir = Path(repo_root) / "proposals" if repo_root is not None else None
+    scratch = SqliteStore(Path(config.db_path), clock, proposals_dir=proposals_dir)
+    scratch.migrate()
+    if getattr(config, "store_backend", "sqlite") != "github":
+        return scratch
+    if gh is None:
+        scratch.close()
+        raise StoreError("STORE_BACKEND=github needs a GitHub client (gh=None)")
+    return GitHubStore(
+        gh,
+        self_repo=str(getattr(config, "self_repo", "")),
+        scratch=scratch,
+        clock=clock,
+        run_url=run_url or str(getattr(config, "run_url", "") or ""),
+    )
+
+
+__all__ = [
+    "GitHubStore",
+    "LABELS",
+    "STATES",
+    "SqliteStore",
+    "StageRun",
+    "Store",
+    "StoreProtocol",
+    "TRANSITIONS",
+    "WorkItem",
+    "open_store",
+]

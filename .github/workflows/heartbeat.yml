@@ -1,0 +1,180 @@
+# heartbeat.yml — weekly: prove the scheduler is alive by posting one comment to the tracking issue.
+# Spends nothing: BACKEND=fake, no model call, no secret beyond GITHUB_TOKEN. Handoff §11.1 (B144).
+# Absence of the weekly comment is the alarm.
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "5 9 * * 1"           # B124: non-zero, non-round minute
+  workflow_dispatch: {}
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  beat:
+    name: heartbeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 120          # B125
+    permissions:
+      contents: read
+      issues: write               # one comment on the tracking issue
+      actions: read               # last successful run per workflow
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install harness
+        shell: bash
+        run: python -m pip install -e .
+
+      # Tier 0, fake backend, sqlite store: nothing here can authenticate or spend.
+      - name: Write a read-only .env
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          src = pathlib.Path(".env.example").read_text(encoding="utf-8").splitlines()
+          over = {
+              "BACKEND": "fake",
+              "PERMISSION_TIER": "0",
+              "STORE_BACKEND": "sqlite",
+              "HARNESS_GITHUB_TOKEN": "",
+              "ANTHROPIC_API_KEY": "",
+              "MAX_CONCURRENT_ITEMS": "1",
+          }
+          out, seen = [], set()
+          for line in src:
+              m = re.match(r"^([A-Z0-9_]+)=", line)
+              if m and m.group(1) in over:
+                  out.append(f"{m.group(1)}={over[m.group(1)]}")
+                  seen.add(m.group(1))
+              else:
+                  out.append(line)
+          for k, v in over.items():
+              if k not in seen:
+                  out.append(f"{k}={v}")
+          pathlib.Path(".env").write_text("\n".join(out) + "\n", encoding="utf-8")
+          print("read-only .env written")
+          PY
+
+      - name: harness status --json and harness ledger --json
+        shell: bash
+        run: |
+          mkdir -p runs/heartbeat
+          harness ledger --json > runs/heartbeat/ledger.json 2>runs/heartbeat/ledger.err || echo "harness ledger --json exited non-zero (see ledger.err); continuing"
+          harness status --json > runs/heartbeat/status.json 2>runs/heartbeat/status.err || echo "harness status --json exited non-zero (see status.err); continuing"
+          echo "ledger --json bytes: $(wc -c < runs/heartbeat/ledger.json)"
+          echo "status --json bytes: $(wc -c < runs/heartbeat/status.json)"
+
+      - name: Post the heartbeat comment
+        uses: actions/github-script@v7
+        env:
+          TRACKING_ISSUE: ${{ vars.TRACKING_ISSUE }}
+          FORK_REPO: ${{ vars.FORK_REPO }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (e) { return ''; } };
+            const parse = (t) => { try { return JSON.parse(t); } catch (e) { return null; } };
+            const cfg = parse(read('.harness/config.json')) || {};
+            const ledger = parse(read('state/ledger.json')) || {};
+            const ledgerCli = read('runs/heartbeat/ledger.json').trim();
+            const statusCli = read('runs/heartbeat/status.json').trim();
+
+            const trackingRaw = (process.env.TRACKING_ISSUE || '').trim()
+              || (cfg.TRACKING_ISSUE === null || cfg.TRACKING_ISSUE === undefined ? '' : String(cfg.TRACKING_ISSUE));
+            const tracking = parseInt(trackingRaw, 10);
+            if (!Number.isFinite(tracking) || tracking <= 0) {
+              core.setFailed('TRACKING_ISSUE is not set (repository variable TRACKING_ISSUE or .harness/config.json): the heartbeat has nowhere to post (§16 item 12)');
+              return;
+            }
+            const forkRepo = (process.env.FORK_REPO || '').trim() || (cfg.FORK_REPO || '');
+            const upstreamRepo = cfg.UPSTREAM_REPO || 'Bright-Bots-Initiative/brightboost';
+
+            // queue depth per state label (open issues; PRs excluded)
+            const labels = [
+              'harness:queued', 'harness:proposing', 'harness:proposed', 'harness:approved',
+              'harness:running', 'harness:packaged', 'harness:shipped', 'harness:revising',
+              'harness:merged', 'harness:blocked', 'harness:needs-human', 'harness:abandoned',
+            ];
+            const depth = {};
+            for (const label of labels) {
+              const items = await github.paginate(github.rest.issues.listForRepo, {
+                owner, repo, state: 'open', labels: label, per_page: 100,
+              });
+              depth[label] = items.filter(i => !i.pull_request).length;
+            }
+
+            // last successful run of each workflow
+            const lastSuccess = {};
+            for (const wf of ['discover.yml', 'implement.yml', 'feedback.yml', 'heartbeat.yml']) {
+              try {
+                const r = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: wf, status: 'success', per_page: 1 });
+                const last = r.data.workflow_runs[0];
+                lastSuccess[wf] = last ? `${last.updated_at} ([run](${last.html_url}))` : 'never';
+              } catch (e) {
+                lastSuccess[wf] = `unknown (${e.message})`;
+              }
+            }
+
+            // fork divergence from upstream (read-only compare; B105)
+            let divergence = 'FORK_REPO not configured';
+            if (forkRepo) {
+              try {
+                const [uo, ur] = upstreamRepo.split('/');
+                const [fo, fr] = forkRepo.split('/');
+                const up = await github.rest.repos.get({ owner: uo, repo: ur });
+                const fk = await github.rest.repos.get({ owner: fo, repo: fr });
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  owner: uo, repo: ur, basehead: `${up.data.default_branch}...${fo}:${fk.data.default_branch}`,
+                });
+                divergence = `${cmp.data.status}: fork \`${forkRepo}\` is ${cmp.data.ahead_by} ahead / ${cmp.data.behind_by} behind upstream \`${upstreamRepo}:${up.data.default_branch}\``
+                  + (cmp.data.ahead_by > 0 ? ' — **fork default branch has diverged; sync-fork will refuse (B105)**' : '');
+              } catch (e) {
+                divergence = `could not compare ${forkRepo} with ${upstreamRepo} (${e.message})`;
+              }
+            }
+
+            const w = ledger.window || {};
+            const fmt = (v) => (v === undefined ? '?' : v === null ? 'null' : String(v));
+            const lines = [];
+            lines.push(`## harness heartbeat — ${new Date().toISOString()}`);
+            lines.push(`run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`);
+            lines.push('');
+            lines.push('### queue depth (open issues per state label)');
+            lines.push('| state | count |');
+            lines.push('|---|---|');
+            for (const l of labels) lines.push(`| \`${l}\` | ${depth[l]} |`);
+            lines.push('');
+            lines.push('### spend this window (state/ledger.json)');
+            lines.push(`- period_start: ${fmt(w.period_start)}`);
+            lines.push(`- spent_usd: ${fmt(w.spent_usd)} of WEEKLY_CAP_USD ${fmt(cfg.WEEKLY_CAP_USD)} (RESERVE_PCT ${fmt(cfg.RESERVE_PCT)})`);
+            lines.push(`- calls: ${fmt(w.calls)}`);
+            lines.push(`- rate_limited_until: ${fmt(w.rate_limited_until)}`);
+            lines.push(`- history entries: ${Array.isArray(ledger.history) ? ledger.history.length : '?'}`);
+            lines.push('');
+            lines.push('### last successful run');
+            for (const [k, v] of Object.entries(lastSuccess)) lines.push(`- ${k}: ${v}`);
+            lines.push('');
+            lines.push('### fork vs upstream');
+            lines.push(`- ${divergence}`);
+            if (ledgerCli) {
+              lines.push('', '<details><summary>harness ledger --json</summary>', '', '```json', ledgerCli.slice(0, 6000), '```', '</details>');
+            }
+            if (statusCli) {
+              lines.push('', '<details><summary>harness status --json (runner-local view)</summary>', '', '```json', statusCli.slice(0, 6000), '```', '</details>');
+            }
+            lines.push('', '_Absence of this weekly comment is the alarm (B144)._');
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: tracking, body: lines.join('\n') });
+            core.info(`heartbeat posted to #${tracking}`);

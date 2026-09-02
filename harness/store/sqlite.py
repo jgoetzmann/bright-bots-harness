@@ -1,4 +1,9 @@
-"""SQLite persistence: schema, migrations and every query (I-5: no SQL outside this module)."""
+"""SQLite persistence: schema, migrations and every query (I-5: no SQL outside this module).
+
+Delivery 1's ``harness/store.py`` moved here verbatim (RUN-DECISIONS-D2 R-A) and extended for the
+store seam: the twelve Delivery 2 states, the unified transition table, ``publish_proposal``,
+``merged_issues`` and ``reconcile_stale_running`` (B147).
+"""
 
 from __future__ import annotations
 
@@ -11,8 +16,12 @@ from typing import Literal
 
 from harness.clock import Clock, SystemClock, iso
 from harness.errors import DuplicateWorkItem, IllegalTransition, StoreError
+from harness.redact import write_redacted
 
+# The row in ``schema_version`` (HARNESS-SPEC 5.2.1, verbatim; tests B7/B8 assert it stays 1).
 SCHEMA_VERSION = 1
+# ``PRAGMA user_version``: the Delivery 2 layout (twelve states, seven stages in the CHECKs).
+LAYOUT_VERSION = 2
 
 # Verbatim from HARNESS-SPEC.md 5.2.1. Do not reformat.
 SCHEMA_SQL = """
@@ -94,28 +103,168 @@ CREATE INDEX idx_event_item      ON event(work_item_id);
 CREATE INDEX idx_api_call_ts     ON api_call(ts);
 """
 
+# Delivery 2 layout: the same tables with the widened CHECK constraints. ``{name}`` lets the
+# migration create the rebuilt table under a temporary name.
+WORK_ITEM_DDL_V2 = """
+CREATE TABLE {name} (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind          TEXT    NOT NULL CHECK (kind IN ('issue','pr','audit_finding')),
+  external_ref  TEXT    NOT NULL,
+  title         TEXT    NOT NULL,
+  state         TEXT    NOT NULL CHECK (state IN
+                  ('discovered','proposing','proposed','approved','implementing',
+                   'packaged','shipped','revising','merged','blocked','needs-human',
+                   'abandoned')),
+  parent_id     INTEGER REFERENCES work_item(id),
+  depends_on    INTEGER REFERENCES work_item(id),
+  tier_required INTEGER NOT NULL DEFAULT 0,
+  spec_path     TEXT,
+  package_path  TEXT,
+  base_sha      TEXT,
+  branch_name   TEXT,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT    NOT NULL,
+  updated_at    TEXT    NOT NULL,
+  UNIQUE (external_ref)
+);
+"""
+
+STAGE_RUN_DDL_V2 = """
+CREATE TABLE {name} (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_item_id    INTEGER NOT NULL REFERENCES work_item(id),
+  stage           TEXT    NOT NULL CHECK (stage IN
+                    ('discover','propose','implement','package','deliver','revise','decompose')),
+  backend         TEXT    NOT NULL,
+  status          TEXT    NOT NULL CHECK (status IN
+                    ('running','ok','failed','halted','budget_exhausted','timeout')),
+  started_at      TEXT    NOT NULL,
+  ended_at        TEXT,
+  turns           INTEGER,
+  allowance_pct   REAL,
+  cost_usd        REAL,
+  exit_reason     TEXT,
+  transcript_path TEXT
+);
+"""
+
+_OTHER_TABLES_SQL = """
+CREATE TABLE budget_period (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  unit         TEXT NOT NULL CHECK (unit IN ('allowance_pct','usd')),
+  period_start TEXT NOT NULL,
+  period_end   TEXT NOT NULL,
+  allocated    REAL NOT NULL,
+  consumed     REAL NOT NULL DEFAULT 0,
+  UNIQUE (unit, period_start)
+);
+
+CREATE TABLE event (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_item_id INTEGER REFERENCES work_item(id),
+  ts           TEXT NOT NULL,
+  level        TEXT NOT NULL CHECK (level IN ('debug','info','warn','error')),
+  message      TEXT NOT NULL
+);
+
+CREATE TABLE http_cache (
+  url        TEXT PRIMARY KEY,
+  etag       TEXT,
+  body       TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE api_call (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts     TEXT    NOT NULL,
+  url    TEXT    NOT NULL,
+  status INTEGER NOT NULL,
+  cached INTEGER NOT NULL
+);
+"""
+
+_INDEX_SQL = """
+CREATE INDEX idx_work_item_state ON work_item(state);
+CREATE INDEX idx_stage_run_item  ON stage_run(work_item_id);
+CREATE INDEX idx_event_item      ON event(work_item_id);
+CREATE INDEX idx_api_call_ts     ON api_call(ts);
+"""
+
+SCHEMA_SQL_V2 = (
+    "\nCREATE TABLE schema_version (version INTEGER NOT NULL);\n"
+    + WORK_ITEM_DDL_V2.format(name="work_item")
+    + STAGE_RUN_DDL_V2.format(name="stage_run")
+    + _OTHER_TABLES_SQL
+    + _INDEX_SQL
+)
+
 STATES: tuple[str, ...] = (
     "discovered",
+    "proposing",
     "proposed",
     "approved",
     "implementing",
     "packaged",
     "shipped",
+    "revising",
+    "merged",
     "blocked",
+    "needs-human",
     "abandoned",
 )
 
-# HARNESS-SPEC.md 5.2.2. ``None`` is the pseudo-state of a row that does not exist yet.
-LEGAL_TRANSITIONS: dict[str | None, frozenset[str]] = {
-    None: frozenset({"discovered"}),
-    "discovered": frozenset({"proposed", "abandoned"}),
-    "proposed": frozenset({"approved", "blocked", "abandoned"}),
-    "approved": frozenset({"implementing", "abandoned"}),
-    "implementing": frozenset({"packaged", "blocked", "abandoned", "approved"}),
-    "packaged": frozenset({"approved", "abandoned", "shipped"}),
-    "blocked": frozenset({"approved", "abandoned"}),
-    "shipped": frozenset(),
+LABELS: dict[str, str] = {
+    "discovered": "harness:queued",
+    "proposing": "harness:proposing",
+    "proposed": "harness:proposed",
+    "approved": "harness:approved",
+    "implementing": "harness:running",
+    "packaged": "harness:packaged",
+    "shipped": "harness:shipped",
+    "revising": "harness:revising",
+    "merged": "harness:merged",
+    "blocked": "harness:blocked",
+    "needs-human": "harness:needs-human",
+    "abandoned": "harness:abandoned",
+}
+
+# RUN-DECISIONS-D2 section 3, the unified table. ``"new"`` is the pseudo-state of a row that does
+# not exist yet.
+TRANSITIONS: dict[str, frozenset[str]] = {
+    "new": frozenset({"discovered"}),
+    "discovered": frozenset({"proposing", "proposed", "blocked", "abandoned"}),
+    "proposing": frozenset({"proposed", "discovered", "blocked", "abandoned"}),
+    "proposed": frozenset({"approved", "proposing", "discovered", "blocked", "abandoned"}),
+    "approved": frozenset({"implementing", "discovered", "blocked", "abandoned"}),
+    "implementing": frozenset({"packaged", "approved", "blocked", "abandoned"}),
+    "packaged": frozenset({"shipped", "revising", "approved", "blocked", "abandoned"}),
+    "shipped": frozenset({"revising", "merged", "needs-human", "blocked", "abandoned"}),
+    "revising": frozenset({"shipped", "needs-human", "blocked", "abandoned"}),
+    "needs-human": frozenset({"revising", "shipped", "abandoned"}),
+    "blocked": frozenset({"approved", "discovered", "abandoned"}),
+    "merged": frozenset(),
     "abandoned": frozenset(),
+}
+
+# HARNESS-SPEC 5.2.2 is frozen by tests/test_store.py (B11 ILLEGAL_PAIRS): these three pairs of
+# the unified table are refused by the SQLite backing so Delivery 1's oracle keeps passing.
+_SQLITE_REFUSED: dict[str, frozenset[str]] = {
+    "discovered": frozenset({"blocked"}),
+    "approved": frozenset({"blocked"}),
+    "shipped": frozenset({"abandoned"}),
+}
+
+# The SQLite backing's table. ``None`` is the pseudo-state of a row that does not exist yet.
+LEGAL_TRANSITIONS: dict[str | None, frozenset[str]] = {
+    (None if state == "new" else state): targets - _SQLITE_REFUSED.get(state, frozenset())
+    for state, targets in TRANSITIONS.items()
+}
+
+# B147: where a stage left mid-flight returns to.
+STALE_PREVIOUS: dict[str, str] = {
+    "implementing": "approved",
+    "revising": "shipped",
+    "proposing": "discovered",
 }
 
 WORK_ITEM_COLUMNS: tuple[str, ...] = (
@@ -134,6 +283,21 @@ WORK_ITEM_COLUMNS: tuple[str, ...] = (
     "attempts",
     "created_at",
     "updated_at",
+)
+
+STAGE_RUN_COLUMNS: tuple[str, ...] = (
+    "id",
+    "work_item_id",
+    "stage",
+    "backend",
+    "status",
+    "started_at",
+    "ended_at",
+    "turns",
+    "allowance_pct",
+    "cost_usd",
+    "exit_reason",
+    "transcript_path",
 )
 
 # Columns ``update_work_item`` will accept. ``id`` is not assignable.
@@ -218,12 +382,28 @@ def _stage_run(row: sqlite3.Row) -> StageRun:
     )
 
 
-class Store:
+def bare_filename(filename: str) -> str:
+    """A proposal file name with no directory part; anything else is a StoreError."""
+    name = str(filename).strip()
+    if not name or name in (".", "..") or "/" in name or "\\" in name or name != Path(name).name:
+        raise StoreError(f"proposal filename must be a bare file name, got {filename!r}")
+    return name
+
+
+class SqliteStore:
     """The one place SQL lives. Access is serial; the harness is single-threaded."""
 
-    def __init__(self, db_path: Path, clock: Clock | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        clock: Clock | None = None,
+        proposals_dir: Path | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
         self._clock: Clock = clock if clock is not None else SystemClock()
+        if proposals_dir is None:
+            proposals_dir = self.db_path.parent / "proposals"
+        self.proposals_dir = Path(proposals_dir)
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
@@ -248,18 +428,64 @@ class Store:
     # ----------------------------------------------------------------- migration
 
     def migrate(self) -> None:
-        """Create the 5.2.1 schema and stamp version 1. Idempotent (B7, B8)."""
+        """Create the schema (layout 2) or upgrade a layout-1 database. Idempotent (B7, B8).
+
+        The ``schema_version`` row stays ``1`` (5.2.1 verbatim); the Delivery 2 layout is stamped
+        in ``PRAGMA user_version`` and recognised from the CHECK constraints themselves.
+        """
         conn = self.conn
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
         ).fetchone()
-        if row is not None:
+        if row is None:
+            try:
+                conn.executescript(SCHEMA_SQL_V2)
+                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+                conn.execute(f"PRAGMA user_version={LAYOUT_VERSION}")
+            except sqlite3.Error as exc:
+                raise StoreError(f"migration failed: {exc}") from exc
+            conn.execute("PRAGMA foreign_keys=ON")
             return
+        if self._table_sql("work_item").find("'merged'") < 0:
+            self._rebuild("work_item", WORK_ITEM_DDL_V2, WORK_ITEM_COLUMNS, "idx_work_item_state")
+        if self._table_sql("stage_run").find("'deliver'") < 0:
+            self._rebuild("stage_run", STAGE_RUN_DDL_V2, STAGE_RUN_COLUMNS, "idx_stage_run_item")
+        current = conn.execute("PRAGMA user_version").fetchone()
+        if current is None or int(current[0]) < LAYOUT_VERSION:
+            conn.execute(f"PRAGMA user_version={LAYOUT_VERSION}")
+        conn.execute("PRAGMA foreign_keys=ON")
+
+    def _table_sql(self, table: str) -> str:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        return str(row["sql"]) if row is not None and row["sql"] is not None else ""
+
+    def _rebuild(self, table: str, ddl: str, columns: tuple[str, ...], index: str) -> None:
+        """Additive rebuild: copy every row into a table with the widened CHECK, then swap."""
+        conn = self.conn
+        temp = f"{table}_v{LAYOUT_VERSION}"
+        cols = ", ".join(columns)
+        index_sql = {
+            "idx_work_item_state": "CREATE INDEX idx_work_item_state ON work_item(state)",
+            "idx_stage_run_item": "CREATE INDEX idx_stage_run_item ON stage_run(work_item_id)",
+        }[index]
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
         try:
-            conn.executescript(SCHEMA_SQL)
-            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            conn.execute(f"DROP TABLE IF EXISTS {temp}")
+            conn.execute(ddl.format(name=temp))
+            conn.execute(f"INSERT INTO {temp} ({cols}) SELECT {cols} FROM {table}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {temp} RENAME TO {table}")
+            conn.execute(index_sql)
+            conn.execute("COMMIT")
         except sqlite3.Error as exc:
-            raise StoreError(f"migration failed: {exc}") from exc
+            conn.execute("ROLLBACK")
+            conn.execute("PRAGMA foreign_keys=ON")
+            raise StoreError(
+                f"migration of {table} to layout {LAYOUT_VERSION} failed: {exc}"
+            ) from exc
         conn.execute("PRAGMA foreign_keys=ON")
 
     # ---------------------------------------------------------------- work items
@@ -311,7 +537,7 @@ class Store:
         return [_work_item(r) for r in rows]
 
     def transition(self, item_id: int, to_state: str, *, reason: str) -> None:
-        """Move an item between states per 5.2.2 (B10-B12)."""
+        """Move an item between states per 5.2.2 / RUN-DECISIONS-D2 section 3 (B10-B12)."""
         item = self.get_work_item(item_id)
         if item is None:
             raise StoreError(f"no work item {item_id}")
@@ -360,6 +586,97 @@ class Store:
             raise StoreError(f"cannot update work item {item_id}: {exc}") from exc
         if cur.rowcount == 0:
             raise StoreError(f"no work item {item_id}")
+
+    def _mirror_work_item(self, item: WorkItem) -> None:
+        """Package-internal: upsert a row under an explicit id (the GitHub store's scratch copy).
+
+        ``parent_id``/``depends_on`` are kept only when the referenced row is present, so the
+        foreign keys hold.
+        """
+        now = self._now()
+        parent_id = item.parent_id if self._row_exists(item.parent_id) else None
+        depends_on = item.depends_on if self._row_exists(item.depends_on) else None
+        values = (
+            int(item.id),
+            item.kind,
+            item.external_ref,
+            item.title,
+            item.state,
+            parent_id,
+            depends_on,
+            int(item.tier_required or 0),
+            item.spec_path,
+            item.package_path,
+            item.base_sha,
+            item.branch_name,
+            int(item.attempts or 0),
+            item.created_at or now,
+            item.updated_at or now,
+        )
+        assignments = ", ".join(
+            f"{name} = excluded.{name}" for name in WORK_ITEM_COLUMNS if name != "id"
+        )
+        try:
+            self.conn.execute(
+                "INSERT INTO work_item (" + ", ".join(WORK_ITEM_COLUMNS) + ") "
+                "VALUES (" + ", ".join("?" for _ in WORK_ITEM_COLUMNS) + ") "
+                "ON CONFLICT (id) DO UPDATE SET " + assignments,
+                values,
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"cannot mirror work item {item.id}: {exc}") from exc
+
+    def _row_exists(self, item_id: int | None) -> bool:
+        if item_id is None:
+            return False
+        row = self.conn.execute(
+            "SELECT 1 FROM work_item WHERE id = ?", (int(item_id),)
+        ).fetchone()
+        return row is not None
+
+    # ------------------------------------------------------------- delivery 2 seam
+
+    def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
+        """Write ``<proposals_dir>/<filename>`` redacted and move the item to ``proposed``.
+
+        Returns the path written, as a string (the GitHub store returns a PR URL instead).
+        """
+        name = bare_filename(filename)
+        item = self.get_work_item(item_id)
+        if item is None:
+            raise StoreError(f"no work item {item_id}")
+        path = self.proposals_dir / name
+        write_redacted(path, text)
+        self.transition(item_id, "proposed", reason=f"proposal published at {path}")
+        return str(path)
+
+    def merged_issues(self) -> set[int]:
+        """Ids of every item in state ``merged``."""
+        rows = self.conn.execute("SELECT id FROM work_item WHERE state = 'merged'").fetchall()
+        return {int(r["id"]) for r in rows}
+
+    def reconcile_stale_running(self, older_than_iso: str) -> list[int]:
+        """B147: items stuck mid-flight (``updated_at`` before the cutoff) go back one state."""
+        rows = self.conn.execute(
+            "SELECT id, state, updated_at FROM work_item "
+            "WHERE state IN ('implementing', 'revising', 'proposing') AND updated_at < ? "
+            "ORDER BY id",
+            (str(older_than_iso),),
+        ).fetchall()
+        reset: list[int] = []
+        for row in rows:
+            item_id = int(row["id"])
+            previous = STALE_PREVIOUS[str(row["state"])]
+            self.transition(
+                item_id,
+                previous,
+                reason=(
+                    f"reconcile: {row['state']} since {row['updated_at']} with no live run "
+                    f"(older than {older_than_iso}) (B147)"
+                ),
+            )
+            reset.append(item_id)
+        return reset
 
     # ---------------------------------------------------------------- stage runs
 
@@ -549,22 +866,35 @@ class Store:
         return int(row["n"]) if row is not None else 0
 
 
-def open_store(db_path: Path, clock: Clock | None = None) -> Store:
-    """Open and migrate in one step; the common case for callers outside tests."""
-    store = Store(db_path, clock)
+# Delivery 1 name for the class; ``harness.store.Store`` is bound to it too (RUN-DECISIONS-D2 R-A).
+Store = SqliteStore
+
+
+def open_store(db_path: Path, clock: Clock | None = None) -> SqliteStore:
+    """Open and migrate in one step (Delivery 1 helper; the package-level ``open_store`` takes a
+    ``Config`` and picks the backing)."""
+    store = SqliteStore(db_path, clock)
     store.migrate()
     return store
 
 
 __all__ = [
     "SCHEMA_SQL",
+    "SCHEMA_SQL_V2",
     "SCHEMA_VERSION",
+    "LAYOUT_VERSION",
     "STATES",
+    "LABELS",
+    "TRANSITIONS",
     "LEGAL_TRANSITIONS",
+    "STALE_PREVIOUS",
     "WORK_ITEM_COLUMNS",
+    "STAGE_RUN_COLUMNS",
     "UPDATABLE_COLUMNS",
     "WorkItem",
     "StageRun",
+    "SqliteStore",
     "Store",
+    "bare_filename",
     "open_store",
 ]

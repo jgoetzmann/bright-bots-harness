@@ -26,7 +26,8 @@ SPEC_PACKAGE_FILES = [
     "harness/__main__.py",
     "harness/config.py",
     "harness/errors.py",
-    "harness/store.py",
+    "harness/store/__init__.py",
+    "harness/store/sqlite.py",
     "harness/governor.py",
     "harness/collision.py",
     "harness/redact.py",
@@ -133,6 +134,10 @@ def test_i1_no_module_issues_a_non_get_http_request():
     )
 
     for path in _harness_sources():
+        # I-1' (Delivery 2, DECISIONS D13): harness/gh.py is the one module permitted to issue a
+        # non-GET request; the new I-11 test pins that exemption to gh.py alone.
+        if _rel(path) == "harness/gh.py":
+            continue
         tree = _parse(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -234,7 +239,8 @@ def test_i5_sql_exists_only_in_store_py():
     violations: list[str] = []
 
     for path in _harness_sources():
-        if _rel(path) == "harness/store.py":
+        # Delivery 2 moved the SQLite store to a package (DECISIONS D12); SQL lives there only.
+        if _rel(path) in ("harness/store.py", "harness/store/sqlite.py"):
             continue
         source = _strip_comment_lines(_read(path))
         for token in SQL_TOKENS:

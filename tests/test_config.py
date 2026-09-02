@@ -279,9 +279,13 @@ def test_b3_unknown_keys_in_environ_are_ignored_rather_than_rejected(env_file):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tier", ["1", "2", "3"])
+@pytest.mark.parametrize("tier", ["1", "3"])
 def test_b4_a_non_zero_permission_tier_is_rejected(tmp_path, write_env, tier):
-    """B4: Delivery 1 is Tier 0; any other tier is a startup error."""
+    """B4: Delivery 1 is Tier 0; any other tier is a startup error.
+
+    Amended in Delivery 2 (DECISIONS D14): tier 2 is now a mode of the harness and is accepted;
+    tier 1 and anything above 2 remain startup errors.
+    """
     path = write_env(tmp_path / ".env", PERMISSION_TIER=tier)
 
     with pytest.raises(ConfigError):

@@ -993,3 +993,27 @@ def test_b119_the_shipped_revise_fixture_replays_as_a_successful_revise(tmp_path
     assert result.ok is True
     assert result.reset_at is None
     assert result.text.strip() != ""
+
+
+def test_d19_an_is_error_result_with_no_stderr_surfaces_the_cli_subtype(tmp_path):
+    """D19: `--max-budget-usd` binding reports `subtype: error_max_budget_usd` with empty stderr;
+    the RunResult must carry that name so a diagnose cycle can tell a budget stop from a crash."""
+    import json
+    import subprocess
+
+    from harness.runner.base import RunRequest
+    from harness.runner.cli import ClaudeCliRunner
+
+    payload = {"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
+               "result": "", "num_turns": 1, "total_cost_usd": 0.153, "duration_ms": 51940}
+
+    def spawn(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, json.dumps(payload), "")
+
+    runner = ClaudeCliRunner(spawn=spawn)
+    result = runner.run(RunRequest(stage="implement", prompt="x", system_prompt=None,
+                                   allowed_tools=("Read",), disallowed_tools=(), max_turns=5,
+                                   cwd=tmp_path, timeout_s=60, max_budget_usd=0.001))
+    assert result.ok is False
+    assert result.error == "error_max_budget_usd"
+    assert result.cost_usd == 0.153

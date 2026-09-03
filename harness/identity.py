@@ -122,8 +122,6 @@ NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
 )
 
 #: Kept for callers that import the Delivery 1 name.
-NEVER_ASK_FOR = NEVER_ASK_FOR_FINE_GRAINED
-
 
 def permission_set_for(tier: int) -> tuple[tuple[str, str, str], ...]:
     """The permission rows for a target tier: §13.2 fine-grained below 2, §5.2 classic at 2."""

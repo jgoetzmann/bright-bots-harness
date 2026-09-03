@@ -1,8 +1,4 @@
-"""The discover stage: directed, triage, and the refused audit mode (SPEC §5.9.1).
-
-Delivery 2: the queue is this repository. Triage ranks the work items already in the store's
-``discovered`` state first; only an empty queue falls back to the Delivery 1 product-repo triage.
-"""
+"""The discover stage: directed, triage (queue first, then the product repo), refused audit."""
 
 from __future__ import annotations
 

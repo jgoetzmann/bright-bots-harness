@@ -120,20 +120,11 @@ class ForkDiverged(HarnessError):
 
 
 class ProposalInvalid(HarnessError):
-    """A proposal's front matter failed schema validation (B103/B104).
+    """A proposal's front matter failed schema validation (B103/B104); ``errors`` lists why."""
 
-    ``errors`` lists every violation. Accepts ``ProposalInvalid(errors)`` with a list, or
-    ``ProposalInvalid(message, errors=[...])``.
-    """
-
-    def __init__(
-        self, message: object = "", errors: Sequence[str] | None = None
-    ) -> None:
-        if errors is None and not isinstance(message, str):
-            errors = [str(item) for item in message]
-            message = ""
+    def __init__(self, message: str = "", errors: Sequence[str] | None = None) -> None:
         self.errors: list[str] = [str(item) for item in (errors or [])]
-        text = str(message) if message else "invalid proposal"
+        text = message or "invalid proposal"
         if self.errors and not message:
             text = "invalid proposal: " + "; ".join(self.errors)
         super().__init__(text)

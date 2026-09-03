@@ -1,11 +1,4 @@
-"""The store seam (Delivery 2 section 2): one queue protocol, two backings.
-
-``Store`` is the SQLite class (Delivery 1's ``harness/store.py``, moved verbatim to ``sqlite.py``)
-so every existing call site and test keeps working. ``StoreProtocol`` is the structural type the
-stages are written against; ``GitHubStore`` is the second implementation. ``open_store`` picks the
-backing from ``config.store_backend``. Nothing here reads an execution-mode environment variable
-(I-16).
-"""
+"""The store seam: ``Store`` (the SQLite class), ``StoreProtocol``, ``GitHubStore``, ``open_store``."""
 
 from __future__ import annotations
 
@@ -101,14 +94,8 @@ class StoreProtocol(Protocol):
     def reconcile_stale_running(self, older_than_iso: str) -> list[int]: ...
 
 
-def open_store(config: Any, clock: Any, gh: Any = None, *, run_url: str = "") -> StoreProtocol:
-    """``sqlite`` -> a migrated :class:`SqliteStore`; ``github`` -> :class:`GitHubStore` over it.
-
-    The SQLite database is ``config.db_path`` in both cases (per-run scratch for the GitHub
-    backing); proposals are written under ``config.repo_root / "proposals"`` when the config
-    carries a ``repo_root``. ``run_url`` (the workflow run, supplied by the CLI) goes into every
-    B101 comment.
-    """
+def open_store(config: Any, clock: Any, gh: Any = None) -> StoreProtocol:
+    """``sqlite`` -> a migrated :class:`SqliteStore`; ``github`` -> :class:`GitHubStore` over it."""
     repo_root = getattr(config, "repo_root", None)
     proposals_dir = Path(repo_root) / "proposals" if repo_root is not None else None
     scratch = SqliteStore(Path(config.db_path), clock, proposals_dir=proposals_dir)
@@ -123,7 +110,6 @@ def open_store(config: Any, clock: Any, gh: Any = None, *, run_url: str = "") ->
         self_repo=str(getattr(config, "self_repo", "")),
         scratch=scratch,
         clock=clock,
-        run_url=run_url or str(getattr(config, "run_url", "") or ""),
     )
 
 

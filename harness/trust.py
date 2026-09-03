@@ -1,8 +1,4 @@
-"""Trust file and the first half of the actor gate (handoff 5.5, 8.2 - B131).
-
-Pure: no environment, no network, no subprocess, no SQL. The only I/O is reading the trust file.
-A trust file that cannot be read is an empty trust set, so nobody is authorised. Fail closed.
-"""
+"""Trust file and the first half of the actor gate (handoff 5.5, 8.2 - B131). Fails closed."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -44,8 +40,6 @@ def is_authorised(handle: str, author_association: str, trusted: frozenset[str])
     Neither alone suffices. The handle comparison is case-insensitive; the association must be
     exactly one of ``AUTHOR_ASSOCIATIONS`` as GitHub spells it.
     """
-    if not isinstance(handle, str) or not isinstance(author_association, str):
-        return False
     in_trust_file = normalise_handle(handle) in trusted
     association_ok = author_association in AUTHOR_ASSOCIATIONS
     return in_trust_file and association_ok

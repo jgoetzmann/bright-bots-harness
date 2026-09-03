@@ -15,12 +15,7 @@ DEFAULT_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "runner"
 
 
 class FakeRunner:
-    """Returns the fixture for ``request.stage``, unchanged, every time.
-
-    A fixture carrying ``"rate_limited": true`` replays the exhaustion outcome (B119/B120):
-    ``ok`` is False whatever the file says and ``reset_at`` is copied as given, ``None``
-    when the fixture names none (D2 §12).
-    """
+    """Returns the fixture for ``request.stage``; ``"rate_limited": true`` replays exhaustion."""
 
     name = "fake"
 

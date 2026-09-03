@@ -1,17 +1,4 @@
-"""GitHub-as-queue store (Delivery 2 section 4).
-
-A work item is one issue in ``self_repo`` carrying exactly one ``harness:*`` state label. Labels
-are read fresh on every call (B102: a human's relabel is honoured, never overwritten from a
-cache); two state labels raise ``StoreError`` (B100); each transition is one ``set_labels`` plus
-one B101 comment. The columns an issue cannot hold (spec_path, base_sha, branch_name,
-package_path, attempts, previous_state, ...) travel in a hidden ``<!-- harness-meta {...} -->``
-marker appended to the comment thread; the latest marker wins. Stage runs, budget, cache, API
-call counts and events live in ``scratch``, a per-run :class:`SqliteStore`.
-
-The GitHub client is duck-typed: ``get`` (Delivery 1) for reads; ``set_labels``, ``comment``,
-``create_issue``, ``create_branch_file`` and ``create_pull`` (RUN-DECISIONS-D2 section 7) for
-writes. Nothing here reads an execution-mode environment variable (I-16).
-"""
+"""GitHub-as-queue store (Delivery 2 section 4): issues, state labels, a hidden meta marker."""
 
 from __future__ import annotations
 
@@ -48,18 +35,6 @@ _NOT_FOUND_RE = re.compile(r"\b404\b|not found", re.IGNORECASE)
 
 PER_PAGE = 100
 MAX_PAGES = 50
-
-# Meta keys that map onto WorkItem columns.
-_META_COLUMNS = (
-    "spec_path",
-    "package_path",
-    "base_sha",
-    "branch_name",
-    "attempts",
-    "parent_id",
-    "depends_on",
-    "tier_required",
-)
 
 
 def _label_names(issue: Mapping[str, Any]) -> list[str]:
@@ -301,12 +276,7 @@ class GitHubStore:
         tier_required: int = 0,
         body: str = "",
     ) -> int:
-        """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number.
-
-        The issue body is ``external_ref`` on its first line (the duplicate check and
-        ``find_by_ref`` read it back), then ``body`` when given, then ``Parent: #N`` for a
-        ``sub:N:i`` reference (S11; the caller never appends it).
-        """
+        """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number."""
         for issue in self._issues(state="open"):
             if _origin_ref(issue) == external_ref:
                 raise DuplicateWorkItem(
@@ -355,11 +325,6 @@ class GitHubStore:
             if _origin_ref(issue) == external_ref:
                 number = int(issue["number"])
                 return _item_from(issue, self._meta(number), _state_of(issue) or "")
-        for issue in issues:
-            number = int(issue["number"])
-            meta = self._meta(number)
-            if meta.get("external_ref") == external_ref:
-                return _item_from(issue, meta, _state_of(issue) or "")
         return None
 
     def list_work_items(self, *, state: str | None = None) -> list[WorkItem]:
@@ -550,11 +515,6 @@ class GitHubStore:
             transcript_path=transcript_path,
         )
         owner = self._runs.get(run_id)
-        if owner is None:
-            for run in self.scratch.list_stage_runs():
-                if run.id == run_id:
-                    owner = (run.work_item_id, run.stage)
-                    break
         if owner is not None:
             self._last_run[owner[0]] = (owner[1], float(cost_usd or 0.0))
 

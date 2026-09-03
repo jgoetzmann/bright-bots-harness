@@ -1,18 +1,10 @@
-"""The revise stage (handoff §9): one bounded revision of a delivered branch against CI failure,
-a merge conflict, or trusted review feedback — gated by the complete Delivery 1 gate sequence.
-
-Nothing here re-implements the gate loop: ``implement.GATE_RUNNER`` runs the sequence,
-``gates.signature`` detects a repeat (B138), ``implement._reject_forbidden_diff`` is B64, and the
-git and pull-request helpers are ``deliver``'s. A red tree is blocked and never pushed (B136); a
-branch a human touched is never force-pushed (B139).
-"""
+"""The revise stage (handoff §9): one bounded revision of a delivered branch, fully re-gated."""
 
 from __future__ import annotations
 
 import dataclasses
 import json
 import logging
-from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from harness import gates, redact
@@ -29,7 +21,6 @@ from harness.errors import (
 )
 from harness.gates import GateResult
 from harness.halt import check_halt
-from harness.redact import write_redacted
 from harness.stages import data_block, load_prompt, run_model
 from harness.stages import deliver as deliver_mod
 from harness.stages import implement as implement_mod
@@ -38,7 +29,6 @@ from harness.stages.propose import parse_work_package
 __all__ = [
     "FAILING_CONCLUSIONS",
     "HARNESS_AUTHOR_EMAILS",
-    "SOURCES",
     "TRUSTED_ASSOCIATIONS",
     "gather_ci_feedback",
     "gather_review_feedback",
@@ -48,7 +38,6 @@ __all__ = [
 
 log = logging.getLogger("harness")
 
-SOURCES: tuple[str, ...] = ("ci", "conflict", "review")
 ALLOWED_TOOLS = implement_mod.ALLOWED_TOOLS
 DISALLOWED_TOOLS = implement_mod.DISALLOWED_TOOLS
 TIMEOUT_S = 3600
@@ -88,10 +77,7 @@ def gather_review_feedback(
     comments: Sequence[Mapping[str, Any]],
     trusted: frozenset[str],
 ) -> str:
-    """Review bodies and review comments from trusted actors only, with their anchors.
-
-    An untrusted body never appears in the result, so it never reaches a prompt (B133).
-    """
+    """Review bodies and comments from trusted actors only, with their anchors (B133)."""
     chunks: list[str] = []
     for review in reviews:
         if not _is_trusted(review, trusted):
@@ -171,15 +157,8 @@ def revise(
     notes: str = "",
     lease: Lease | None = None,
 ) -> Lease | None:
-    """One revision cycle. Returns the lease when a branch was revised, ``None`` when the cycle
-    stopped before touching anything (cap, repeated signature, nothing to act on, red gates).
-
-    Requires ``shipped``, or ``needs-human`` with non-empty ``notes`` (an explicit
-    ``/harness fix``), or ``packaged`` with a held ``lease`` (deliver's rebase conflicted).
-    """
+    """One revision cycle: the lease when a branch was revised, ``None`` when it stopped first."""
     check_halt(ctx.config.halt_file)
-    if source not in SOURCES:
-        raise HarnessError(f"unknown revise source {source!r}; expected one of {SOURCES}")
 
     item = ctx.store.get_work_item(item_id)
     if item is None:
@@ -542,13 +521,7 @@ def _cycle_count(ctx: Context, item_id: int) -> int:
     return max(from_ledger, from_scratch)
 
 
-def _signature_path(ctx: Context) -> Path:
-    return ctx.run_dir / "revise" / "last_signature"
-
-
 def _signature_seen(ctx: Context, item_id: int, signature: str) -> bool:
-    if deliver_mod._read(_signature_path(ctx)).strip() == signature:
-        return True
     marker = f"revise signature {signature}"
     return any(marker in str(event.get("message") or "") for event in ctx.store.events(item_id))
 
@@ -556,12 +529,11 @@ def _signature_seen(ctx: Context, item_id: int, signature: str) -> bool:
 def _remember_signature(ctx: Context, item_id: int, signature: str) -> None:
     if not signature:
         return
-    write_redacted(_signature_path(ctx), signature + "\n")
     ctx.store.append_event(item_id, "info", f"revise signature {signature}")
 
 
 def _baseline_red(ctx: Context, item_id: int) -> set[str]:
-    """Gates already red before the change: the run's baseline, else the proposal's list."""
+    """Gates already red before the change, from the run's baseline."""
     raw = deliver_mod._read(ctx.run_dir / "gates" / "baseline.json").strip()
     if raw:
         try:
@@ -574,30 +546,6 @@ def _baseline_red(ctx: Context, item_id: int) -> set[str]:
                 for r in rows
                 if isinstance(r, Mapping) and r.get("exit_code") not in (0, None)
             }
-    return _proposal_baseline_red(ctx, item_id)
-
-
-def _proposal_baseline_red(ctx: Context, item_id: int) -> set[str]:
-    roots = [
-        Path(getattr(ctx.config, "repo_root", ".")) / "proposals",
-        Path(ctx.config.db_path).parent / "proposals",
-    ]
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for path in sorted(root.glob(f"{item_id}-*.md")):
-            names: set[str] = set()
-            inside = False
-            for line in deliver_mod._read(path).splitlines():
-                if line.strip() == "baseline_red:":
-                    inside = True
-                    continue
-                if inside and line.startswith("  - "):
-                    names.add(line[4:].strip().strip('"'))
-                    continue
-                if inside:
-                    break
-            return names
     return set()
 
 

@@ -1057,3 +1057,102 @@ def test_B69_a_halt_file_appearing_mid_implement_releases_the_clone_and_resets_t
     assert rig.log.count("gates(baseline=True)") == 1
     assert "commit" not in rig.log
     assert [keep for _lease, keep in rig.clones.released] == [False]
+
+
+# --------------------------------------------------------------------------
+# B103 / B104 — the proposal schema is bounded; touched_paths must exist upstream
+# --------------------------------------------------------------------------
+
+
+def _valid_front() -> dict:
+    return {
+        "issue": 1,
+        "upstream_issue": 816,
+        "title": "fix(scripts): bundle size check misses esm output",
+        "kind": "fix",
+        "slices": 1,
+        "risk": "low",
+        "touched_paths": ["scripts/check-bundle-size.js"],
+        "depends_on": [],
+        "estimated_turns": 40,
+        "gate_expectation": "green",
+        "baseline_red": [],
+    }
+
+
+def test_B103_a_valid_front_matter_produces_no_errors():
+    """B103: every field present, every enum closed, every path real -> no validation error."""
+    from harness.stages.propose import validate_proposal
+
+    errors = validate_proposal(
+        _valid_front(), path_exists=lambda p: True, max_turns=80, open_issue=lambda n: n == 1
+    )
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "fragment"),
+    [
+        ({"kind": "feature"}, "kind"),
+        ({"risk": "extreme"}, "risk"),
+        ({"slices": 6}, "slices"),
+        ({"estimated_turns": 0}, "estimated_turns"),
+        ({"gate_expectation": "maybe"}, "gate_expectation"),
+        ({"unexpected": 1}, "unknown key"),
+        ({"title": ""}, "title"),
+    ],
+)
+def test_B103_a_closed_enum_range_or_unknown_key_fails_validation(mutation, fragment):
+    """B103: the front matter is a bounded schema; every enum closed, unknown keys rejected."""
+    from harness.stages.propose import validate_proposal
+
+    front = _valid_front()
+    front.update(mutation)
+    errors = validate_proposal(
+        front, path_exists=lambda p: True, max_turns=80, open_issue=lambda n: n == 1
+    )
+    assert errors, "expected a validation error"
+    assert any(fragment in e for e in errors), errors
+
+
+def test_B103_a_missing_required_key_fails_validation():
+    """B103: every field required."""
+    from harness.stages.propose import validate_proposal
+
+    front = _valid_front()
+    del front["risk"]
+    errors = validate_proposal(
+        front, path_exists=lambda p: True, max_turns=80, open_issue=lambda n: n == 1
+    )
+    assert any("risk" in e for e in errors), errors
+
+
+def test_B104_a_touched_path_absent_from_the_product_repo_fails_validation():
+    """B104: touched_paths entries are checked against the product repository at the base."""
+    from harness.stages.propose import validate_proposal
+
+    front = _valid_front()
+    front["touched_paths"] = ["scripts/check-bundle-size.js", "src/does/not/exist.ts"]
+    seen: list[str] = []
+
+    def path_exists(path: str) -> bool:
+        seen.append(path)
+        return path == "scripts/check-bundle-size.js"
+
+    errors = validate_proposal(
+        front, path_exists=path_exists, max_turns=80, open_issue=lambda n: n == 1
+    )
+    assert seen == ["scripts/check-bundle-size.js", "src/does/not/exist.ts"]
+    assert len(errors) == 1 and "src/does/not/exist.ts" in errors[0]
+
+
+def test_B104_every_touched_path_is_checked_and_an_empty_list_is_rejected():
+    """B104: the check is per entry; an empty list is not 'nothing to check', it is invalid."""
+    from harness.stages.propose import validate_proposal
+
+    front = _valid_front()
+    front["touched_paths"] = []
+    errors = validate_proposal(
+        front, path_exists=lambda p: True, max_turns=80, open_issue=lambda n: n == 1
+    )
+    assert any("touched_paths" in e for e in errors), errors

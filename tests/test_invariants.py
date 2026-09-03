@@ -1793,3 +1793,28 @@ def test_b127_every_spending_workflow_runs_doctor_before_dispatching(name):
     assert doctor is not None, f"{name}: harness doctor is required (B127)"
     assert dispatch is not None, f"{name}: harness dispatch is required (B122)"
     assert doctor < dispatch, f"{name}: doctor must run before dispatch (B127)"
+
+
+# --------------------------------------------------------------------------------------
+# B113 / B134 — properties that live in governance and documentation, checked as text
+# --------------------------------------------------------------------------------------
+
+
+def test_b113_branch_protection_is_a_named_human_prerequisite_and_codeowners_covers_governance():
+    """B113: main requires one approving review and no force-push; the harness's own proposal PRs are
+    subject to it. That is a repository setting a human applies (HUMAN.md item 9), and CODEOWNERS
+    keeps the governance files behind review."""
+    human = (REPO_ROOT / "HUMAN.md").read_text(encoding="utf-8").lower()
+    assert "branch protection" in human and "force-push" in human.replace("force push", "force-push")
+    owners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    for path in ("/.harness/", "/prompts/", "/.github/", "/harness/gates.py", "/harness/redact.py"):
+        assert path in owners, f"CODEOWNERS must cover {path}"
+
+
+def test_b134_operations_doc_states_the_event_driven_versus_polled_asymmetry():
+    """B134: commands on this repository are event-driven; on the product repository they are found by
+    the sweep with latency NOTIFY_POLL_HOURS. docs/OPERATIONS.md must say so, or it reads as a bug."""
+    ops = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
+    assert "NOTIFY_POLL_HOURS" in ops
+    lowered = ops.lower()
+    assert "event" in lowered and ("poll" in lowered or "sweep" in lowered)

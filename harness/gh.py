@@ -1,12 +1,4 @@
-"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface (D2 §5.3).
-
-``GitHubReadOnly`` is Delivery 1, unchanged. ``GitHubClient`` extends it and is the only
-authenticated request path in the package (I-11): every write passes its payload through
-``redact.redact_json`` before it is encoded (I-13), is recorded on ``sent``, and refuses to run
-without a token (``TierViolation``). Issues are only ever created in ``self_repo`` (I-14). No
-method here can change a pull request's state beyond closing it, nor act on a review's verdict
-(I-12).
-"""
+"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface (D2 §5.3)."""
 
 from __future__ import annotations
 
@@ -257,12 +249,7 @@ class GitHubReadOnly:
 
 
 class GitHubClient(GitHubReadOnly):
-    """Reads with or without a token; writes only with one.
-
-    ``can_write`` is ``bool(token)``. Every request carries ``Authorization: token <t>`` iff
-    ``can_write``. Every write records ``{"method", "url", "payload"}`` on ``sent`` — in
-    ``dry_run`` mode as well, where nothing is opened and a plausible synthetic body comes back.
-    """
+    """Reads with or without a token; writes only with one, each recorded on ``sent``."""
 
     def __init__(
         self,
@@ -285,12 +272,6 @@ class GitHubClient(GitHubReadOnly):
         self.self_repo = self_repo or ""
         self.dry_run = bool(dry_run)
         self.sent: list[dict] = []
-
-    def __repr__(self) -> str:
-        return (
-            f"GitHubClient(repo={self.repo!r}, self_repo={self.self_repo!r}, "
-            f"can_write={self.can_write}, dry_run={self.dry_run})"
-        )
 
     # ---------------------------------------------------------------- plumbing
 
@@ -329,7 +310,6 @@ class GitHubClient(GitHubReadOnly):
             code = int(getattr(exc, "code", 0) or 0)
             self.store.record_api_call(url, code, False)
             self._raise_for_status(url, code, _body_text(exc), getattr(exc, "headers", None))
-            raise GitHubError(f"github returned {code} for {url}")
         status = int(getattr(response, "status", 200) or 200)
         text = _body_text(response)
         _close(response)
@@ -462,11 +442,7 @@ class GitHubClient(GitHubReadOnly):
         message: str,
         base: str = "main",
     ) -> dict:
-        """Refs + contents API: GET the base ref, POST the branch ref, PUT the file on it.
-
-        An already-existing branch is reused, and an already-existing file is updated (its
-        blob sha is fetched so the PUT is accepted). The text is redacted before base64.
-        """
+        """Refs + contents API: GET the base ref, POST the branch ref, PUT the file on it."""
         self._require_write("create_branch_file")
         clean = redact.redact_json(
             {"message": str(message), "content": str(content), "branch": str(branch)}
@@ -574,11 +550,7 @@ class GitHubClient(GitHubReadOnly):
         force: bool,
         git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None,
     ) -> None:
-        """``git push`` over https with the token in an ``http.extraheader`` — never in the URL.
-
-        The header value is base64 of ``x-access-token:<token>``; it appears in argv only,
-        never in a log line, and is scrubbed from any error text before it is raised.
-        """
+        """``git push`` over https with the token in an ``http.extraheader``, never in the URL."""
         remote_url = f"https://github.com/{remote_repo}.git"
         record = redact.redact_json({"refspec": refspec, "force": force, "cwd": str(cwd)})
         self._record("git push", remote_url, record)
@@ -658,12 +630,7 @@ class GitHubClient(GitHubReadOnly):
 
 
 def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:
-    """Construct the client from a loaded ``Config``.
-
-    The token door (I-11) is opened here and nowhere else: the getter is imported inside this
-    function so the module never holds a reference to it, and it returns ``""`` unless the
-    last-loaded config is at permission tier 2.
-    """
+    """Construct the client from a loaded ``Config``; the token door (I-11) opens here only."""
     from harness.config import github_token
 
     return GitHubClient(

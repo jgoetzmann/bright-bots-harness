@@ -1,11 +1,4 @@
-"""The deliver stage (handoff §4.5): sync the fork, rebase, push the branch, open the upstream
-pull request from the review package, request trusted reviewers, and ship the item.
-
-Everything that leaves this machine goes through ``harness.gh`` (I-11) and through ``redact``
-(I-13). Nothing here acts on a review or takes a pull request past review (I-12). Nothing here
-inspects the diff for forbidden paths: that is B64 in ``implement.py``, and there is exactly one
-copy of it.
-"""
+"""The deliver stage (handoff §4.5): sync the fork, rebase, push, open the upstream PR, ship."""
 
 from __future__ import annotations
 
@@ -116,8 +109,6 @@ def build_pr_body(
     diagnosis = _read(package_dir / "DIAGNOSIS.md").strip()
     evidence = _read(package_dir / "EVIDENCE.md").strip()
     base = _read(package_dir / "BASE").strip() or base_sha
-    patches_dir = package_dir / "patches"
-    patches = sorted(p.name for p in patches_dir.glob("*.patch")) if patches_dir.is_dir() else []
     fork_owner = fork_repo.split("/")[0] if fork_repo else "the fork"
 
     parts: list[str] = [
@@ -170,11 +161,6 @@ def build_pr_body(
         "```",
         "",
     ]
-    if patches:
-        parts.append(f"Patch series ({len(patches)}):")
-        parts.append("")
-        parts.extend(f"- `patches/{name}`" for name in patches)
-        parts.append("")
     body = redact.redact("\n".join(parts))
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + TRUNCATION_NOTE
@@ -187,13 +173,7 @@ def build_pr_body(
 
 
 def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
-    """Push the branch and open the upstream PR. Returns its URL.
-
-    Returns ``""`` when the client cannot write: the branch stays in the clone for the host to
-    push and ``runs/<id>/DELIVER.json`` records what would have been sent. ``lease`` is passed
-    by ``revise`` when the clone is already held — rebased and force-pushed by it (B139) — so
-    the sync, rebase and push steps are skipped and only the pull request is opened.
-    """
+    """Push the branch and open the upstream PR; its URL, or ``""`` when the client cannot write."""
     check_halt(ctx.config.halt_file)
 
     item = ctx.store.get_work_item(item_id)
@@ -297,24 +277,9 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
     record["pushed"] = True
 
-    # 4. the pull request, fork -> upstream default branch; reused when one is already open.
-    existing = _find_open_pull(ctx, upstream, head)
-    if existing is not None:
-        pr = existing
-        tip = _tip_sha(the_lease)
-        ctx.gh.comment(
-            upstream,
-            int(pr.get("number") or 0),
-            redact.redact(
-                f"Branch `{the_lease.branch}` updated by the harness"
-                + (f" (tip `{tip}`)" if tip else "")
-                + f"; gates re-run, evidence in the run artifact for `{self_repo}#{item_id}`."
-            ),
-        )
-        ctx.record_decision(f"reused open pull request #{pr.get('number')} for {head}")
-    else:
-        pr = ctx.gh.create_pull(upstream, head=head, base=default_branch, title=title, body=body)
-        ctx.record_decision(f"opened pull request #{pr.get('number')} on {upstream} from {head}")
+    # 4. the pull request, fork -> upstream default branch.
+    pr = ctx.gh.create_pull(upstream, head=head, base=default_branch, title=title, body=body)
+    ctx.record_decision(f"opened pull request #{pr.get('number')} on {upstream} from {head}")
     number = int(pr.get("number") or 0)
     url = str(pr.get("html_url") or "")
     record["pr_number"] = number or None

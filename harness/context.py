@@ -1,9 +1,4 @@
-"""The :class:`Context` handed to every stage, and the wiring that builds one.
-
-Delivery 2 adds the ledger (``state/ledger.json``), the trusted-handle set (``.harness/trust.txt``),
-the store seam (``harness.store.open_store``) and the authenticated GitHub client built by
-``harness.gh.build_client`` — which reads the token door itself, so this module never does (I-11).
-"""
+"""The :class:`Context` handed to every stage, and the wiring that builds one."""
 
 from __future__ import annotations
 
@@ -29,9 +24,6 @@ __all__ = ["Context", "build_context", "repo_root", "ledger_path_for"]
 
 #: The run id used by stages that are not scoped to a single work item.
 DEFAULT_RUN_ID = "discover"
-
-#: The ``period_start`` of a ledger that has never been persisted (RUN-DECISIONS-D2 §4).
-EPOCH_ISO = "1970-01-01T00:00:00Z"
 
 
 def repo_root() -> Path:
@@ -59,15 +51,6 @@ class Context:
     ledger: Ledger | None = None
     ledger_path: Path | None = None
     trusted: frozenset[str] = frozenset()
-
-    def __post_init__(self) -> None:
-        # Delivery 1 callers construct Context without the three Delivery 2 fields; give them
-        # an empty ledger at the configured path so ``save_ledger`` and the stages still work.
-        if self.ledger is None:
-            self.ledger = Ledger.empty(EPOCH_ISO)
-        if self.ledger_path is None:
-            self.ledger_path = ledger_path_for(self.config)
-        self.trusted = frozenset(handle.lower() for handle in self.trusted)
 
     @property
     def run_dir(self) -> Path:
@@ -112,13 +95,7 @@ def build_context(
     ledger: Ledger | None = None,
     trusted: Iterable[str] | None = None,
 ) -> Context:
-    """Wire a :class:`Context`, arming the write guard before anything can write.
-
-    The GitHub client is built first, on the sqlite scratch store (it needs a cache and the
-    api-call ledger); the GitHub-backed store, when configured, is then built on that client.
-    With ``store`` injected, or ``STORE_BACKEND=sqlite``, the scratch store IS the store — the
-    Delivery 1 wiring, unchanged.
-    """
+    """Wire a :class:`Context`, arming the write guard before anything can write."""
     the_clock: Clock = clock if clock is not None else SystemClock()
 
     scratch: Store = store if store is not None else Store(config.db_path, the_clock)

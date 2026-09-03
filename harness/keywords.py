@@ -1,12 +1,4 @@
-"""Keyword commands and the actor gate (handoff 8, 9.2 - B131-B135, B140, B141).
-
-The order inside ``command_from`` is the whole point of this module: the replay check, then the
-actor gate, then, and only then, the comment text. ``authorise`` never reads the text; nothing
-here logs, replies, reacts, calls a model, writes to GitHub or writes to disk.
-
-Pure with respect to the outside world: no environment, no SQL, no subprocess, no network. The
-only external calls are the three read-only ``gh`` methods that ``sweep`` is handed.
-"""
+"""Keyword commands and the actor gate (handoff 8, 9.2 - B131-B135, B140, B141)."""
 from __future__ import annotations
 
 import re
@@ -21,8 +13,6 @@ if TYPE_CHECKING:  # annotation only; no import-time dependency on ledger.py
 
 VERBS: tuple[str, ...] = ("revise", "reject", "fix", "rebase", "stop", "split", "queue")
 
-SURFACES: tuple[str, ...] = ("proposal_pr", "delivery_pr", "issue")
-
 _COMMAND_RE = re.compile(r"^\s*/harness\s+(\w+)([^\n]*)", re.MULTILINE)
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
@@ -32,7 +22,7 @@ _EPOCH = "1970-01-01T00:00:00Z"
 class Command:
     verb: str
     args: str
-    surface: str  # one of SURFACES
+    surface: str  # proposal_pr, delivery_pr or issue
     number: int
     comment_id: str
     actor: str
@@ -47,12 +37,7 @@ def comment_id(comment: Mapping[str, Any]) -> str:
 
 
 def authorise(comment: Mapping[str, Any], trusted: frozenset[str], ledger: Ledger) -> bool:
-    """The actor gate (B131, B132).
-
-    Reads exactly two fields, the login and GitHub's author association, and nothing else.
-    On denial the ledger counts the handle and the answer is a bare False: no reply, no reaction,
-    no log line, no exception.
-    """
+    """The actor gate (B131, B132): login and association only; denial is a bare False."""
     user = comment.get("user") or {}
     login = str(user.get("login") or "")
     association = str(comment.get("author_association") or "")
@@ -63,11 +48,7 @@ def authorise(comment: Mapping[str, Any], trusted: frozenset[str], ledger: Ledge
 
 
 def parse(body: str) -> tuple[str, str] | None:
-    """``/harness <verb> [args]`` on its own line -> ``(verb, args)``; anything else -> None.
-
-    Only the first such line counts. Only ever called on text whose author has already passed
-    ``authorise``.
-    """
+    """``/harness <verb> [args]`` on its own line -> ``(verb, args)``; anything else -> None."""
     if not isinstance(body, str):
         return None
     match = _COMMAND_RE.search(body)
@@ -119,11 +100,7 @@ def thread_number(url: str) -> int | None:
 def thread_target(
     notification: Mapping[str, Any], *, self_repo: str, upstream_repo: str
 ) -> tuple[str, str, int] | None:
-    """``(repo, surface, number)`` for a notification the sweep reads, else None.
-
-    A PR on the harness repo is a proposal PR; a PR on the product repo is a delivery PR; an
-    issue on the harness repo is an issue. An issue on the product repo is never a command source.
-    """
+    """``(repo, surface, number)`` for a notification the sweep reads, else None."""
     subject = notification.get("subject") or {}
     repo = str((notification.get("repository") or {}).get("full_name") or "")
     number = thread_number(str(subject.get("url") or ""))
@@ -150,12 +127,7 @@ def sweep(
     self_repo: str,
     upstream_repo: str,
 ) -> list[Command]:
-    """B140/B141: notifications since the cursor -> comments of each thread -> commands.
-
-    Read-and-enqueue only: no model call, no write to GitHub, no write to disk. The cursor moves
-    to ``now_iso`` only after every thread was read, so an exception mid-sweep leaves it in place
-    and the next sweep re-reads; the seen-id record keeps that from acting twice.
-    """
+    """B140/B141: notifications since the cursor -> comments of each thread -> commands."""
     since = ledger.cursors.get("notifications_last_seen") or _EPOCH
     commands: list[Command] = []
     for notification in gh.notifications(since):

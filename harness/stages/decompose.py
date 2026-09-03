@@ -1,6 +1,4 @@
-"""The decompose stage (handoff §4.6): split one issue of this repository into bounded
-sub-issues, each queued here — never on the product repository (I-14), never deeper than one
-level (B111)."""
+"""The decompose stage (handoff §4.6): one issue here into bounded sub-issues here (I-14, B111)."""
 
 from __future__ import annotations
 
@@ -29,10 +27,7 @@ _LINE = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s+(?:—|–|--|-)\s+(.+?)\s*$")
 
 
 def parse_subissues(text: str) -> list[tuple[str, str]]:
-    """``N. <title> — <one-paragraph body>`` lines, in order. Anything else is ignored.
-
-    A continuation line (indented, or not starting a new number) extends the previous body.
-    """
+    """``N. <title> — <one-paragraph body>`` lines, in order; continuation lines extend a body."""
     parts: list[tuple[str, str]] = []
     for raw in (text or "").splitlines():
         match = _LINE.match(raw)

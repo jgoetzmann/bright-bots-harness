@@ -45,7 +45,7 @@ BRANCH = "harness/fix-816-dashboard-crashes-on-first-render"
 TITLE = "Dashboard crashes on first render"
 HARNESS_EMAIL = "harness@brightboost-harness"
 DEV_EMAIL = "dev@example.com"
-FAKE_SECRET = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+FAKE_SECRET = "ghp_" + "FAKE0" * 8  # synthetic; 40 alphanumerics so redact's ghp_ rule fires
 DIAGNOSIS_SENTINEL = "DIAGNOSIS-SENTINEL-4c1e"
 EVIDENCE_SENTINEL = "EVIDENCE-SENTINEL-9b2d"
 

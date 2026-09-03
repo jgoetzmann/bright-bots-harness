@@ -1150,3 +1150,24 @@ def test_i11_token_key_name_is_the_env_key(tmp_path, write_d2_env):
     """RUN-DECISIONS-D2 §2: TOKEN_KEY_NAME is the constant identity.py uses instead of the literal."""
     assert config_module.TOKEN_KEY_NAME == "HARNESS_GITHUB_TOKEN"
     assert config_module.TOKEN_KEY_NAME in config_module.SECRET_KEYS
+
+
+# --------------------------------------------------------------------------
+# A7 / R4.1 — the shipped .env.example is a loadable configuration
+# --------------------------------------------------------------------------
+
+
+def test_a7_the_shipped_env_example_loads_without_error(tmp_path):
+    """A7 / D2-R4.1: `harness init` copies .env.example to .env; every key it ships must be known
+    to load_config (including the subscription token key CLAUDE_CODE_OAUTH_TOKEN, a secret key
+    that is accepted, never stored on Config, and scrubbed by redact)."""
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    target = tmp_path / ".env"
+    target.write_text(example.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+
+    config = load_config(env_path=target, environ={})
+
+    assert config.permission_tier == 0
+    assert config.store_backend == "sqlite"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in config_module.SECRET_KEYS
+    assert not any(name.lower().endswith(("_token", "_key")) for name in config.__dataclass_fields__)

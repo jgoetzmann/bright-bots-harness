@@ -70,22 +70,12 @@ class Runner(Protocol):
 
 
 def is_rate_limited(result: RunResult) -> bool:
-    """True when a failed result is the CLI saying "come back later", not "I failed".
-
-    Pure: a ``reset_at`` set by the backend is conclusive; otherwise ``error`` is matched
-    against :data:`RATE_LIMIT_PATTERN` (RUN-DECISIONS-D2 section 12).
-    """
+    """True when a failed result is the CLI saying "come back later", not "I failed"."""
     return result.reset_at is not None or bool(RATE_LIMIT_PATTERN.search(result.error or ""))
 
 
 def get_runner(config: "Config") -> Runner:
-    """Return the backend named by ``config.backend`` (B24).
-
-    ``"cli"`` yields :class:`~harness.runner.cli.ClaudeCliRunner`, ``"fake"``
-    yields :class:`~harness.runner.fake.FakeRunner`. Anything else — including
-    the ``api`` backend the protocol admits but delivery 1 does not ship — is a
-    ``ConfigError``.
-    """
+    """Return the backend named by ``config.backend`` (B24); anything unknown is a ``ConfigError``."""
     backend = getattr(config, "backend", None)
     if backend == "cli":
         from harness.runner.cli import ClaudeCliRunner

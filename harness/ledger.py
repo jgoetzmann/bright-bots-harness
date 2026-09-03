@@ -234,18 +234,7 @@ class Ledger:
             cursors=cursors,
             history=history,
         )
-        ledger._reconcile_loaded_observations()
         return ledger
-
-    def _reconcile_loaded_observations(self) -> None:
-        """A file whose observations count more than its history keeps them as folded values."""
-        for stage, obs in self.observations.items():
-            in_history = sum(1 for entry in self.history if entry.get("stage") == stage)
-            n = int(obs.get("n", 0))
-            if n > in_history and not int(obs.get("folded_n", 0)):
-                missing = n - in_history
-                obs["folded_n"] = missing
-                obs["folded_sum"] = _usd(missing * float(obs.get("median_usd", 0.0)))
 
     @classmethod
     def empty(cls, period_start: str) -> "Ledger":
@@ -301,11 +290,7 @@ def parse_transition_comment(body: str) -> tuple[str, str, str, float] | None:
 
 
 def rebuild(comments: Iterable[dict]) -> Ledger:
-    """Regenerate history and observations from B101 transition comments.
-
-    Each comment is ``{"body", "created_at", "issue"}``. Comments are replayed oldest first;
-    the window starts at the epoch and holds every parsed cost, so the caller rolls it.
-    """
+    """Regenerate history and observations from B101 comments ``{"body", "created_at", "issue"}``."""
     parsed: list[tuple[str, int, str, str, float]] = []
     for comment in comments:
         body = str(comment.get("body", "") or "")

@@ -113,10 +113,7 @@ class Governor:
 
     def remaining_weekly_pct(self) -> float:
         if self.ledger is not None:
-            cap = self._weekly_cap_usd()
-            if cap <= 0:
-                return 0.0
-            return max(0.0, (1.0 - self._spent_usd() / cap) * 100.0)
+            return max(0.0, (1.0 - self._spent_usd() / self._weekly_cap_usd()) * 100.0)
         start, _end = self._ensure_period()
         allocated, consumed = self.store.budget_period(BUDGET_UNIT, start)
         return float(allocated) - float(consumed)
@@ -135,10 +132,7 @@ class Governor:
 
     def estimate(self, stage: str) -> float:
         if self.ledger is not None:
-            cap = self._weekly_cap_usd()
-            if cap <= 0:
-                return 0.0
-            return estimate_usd(self.ledger, stage) / cap * 100.0
+            return estimate_usd(self.ledger, stage) / self._weekly_cap_usd() * 100.0
         observed = [float(v) for v in self.store.completed_allowances(stage)]
         if len(observed) >= MIN_OBSERVATIONS:
             return float(statistics.median(observed))
@@ -192,7 +186,7 @@ class Governor:
             stage=stage,
             granted_pct=needed,
             max_turns=int(max_turns),
-            max_budget_usd=float(getattr(self.config, "per_call_cap_usd", 0.0) or 0.0),
+            max_budget_usd=float(self.config.per_call_cap_usd),
         )
         log.debug("authorized %s for %.3f%% (%d turns)", auth.id, needed, auth.max_turns)
         return auth

@@ -1,8 +1,4 @@
-"""`.env` parsing into a frozen :class:`Config`; the only module that reads ``os.environ`` (I-4).
-
-Delivery 2 adds the budget, fork, trust, and store-backend knobs (handoff §6.5), the
-``.harness/config.json`` override file (B112), and the single token door (I-11).
-"""
+"""`.env` parsing into a frozen :class:`Config`; the only module that reads ``os.environ`` (I-4)."""
 
 from __future__ import annotations
 
@@ -260,11 +256,7 @@ def _json_scalar(key: str, value: object) -> str:
 
 
 def read_config_json(path: Path) -> dict[str, str]:
-    """Parse `.harness/config.json` (B112): knob keys only; any other key is a ConfigError.
-
-    A missing file is an empty override. Values come back as `.env`-style strings so the
-    same validators apply to both sources.
-    """
+    """Parse `.harness/config.json` (B112): knob keys only, as `.env`-style strings."""
     path = Path(path)
     if not path.is_file():
         return {}
@@ -293,11 +285,7 @@ def token_shape_ok(token: str) -> bool:
 def load_config(
     env_path: Path | None = None, *, environ: Mapping[str, str] | None = None
 ) -> Config:
-    """Read `.env` (B1), validate it (B2-B5, B22, §6.5), and return a frozen Config (B6).
-
-    Precedence, lowest to highest: `.env`, then `.harness/config.json` beside it (knob keys
-    only, B112), then ``environ`` (default ``os.environ``) key-for-key for known keys.
-    """
+    """Read `.env`, then `.harness/config.json`, then ``environ``; validate; return a frozen Config."""
     global _LAST_CONFIG
 
     path = Path(env_path) if env_path is not None else Path(".env")
@@ -525,12 +513,7 @@ def load_config(
 
 
 def github_token() -> str:
-    """The token door (I-11).
-
-    Returns the ``HARNESS_GITHUB_TOKEN`` value from the last-loaded env ONLY when the
-    last-loaded :class:`Config` has ``permission_tier == 2``; otherwise the empty string.
-    ``harness/gh.py`` is the only importer; nothing else may call it.
-    """
+    """The token door (I-11): the token only when the last-loaded config is at tier 2."""
     config = _LAST_CONFIG
     if config is None or config.permission_tier != 2:
         return ""

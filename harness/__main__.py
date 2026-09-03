@@ -1,22 +1,4 @@
-"""Command line entry point for the Bright Bots harness.
-
-Every subcommand of HARNESS-SPEC §5.10 and DELIVERY-2-HANDOFF §3.2 is parsed and
-dispatched here. The module owns the exit-code contract and nothing else: all real work
-lives in the stage modules.
-
-Exit codes
-----------
-0   success; also ``RepoHalted`` (``.harness/HALT``, B149) and ``RateLimited`` (B120)
-1   any other ``HarnessError`` (``ForkDiverged`` names both shas on stderr)
-2   ``NotImplementedInDelivery1`` (``discover --mode audit``)
-3   ``doctor`` degraded
-4   ``BudgetExhausted``
-5   ``Halted`` (the Delivery 1 ``HALT`` file)
-6   ``setup`` has outstanding prerequisites
-
-Order of checks in every spending command (B150): ``.harness/HALT`` first, before the
-config is even loaded; then the Delivery 1 ``HALT`` file; then the stages.
-"""
+"""Command line entry point: every subcommand of HARNESS-SPEC §5.10 and the handoff §3.2."""
 
 from __future__ import annotations
 
@@ -50,7 +32,6 @@ from harness.errors import (
     PinMismatch,
     RateLimited,
     RepoHalted,
-    TrustDenied,
 )
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
@@ -97,22 +78,6 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("STORE_BACKEND", "store_backend"),
 )
 
-# `init --labels`: one colour per state label, so a freshly created queue is readable.
-LABEL_COLORS: dict[str, str] = {
-    "harness:queued": "c5def5",
-    "harness:proposing": "bfdadc",
-    "harness:proposed": "0e8a16",
-    "harness:approved": "1d76db",
-    "harness:running": "fbca04",
-    "harness:packaged": "5319e7",
-    "harness:shipped": "0052cc",
-    "harness:revising": "d93f0b",
-    "harness:merged": "6f42c1",
-    "harness:blocked": "b60205",
-    "harness:needs-human": "e99695",
-    "harness:abandoned": "cccccc",
-}
-
 # B147: an item left in a running state longer than this with no live run is reset.
 STALE_RUNNING_HOURS = 3
 
@@ -121,7 +86,6 @@ HEARTBEAT_SLICE_S = 10
 DEFAULT_LOOP_SECONDS = 300
 
 PROPOSE_BRANCH_RE = re.compile(r"harness/propose-(\d+)$")
-EXTERNAL_REF_RE = re.compile(r"^[a-z]+:(\d+)$")
 
 
 # --------------------------------------------------------------------------------------
@@ -259,11 +223,7 @@ def _env_path(args: argparse.Namespace) -> Path:
 
 
 def _repo_root(args: argparse.Namespace, config=None) -> Path:
-    """The directory holding .env, .harness/ and state/.
-
-    Taken from the loaded config when there is one; otherwise derived from ``--config`` or
-    the cwd, because the ``.harness/HALT`` check (B150) runs before the config can load.
-    """
+    """The directory holding .env, .harness/ and state/ (from the config, else --config or cwd)."""
     if config is not None:
         return Path(config.repo_root)
     if getattr(args, "config", None):
@@ -389,7 +349,7 @@ def _ensure_labels(ctx, config) -> dict:
         ctx.gh.create_label(
             config.self_repo,
             name=name,
-            color=LABEL_COLORS.get(name, "ededed"),
+            color="ededed",
             description=f"harness state: {state}",
         )
         created.append(name)
@@ -513,12 +473,7 @@ def _probe_max_turns() -> tuple[bool, str]:
 def _doctor_config_keys(
     args: argparse.Namespace, config, config_error: str | None, problems: list[str]
 ) -> dict[str, str | None]:
-    """A30: one entry per §6.5 key.
-
-    With a loaded config the values are the parsed ones. Without one they come straight
-    from .env + .harness/config.json, so a missing key is still named rather than hidden
-    behind the parse failure.
-    """
+    """A30: one entry per §6.5 key, from the config or, when it failed to load, the raw files."""
     keys: dict[str, str | None] = {}
     if config is not None:
         for key, attr in CONFIG_KEYS:
@@ -987,11 +942,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 def _front_matter_depends_on(text: str) -> tuple[int, ...]:
-    """`depends_on` from a proposal's YAML front matter (§4.3), inline or block list.
-
-    A hand-rolled reader: the schema is bounded and the only value needed here is a list
-    of ints, so a YAML parser would be a dependency for nothing (I-17).
-    """
+    """`depends_on` from a proposal's YAML front matter (§4.3), inline or block list (I-17)."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return ()
@@ -1029,18 +980,6 @@ def _front_matter_depends_on(text: str) -> tuple[int, ...]:
     return tuple(found)
 
 
-def _proposal_numbers(item) -> list[int]:
-    """Numbers a proposal file for this item may be named after: the item id, then the
-    number inside external_ref (`issue:816`, `self:42`)."""
-    numbers = [int(item.id)]
-    match = EXTERNAL_REF_RE.match(str(getattr(item, "external_ref", "") or ""))
-    if match:
-        number = int(match.group(1))
-        if number not in numbers:
-            numbers.append(number)
-    return numbers
-
-
 def _depends_on(config, item) -> tuple[int, ...]:
     """The item's `depends_on` from its proposal under proposals/, else ()."""
     dirs = [Path(config.repo_root) / "proposals"]
@@ -1051,15 +990,14 @@ def _depends_on(config, item) -> tuple[int, ...]:
     for directory in dirs:
         if not directory.is_dir():
             continue
-        for number in _proposal_numbers(item):
-            matches = sorted(directory.glob(f"{number}-*.md"))
-            if not matches:
-                continue
-            try:
-                text = matches[0].read_text(encoding="utf-8")
-            except OSError:
-                continue
-            return _front_matter_depends_on(text)
+        matches = sorted(directory.glob(f"{int(item.id)}-*.md"))
+        if not matches:
+            continue
+        try:
+            text = matches[0].read_text(encoding="utf-8")
+        except OSError:
+            continue
+        return _front_matter_depends_on(text)
     return ()
 
 
@@ -1169,12 +1107,7 @@ def cmd_decompose(args: argparse.Namespace) -> int:
 
 
 def _item_for_command(ctx, config, cmd) -> int | None:
-    """Map a keyword command's thread to a work item id.
-
-    issue        → the number is the item (GitHub store) or item id (sqlite).
-    proposal_pr  → head branch `harness/propose-<id>`.
-    delivery_pr  → the item whose branch_name is the PR's head branch.
-    """
+    """Map a keyword command's thread (issue, proposal PR, delivery PR) to a work item id."""
     if cmd.surface == "issue":
         return int(cmd.number)
     repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
@@ -1510,9 +1443,6 @@ def main(argv: list[str] | None = None) -> int:
     except RateLimited as exc:
         # B120: the stage already returned the item to its prior state.
         print(f"rate limited until {exc.reset_at or 'unknown'}")
-        return EXIT_OK
-    except TrustDenied:
-        # B132: denial is silent. No reply, no reaction, no message.
         return EXIT_OK
     except ForkDiverged as exc:
         print(f"fork diverged: {exc}", file=sys.stderr)

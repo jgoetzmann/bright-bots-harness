@@ -1,9 +1,4 @@
-"""Disposable clone lifecycle (SPEC §5.7): https only, under ``runs_dir`` only.
-
-Delivery 2 (handoff §4.4): clones come from the fork when ``FORK_REPO`` is set, a revise cycle
-re-acquires an existing branch instead of cutting a new one, and :func:`sync_fork` fast-forwards
-the fork's main from upstream or refuses without touching anything (B105).
-"""
+"""Disposable clone lifecycle (SPEC §5.7) and the fast-forward-only fork sync (handoff §4.4)."""
 
 from __future__ import annotations
 
@@ -164,13 +159,7 @@ class CloneManager:
         branch: str | None = None,
         from_fork: bool = False,
     ) -> Lease:
-        """Fresh clone under ``runs_dir/item-<id>/clone``.
-
-        Without ``branch``: cut ``branch_name_for(item)`` from the clone's HEAD (Delivery 1).
-        With ``branch``: fetch and switch to that existing branch — a revise cycle continues
-        the work already pushed rather than starting over (D2 §9). ``from_fork`` records the
-        caller's intent; the clone source is the fork whenever ``FORK_REPO`` is configured.
-        """
+        """Fresh clone under ``runs_dir/item-<id>/clone``; ``branch`` re-acquires an existing one."""
         blockers = self.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))
@@ -253,15 +242,7 @@ def sync_fork(
     push: Callable[[Path, str], None],
     git_runner: GitRunner | None = None,
 ) -> str:
-    """Fast-forward the fork's ``main`` from upstream, or refuse. Returns the resulting sha.
-
-    A bare clone of the fork lands in ``workdir/fork.git`` with ``upstream`` added; both mains
-    are fetched. Equal → nothing to do. Fork behind upstream → ``push(bare, "upstream/main:
-    refs/heads/main")`` (the caller supplies the authenticated push) and the new sha comes back.
-    Anything else is :class:`ForkDiverged`, raised with both shas and nothing pushed (B105):
-    a fork main that is not an ancestor of upstream's would silently break every pinned
-    ``base_sha`` downstream.
-    """
+    """Fast-forward the fork's ``main`` from upstream or raise ``ForkDiverged`` (B105); the sha."""
     fork_repo = (getattr(config, "fork_repo", "") or "").strip()
     if not fork_repo:
         raise CloneError("sync_fork: FORK_REPO is not configured; there is no fork to sync")

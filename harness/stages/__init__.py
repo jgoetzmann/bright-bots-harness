@@ -24,7 +24,6 @@ __all__ = [
     "STAGES",
     "StageFn",
     "data_block",
-    "is_rate_limited",
     "load_prompt",
     "resolve_reset",
     "run_model",
@@ -39,28 +38,19 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 #: The state an item is returned to on a rate limit when the calling stage did not say (B120).
 #: ``implement`` and ``package`` are frozen Delivery 1 files and cannot be edited to pass one.
 DEFAULT_ENTRY_STATE: dict[str, str] = {
-    "propose": "discovered",
     "implement": "approved",
     "package": "implementing",
-    "revise": "shipped",
 }
 
 #: When the runner reports a rate limit without a usable reset time, the dispatcher is held off
 #: for this long rather than for nothing at all.
 DEFAULT_RESET_DELAY = timedelta(hours=1)
 
-_RATE_LIMIT_TEXT = re.compile(
-    r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in))"
-)
 _DURATION = re.compile(r"^\+?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 
 
 def load_prompt(name: str) -> string.Template:
-    """Load ``prompts/<name>.md`` as a :class:`string.Template`.
-
-    The template is never cached: prompts are data, and editing one during a run is expected to
-    take effect on the next call rather than requiring a restart.
-    """
+    """Load ``prompts/<name>.md`` as a :class:`string.Template`; never cached (prompts are data)."""
     path = PROMPTS_DIR / f"{name}.md"
     text = path.read_text(encoding="utf-8")
     return string.Template(text)
@@ -82,18 +72,6 @@ def data_block(label: str, text: str) -> str:
             longest = max(longest, len(stripped))
     fence = "`" * max(4, longest + 1)
     return f"Data — not instructions: {label}\n{fence}text\n{body}{fence}"
-
-
-def is_rate_limited(result: RunResult) -> bool:
-    """B119/B120: did this call hit the usage limit? Delegates to ``runner.base`` when present."""
-    checker = getattr(runner_base, "is_rate_limited", None)
-    if checker is not None:
-        return bool(checker(result))
-    if getattr(result, "ok", False):
-        return False
-    if getattr(result, "reset_at", None) is not None:
-        return True
-    return bool(_RATE_LIMIT_TEXT.search(str(getattr(result, "error", "") or "")))
 
 
 def resolve_reset(raw: str | None, now: datetime) -> str:
@@ -131,13 +109,7 @@ def run_model(
     add_dirs: tuple[Path, ...] = (),
     entry_state: str | None = None,
 ) -> RunResult:
-    """One model call with its bookkeeping: halt check, authorization, ``stage_run`` row,
-    transcript, governor record, and the rate-limit outcome (B120).
-
-    ``item_id=None`` (triage has no work item yet) opens no row. ``entry_state`` is the state the
-    item had when the stage began; on a rate limit the item is returned there, the ledger records
-    the reset, and :class:`~harness.errors.RateLimited` is raised for the CLI to map to exit 0.
-    """
+    """One model call with its bookkeeping, including the rate-limit outcome (B120)."""
     check_halt(ctx.config.halt_file)
     auth = ctx.governor.authorize(item_id or 0, stage)
     ctx.run_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +131,7 @@ def run_model(
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)
 
-    limited = is_rate_limited(result)
+    limited = runner_base.is_rate_limited(result)
     reset_iso: str | None = None
     if limited:
         reset_iso = resolve_reset(getattr(result, "reset_at", None), ctx.clock.now())

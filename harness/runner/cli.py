@@ -34,23 +34,13 @@ _RELATIVE_RESET = re.compile(
 
 
 def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-    """Default spawn: resolve argv[0] on PATH first.
-
-    On Windows the ``claude`` entry point is a ``.CMD`` shim, and CreateProcess only finds
-    bare names with an ``.exe`` extension; ``shutil.which`` applies PATHEXT. Injected spawns
-    receive the unresolved argv so argv construction stays testable (B25).
-    """
+    """Default spawn: resolve argv[0] on PATH first (Windows ``.CMD`` shims need PATHEXT)."""
     resolved = shutil.which(argv[0]) or argv[0]
     return subprocess.run([resolved, *argv[1:]], **kwargs)  # type: ignore[call-overload]
 
 
 def parse_reset_at(text: str) -> str | None:
-    """The reset marker inside a usage-limit message (B119).
-
-    An ISO-8601 timestamp wins and is normalised to UTC ``Z``. ``resets in N minutes|hours``
-    becomes a relative ISO duration (``+PT30M``, ``+PT2H``) for the stage to add to its clock.
-    A phrase naming no reset time at all gives ``None`` ("when present", B119).
-    """
+    """The reset marker in a usage-limit message (B119): ISO-Z, ``+PT30M``-style, or ``None``."""
     haystack = text or ""
     match = _ISO_TIMESTAMP.search(haystack)
     if match:
@@ -89,11 +79,7 @@ class ClaudeCliRunner:
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """Exactly the order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` right after
-        ``--max-turns`` when the request carries a budget (D2 §6.1).
-
-        No permission-skipping flag exists in this module to emit (SPEC 9, I-3; B27).
-        """
+        """The order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` after ``--max-turns``."""
         argv: list[str] = [
             self.claude_bin,
             "--print",
@@ -127,11 +113,7 @@ class ClaudeCliRunner:
         return argv
 
     def build_env(self) -> dict[str, str]:
-        """The parent environment minus every key in :data:`STRIPPED_ENV_KEYS` (B26).
-
-        The process environment is read only by ``harness.config`` (SPEC 9, I-4), so the
-        snapshot comes from there.
-        """
+        """The parent environment minus every key in :data:`STRIPPED_ENV_KEYS` (B26)."""
         base = environ_snapshot()
         return {key: value for key, value in base.items() if key not in STRIPPED_ENV_KEYS}
 
@@ -193,13 +175,8 @@ class ClaudeCliRunner:
             text = ""
         is_error = bool(data.get("is_error", False))
         error = None
-        reset_at = None
         if is_error:
             error = redact(stderr[-STDERR_TAIL_CHARS:]) if stderr else "claude reported is_error"
-            # The CLI may report exhaustion as a JSON error with exit 0; same outcome (B119).
-            signal = f"{text}\n{stderr}"
-            if RATE_LIMIT_PATTERN.search(signal):
-                reset_at = parse_reset_at(signal)
         return RunResult(
             ok=not is_error,
             text=text,
@@ -215,7 +192,6 @@ class ClaudeCliRunner:
                 {"raw": data},
             ),
             error=error,
-            reset_at=reset_at,
         )
 
     def _failure(

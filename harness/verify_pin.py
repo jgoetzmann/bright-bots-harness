@@ -1,14 +1,4 @@
-"""The pin over what the harness checks and what it refuses to say (handoff §10.4, B142/B143).
-
-``python -m harness.verify_pin --check`` recomputes a SHA-256 over the pinned set in sorted path
-order and compares it with the first token of the first line of ``.harness/PIN``. The pinned set
-is ``harness/gates.py``, ``harness/packager.py``, ``harness/redact.py`` and every file under
-``prompts/``. Mismatch is a startup failure in both modes.
-
-``--write`` is the orchestrator's tool. It is the only branch in this module that writes, it uses a
-plain ``open`` rather than a harness write path, and ``.harness/PIN`` is deliberately outside
-``redact.allowed_roots()`` so the harness cannot re-pin itself (B143).
-"""
+"""The pin over the result-defining files (handoff §10.4, B142/B143): --check, --print, --write."""
 
 from __future__ import annotations
 

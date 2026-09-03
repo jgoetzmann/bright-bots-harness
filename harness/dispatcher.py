@@ -82,8 +82,6 @@ def plan(
     max_slots = int(config.max_concurrent_items)
     if config.store_backend != "github":
         max_slots = 1
-    if max_slots < 1:
-        max_slots = 1
 
     merged_ids = {int(number) for number in merged}
     ordered = sorted(candidates, key=lambda c: (c.created_at, int(c.issue)))

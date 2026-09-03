@@ -1,9 +1,4 @@
-"""The propose stage: one model call -> a §7.1 work package -> a bounded proposal file (§4.3).
-
-Delivery 1's spec write is unchanged. Delivery 2 adds the proposal file — YAML front matter
-rendered by the stage from a closed schema, validated before anything is published (B103/B104) —
-and hands it to the store's ``publish_proposal``.
-"""
+"""The propose stage: one model call -> a §7.1 work package -> a bounded proposal file (§4.3)."""
 
 from __future__ import annotations
 
@@ -194,11 +189,7 @@ def _as_list(block: str) -> list[str]:
 
 
 def extract_proposal_block(text: str) -> tuple[dict | None, str, list[str]]:
-    """Pull the ``<!-- proposal: {...} -->`` block out of the model's output.
-
-    Returns ``(parsed, text_without_block, errors)``. A missing block is not an error here —
-    the stage fills the front matter from the work package — but an unparseable one is.
-    """
+    """``(parsed, text_without_block, errors)`` from the model's ``<!-- proposal: {...} -->``."""
     match = _BLOCK.search(text or "")
     if match is None:
         return None, text or "", []
@@ -228,11 +219,7 @@ def build_front_matter(
     block: Mapping[str, Any] | None,
     max_turns: int,
 ) -> dict[str, Any]:
-    """The §4.3 mapping: defaults from the work package, overridden by the model's block.
-
-    Unknown keys in the block are kept so :func:`validate_proposal` can reject them. ``issue``
-    is always the harness item — the model may steer the plan, not re-address it.
-    """
+    """The §4.3 mapping: defaults from the work package, overridden by the model's block."""
     front: dict[str, Any] = {
         "issue": item_id,
         "upstream_issue": upstream_issue,
@@ -398,11 +385,7 @@ def render_front_matter(front: Mapping[str, Any]) -> str:
 
 
 def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
-    """B60 + §4.3: one model call, a spec file on disk, a validated proposal published.
-
-    ``discovered -> proposing`` at entry; ``proposing -> proposed`` when the store publishes.
-    ``notes`` is the trusted ``/harness revise`` text; with it, a ``proposed`` item is re-proposed.
-    """
+    """B60 + §4.3: one model call, a spec file on disk, a validated proposal published."""
     check_halt(ctx.config.halt_file)
 
     item = ctx.store.get_work_item(item_id)
@@ -501,11 +484,6 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
     )
     ctx.store.append_event(item_id, "info", f"proposal published: {location}")
 
-    current = ctx.store.get_work_item(item_id)
-    if current is not None and current.state == "proposing":
-        # The store's publish normally moves the item; a store that only files the text is
-        # brought to the same place here so both backings agree.
-        ctx.store.transition(item_id, "proposed", reason=f"proposal published: {location}")
     log.info("proposed item %s -> %s (%s)", item_id, spec_path, location)
     return spec_path
 
@@ -569,11 +547,7 @@ def _render_prompt(
 
 
 def _issue_body(ctx: Context, item: Any) -> tuple[str, int | None]:
-    """The issue body, verbatim, and any ``issue:<n>`` upstream reference it carries.
-
-    ``issue:<n>`` items read the product repository (Delivery 1, unauthenticated);
-    ``self:<n>`` and ``sub:`` items read the harness repository's own issue.
-    """
+    """The issue body, verbatim, and any ``issue:<n>`` upstream reference it carries."""
     ref = item.external_ref
     number = item.issue_number
     if ref.startswith("issue:") and number is not None:
@@ -606,11 +580,7 @@ def _issue_body(ctx: Context, item: Any) -> tuple[str, int | None]:
 
 
 def _path_checker(ctx: Context, item: Any) -> Callable[[str], bool]:
-    """B104: does the path exist in the product repository at the pinned base commit?
-
-    A 404 arrives as ``GitHubError`` and means "no". Any response that is not an error is a
-    hit — GitHub never answers a contents request with an empty body.
-    """
+    """B104: does the path exist in the product repository at the pinned base commit?"""
     ref = item.base_sha or "HEAD"
     repo = ctx.config.repo
 

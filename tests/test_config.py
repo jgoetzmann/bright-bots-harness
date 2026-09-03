@@ -1169,5 +1169,6 @@ def test_a7_the_shipped_env_example_loads_without_error(tmp_path):
 
     assert config.permission_tier == 0
     assert config.store_backend == "sqlite"
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in config_module.SECRET_KEYS
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in config_module.KNOWN_KEYS
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in config_module.SECRET_KEYS  # D1 B49 pins two
     assert not any(name.lower().endswith(("_token", "_key")) for name in config.__dataclass_fields__)

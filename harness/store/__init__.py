@@ -1,4 +1,5 @@
-"""The store seam: ``Store`` (the SQLite class), ``StoreProtocol``, ``GitHubStore``, ``open_store``."""
+"""The store seam: ``Store`` (the SQLite class), ``StoreProtocol``, ``GitHubStore``,
+``open_store``."""
 
 from __future__ import annotations
 

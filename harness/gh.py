@@ -1,4 +1,5 @@
-"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface (D2 §5.3)."""
+"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface
+(D2 §5.3)."""
 
 from __future__ import annotations
 
@@ -326,6 +327,15 @@ class GitHubClient(GitHubReadOnly):
         return self._send(method, path, payload)
 
     # ------------------------------------------------------------------ writes
+
+    def create_label(self, repo: str, *, name: str, color: str, description: str = "") -> dict:
+        """One `harness:*` label; `init --labels` calls it only for names not already present."""
+        self._require_write("create_label")
+        payload = redact.redact_json(
+            {"name": str(name), "color": str(color).lstrip("#"), "description": str(description)}
+        )
+        data = self._write("POST", f"/repos/{repo}/labels", payload, dict(payload))
+        return data if isinstance(data, dict) else {}
 
     def comment(self, repo: str, number: int, body: str) -> dict:
         self._require_write("comment")

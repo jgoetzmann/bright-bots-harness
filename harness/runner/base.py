@@ -75,7 +75,8 @@ def is_rate_limited(result: RunResult) -> bool:
 
 
 def get_runner(config: "Config") -> Runner:
-    """Return the backend named by ``config.backend`` (B24); anything unknown is a ``ConfigError``."""
+    """Return the backend named by ``config.backend`` (B24); anything unknown is a
+    ``ConfigError``."""
     backend = getattr(config, "backend", None)
     if backend == "cli":
         from harness.runner.cli import ClaudeCliRunner

@@ -26,6 +26,8 @@ __all__ = [
 ]
 
 SECRET_KEYS: tuple[str, ...] = ("HARNESS_GITHUB_TOKEN", "ANTHROPIC_API_KEY")
+#: Accepted in .env for the claude CLI, never a Config field, scrubbed like a secret (D24).
+PASSTHROUGH_KEYS: tuple[str, ...] = ("CLAUDE_CODE_OAUTH_TOKEN",)
 
 #: The `.env` key holding the machine-account token. Other modules (``identity.py``) refer to
 #: the key through this name so the literal lives in exactly one module (I-11).
@@ -77,7 +79,7 @@ FIELD_KEYS: tuple[str, ...] = (
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
 OPTIONAL_KEYS: tuple[str, ...] = ("FORK_REPO", "TRACKING_ISSUE")
 
-KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS
+KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS + PASSTHROUGH_KEYS
 
 #: The operational knobs `.harness/config.json` may carry, and nothing else (B112).
 CONFIG_JSON_KEYS: tuple[str, ...] = (
@@ -285,7 +287,8 @@ def token_shape_ok(token: str) -> bool:
 def load_config(
     env_path: Path | None = None, *, environ: Mapping[str, str] | None = None
 ) -> Config:
-    """Read `.env`, then `.harness/config.json`, then ``environ``; validate; return a frozen Config."""
+    """Read `.env`, then `.harness/config.json`, then ``environ``; validate; return a frozen
+    Config."""
     global _LAST_CONFIG
 
     path = Path(env_path) if env_path is not None else Path(".env")
@@ -523,7 +526,7 @@ def github_token() -> str:
 def secret_values() -> tuple[str, ...]:
     """Every non-empty secret value known from ``os.environ`` and the last-loaded `.env`."""
     found: list[str] = []
-    for key in SECRET_KEYS:
+    for key in SECRET_KEYS + PASSTHROUGH_KEYS:
         for source in (os.environ, _LAST_ENV):
             raw = source.get(key, "")
             value = raw.strip() if isinstance(raw, str) else ""

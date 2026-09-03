@@ -347,3 +347,34 @@ def test_B37_a_404_raises_GitHubError_and_not_RateCeilingReached(store, clock):
         gh.issue(816)
 
     assert not isinstance(caught.value, RateCeilingReached)
+
+
+# --------------------------------------------------------------------------------------
+# create_label — the write behind `harness init --labels` (handoff §16 item 11)
+# --------------------------------------------------------------------------------------
+
+
+def test_create_label_posts_to_the_given_repo_labels_endpoint_redacted_and_needs_a_token(tmp_path):
+    """§5.3: a label create is a write like any other — tier-gated, redacted, recorded in `sent`."""
+    from harness.clock import FrozenClock
+    from harness.errors import TierViolation
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    client = GitHubClient(
+        "o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, self_repo="me/self", dry_run=True
+    )
+    client.create_label("me/self", name="harness:queued", color="#0e8a16", description="secret=abc")
+    (call,) = client.sent
+    assert call["method"] == "POST" and call["url"].endswith("/repos/me/self/labels")
+    assert call["payload"]["name"] == "harness:queued" and call["payload"]["color"] == "0e8a16"
+    assert "abc" not in call["payload"]["description"]
+
+    unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
+    with pytest.raises(TierViolation):
+        unarmed.create_label("me/self", name="x", color="000000")
+    assert unarmed.sent == []

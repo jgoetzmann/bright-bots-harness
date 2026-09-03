@@ -290,7 +290,8 @@ def parse_transition_comment(body: str) -> tuple[str, str, str, float] | None:
 
 
 def rebuild(comments: Iterable[dict]) -> Ledger:
-    """Regenerate history and observations from B101 comments ``{"body", "created_at", "issue"}``."""
+    """Regenerate history and observations from B101 comments
+    ``{"body", "created_at", "issue"}``."""
     parsed: list[tuple[str, int, str, str, float]] = []
     for comment in comments:
         body = str(comment.get("body", "") or "")

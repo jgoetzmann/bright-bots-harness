@@ -159,7 +159,8 @@ class CloneManager:
         branch: str | None = None,
         from_fork: bool = False,
     ) -> Lease:
-        """Fresh clone under ``runs_dir/item-<id>/clone``; ``branch`` re-acquires an existing one."""
+        """Fresh clone under ``runs_dir/item-<id>/clone``; ``branch`` re-acquires an existing
+        one."""
         blockers = self.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))

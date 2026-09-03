@@ -153,6 +153,14 @@ class ClaudeCliRunner:
                 return self._failure(
                     request, exit_code, stderr or stdout, reset_at=parse_reset_at(combined)
                 )
+            # A budget stop (D19: `subtype` error_max_budget_usd) exits 1 with a complete JSON
+            # result; keep its cost, turns and reason rather than dumping the JSON as the error.
+            try:
+                errored: Any = json.loads(stdout)
+            except (ValueError, TypeError):
+                errored = None
+            if isinstance(errored, dict) and errored.get("is_error"):
+                return self._from_json(request, errored, stderr, exit_code)
             return self._failure(request, exit_code, stderr or stdout)
 
         try:

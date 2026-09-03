@@ -184,10 +184,11 @@ class ClaudeCliRunner:
         is_error = bool(data.get("is_error", False))
         error = None
         if is_error:
-            # The CLI names the reason in `subtype` (e.g. error_max_budget_usd, D19) and often leaves
-            # stderr empty; the subtype is what a diagnose cycle or an operator needs to see.
+            # The CLI names the reason in `subtype` (e.g. error_max_budget_usd, D19) and often
+            # leaves stderr empty; the subtype is what a diagnose cycle or an operator needs to see.
             subtype = str(data.get("subtype") or "")
-            error = redact(stderr[-STDERR_TAIL_CHARS:]) if stderr else (subtype or "claude reported is_error")
+            fallback = subtype or "claude reported is_error"
+            error = redact(stderr[-STDERR_TAIL_CHARS:]) if stderr else fallback
         return RunResult(
             ok=not is_error,
             text=text,

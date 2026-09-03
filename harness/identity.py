@@ -171,6 +171,9 @@ class Identity:
         self.self_repo = str(getattr(config, "self_repo", "") or "")
         fork = str(getattr(config, "fork_repo", "") or "")
         self.fork_repo = fork or f"{HANDLE}/{self.repo.split('/')[-1] or 'brightboost'}"
+        # The account that owns the fork IS the machine account (handoff §5.1); the default
+        # handle applies only until FORK_REPO is configured.
+        self.handle = fork.split("/")[0] if fork else HANDLE
         trust_file = getattr(config, "trust_file", None)
         self.trust_file_name = Path(trust_file).name if trust_file else "trust.txt"
 

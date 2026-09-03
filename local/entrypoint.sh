@@ -47,7 +47,7 @@ echo "gate 4/5: $WORK, $DATA, $WORK/.env and .harness/config.json present"
 # identity and must trust the mounted directories. The author is the harness identity, which is
 # the only tip the host watchdog will push (B139).
 git config --global user.email "harness@brightboost-harness" 2>/dev/null || true
-git config --global user.name "brightboost-harness" 2>/dev/null || true
+git config --global user.name "jgoetzmann-bot" 2>/dev/null || true
 git config --global --add safe.directory '*' 2>/dev/null || true
 
 # 5. The fast test subset: the invariant tests (I-1..I-17, including the gate-sequence golden).

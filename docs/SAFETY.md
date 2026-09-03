@@ -9,7 +9,7 @@ open a pull request against your repository from a fork it owns, and that is all
 cannot push to your repository, cannot merge anything, cannot approve or dismiss a review,
 cannot file an issue on your repository, and cannot touch a CI workflow anywhere — the last
 one because GitHub itself rejects the push, not because the harness has been asked not to.
-Everything it delivers arrives as an ordinary PR from `brightboost-harness:harness/…`, and
+Everything it delivers arrives as an ordinary PR from `jgoetzmann-bot:harness/…`, and
 nothing lands without a human merging it.
 
 Below is every guarantee, what it means, how it is enforced, and how you can check it
@@ -41,9 +41,9 @@ the harness's write roots, and read once at startup.
 
 - A branch on `<machine-account>/brightboost`, under `harness/`. Never a branch on
   `Bright-Bots-Initiative/brightboost`.
-- A pull request on `Bright-Bots-Initiative/brightboost`, opened by `brightboost-harness`,
+- A pull request on `Bright-Bots-Initiative/brightboost`, opened by `jgoetzmann-bot`,
   with a review requested from every handle in `.harness/trust.txt`.
-- A comment on that PR, or on an issue in this repository, signed `brightboost-harness`.
+- A comment on that PR, or on an issue in this repository, signed `jgoetzmann-bot`.
 - An issue in **this** repository (a `decompose` sub-issue, or an `ops:` failure report).
 - A commit to `state/ledger.json` in this repository with `[skip ci]`, and a proposal PR
   into `proposals/` here that you merge or close.
@@ -295,7 +295,7 @@ it is load-bearing, and `harness/redact.py` is one of the three pinned files (be
 
 ## The identity, now active
 
-The harness acts as `brightboost-harness`, a machine user account, not as a person. GitHub's
+The harness acts as `jgoetzmann-bot`, a machine user account, not as a person. GitHub's
 terms permit one machine account alongside a personal account. The account:
 
 - **owns the fork** `<machine-account>/brightboost`. Not you. PRs are then unambiguously

@@ -65,6 +65,21 @@ jobs:
         with:
           fetch-depth: 0
 
+        # D28: the ledger lives on the unprotected `harness-state` branch (main requires a reviewed PR,
+        # B113, which the Actions token cannot satisfy for B115's direct commit). Load the latest copy.
+      - name: Load state/ledger.json from harness-state
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git fetch --quiet origin harness-state 2>/dev/null; then
+            mkdir -p state
+            git show FETCH_HEAD:state/ledger.json > state/ledger.json
+            echo "ledger loaded from harness-state"
+          else
+            echo "no harness-state branch yet; using the checked-in ledger"
+          fi
+
       - name: Set up Python 3.13
         if: steps.halt.outputs.halted != 'true'
         uses: actions/setup-python@v5
@@ -182,22 +197,32 @@ jobs:
         env:
           WORKFLOW: ${{ github.workflow }}
           RUN_ID: ${{ github.run_id }}
-          BRANCH: ${{ github.ref_name }}
+          BRANCH: harness-state
         run: |
           set -euo pipefail
           if [ ! -f state/ledger.json ]; then echo "no ledger file; nothing to commit"; exit 0; fi
-          if git diff --quiet -- state/ledger.json && [ -z "$(git ls-files --others --exclude-standard -- state/ledger.json)" ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A worktree holding only the state branch, so main's history never rides along (D28).
+          rm -rf ../harness-state
+          if git fetch --quiet origin "${BRANCH}" 2>/dev/null; then
+            git worktree add --quiet ../harness-state FETCH_HEAD
+          else
+            git worktree add --quiet --orphan -b "${BRANCH}" ../harness-state
+          fi
+          mkdir -p ../harness-state/state
+          if [ -f ../harness-state/state/ledger.json ] && cmp -s state/ledger.json ../harness-state/state/ledger.json; then
             echo "ledger unchanged; nothing to commit"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/ledger.json && git commit -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
+          cp state/ledger.json ../harness-state/state/ledger.json
+          cd ../harness-state
+          git add state/ledger.json && git commit --quiet -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
           for attempt in 1 2 3; do
-            if git push origin "HEAD:${BRANCH}"; then echo "ledger pushed"; exit 0; fi
+            if git push --quiet origin "HEAD:refs/heads/${BRANCH}"; then echo "ledger pushed to ${BRANCH}"; exit 0; fi
             echo "push rejected (attempt ${attempt}); rebasing onto origin/${BRANCH}"
-            git fetch origin "${BRANCH}"
-            if ! git rebase --autostash "origin/${BRANCH}"; then
+            git fetch --quiet origin "${BRANCH}"
+            if ! git rebase --quiet "origin/${BRANCH}"; then
               git rebase --abort || true
               echo "::error::ledger rebase conflicted; run 'harness ledger --rebuild' and commit the result by hand (B117)"
               exit 1

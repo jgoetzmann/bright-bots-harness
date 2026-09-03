@@ -1,13 +1,13 @@
 {
-  "WEEKLY_CAP_USD": 25.00,
-  "PER_CALL_CAP_USD": 3.00,
+  "WEEKLY_CAP_USD": 25.0,
+  "PER_CALL_CAP_USD": 3.0,
   "RESERVE_PCT": 10,
   "MAX_CONCURRENT_ITEMS": 1,
   "MAX_REVISE_CYCLES": 3,
   "NOTIFY_POLL_HOURS": 3,
   "MAX_SUBISSUES": 8,
-  "TRACKING_ISSUE": null,
-  "FORK_REPO": "",
+  "TRACKING_ISSUE": 2,
+  "FORK_REPO": "jgoetzmann-bot/brightboost",
   "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
   "TRUST_FILE": ".harness/trust.txt"
 }

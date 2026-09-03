@@ -244,7 +244,7 @@ harness holds no other state that depends on the old value. Do the steps in this
 name `.harness/HALT`, any content → Commit directly to `main`. Every spending workflow now
 exits 0 at its first step (B149). Locally, `harness halt`; for the container, `.\bb-stop.ps1`.
 
-**If `HARNESS_GITHUB_TOKEN` leaked** — the classic PAT on `brightboost-harness`:
+**If `HARNESS_GITHUB_TOKEN` leaked** — the classic PAT on `jgoetzmann-bot`:
 
 1. Sign in as the machine account → Settings → Developer settings → Personal access tokens →
    Tokens (classic) → **Delete** the token. Every request carrying it fails from that second.
@@ -405,3 +405,15 @@ which is the point.
 Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries
 `author_association` OWNER, MEMBER, or COLLABORATOR — both, or it is silently ignored
 (B131, B132). Adding a handle is a reviewed PR to `.harness/trust.txt`.
+
+## 12. Where the ledger actually lives (D28)
+
+`main` is protected (one approving review, no force-push), so the workflows do **not** commit
+`state/ledger.json` to `main`. They keep it on the branch **`harness-state`**: every spending job
+loads the latest copy from there before `harness doctor`, and pushes the updated file back at the
+end with `[skip ci]`. `main`'s copy is the initial ledger and what local mode starts from.
+
+- Read it: `git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json`
+- Rebuild it after a corruption: `harness ledger --rebuild`, then commit the result to `harness-state`
+  by hand (`git worktree add ../hs origin/harness-state`, copy, commit, push).
+- Never protect `harness-state`; it is written by the Actions token.

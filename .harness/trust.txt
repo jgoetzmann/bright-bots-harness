@@ -2,4 +2,4 @@
 # One handle per line. '#' starts a comment. Case-insensitive.
 # Changing this file requires a reviewed PR (see .github/CODEOWNERS).
 jgoetzmann
-<NATHAN_HANDLE>
+BrightBoost-Tech

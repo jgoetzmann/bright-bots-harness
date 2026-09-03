@@ -1818,3 +1818,15 @@ def test_b134_operations_doc_states_the_event_driven_versus_polled_asymmetry():
     assert "NOTIFY_POLL_HOURS" in ops
     lowered = ops.lower()
     assert "event" in lowered and ("poll" in lowered or "sweep" in lowered)
+
+
+def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_ignored():
+    """B149: `.harness/HALT` is a one-line commit on the default branch, so it must not be caught by
+    Delivery 1's `HALT` ignore line (I-6), which is for the local scratch kill file only."""
+    import subprocess
+
+    def ignored(path: str) -> bool:
+        return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO_ROOT).returncode == 0
+
+    assert ignored("HALT"), "the root HALT must stay ignored (I-6)"
+    assert not ignored(".harness/HALT"), ".harness/HALT must be committable (B149)"

@@ -25,6 +25,8 @@ Thumbs.db
 .fullsend/
 runs/
 HALT
+# The repo-level kill switch (D2 B149) is committed on purpose; only the root HALT is scratch.
+!.harness/HALT
 harness.db
 *.egg-info/
 .venv/

@@ -1,0 +1,3 @@
+Kill switch (DELIVERY-2-HANDOFF B149/B150). While this file exists on main, every spending
+workflow exits 0 before doctor, before the dispatcher, before any token is spent.
+Remove it (one commit) to run D2-R8, the supervised first live item.

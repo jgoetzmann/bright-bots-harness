@@ -62,6 +62,8 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("SELF_REPO", "jgoetzmann/bright-bots-harness"),
     ("TRACKING_ISSUE", ""),
     ("STORE_BACKEND", "sqlite"),
+    ("MODEL", "opus"),
+    ("EFFORT", "xhigh"),
     ("WEEKLY_USAGE_STOP_PCT", "90"),
     ("SESSION_USAGE_STOP_PCT", "70"),
     ("OVERRUN_PCT", "10"),

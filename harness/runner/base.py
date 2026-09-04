@@ -40,6 +40,10 @@ class RunRequest:
     #: ``--permission-mode acceptEdits`` it will read any absolute path it is given, including
     #: the harness's own ``.env``. A directory is written with a trailing ``/**``.
     deny_read: tuple[str, ...] = ()
+    #: ``claude --model`` and ``--effort`` (B225). Omitted from argv when ``None``, which is
+    #: what the fake backend and the Delivery 2 argv shape both expect.
+    model: str | None = None
+    effort: str | None = None
 
 
 @dataclass(frozen=True)

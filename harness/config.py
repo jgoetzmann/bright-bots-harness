@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 
 from harness.clock import as_utc
 from harness.errors import ConfigError
@@ -30,7 +30,11 @@ __all__ = [
     "RUN_WINDOW_PATTERN",
     "WINDOW_DAYS",
     "in_run_window",
+    "EFFORT_LEVELS",
 ]
+
+#: The reasoning-effort levels `claude --effort` accepts, in order (B225).
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
 SECRET_KEYS: tuple[str, ...] = ("HARNESS_GITHUB_TOKEN", "ANTHROPIC_API_KEY")
 #: Accepted in .env for the claude CLI, never a Config field, scrubbed like a secret (D24).
@@ -86,6 +90,8 @@ FIELD_KEYS: tuple[str, ...] = (
     "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
+    "MODEL",
+    "EFFORT",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
@@ -200,6 +206,11 @@ class Config:
     overrun_pct: float
     run_window_start: str
     run_window_end: str
+    #: B225: the model alias and the reasoning effort every stage runs at. Pinned in `.env`
+    #: rather than left to the CLI's default, so a change to that default cannot silently
+    #: change what a work package or a diff is worth.
+    model: str
+    effort: Literal["low", "medium", "high", "xhigh", "max"]
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -502,6 +513,17 @@ def load_config(
                 f"TRACKING_ISSUE must be a positive issue number; got {tracking_issue}"
             )
 
+    model = values["MODEL"].strip()
+    if not model:
+        raise ConfigError("MODEL must not be empty; use an alias such as opus, or a full name")
+
+    effort_raw = values["EFFORT"].strip().lower()
+    if effort_raw not in EFFORT_LEVELS:
+        raise ConfigError(
+            f"EFFORT must be one of {', '.join(EFFORT_LEVELS)}; got {values['EFFORT']!r}"
+        )
+    effort: Any = effort_raw
+
     store_backend_raw = values["STORE_BACKEND"].strip()
     if store_backend_raw not in _STORE_BACKENDS:
         raise ConfigError(
@@ -594,6 +616,8 @@ def load_config(
         overrun_pct=overrun_pct,
         run_window_start=run_window_start,
         run_window_end=run_window_end,
+        model=model,
+        effort=effort,
     )
     _LAST_CONFIG = config
     return config

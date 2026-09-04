@@ -100,6 +100,8 @@ BASE_ENV = {
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "github",
+    "MODEL": "opus",
+    "EFFORT": "xhigh",
     # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
     # window is left empty (= always open) so the D2 behaviour above is unchanged.
     "WEEKLY_USAGE_STOP_PCT": "90",

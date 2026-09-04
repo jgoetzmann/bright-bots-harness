@@ -77,7 +77,13 @@ def _directed(ctx: Context, target: str | None) -> list[int]:
 
     title = str(issue.get("title") or f"issue {number}").strip() or f"issue {number}"
     item_id = ctx.store.create_work_item(
-        kind="issue", external_ref=ref, title=title, tier_required=0
+        kind="issue",
+        external_ref=ref,
+        title=title,
+        tier_required=0,
+        # B227: the issue the harness opens quotes the one it is tracking, so a reader on the
+        # web can judge the work without leaving the page.
+        upstream_body=str(issue.get("body") or ""),
     )
     ctx.store.append_event(item_id, "info", f"discovered {ref} by directed target")
     ctx.record_decision(

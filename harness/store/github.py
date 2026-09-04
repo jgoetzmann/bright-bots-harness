@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
 from harness.clock import Clock, iso, parse_iso
 from harness.errors import DuplicateWorkItem, GitHubError, IllegalTransition, StoreError
+from harness import links
 from harness.redact import redact
 from harness.store.sqlite import (
     LABELS,
@@ -30,6 +31,13 @@ _META_RE = re.compile(r"<!--\s*harness-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 # A live-run marker: a plain comment (no harness-meta) naming a workflow run.
 _RUN_MARKER_RE = re.compile(r"actions/runs/\d+|<!--\s*harness-run\b")
 _PARENT_RE = re.compile(r"Parent:\s*#(\d+)")
+def _ref_number(external_ref: str) -> int | None:
+    """The product-repository issue number in an ``issue:<n>`` reference (B227)."""
+    match = re.search(r"[0-9]+", str(external_ref or ""))
+    return int(match.group(0)) if match and str(external_ref).startswith("issue:") else None
+
+
+_REF_MARKER_RE = re.compile(re.escape(links.REF_MARKER) + r"\s*`([^`]+)`")
 _SUB_REF_RE = re.compile(r"^sub:(\d+):\d+$")
 _NOT_FOUND_RE = re.compile(r"\b404\b|not found", re.IGNORECASE)
 
@@ -57,8 +65,15 @@ def _state_of(issue: Mapping[str, Any]) -> str | None:
 
 
 def _origin_ref(issue: Mapping[str, Any]) -> str:
-    """The external_ref an item was created with: the first non-blank line of the body."""
+    """The external_ref an item was created with (B227).
+
+    The marker line first, then the old convention -- the first non-blank line -- so items
+    opened before the bodies became prose still resolve.
+    """
     body = str(issue.get("body") or "")
+    match = _REF_MARKER_RE.search(body)
+    if match:
+        return match.group(1).strip()
     for line in body.splitlines():
         if line.strip():
             return line.strip()
@@ -150,6 +165,8 @@ class GitHubStore:
         scratch: SqliteStore,
         clock: Clock,
         run_url: str = "",
+        config: Any = None,
+        trusted: Iterable[str] = (),
     ) -> None:
         if not self_repo or "/" not in self_repo:
             raise StoreError(f"self_repo must be 'owner/name', got {self_repo!r}")
@@ -158,6 +175,10 @@ class GitHubStore:
         self.scratch = scratch
         self._clock = clock
         self.run_url = run_url
+        # B227: what the bodies this store writes say about themselves. Optional so a test may
+        # build a store without a whole Config; the text degrades, nothing raises.
+        self.config = config
+        self.trusted = tuple(trusted)
         # item id -> (stage, usd) of the latest finish_stage_run in this process (B101 comment).
         self._last_run: dict[int, tuple[str, float]] = {}
         # run id -> (item id, stage) for runs started in this process.
@@ -275,6 +296,7 @@ class GitHubStore:
         title: str,
         tier_required: int = 0,
         body: str = "",
+        upstream_body: str = "",
     ) -> int:
         """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number."""
         for issue in self._issues(state="open"):
@@ -282,10 +304,19 @@ class GitHubStore:
                 raise DuplicateWorkItem(
                     f"work item already exists for {external_ref}: #{issue.get('number')}"
                 )
-        text = f"{external_ref}\n\n{body}" if body else external_ref
         sub = _SUB_REF_RE.match(external_ref)
-        if sub:
-            text = f"{text}\n\nParent: #{sub.group(1)}"
+        # B227: the body used to be the bare `issue:633` and nothing else, which told a
+        # reader on the web neither what the work was nor where it came from.
+        text = links.work_item_body(
+            self.config,
+            external_ref=external_ref,
+            upstream_number=_ref_number(external_ref),
+            upstream_title=title,
+            upstream_body=upstream_body,
+            parent=int(sub.group(1)) if sub else None,
+            extra=body,
+            trusted=self.trusted,
+        )
         created = self.gh.create_issue(title, redact(text), [LABELS["discovered"]])
         number = int(created["number"])
         meta: dict[str, Any] = {
@@ -388,9 +419,17 @@ class GitHubStore:
             head=branch,
             base="main",
             title=f"proposal: {item.title} (#{item_id})",
+            # B227: the proposal is inlined, not merely linked. Gate 1 is a judgement about a
+            # plan, and the person making it should not have to open a file in a diff to read it.
             body=redact(
-                f"Proposal for #{item_id}: `{path}`.\n\n"
-                "Merging this PR approves the proposal (gate 1); closing it rejects it."
+                links.proposal_pr_body(
+                    self.config,
+                    item_id=item_id,
+                    path=path,
+                    proposal_text=text,
+                    upstream_number=_ref_number(item.external_ref),
+                    trusted=self.trusted,
+                )
             ),
         )
         url = ""

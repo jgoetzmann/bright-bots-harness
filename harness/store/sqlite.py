@@ -414,6 +414,7 @@ class SqliteStore:
         title: str,
         tier_required: int = 0,
         body: str = "",
+        upstream_body: str = "",
     ) -> int:
         """Insert a new item in state ``discovered``. B9: duplicate ref -> DuplicateWorkItem.
 

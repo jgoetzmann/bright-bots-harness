@@ -17,6 +17,7 @@ from typing import Any, Callable, Sequence
 from harness import __version__
 from harness import redact
 from harness.clock import Clock, iso
+from harness.clone import HOOKS_OFF
 from harness.errors import GitHubError, RateCeilingReached, TierViolation
 from harness.gates import run_command
 from harness.store import Store
@@ -247,6 +248,27 @@ class GitHubReadOnly:
 # ======================================================================================
 # Delivery 2 — the one authenticated client (I-11)
 # ======================================================================================
+
+
+#: How many trailing lines of a failed push's output are worth showing.
+PUSH_REASON_LINES = 12
+
+
+def _push_reason(detail: str) -> str:
+    """The lines of a failed push worth reading (B229).
+
+    A push that a hook refuses carries the hook's entire output, and the tail of that is
+    whatever the hook's last command printed -- a vitest browser stack, in the case that led
+    here. The lines git itself writes all start `error:`, `fatal:`, `remote:` or `hint:`, so
+    prefer those and fall back to the tail only when there are none.
+    """
+    text = redact.redact(detail or "").strip()
+    if not text:
+        return "(no output)"
+    prefixes = ("error:", "fatal:", "remote:", "hint:", "!", "To ")
+    lines = [line for line in text.splitlines() if line.strip().startswith(prefixes)]
+    chosen = lines or text.splitlines()
+    return " / ".join(line.strip() for line in chosen[-PUSH_REASON_LINES:])[:2000]
 
 
 class GitHubClient(GitHubReadOnly):
@@ -574,6 +596,13 @@ class GitHubClient(GitHubReadOnly):
             "git",
             "-c",
             f"http.extraheader=Authorization: basic {credential}",
+            # B229/D49: on the command line, where nothing can override it. `acquire` sets the
+            # same key in the clone's config, and then `npm ci` runs the product repository's
+            # `prepare` script -- husky -- which sets `core.hooksPath` right back to `.husky/_`.
+            # Measured twice: the product's pre-push hook refused the push after every gate had
+            # passed, and reported a vitest browser failure as the reason.
+            "-c",
+            f"core.hooksPath={HOOKS_OFF}",
             "push",
             "--force-with-lease" if force else "--",
             remote_url,
@@ -583,8 +612,9 @@ class GitHubClient(GitHubReadOnly):
         code, out, err = run(argv, cwd)
         if code != 0:
             detail = (err or out or "").replace(credential, redact.REDACTION)
-            detail = redact.redact(detail).strip()[-2000:]
-            raise GitHubError(f"git push {refspec} to {remote_repo} failed ({code}): {detail}")
+            raise GitHubError(
+                f"git push {refspec} to {remote_repo} failed ({code}): {_push_reason(detail)}"
+            )
         log.info("pushed %s to %s force=%s", refspec, remote_repo, force)
 
     # ------------------------------------------------------------------- reads

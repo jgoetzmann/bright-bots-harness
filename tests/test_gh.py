@@ -378,3 +378,62 @@ def test_create_label_posts_to_the_given_repo_labels_endpoint_redacted_and_needs
     with pytest.raises(TierViolation):
         unarmed.create_label("me/self", name="x", color="000000")
     assert unarmed.sent == []
+
+
+# --------------------------------------------------------------------------------------
+# B229 - the push carries its own hook suppression, and says why it failed (D49)
+# --------------------------------------------------------------------------------------
+
+
+def test_b229_the_push_turns_hooks_off_on_the_command_line(tmp_path):
+    """B229: `acquire` sets core.hooksPath in the clone's config, and then `npm ci` runs the
+    product repository's `prepare` script -- husky -- which sets it right back. On the command
+    line nothing can override it."""
+    from harness.clone import HOOKS_OFF
+
+    calls: list[list[str]] = []
+
+    def runner(argv, cwd=None):
+        calls.append(list(argv))
+        return (0, "", "")
+
+    from datetime import datetime, timezone
+
+    from pathlib import Path
+
+    from harness.gh import GitHubClient
+    from harness.store import Store
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    client = GitHubClient(
+        "o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, self_repo="me/self"
+    )
+    client.push_ref(Path("."), "main:refs/heads/main", remote_repo="o/n", git_runner=runner)
+
+    argv = calls[0]
+    assert f"core.hooksPath={HOOKS_OFF}" in argv
+    assert argv.index("-c") < argv.index("push")
+
+
+def test_b229_a_refused_push_reports_gits_own_lines_not_the_hooks_output():
+    """B229: measured -- a refusing hook's tail was a vitest browser stack, and that is what the
+    error said the push failed for."""
+    from harness.gh import _push_reason
+
+    noise = "\n".join(["box art"] * 200)
+    detail = f"{noise}\nremote: rejected by pre-push\nerror: failed to push some refs"
+
+    reason = _push_reason(detail)
+
+    assert "remote: rejected by pre-push" in reason
+    assert "error: failed to push some refs" in reason
+    assert "box art" not in reason
+
+
+def test_b229_a_push_failure_with_no_git_prefix_still_says_something():
+    from harness.gh import _push_reason
+
+    assert _push_reason("something odd happened") == "something odd happened"
+    assert _push_reason("") == "(no output)"

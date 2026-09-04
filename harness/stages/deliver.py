@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -144,6 +145,117 @@ def _reference_lines(
     return "\n".join(lines)
 
 
+#: How much of a gate's output is worth inlining when it passed: none. The verbatim capture
+#: lives in the review package, which is attached to the run and rebuildable from the public
+#: repositories alone.
+EVIDENCE_TAIL_CHARS = 6000
+
+#: `### <gate> — exit code <n> (PASS|FAIL)`, as `packager._gate_section` writes it.
+_GATE_HEADING = re.compile(
+    r"^###\s+(?P<name>.+?)\s+[-–—]\s+exit code\s+"
+    r"(?P<code>\d+)\s*\((?P<verdict>PASS|FAIL)\)\s*$"
+)
+
+
+_PHASE_SPLIT = re.compile(r"\s+[-–—]\s+")
+
+
+def evidence_digest(evidence: str) -> str:
+    """The gate results as a table, with any failure kept whole (B232/D52).
+
+    The first delivery pull request was 52 KB, 40 KB of which was the verbatim stdout of seven
+    gates that all passed — a wall nobody scrolls, in the one place a reviewer has to read.
+    What a reviewer needs from a green run is that it was green; what they need from a red one
+    is all of it. The complete capture is in the review package either way, and the package is
+    the artifact of record.
+    """
+    text = (evidence or "").strip()
+    if not text:
+        return "_EVIDENCE.md was missing from the package._"
+
+    sections: list[tuple[str, str, str, str, list[str]]] = []
+    preamble: list[str] = []
+    phase = ""
+    for line in text.splitlines():
+        if line.startswith("## "):
+            # `## Baseline - untouched tree at BASE` and its siblings. Without this the
+            # table lists every gate twice with nothing to say which run is which.
+            phase = _PHASE_SPLIT.split(line[3:].strip(), maxsplit=1)[0]
+        match = _GATE_HEADING.match(line)
+        if match:
+            sections.append(
+                (phase, match.group("name"), match.group("code"), match.group("verdict"), [])
+            )
+        elif sections:
+            sections[-1][4].append(line)
+        else:
+            preamble.append(line)
+
+    if not sections:
+        return text[:EVIDENCE_TAIL_CHARS]
+
+    out = [line for line in preamble if line.strip().startswith("- ")]
+    out.append("")
+    out.append("| when | gate | exit | |")
+    out.append("|---|---|---|---|")
+    for phase_name, name, code, verdict, _body in sections:
+        mark = "PASS" if verdict == "PASS" else "**FAIL**"
+        out.append(f"| {phase_name or 'the run'} | `{name}` | {code} | {mark} |")
+
+    failures = [section for section in sections if section[3] != "PASS"]
+    for phase_name, name, code, _verdict, body in failures:
+        out.append("")
+        out.append(f"#### {phase_name}: {name} — exit code {code}")
+        out.append(chr(10).join(body).strip()[:EVIDENCE_TAIL_CHARS])
+    if not failures:
+        out.append("")
+        out.append(
+            "Every gate passed. The verbatim output of each is in the review package "
+            "(`EVIDENCE.md`), attached to the run and rebuildable with the commands below."
+        )
+    return "\n".join(out).strip()
+
+
+def _collapsed(summary: str, body: str) -> str:
+    """A `<details>` block, so the pull request opens at something a person can read."""
+    return f"<details>\n<summary>{summary}</summary>\n\n{body.strip()}\n\n</details>"
+
+
+def _trusted_handles(trusted: Iterable[str] | None) -> str:
+    names = sorted({str(h).strip().lstrip("@") for h in (trusted or ()) if str(h).strip()})
+    if not names:
+        return "nobody (the trust file is empty)"
+    return ", ".join(f"@{name}" for name in names)
+
+
+def _checklist(evidence: str) -> str:
+    """`CONTRIBUTING.md`'s reviewer checklist, with what the harness measured already ticked."""
+    verdicts: dict[str, bool] = {}
+    for line in (evidence or "").splitlines():
+        match = _GATE_HEADING.match(line)
+        if match:
+            verdicts[match.group("name").strip()] = match.group("verdict") == "PASS"
+
+    def tick(gate: str) -> str:
+        return "x" if verdicts.get(gate) else " "
+
+    return "\n".join(
+        [
+            f"- [{tick('npm run build')}] Does it build? — `npm run build`, on this branch",
+            f"- [{tick('npm run lint')}] Does it pass lint? — `npm run lint`",
+            f"- [{tick('npm run test:unit')}] Does it pass tests? — `npm run test:unit`",
+            "- [ ] Hardcoded English rather than i18n keys — yours to check",
+            "- [ ] Mobile responsive — yours to check",
+            "- [ ] Matches existing code patterns — yours to check",
+            (
+                "- [ ] Agent prompt logged — the prompt is `prompts/implement.md` in the harness "
+                "repository, pinned by content hash; the full transcript is `transcript.jsonl` "
+                "in the review package"
+            ),
+        ]
+    )
+
+
 def build_pr_body(
     package_dir: Path,
     *,
@@ -157,48 +269,24 @@ def build_pr_body(
     config: Any = None,
     trusted: Iterable[str] | None = None,
 ) -> str:
-    """B108: README + DIAGNOSIS + EVIDENCE from the package, verbatim, plus the reconstruction
-    commands of ``docs/PACKAGE-FORMAT.md`` §3 — redacted, and capped at GitHub's limit."""
+    """B108/B232: the pull request a reviewer actually reads.
+
+    What they need first is on top and uncollapsed — what this closes, how to steer it, why CI
+    may be waiting, and the checklist `CONTRIBUTING.md` asks them to work through. Everything
+    that is evidence rather than argument sits behind a `<details>`, because the review package
+    holds the authoritative copy and a pull request is not the place to reproduce it.
+    """
     readme = _read(package_dir / "README.md").strip()
     diagnosis = _read(package_dir / "DIAGNOSIS.md").strip()
     evidence = _read(package_dir / "EVIDENCE.md").strip()
     base = _read(package_dir / "BASE").strip() or base_sha
     fork_owner = fork_repo.split("/")[0] if fork_repo else "the fork"
 
-    parts: list[str] = [
-        "<!-- opened by the Bright Bots Harness; generated from the review package (B108) -->",
+    rebuild = [
         (
-            f"_Automated pull request from `{fork_owner}`. Nothing here merges itself: a trusted "
-            f"human reviews and merges, or closes._"
-        ),
-        "",
-        # B227: the references GitHub resolves, so this pull request, the product issue it
-        # fixes and the work item that produced it all appear in one another's timelines.
-        _reference_lines(
-            self_repo=self_repo,
-            upstream_repo=upstream_repo,
-            item_id=item_id,
-            upstream_issue=upstream_issue,
-        ),
-        "",
-        readme or "# Review package\n\n_README.md was missing from the package._",
-        "",
-        "---",
-        "",
-        diagnosis or "# Diagnosis\n\n_DIAGNOSIS.md was missing from the package._",
-        "",
-        "---",
-        "",
-        evidence or "# Evidence\n\n_EVIDENCE.md was missing from the package._",
-        "",
-        "---",
-        "",
-        "## Reconstruction",
-        "",
-        (
-            f"Base commit `{base}` exists upstream in `{upstream_repo}`; the branch `{branch}` "
-            f"on `{fork_repo}` was rebased onto the fork's main, which is a fast-forward of "
-            "upstream (B105). To rebuild the exact tree from the public repositories alone:"
+            f"Base commit `{base}` exists here in `{upstream_repo}`; the branch `{branch}` on "
+            f"`{fork_repo}` was rebased onto the fork's main, which is a fast-forward of this "
+            "repository (B105)."
         ),
         "",
         "```bash",
@@ -222,9 +310,73 @@ def build_pr_body(
         "git bundle verify bundle.gitbundle",
         f"git clone bundle.gitbundle -b {branch} r",
         "```",
-        "",
     ]
-    parts.append(links.signature(config, trusted=trusted))
+
+    parts: list[str] = [
+        "<!-- opened by the Bright Bots Harness; generated from the review package (B108) -->",
+    ]
+    closing = links.closes(upstream_repo, upstream_issue, same_repo=True)
+    if closing:
+        parts.extend([closing, ""])
+    parts.extend(
+        [
+            (
+                f"Opened by the **Bright Bots Harness** from `{fork_owner}`. It cannot merge "
+                "this and will not push again unless you ask it to. Work item: "
+                f"[{links.issue_ref(self_repo, item_id)}]({links.issue_url(self_repo, item_id)})."
+            ),
+            "",
+            "## Steering it from here",
+            "",
+            "Put one of these on its own line in a comment on this pull request:",
+            "",
+            "| comment | what happens |",
+            "|---|---|",
+            "| `/harness fix <notes>` | one more implementation pass, your notes as the brief |",
+            "| `/harness rebase` | rebase onto this repository's current `main`, then push again |",
+            "| `/harness stop` | close this and park the work item; nothing further is attempted |",
+            "",
+            (
+                f"Honoured only from {_trusted_handles(trusted)}, and only when GitHub also "
+                "reports you as an owner, member or collaborator here. Everyone else's comments "
+                "are read and ignored. A command is acted on once — editing a comment does not "
+                "re-fire it, so post a new one."
+            ),
+            "",
+            "## If the checks are not running",
+            "",
+            (
+                "GitHub holds workflow runs from an account with no merged contribution here, "
+                "so the first pull request from this one needs a maintainer to press **Approve "
+                "and run** in the checks list on this page. Later ones start on their own."
+            ),
+            "",
+            "## Review checklist",
+            "",
+            "From `CONTRIBUTING.md`. The harness ran the first three itself, on this branch:",
+            "",
+            _checklist(evidence),
+            "",
+            _collapsed("What this change is, and why", diagnosis or "_DIAGNOSIS.md was missing._"),
+            "",
+            _collapsed(
+                "Gate results — this repository's own sequence, run on the branch",
+                evidence_digest(evidence),
+            ),
+            "",
+            _collapsed(
+                "The review package, verbatim",
+                readme or "_README.md was missing from the package._",
+            ),
+            "",
+            _collapsed("Rebuild this exact tree yourself", "\n".join(rebuild)),
+            "",
+            _collapsed(
+                "About the harness",
+                links.signature(config, trusted=trusted, steerable=False),
+            ),
+        ]
+    )
     body = redact.redact("\n".join(parts))
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + TRUNCATION_NOTE

@@ -1358,3 +1358,122 @@ def test_B214_handoff_without_a_clone_raises_and_writes_nothing(tmp_path):
     assert s.gh.calls_named("push_branch") == []
     assert s.gh.calls_named("create_pull") == []
     assert s.store.get_work_item(ITEM).state == "implementing"
+
+
+# --------------------------------------------------------------------------------------
+# B232 - the pull request is something a person reads (D52)
+# --------------------------------------------------------------------------------------
+
+
+GREEN_EVIDENCE = """# Evidence
+
+- Base commit: `abc123`
+- Branch: `harness/fix-4-x`
+
+## Baseline — untouched tree at BASE
+
+### npm run lint — exit code 0 (PASS)
+
+stdout (verbatim tail):
+
+```text
+""" + ("noise line\n" * 400) + """```
+
+## Post-change — the branch as packaged
+
+### npm run lint — exit code 0 (PASS)
+
+stdout (verbatim tail):
+
+```text
+""" + ("more noise\n" * 400) + """```
+"""
+
+RED_EVIDENCE = GREEN_EVIDENCE.replace(
+    "## Post-change — the branch as packaged\n\n### npm run lint — exit code 0 (PASS)",
+    "## Post-change — the branch as packaged\n\n### npm run test:unit — exit code 1 (FAIL)",
+)
+
+
+def test_b232_a_green_run_collapses_to_a_table(tmp_path):
+    """B232: the first delivery pull request was 52 KB, 40 KB of it the stdout of seven gates
+    that all passed -- a wall nobody scrolls, in the one place a reviewer has to read."""
+    from harness.stages.deliver import evidence_digest
+
+    digest = evidence_digest(GREEN_EVIDENCE)
+
+    assert len(digest) < len(GREEN_EVIDENCE) / 5
+    assert "| when | gate | exit | |" in digest
+    assert "noise line" not in digest
+    assert "review package" in digest
+
+
+def test_b232_the_table_says_which_run_each_gate_belongs_to(tmp_path):
+    """B232: the sequence runs twice; a table that does not say which is which is a puzzle."""
+    from harness.stages.deliver import evidence_digest
+
+    digest = evidence_digest(GREEN_EVIDENCE)
+
+    assert "| Baseline | `npm run lint` | 0 | PASS |" in digest
+    assert "| Post-change | `npm run lint` | 0 | PASS |" in digest
+
+
+def test_b232_a_failing_gate_is_kept_whole(tmp_path):
+    """B232: what a reviewer needs from a green run is that it was green; from a red one, all
+    of it."""
+    from harness.stages.deliver import evidence_digest
+
+    digest = evidence_digest(RED_EVIDENCE)
+
+    assert "**FAIL**" in digest
+    assert "Post-change: npm run test:unit" in digest
+    assert "more noise" in digest, "the failing gate's output must survive"
+
+
+def test_b232_evidence_that_parses_as_nothing_is_passed_through(tmp_path):
+    from harness.stages.deliver import evidence_digest
+
+    assert "something else" in evidence_digest("something else entirely")
+    assert "missing" in evidence_digest("")
+
+
+def test_b232_the_checklist_ticks_what_the_harness_measured(tmp_path):
+    """B232: CONTRIBUTING.md asks the reviewer to check build, lint and tests. The harness ran
+    all three on this branch, so it answers them and leaves the rest blank."""
+    from harness.stages.deliver import _checklist
+
+    ticked = _checklist(GREEN_EVIDENCE)
+
+    assert "- [x] Does it pass lint?" in ticked
+    assert "- [ ] Mobile responsive" in ticked
+    assert "prompts/implement.md" in ticked
+
+
+def test_b232_the_body_opens_with_what_closes_and_how_to_steer_it(tmp_path):
+    """B232: the closing keyword and the command table go above everything collapsible."""
+    from harness.stages.deliver import build_pr_body
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "README.md").write_text("# pkg\n", encoding="utf-8")
+    (package / "DIAGNOSIS.md").write_text("# why\n", encoding="utf-8")
+    (package / "EVIDENCE.md").write_text(GREEN_EVIDENCE, encoding="utf-8")
+    (package / "BASE").write_text("abc123\n", encoding="utf-8")
+
+    body = build_pr_body(
+        package,
+        upstream_repo="own/prod",
+        fork_repo="bot/prod",
+        branch="harness/fix-4-x",
+        base_sha="abc123",
+        self_repo="me/harness",
+        item_id=4,
+        upstream_issue=633,
+        trusted=("jgoetzmann",),
+    )
+
+    assert body.index("Closes #633") < body.index("<details>")
+    assert body.index("/harness fix") < body.index("<details>")
+    assert body.index("Approve and run") < body.index("<details>")
+    assert "noise line" not in body
+    assert len(body) < 12000, f"the body is {len(body)} characters"

@@ -454,7 +454,11 @@ def test_B100_create_work_item_files_one_queued_issue_in_self_repo(gh, store):
     assert item.id == n
     assert item.state == "discovered"
     assert item.kind == "issue"
-    assert item.external_ref == f"self:{n}"
+    # B230: the reference the item was CREATED with. `self:<n>` was a synthetic stand-in, and
+    # it cost the delivery pull request its `Closes` keyword: `issue_number` reads digits out of
+    # this string, so `self:4` answered 4 -- the harness issue -- instead of the product's 633.
+    assert item.external_ref == "issue:816"
+    assert item.issue_number == 816
     assert item.title == "Dashboard crashes on first render"
 
 
@@ -903,3 +907,39 @@ def test_store_only_uses_the_section_7_client_surface(gh, store, clock):
     assert names <= GH_SURFACE, names - GH_SURFACE
     assert names & WRITE_METHODS, "the store never wrote through the client"
     assert not any(w in name for name in names for w in ("merge", "approve", "dismiss"))
+
+
+# --------------------------------------------------------------------------------------
+# B230 - the work item keeps the reference it was created with (D50)
+# --------------------------------------------------------------------------------------
+
+
+def test_b230_the_product_issue_number_survives_a_round_trip(gh, store):
+    """B230: `deliver` decides whether to write `Closes` by asking whether the reference starts
+    `issue:`. A synthetic `self:<n>` answers no, and the pull request silently loses it."""
+    n = _create(store)
+
+    item = store.get_work_item(n)
+
+    assert item.external_ref.startswith("issue:")
+    assert item.issue_number == 816, "the PRODUCT issue, not the harness issue"
+
+
+def test_b230_a_body_in_the_old_format_still_resolves(gh, store):
+    """B230: items opened before the bodies became prose carry the reference as their first
+    line and no marker; those must keep working."""
+    n = _create(store)
+    gh.repos[SELF_REPO][n]["body"] = "issue:816"
+
+    assert store.get_work_item(n).external_ref == "issue:816"
+
+
+def test_b230_an_issue_with_no_recoverable_reference_falls_back_to_itself(gh, store):
+    """B230: an issue a human opened by hand and labelled has no reference at all; naming
+    itself is the honest answer, and it is what find_by_ref already understands."""
+    n = _create(store)
+    gh.repos[SELF_REPO][n]["body"] = ""
+    for comment in gh.comments.get((SELF_REPO, n), []):
+        comment["body"] = "not meta"
+
+    assert store.get_work_item(n).external_ref == f"self:{n}"

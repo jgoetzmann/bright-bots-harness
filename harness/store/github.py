@@ -135,10 +135,19 @@ def _item_from(issue: Mapping[str, Any], meta: Mapping[str, Any], state: str) ->
     if parent is None:
         match = _PARENT_RE.search(str(issue.get("body") or ""))
         parent = int(match.group(1)) if match else None
+    # B230/D50: the reference the item was CREATED with, not a synthetic one. The meta comment
+    # records it at creation and the body carries it too; only when neither survives does this
+    # fall back to naming the issue itself. Getting this wrong is quiet and expensive: with
+    # `self:4`, `WorkItem.issue_number` returns 4 -- the harness issue -- rather than the product
+    # issue 633, so the delivery pull request lost its `Closes #633` and the package README
+    # named `self:4` as the work it was doing.
+    external_ref = (
+        str(meta.get("external_ref") or "").strip() or _origin_ref(issue) or f"self:{number}"
+    )
     return WorkItem(
         id=number,
         kind="issue",
-        external_ref=f"self:{number}",
+        external_ref=external_ref,
         title=str(issue.get("title") or ""),
         state=state,
         parent_id=parent,

@@ -13,7 +13,7 @@ from harness.halt import check_halt
 from harness.stages import data_block, load_prompt, read_issue_body, run_model
 from harness.store.github import _label_names
 
-__all__ = ["discover", "EXCLUDED_LABELS"]
+__all__ = ["discover", "EXCLUDED_LABELS", "machine_account"]
 
 log = logging.getLogger("harness")
 
@@ -46,6 +46,8 @@ def discover(
         raise NotImplementedInDelivery1("not implemented in delivery 1")
     if mode == "directed":
         return _directed(ctx, target)
+    if mode == "assigned":
+        return _assigned(ctx)
     if mode == "triage":
         return _triage(ctx, lens, ignore_allowlist)
     raise HarnessError(f"unknown discover mode: {mode!r}")
@@ -106,6 +108,72 @@ def _parse_target(target: str | None) -> int:
 # --------------------------------------------------------------------------------------------
 # triage — the queue in this repository first
 # --------------------------------------------------------------------------------------------
+
+
+def machine_account(config: Any) -> str:
+    """The login the harness runs as: the owner of the fork it pushes to (B233).
+
+    Derived rather than configured, because a fork the machine account does not own is not a
+    fork it can push to — `FORK_REPO` already names the account, and a second key naming it
+    again could only ever disagree.
+    """
+    fork = str(getattr(config, "fork_repo", "") or "").strip()
+    return fork.split("/")[0] if "/" in fork else ""
+
+
+def _assigned(ctx: Context) -> list[int]:
+    """B233: every open product-repository issue assigned to the machine account.
+
+    Assignment is a maintainer saying "this one is yours", on the ticket itself, in the place
+    they already work. It is the allowlist label's job without the label — and unlike the
+    label, it is a gesture GitHub already has a verb for. No model call: which issues are
+    assigned is a fact, not a judgement.
+    """
+    account = machine_account(ctx.config)
+    if not account:
+        raise HarnessError(
+            "no machine account to look for: FORK_REPO is empty, so there is no login to be "
+            "assigned to. Set FORK_REPO, or use --mode directed --target <n>."
+        )
+
+    issues = ctx.gh.issues_assigned_to(account)
+    ctx.record_decision(
+        f"assigned discover: {len(issues)} open issue(s) in {ctx.config.repo} are assigned to "
+        f"@{account}"
+    )
+
+    created: list[int] = []
+    skipped: list[int] = []
+    for issue in issues:
+        number = _issue_number(issue)
+        if number is None:
+            continue
+        ref = f"issue:{number}"
+        if ctx.store.find_by_ref(ref) is not None:
+            skipped.append(number)
+            continue
+        title = str(issue.get("title") or f"issue {number}").strip() or f"issue {number}"
+        item_id = ctx.store.create_work_item(
+            kind="issue",
+            external_ref=ref,
+            title=title,
+            tier_required=0,
+            upstream_body=str(issue.get("body") or ""),
+        )
+        ctx.store.append_event(item_id, "info", f"queued {ref}: assigned to @{account}")
+        created.append(item_id)
+        log.info("assigned %s queued as work item %s", ref, item_id)
+
+    if skipped:
+        ctx.record_decision(
+            f"assigned discover: {sorted(skipped)} already had work items and were left alone"
+        )
+    if not created:
+        ctx.record_decision(
+            "assigned discover created nothing: no issue assigned to @"
+            f"{account} is new. Assign one on {ctx.config.repo} and it will be picked up."
+        )
+    return created
 
 
 def _triage(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]:
@@ -192,6 +260,7 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
             claimed=claimed,
             allowlist_label=ctx.config.allowlist_label,
             ignore_allowlist=ignore_allowlist,
+            machine=machine_account(ctx.config),
         )
         if reason is not None:
             ctx.store.append_event(None, "debug", f"triage excluded #{number}: {reason}")
@@ -251,19 +320,37 @@ def _rejection_reason(
     claimed: set[int],
     allowlist_label: str,
     ignore_allowlist: bool,
+    machine: str = "",
 ) -> str | None:
     """Return why this issue is not a candidate, or ``None`` when it survives."""
-    if _is_assigned(issue):
-        return "assigned"  # B55
+    mine = _assigned_to(issue, machine)
+    if _is_assigned(issue) and not mine:
+        return "assigned"  # B55: to somebody else, so it is somebody else's work
     if number in claimed:
         return "claimed by an in-flight branch or pull request title"  # B56
     labels = _label_names(issue)
     hit = [name for name in labels if name in EXCLUDED_LABELS]
     if hit:
         return f"excluded label {hit[0]}"  # B57
+    if mine:
+        # B233: assignment is the statement the allowlist label makes, made on the ticket
+        # itself. Requiring both would mean a maintainer had to say the same thing twice.
+        return None
     if not ignore_allowlist and allowlist_label not in labels:
         return f"missing allowlist label {allowlist_label}"  # B58
     return None
+
+
+def _assigned_to(issue: dict, login: str) -> bool:
+    """Is this issue assigned to `login`? GitHub logins are case-insensitive."""
+    handle = str(login or "").strip().lstrip("@").lower()
+    if not handle:
+        return False
+    holders = [h for h in (issue.get("assignees") or []) if h]
+    single = issue.get("assignee")
+    if single:
+        holders.append(single)
+    return any(str((h or {}).get("login") or "").lower() == handle for h in holders)
 
 
 def _is_assigned(issue: dict) -> bool:

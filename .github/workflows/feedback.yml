@@ -183,6 +183,29 @@ jobs:
           mkdir -p runs
           harness sweep | tee runs/sweep.jsonl
 
+        # B233: assigning the machine account to an issue on the product repository is how a
+        # maintainer hands it a ticket. The harness gets no events from that repository, so it
+        # asks — one request, no model call, every three hours on a weekday. An issue that is
+        # already a work item is left alone, so this is safe to run as often as it likes.
+      - name: Queue issues assigned to the bot (harness discover --mode assigned)
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runs
+          if harness --json discover --mode assigned | tee runs/assigned.json; then
+            echo "assigned sweep ok"
+          else
+            status=$?
+            # A budget stop is a normal outcome (D33/B120), and this step spends nothing anyway.
+            if [ "${status}" -eq 4 ]; then
+              echo "budget exhausted; nothing queued this run"
+            else
+              echo "::error::harness discover --mode assigned exited ${status}"
+              exit "${status}"
+            fi
+          fi
+
         # B147: reconciliation lives at the entry of `harness run` — items in harness:running (and
         # revising/proposing) with no live workflow run for 3 hours go back to their previous label.
       - name: Reconcile stale harness:running items (harness run)

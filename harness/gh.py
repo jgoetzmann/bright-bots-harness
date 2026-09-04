@@ -230,6 +230,19 @@ class GitHubReadOnly:
         # GitHub serves pull requests from the issues endpoint; they are not issues.
         return [row for row in rows if "pull_request" not in row]
 
+    def issues_assigned_to(self, login: str, *, state: str = "open") -> list[dict]:
+        """Open product-repository issues assigned to `login` (B233).
+
+        One request. Assigning the machine account is how a maintainer hands it a ticket, so
+        this is the query that turns that gesture into a queue entry.
+        """
+        handle = str(login or "").strip().lstrip("@")
+        if not handle:
+            return []
+        pairs = [("state", state), ("assignee", handle), ("per_page", str(PER_PAGE))]
+        rows = self._paginate(f"/repos/{self.repo}/issues?{_query(pairs)}")
+        return [row for row in rows if "pull_request" not in row]
+
     def pulls(self, *, state: str = "open") -> list[dict]:
         pairs = [("state", state), ("per_page", str(PER_PAGE))]
         return self._paginate(f"/repos/{self.repo}/pulls?{_query(pairs)}")

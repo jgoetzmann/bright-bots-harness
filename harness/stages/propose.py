@@ -25,6 +25,9 @@ from harness.redact import write_redacted
 from harness.stages import data_block, load_prompt, run_model
 
 __all__ = [
+    "work_package_text",
+    "strip_front_matter",
+    "PROPOSALS_DIR",
     "GATE_EXPECTATIONS",
     "GATE_NAMES",
     "KINDS",
@@ -363,6 +366,67 @@ def _yaml_list(key: str, values: Any) -> list[str]:
     for value in values:
         lines.append(f"  - {_yaml_scalar(value)}")
     return lines
+
+
+#: Where the merged proposal lands, relative to the repository root. Gate 1 is the merge of a
+#: PR that adds exactly this file, so it is the one copy of a work package that is guaranteed
+#: to exist on every later checkout.
+PROPOSALS_DIR: str = "proposals"
+
+
+def strip_front_matter(text: str) -> str:
+    """The body of a published proposal: everything after the leading ``---`` block (B226)."""
+    lines = (text or "").splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            rest = lines[index + 1 :]
+            while rest and not rest[0].strip():
+                rest.pop(0)
+            return "".join(rest)
+    return text
+
+
+def work_package_text(item: Any, *, repo_root: Path | str = ".") -> str:
+    """The work package for `item`: the recorded spec if it is still here, else the proposal.
+
+    B226/D46. ``propose`` writes ``runs/item-N/spec/N.md`` and records that absolute path as
+    ``WorkItem.spec_path``. ``runs/`` is ephemeral per Actions runner and is never committed, and
+    gate 1 -- a human merging the proposal PR -- necessarily puts ``propose`` and ``implement`` in
+    different runs, days apart in the intended weekly cadence. Measured: the first live run died
+    with ``spec file missing for item 4: .../runs/item-4/spec/4.md`` before spending anything.
+
+    The durable copy is the file that merge landed. Its slug comes from the proposal's own
+    front-matter title rather than the item's, so it is found by glob on the id prefix rather
+    than derived; the front matter is stripped so the caller gets the same text either way.
+    """
+    recorded = str(getattr(item, "spec_path", "") or "")
+    if recorded and Path(recorded).is_file():
+        return Path(recorded).read_text(encoding="utf-8")
+
+    root = Path(repo_root or ".")
+    try:
+        prefix = f"{int(item.id)}-"
+    except (TypeError, ValueError):
+        prefix = f"{item.id}-"
+    # Newest first, then last by name. One item normally has exactly one proposal; a re-propose
+    # under a changed title lands a second file beside the first, and the later one is the one
+    # that was approved. A checkout gives every file the same mtime, hence the name tie-break.
+    matches = sorted(
+        (root / PROPOSALS_DIR).glob(f"{prefix}*.md"),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
+    if matches:
+        return strip_front_matter(matches[0].read_text(encoding="utf-8"))
+
+    raise HarnessError(
+        f"no work package for item {item.id}: the recorded spec "
+        f"{recorded or '(none)'} is not on this disk and no "
+        f"{PROPOSALS_DIR}/{item.id}-*.md is committed here. On Actions, `runs/` does not "
+        "survive between runs; the proposal PR must be merged before implement can start."
+    )
 
 
 def render_front_matter(front: Mapping[str, Any]) -> str:

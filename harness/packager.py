@@ -11,10 +11,10 @@ from harness import __version__
 from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
-from harness.errors import PackageError, WriteOutsideAllowedRoots
+from harness.errors import HarnessError, PackageError, WriteOutsideAllowedRoots
 from harness.gates import run_command
 from harness.redact import allowed_roots, write_redacted
-from harness.stages.propose import parse_work_package
+from harness.stages.propose import parse_work_package, work_package_text
 
 # Exactly the §7.2 entries. B73: the package directory contains these and nothing else.
 PACKAGE_FILES: tuple[str, ...] = (
@@ -197,8 +197,14 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         raise PackageError(f"base sha for item {item_id} is not a 40-character sha: {base_sha!r}")
     if not branch:
         raise PackageError(f"no branch recorded for item {item_id}")
-    if not item.spec_path or not Path(item.spec_path).is_file():
-        raise PackageError(f"no spec file for item {item_id}: {item.spec_path!r}")
+
+    # B226/B73: resolved before any directory is made, so a missing work package leaves no
+    # half-built package behind. On Actions `runs/` does not survive between runs, so the
+    # recorded spec path may belong to a dead runner; the committed proposal always exists.
+    try:
+        spec_text = work_package_text(item, repo_root=ctx.config.repo_root)
+    except HarnessError as exc:
+        raise PackageError(str(exc)) from exc
 
     run_dir = ctx.run_dir
     package_dir = run_dir / "package"
@@ -208,7 +214,6 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     patches_dir = package_dir / "patches"
     patches_dir.mkdir(parents=True, exist_ok=True)
 
-    spec_text = _read_text(Path(item.spec_path))
     pkg = parse_work_package(spec_text)
 
     prep = _read_json_list(run_dir / "gates" / "prepare.json")

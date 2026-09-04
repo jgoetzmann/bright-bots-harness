@@ -49,9 +49,19 @@ def branch_name_for(item: WorkItem) -> str:
 
 
 def _source_repo(config) -> str:
-    """The repository clones come from: the fork when configured (D2 §4.4), else the product."""
-    fork = getattr(config, "fork_repo", "") or ""
-    return fork.strip() or config.repo
+    """The repository clones come from: the fork at tier 2 (D2 §4.4), else the product repo.
+
+    B220/D40: the fork is only the right source while the harness can keep it current, and
+    that takes a write credential -- `sync_fork` fast-forwards it through `gh.push_ref`, which
+    tier 2 alone can call. Below tier 2 the fork is frozen wherever it was last left, so
+    cloning it pins every proposal, diff and gate run to a stale base and silently reports it
+    as the product repository. Measured: a tier-0 trial cloned a fork twelve commits behind
+    upstream. With no push there is no reason to prefer the fork at all.
+    """
+    fork = (getattr(config, "fork_repo", "") or "").strip()
+    if fork and int(getattr(config, "permission_tier", 0) or 0) >= 2:
+        return fork
+    return config.repo
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:

@@ -1365,6 +1365,37 @@ def _self_repo_comments(ctx, config) -> list[dict]:
     return comments
 
 
+def _usage_lines(led, config) -> list[str]:
+    """The measured subscription usage and how far it is from each stop (B221/D41).
+
+    Delivery 3 made the two stops depend on this signal, and then printed neither it nor the
+    distance to it -- so the one question an operator asks the ledger ("how close am I?") had
+    no answer in its output.
+    """
+    usage = (dict(led.window).get("usage") or {}) if led.window else {}
+    if not usage:
+        return ["usage:", "  (never observed; the USD path governs - B114)"]
+    rows = [
+        ("session (5h) ", "five_hour", float(config.session_usage_stop_pct)),
+        ("weekly  (7d) ", "seven_day", float(config.weekly_usage_stop_pct)),
+    ]
+    lines = ["usage:"]
+    for label, key, stop in rows:
+        window = usage.get(key) or {}
+        raw = window.get("utilization")
+        if raw is None:
+            lines.append(f"  {label}       (not reported)")
+            continue
+        pct = float(raw) * 100.0
+        verdict = "STOPPED" if pct >= stop else f"{stop - pct:.0f} to go"
+        lines.append(
+            f"  {label}{pct:5.1f}%  stop at {stop:.0f}%  ({verdict})"
+            f"  resets {window.get('resets_at') or 'unknown'}"
+        )
+    lines.append(f"  observed at   {usage.get('observed_at') or 'unknown'}")
+    return lines
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="ledger")
@@ -1387,6 +1418,7 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     lines.append(f"  spent_usd           {float(window.get('spent_usd') or 0.0):.2f}")
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
     lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
+    lines.extend(_usage_lines(led, config))
     lines.append("observations:")
     if led.observations:
         for stage in sorted(led.observations):

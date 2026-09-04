@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -340,3 +341,39 @@ def test_B48_release_keep_true_leaves_the_clone_and_records_the_path(
     kept = config.runs_dir / lease.run_id / "KEPT"
     assert kept.is_file()
     assert str(lease.path) in kept.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------
+# B220 - the fork is the clone source only while it can be kept current (D40)
+# --------------------------------------------------------------------------------------
+
+
+def test_b220_tier_2_clones_the_fork(tmp_path):
+    """B220: at tier 2 sync_fork can fast-forward the fork, so the fork is the right base."""
+    from harness.clone import _source_repo
+
+    config = SimpleNamespace(
+        fork_repo="bot/product", repo="owner/product", permission_tier=2
+    )
+
+    assert _source_repo(config) == "bot/product"
+
+
+def test_b220_tier_0_clones_the_product_repository_not_the_stale_fork(tmp_path):
+    """B220: below tier 2 there is no push, so sync_fork cannot run and the fork is frozen."""
+    from harness.clone import _source_repo
+
+    config = SimpleNamespace(
+        fork_repo="bot/product", repo="owner/product", permission_tier=0
+    )
+
+    assert _source_repo(config) == "owner/product"
+
+
+def test_b220_no_fork_configured_always_means_the_product_repository():
+    """B220: unchanged from Delivery 1 -- an empty FORK_REPO was never a clone source."""
+    from harness.clone import _source_repo
+
+    for tier in (0, 2):
+        config = SimpleNamespace(fork_repo="", repo="owner/product", permission_tier=tier)
+        assert _source_repo(config) == "owner/product"

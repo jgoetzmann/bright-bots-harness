@@ -39,8 +39,14 @@ minimised window. After a reboot, `.\bb-start.ps1` resumes from the same state.
 | `bb-work/` (gitignored) | `/work` | read-write | `HEARTBEAT`, `STOP`, `HALT`, `.env` (generated), `runs/`, `packages/`, `state/ledger.json`, `proposals/` |
 | named volume `bb-data` | `/data` | read-write | `harness.db` — SQLite on a named volume because bind-mount locking on Windows is unreliable |
 
-Inside the container the loop runs `python -m harness local-loop --work /work --config /work/.env`,
-so `repo_root` is `/work` and every write lands on the writable mount. `local/run.ps1` generates
+Inside the container the loop runs
+`python -m harness --config /work/.env local-loop --work /work --loop-seconds "$BB_LOOP_SECONDS"`,
+so `repo_root` is `/work` and every write lands on the writable mount. `--config` is a **global**
+flag and must come before the subcommand — argparse rejects it after `local-loop`, and the
+container would die at `exec` with exit 2 having passed every gate. `BB_LOOP_SECONDS` carries
+`bb-config.json`'s `run.loop_seconds` into the container, where `local/entrypoint.sh` — not any
+Python — turns it into `--loop-seconds`; I-4 confines `os.environ` to `config.py`, which knows no
+`BB_` key. `local/run.ps1` generates
 `/work/.env` from the filtered host `.env` on every start with the container shape forced:
 `DB_PATH=/data/harness.db`, `RUNS_DIR=/work/runs`, `PACKAGES_DIR=/work/packages`,
 `HALT_FILE=/work/HALT`, `TRUST_FILE=/harness/.harness/trust.txt`, `PERMISSION_TIER=0`,
@@ -66,6 +72,15 @@ in the item's clone and writes `runs/<item>/DELIVER.json`. `local/watchdog-bb.ps
 publisher — pushes that branch to the fork every `watchdog.push_minutes` (and once more on
 `bb-stop.ps1`) using the host's `HARNESS_GITHUB_TOKEN`, only for branches under `harness/` whose tip
 author is `harness@brightboost-harness` (B139). It records the pushed sha in `runs/<item>/PUSHED`.
+
+The push is `--force-with-lease=refs/heads/<branch>:<sha>`, never a bare `--force`, matching
+`gh.push_branch`'s rule for Actions mode. The expected `<sha>` is the one the watchdog last left
+there — the first word of `runs/<item>/PUSHED`, empty when it has never pushed that branch — so a
+revise cycle's rewritten tip lands, and a commit someone else pushed to the same fork branch is
+refused instead of discarded. (The lease needs that explicit value: a bare `--force-with-lease`
+reads a remote-*tracking* ref, and pushing to a URL has none, so it fails with `stale info` every
+time.) On a refusal the watchdog names both shas and stops; to hand the branch back to the
+harness, put the sha you accept as the base first in `runs/<item>/PUSHED`.
 Opening the upstream pull request from that branch is then a human act, or Actions mode's `deliver`.
 
 ## Kill switches
@@ -161,6 +176,8 @@ docker inspect bb --format "{{.HostConfig.Binds}}"      # R9.2: /harness:ro, /wo
 | the gate prints a step you removed from `entrypoint.sh` | stale image | `.\bb-start.ps1 -Build` — compare the printed build time to your edit |
 | `FATAL: /harness is writable` | mount lost `:ro` | run through `bb-start.ps1`, never a hand-typed `docker run` |
 | `FATAL: pin mismatch` | a pinned file changed | that is a reviewed PR touching `.harness/PIN` (B143); never edit the pin by hand to make it pass |
+| container exits `2` right after `gate 5/5`, five times, then stays down | a bad `local-loop` argv — most often a global flag placed after the subcommand | `docker logs bb` shows the argparse usage line; fix `entrypoint.sh`, then `.\bb-start.ps1 -Build` |
+| `push REFUSED … the lease failed` | someone pushed to the same fork branch since the watchdog last did | intended: the lease stopped a force push from discarding that commit. Inspect the branch; to accept its tip as the base, put that sha first in `runs\<item>\PUSHED` |
 | exit `137` | out of memory | raise `container.memory_gb`; it is the limit that kills |
 | killed every ~3 min during implement | heartbeat sidecar not running — old image | `-Build`; check `docker logs bb` for `gate 5/5` then the loop's own lines |
 | branches never appear on the fork | no watchdog | `.\bb-watcher.ps1 -Once` shows `watchdog: ABSENT`; `.\bb-start.ps1` restarts it |

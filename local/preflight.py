@@ -8,7 +8,13 @@ Run BEFORE bb-start.ps1.
 Checks, each PASS / FAIL / WARN / SKIP: docker present and up; the image; the repository paths the
 container mounts and gates on; .env and its two credentials; .harness/PIN and the pin itself;
 bb-config.json; the credential filter's output (A46); A44's filename rule; LF line endings on the
-baked-in entrypoint. Exit 1 on any FAIL. Standard library only (I-17).
+baked-in entrypoint; the entrypoint's exec line (global flags before the subcommand); that every
+BB_* variable run.ps1 sets has a reader; that bb-config.json and bb-configure.py's SCHEMA hold the
+same keys; and that the two publishers still agree on --force-with-lease. Exit 1 on any FAIL.
+Standard library only (I-17).
+
+Those last four are text assertions on purpose: PowerShell and the shell entrypoint have no Python
+test suite, so an invariant they share with harness/ can only be held here.
 """
 from __future__ import annotations
 
@@ -21,6 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+CMD_C_GIT = 'cmd /c "git'   # the broken form: see check_publishers_agree
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL = ROOT / "local"
 WORK = ROOT / "bb-work"
@@ -173,6 +180,127 @@ def check_local_files() -> None:
             report("FAIL", "bb-config.json parses", str(e))
 
 
+def check_entrypoint_invocation() -> None:
+    """The container's last act. `--config` is defined on the TOP-LEVEL parser only, so argparse
+    rejects it after the subcommand: the wrong order passes all five gates and then dies at exec
+    with exit 2, burning every restart. `--loop-seconds` is how run.ps1's BB_LOOP_SECONDS reaches
+    the loop; without it the knob is inert and 300 s is the only speed the loop has."""
+    ep = LOCAL / "entrypoint.sh"
+    if not ep.exists():
+        return
+    body = ep.read_text(encoding="utf-8", errors="replace")
+    execs = [ln for ln in body.splitlines() if ln.startswith("exec ")]
+    if not check(len(execs) == 1, "entrypoint.sh exec line", "one", f"{len(execs)} exec lines"):
+        return
+    line = execs[0]
+    if not check("local-loop" in line, "entrypoint.sh execs local-loop", "yes", line[:80]):
+        return
+    sub = line.index("local-loop")
+    pos = line.find("--config")
+    check(0 <= pos < sub, "entrypoint.sh --config placement",
+          "before the subcommand, where a global flag belongs",
+          "--config is missing or follows local-loop; argparse would exit 2")
+    check("--loop-seconds" in line, "entrypoint.sh --loop-seconds",
+          "the loop is told how long to sleep",
+          "run.loop_seconds cannot reach the loop; it would always sleep the 300 s default")
+
+
+def check_bb_env_has_readers() -> None:
+    """Nothing under harness/ reads a BB_ variable and nothing may: I-4 confines os.environ to
+    config.py, whose key list has no BB_ entry. So a BB_* variable run.ps1 puts in the container
+    is live only if entrypoint.sh reads it. One that nothing reads is a knob that lies -
+    bb-configure.py prints a restart hint for it and bb-watcher.ps1 shows it as in sync."""
+    run_ps1, ep = LOCAL / "run.ps1", LOCAL / "entrypoint.sh"
+    if not (run_ps1.exists() and ep.exists()):
+        return
+    text = run_ps1.read_text(encoding="utf-8", errors="replace")
+    passed = sorted(set(re.findall(r'"(BB_[A-Z0-9_]+)=', text)))
+    gate = ep.read_text(encoding="utf-8", errors="replace")
+    orphans = [name for name in passed if name not in gate]
+    check(not orphans, "BB_* variables have a reader",
+          f"{', '.join(passed) or 'none'} (read by entrypoint.sh)",
+          f"run.ps1 sets {orphans}, which entrypoint.sh never reads - a dead knob")
+
+
+def check_config_schema_agrees() -> None:
+    """bb-config.json and bb-configure.py's SCHEMA are two halves of one table. A file key with no
+    SCHEMA entry is silently dropped by `load`; a SCHEMA key with no file entry still shows a
+    value in `show`. Either way the operator is told something that is not so."""
+    cfg_path, conf_path = ROOT / "bb-config.json", ROOT / "bb-configure.py"
+    if not (cfg_path.exists() and conf_path.exists()):
+        return
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return  # check_local_files already reported the parse failure
+    in_file = {
+        f"{sec}.{name}"
+        for sec, vals in data.items()
+        if not sec.startswith("_") and isinstance(vals, dict)
+        for name in vals
+    }
+    schema_src = conf_path.read_text(encoding="utf-8", errors="replace")
+    in_schema = set(re.findall(r'^\s*"([a-z_]+\.[a-z_0-9]+)":', schema_src, re.M))
+    check(in_file == in_schema, "bb-config.json matches SCHEMA", f"{len(in_file)} keys",
+          f"only in the file: {sorted(in_file - in_schema)}; "
+          f"only in SCHEMA: {sorted(in_schema - in_file)}")
+
+
+# A force with no lease. Two shapes, because the two publishers build argv differently:
+#   ARG_FORCE   the flag as a quoted argument - "--force" / '-f' - which is how gh.py writes it,
+#               several lines away from the word "push".
+#   LINE_FORCE  the flag as a bare token on a line that also says push, which is how PowerShell
+#               writes it. Requiring "push" on the line keeps -Force (capital F, a different
+#               thing entirely) and prose out of it.
+# Neither matches --force-with-lease, and neither matches ``-f`` in a docstring's backticks.
+ARG_FORCE = re.compile(r"""['"](?:--force(?!-with-lease)|-f)['"]""")
+LINE_FORCE = re.compile(r"--force(?!-with-lease)|(?<![\w-])-f(?![\w-])")
+
+
+def _bare_force_lines(body: str, comment: str) -> list[str]:
+    out = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith(comment):
+            continue
+        if ARG_FORCE.search(line) or ("push" in line and LINE_FORCE.search(line)):
+            out.append(line)
+    return out
+
+
+def check_publishers_agree() -> None:
+    """local/watchdog-bb.ps1 is the ONLY publisher in local mode (P5); harness/gh.py is the one in
+    Actions mode. gh.push_branch documents "``force`` uses ``--force-with-lease``, never ``-f``"
+    and a Python test pins its argv - but that test cannot see the PowerShell copy, which once
+    pushed with a bare `--force` and would discard a commit a human pushed to the same fork
+    branch. These assertions are the only thing holding the two publishers together.
+
+    The lease must also carry an explicit expected sha. A bare `--force-with-lease` reads a
+    remote-TRACKING ref; the watchdog pushes to a URL, which has none, and git then refuses every
+    push with "stale info" - verified against a local bare repository."""
+    wd = LOCAL / "watchdog-bb.ps1"
+    if wd.exists():
+        body = wd.read_text(encoding="utf-8", errors="replace")
+        bare = _bare_force_lines(body, "#")
+        check(not bare, "watchdog pushes with a lease", "no bare --force",
+              f"bare force push, against gh.push_branch's rule: {bare}")
+        check("--force-with-lease=" in body, "watchdog lease is explicit",
+              "--force-with-lease=<ref>:<sha>",
+              "a bare --force-with-lease has no tracking ref when pushing to a URL, so every "
+              "push would fail with 'stale info'")
+        code = [ln for ln in body.splitlines() if not ln.strip().startswith("#")]
+        check(not any(CMD_C_GIT in ln for ln in code), "watchdog calls git directly",
+              "& git, not cmd /c",
+              "cmd /c inside an interpolated subexpression hands git a path with a leading "
+              "space and exits 128 - the publisher would push nothing at all")
+    gh = ROOT / "harness" / "gh.py"
+    if gh.exists():
+        body = gh.read_text(encoding="utf-8", errors="replace")
+        bare = _bare_force_lines(body, "#")
+        check(not bare, "gh.py pushes with a lease", "no bare --force",
+              f"bare force push: {bare}")
+
+
 def check_docker() -> None:
     exe = shutil.which("docker")
     if exe is None:
@@ -206,6 +334,10 @@ def main(argv: list[str] | None = None) -> int:
     check_env()
     check_filter()
     check_local_files()
+    check_entrypoint_invocation()
+    check_bb_env_has_readers()
+    check_config_schema_agrees()
+    check_publishers_agree()
     if args.quick:
         report("SKIP", "docker", "--quick")
     else:

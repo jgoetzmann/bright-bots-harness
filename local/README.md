@@ -24,7 +24,7 @@ Rebuild.
 | Package, mounted `:ro` at `/harness` | this repository root |
 | Work dir, bind-mounted at `/work` | `bb-work/` (gitignored; created by `bb-start.ps1`) |
 | Named volume | `bb-data` → `/data`, holding `harness.db` |
-| Env prefix | `BB_*` (`BB_WORK_DIR`, `BB_LOOP_SECONDS`, `BB_MAX_ITEMS_PER_UNIT`) |
+| Env prefix | `BB_*` (`BB_WORK_DIR`, `BB_LOOP_SECONDS`) — read by `entrypoint.sh`, never by Python (I-4) |
 | Network | `bb-net`, plain bridge — no egress allowlist, by ruling (§10.6) |
 | Workspace scripts | `bb-start.ps1`, `bb-stop.ps1`, `bb-watcher.ps1`, `bb-configure.py`, `bb-config.json` (repo root) |
 | Watchdog | `local/watchdog-bb.ps1` — never contains the substring rk's wildcard kill matches (A44) |
@@ -39,9 +39,9 @@ Rebuild.
 | File | Role |
 | --- | --- |
 | `Dockerfile` | the image: base + pinned Node, claude CLI, pytest; `COPY`s only `entrypoint.sh` (P1). Build context is this directory, so copying the package is impossible |
-| `entrypoint.sh` | the gate, in the frozen §10.3 order; `exec`s `python -m harness local-loop --work /work --config /work/.env` |
+| `entrypoint.sh` | the gate, in the frozen §10.3 order; `exec`s `python -m harness --config /work/.env local-loop --work /work --loop-seconds $BB_LOOP_SECONDS` |
 | `run.ps1` | the `docker run` contract (§5.3): network, volume, `docker rm -f bb`, the credential filter, `/work/.env`, the flags |
-| `watchdog-bb.ps1` | host-side policing (§6.5) and the **only publisher**: pushes delivered branches every `push_minutes` |
+| `watchdog-bb.ps1` | host-side policing (§6.5) and the **only publisher**: pushes delivered branches every `push_minutes`, always under a `--force-with-lease` against the sha in `runs/<item>/PUSHED` |
 | `container_env.ps1` | the credential filter (P4/P5): drops `HARNESS_GITHUB_TOKEN`, prints `dropped N line(s)` |
 | `preflight.py` | host-side checks before the first start; stdlib only |
 
@@ -50,9 +50,17 @@ Rebuild.
 1. write `/work/HEARTBEAT` — before anything else, so the watchdog's grace window starts fresh
 2. probe `/harness` for writability — writable → `FATAL`, `exit 1`
 3. `python -m harness.verify_pin --check` against `/harness/.harness/PIN` — mismatch → `exit 1`
-4. `/work`, `/data`, `/work/.env`, `/harness/.harness/config.json` exist; the JSON parses
+4. `/work`, `/data`, `/work/.env`, `/harness/.harness/config.json` exist; the JSON parses; `BB_LOOP_SECONDS` is a whole number of seconds (argparse would otherwise reject it at step 6, after the gate has already passed)
 5. `python -m pytest -q -p no:cacheprovider -o cache_dir=/tmp/pc tests/test_invariants.py` — red → `exit 1`; timed, warns past 10 s
-6. `exec python -m harness local-loop --work /work --config /work/.env`
+6. `exec python -m harness --config /work/.env local-loop --work /work --loop-seconds "$BB_LOOP_SECONDS"`
+
+`--config` is a **global** flag on the top-level parser, so it must precede the subcommand;
+argparse rejects it after `local-loop` and the container dies at `exec` with exit 2, burning all
+five restarts on a container that passed every gate. `--loop-seconds` is `local-loop`'s own flag —
+it is how `bb-config.json`'s `run.loop_seconds` reaches the loop, because nothing under `harness/`
+reads a `BB_*` variable and nothing may (I-4 confines `os.environ` to `config.py`). A `BB_*` knob
+is live only when this line forwards it; there is exactly one. Per-unit item count is not a knob:
+it is the dispatcher's `MAX_CONCURRENT_ITEMS`, pinned to 1 in local mode by `run.ps1` (B123).
 
 Between 5 and 6 the entrypoint starts a `sh` sidecar that rewrites `HEARTBEAT` every 10 s. It dies
 with PID 1, so it guards process death exactly as a daemon thread would — and nothing under

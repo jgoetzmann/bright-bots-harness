@@ -59,11 +59,14 @@ change, reviewed as one (B112):
   `harness/keywords.py`).
 
 Adding such a key to `config.json` does not silently take effect: `load_config` rejects any key
-outside the eleven above, so the run fails at `harness doctor` naming the key (A30).
+outside the list above (`config.CONFIG_JSON_KEYS`, sixteen keys since the Delivery 3 knobs),
+so the run fails at `harness doctor` naming the key (A30).
 
 ## Notes
 
-- `trust.txt` currently contains the placeholder `<NATHAN_HANDLE>`. Until it is replaced with a
-  real handle only `jgoetzmann` can steer; the acceptance check R4.9 stays `Blocked` by design.
+- `trust.txt` carries real handles now — `jgoetzmann` and `BrightBoost-Tech`; the
+  `<NATHAN_HANDLE>` placeholder it shipped with is gone. `Identity.trust_file_ready()` is what
+  reads that: it wants the file present, at least two handles, and no placeholder left. Adding
+  or removing a handle is a reviewed PR, and `tests/test_trust.py` pins the shipped file.
 - The harness never merges, approves or dismisses anything (I-12). Nothing in this directory can
   change that.

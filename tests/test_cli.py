@@ -1764,3 +1764,240 @@ def test_B214_budget_exhausted_hands_the_item_back_to_approved_with_a_handoff_fi
     assert D3_STOP_REASON in text
     assert read_ledger(tmp_path)["window"]["carry"]["issue"] == item_id
     assert not list((tmp_path / "packages").iterdir())
+
+
+# --------------------------------------------------------------------------
+# A30 / B112 - doctor's per-key config report: it covers Delivery 3, and each
+# verdict is whole-word (audit findings 7 and 12)
+# --------------------------------------------------------------------------
+
+D3_DOCTOR_KEYS = (
+    "WEEKLY_USAGE_STOP_PCT",
+    "SESSION_USAGE_STOP_PCT",
+    "OVERRUN_PCT",
+    "RUN_WINDOW_START",
+    "RUN_WINDOW_END",
+)
+
+
+def test_A30_doctor_names_every_delivery_3_config_key(tmp_path, monkeypatch, capsys):
+    """A30 with the D3 additions: OPERATIONS §13.5 sends the operator to `harness doctor` to
+    confirm exactly these five knobs after a reviewed change, so doctor prints each with the
+    value it loaded - in the text report and in `--json` alike."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, RUN_WINDOW_START="mon 08:00", RUN_WINDOW_END="tue 20:00")
+    assert cli.main(["init"]) == 0
+    doctor_ok(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["doctor"]) == 0
+
+    out = capsys.readouterr().out
+    for key in D3_DOCTOR_KEYS:
+        assert key in out, f"doctor must name {key} (A30, D3 config table)"
+    assert "mon 08:00" in out and "tue 20:00" in out
+
+    assert cli.main(["doctor", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    keys = payload["config_keys"]
+    assert keys["WEEKLY_USAGE_STOP_PCT"] == "90.0"
+    assert keys["SESSION_USAGE_STOP_PCT"] == "70.0"
+    assert keys["OVERRUN_PCT"] == "10.0"
+    assert keys["RUN_WINDOW_START"] == "mon 08:00"
+    assert keys["RUN_WINDOW_END"] == "tue 20:00"
+
+
+def test_A30_doctor_config_keys_cover_every_key_config_json_may_override():
+    """A sixth knob must not drift out of the report the way the five D3 ones did: every key
+    `.harness/config.json` may override is a key doctor names, and every pair points at a
+    field that actually exists on Config."""
+    import dataclasses as _dataclasses
+
+    from harness import config as config_mod
+
+    named = dict(cli.CONFIG_KEYS)
+    assert len(named) == len(cli.CONFIG_KEYS), "a key is listed twice in CONFIG_KEYS"
+    missing = [key for key in config_mod.CONFIG_JSON_KEYS if key not in named]
+    assert missing == [], f"doctor never names {missing}"
+    fields = {f.name for f in _dataclasses.fields(config_mod.Config)}
+    unknown = [attr for attr in named.values() if attr not in fields]
+    assert unknown == [], f"CONFIG_KEYS points at fields Config does not have: {unknown}"
+
+
+def test_B112_a_typod_superstring_key_does_not_indict_the_correctly_spelled_one(
+    tmp_path, monkeypatch, capsys
+):
+    """B112 boundary: `WEEKLY_CAP_USDD` in .harness/config.json is a startup error naming the
+    typo, but `WEEKLY_CAP_USD` is spelled correctly and in range. The per-key verdict is
+    whole-word, so doctor must not also report the real key as invalid."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "config.json").write_text(
+        json.dumps({"WEEKLY_CAP_USD": 25.0, "WEEKLY_CAP_USDD": 30.0}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    doctor_ok(monkeypatch)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["doctor", "--json"]) == 3
+
+    payload = json.loads(capsys.readouterr().out)
+    problems = payload["problems"]
+    assert any("WEEKLY_CAP_USDD" in problem for problem in problems), problems
+    assert "config key invalid or out of range: WEEKLY_CAP_USD" not in problems, problems
+    assert payload["config_keys"]["WEEKLY_CAP_USD"] in ("25.0", "25.00")
+
+    capsys.readouterr()
+    assert cli.main(["doctor"]) == 3
+    captured = capsys.readouterr()
+    text = captured.out + captured.err
+    assert "WEEKLY_CAP_USDD" in text
+    assert "config key invalid or out of range: WEEKLY_CAP_USD\n" not in text
+
+
+def test_A30_an_out_of_range_key_still_earns_its_own_per_key_verdict(
+    tmp_path, monkeypatch, capsys
+):
+    """The other side of the same boundary: anchoring the match must not silence the honest
+    verdict. MAX_SUBISSUES=51 fails the load naming that key, and doctor's per-key report says
+    so for that key and no other."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, MAX_SUBISSUES="51")
+    doctor_ok(monkeypatch)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["doctor", "--json"]) == 3
+
+    payload = json.loads(capsys.readouterr().out)
+    problems = payload["problems"]
+    assert "config key invalid or out of range: MAX_SUBISSUES" in problems, problems
+    indicted = [p for p in problems if p.startswith("config key invalid or out of range: ")]
+    assert indicted == ["config key invalid or out of range: MAX_SUBISSUES"], indicted
+
+
+# --------------------------------------------------------------------------
+# B209/B210 - the run window decides what `harness run` may start (D3, D32).
+# Appended; nothing above is edited. These are the tests `D3_ENV_LINES` was
+# written for: its window is driven through cli.main(["run"]) against a clock
+# inside it and a clock outside it.
+# --------------------------------------------------------------------------
+
+# The window exactly as D3_ENV_LINES documents it, read from that constant so the two
+# cannot drift apart.
+D3_WINDOW = {
+    key: value.strip()
+    for key, _, value in (
+        line.partition("=") for line in D3_ENV_LINES.splitlines() if line.strip()
+    )
+    if key.startswith("RUN_WINDOW_")
+}
+WINDOW_TEXT = "mon 08:00-tue 20:00 UTC"
+# Monday 2026-08-31 12:00 UTC is inside `mon 08:00 - tue 20:00`; Thursday 2026-09-03 is not.
+INSIDE_THE_WINDOW = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+OUTSIDE_THE_WINDOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+
+
+def freeze_run_clock(monkeypatch, at: datetime) -> None:
+    """Pin the clock `cmd_run` reads. `build_context` constructs a `SystemClock` when no clock
+    is injected (harness/context.py) and `cmd_run` offers no other seam, so the name is it."""
+    import harness.context as context_mod
+    from harness.clock import FrozenClock
+
+    monkeypatch.setattr(context_mod, "SystemClock", lambda: FrozenClock(at))
+
+
+def align_ledger_window(tmp_path: Path, at: datetime) -> None:
+    """Start the ledger's window a minute before `at`, so a frozen clock cannot roll it."""
+    path = tmp_path / "state" / "ledger.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["period_start"] = (at - timedelta(seconds=60)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def windowed_repo(tmp_path: Path, monkeypatch, at: datetime) -> int:
+    """A repo whose .env carries D3_ENV_LINES' window, one approved item, clock frozen at `at`."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, **D3_WINDOW)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    write_carry_ledger(tmp_path)  # carry is None: nothing is being carried in these tests
+    align_ledger_window(tmp_path, at)
+    freeze_run_clock(monkeypatch, at)
+    return item_id
+
+
+def test_B210_run_outside_the_run_window_starts_nothing_and_names_the_window(
+    tmp_path, monkeypatch, capsys
+):
+    """B210 (RUN-DECISIONS-D3 `__main__.run`, D32): with `RUN_WINDOW_START=mon 08:00` and
+    `RUN_WINDOW_END=tue 20:00`, a Thursday tick starts no stage, says which window it is
+    outside of, and exits 0 - a closed window is a normal outcome, not a failure."""
+    item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_everything(monkeypatch)  # a clone or a request here would be the bug
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"a closed window is exit 0; got {rc}: {captured}"
+    assert f"outside run window ({WINDOW_TEXT}); nothing started" in captured.out, captured.out
+    assert ran == [], f"no stage may start outside the window: {ran}"
+    assert stage_run_count(tmp_path) == 0
+    assert item_state(tmp_path, item_id) == "approved"
+    assert not list((tmp_path / "packages").iterdir())
+
+
+def test_B209_run_inside_the_run_window_starts_the_approved_item(
+    tmp_path, monkeypatch, capsys
+):
+    """B209: the same repo, the same queue, a Monday-noon clock - the window is open, the item
+    is implemented, and the "outside run window" line is not printed. Without this half the
+    test above would also pass on a build that never starts anything at all."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    clone_dir = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert "outside run window" not in captured.out + captured.err, captured.out
+    assert "implement" in stage_names(ran), f"an open window must start the item: {ran} {captured}"
+    assert [entry[1] for entry in ran if entry[0] == "implement"] == [item_id]
+
+
+def test_B210_run_item_bypasses_the_run_window_but_still_reaches_the_stage(
+    tmp_path, monkeypatch, capsys
+):
+    """RUN-DECISIONS-D3: "`--item` bypasses the run window but not the usage stops" - a human
+    at the keyboard on a Thursday gets the item implemented, not the window message."""
+    item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    clone_dir = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run", "--item", str(item_id)])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert "outside run window" not in captured.out + captured.err, captured.out
+    assert "implement" in stage_names(ran), f"--item must start the item: {ran} {captured}"

@@ -3,7 +3,8 @@
 # docs/delivery/DELIVERY-2-HANDOFF.md section 10.3 (platform section 5.2). Baked into the image
 # (P3); the package it gates is mounted read-only at /harness (P1). Hand-written; never
 # machine-generated.
-#   1. HEARTBEAT immediately          4. /work, /data, /work/.env, .harness/config.json exist and parse
+#   1. HEARTBEAT immediately          4. /work, /data, /work/.env, .harness/config.json exist and parse,
+#                                        and BB_LOOP_SECONDS is a whole number of seconds
 #   2. /harness must be read-only     5. the fast test subset: tests/test_invariants.py, under ~10 s
 #   3. pinned hash check (B142)       6. exec the loop
 # Every step fails closed with exit 1 (A45). The gate runs on every start, restarts included.

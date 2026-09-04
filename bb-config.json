@@ -7,8 +7,7 @@
     "cpu_shares": 256
   },
   "run": {
-    "loop_seconds": 300,
-    "max_items_per_unit": 1
+    "loop_seconds": 300
   },
   "watchdog": {
     "poll_seconds": 10,

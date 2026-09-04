@@ -81,8 +81,23 @@ So the first thing to read is the `harness:ops` issue, not the Actions log.
    Actions → the run → Artifacts. `EVIDENCE.md` inside has verbatim gate output. The item
    itself will be `harness:blocked` with the reason in a comment, or will be reset to its
    previous state by the next run's reconciliation (§3).
-5. If the step is the ledger commit: `state/ledger.json` conflicted. Pull `main`, run
-   `harness ledger --rebuild`, commit the result with `[skip ci]`, push. Losing the file
+5. If the step is the ledger commit: `state/ledger.json` conflicted on **`harness-state`**,
+   the branch the workflows keep it on (§12, D28). Do **not** rebuild it on `main`:
+   `main`'s copy is only the initial ledger, and B113 protects `main`, so the push would be
+   refused after you had already overwritten the local file. Rebuild it on the state branch
+   with §12's worktree recipe:
+
+   ```bash
+   git fetch origin harness-state
+   git worktree add ../hs FETCH_HEAD        # the state branch, detached; nothing else in it
+   harness ledger --rebuild                 # rewrites state/ledger.json in THIS checkout
+   cp state/ledger.json ../hs/state/ledger.json
+   git -C ../hs commit -am "ledger: rebuild [skip ci]"
+   git -C ../hs push origin HEAD:refs/heads/harness-state
+   git worktree remove ../hs
+   ```
+
+   The `[skip ci]` matters (B115); without it the push triggers a workflow. Losing the file
    costs accuracy, not correctness (B117).
 6. Close the `ops:` issue when you have acted on it. `ops.yml` reopens or updates it if the
    failure repeats.
@@ -140,19 +155,24 @@ workflow shows green. Until the reset time, `harness dispatch` prints an empty p
 Nothing to do but wait. Every scheduled tick between now and then runs `dispatch`, sees the
 reason, and exits without spending (B121).
 
-If you know the limit has lifted early and want the next tick to work:
+If you know the limit has lifted early and want the next tick to work, clear the field on
+**`harness-state`** — the branch the ledger actually lives on (§12, D28). Editing
+`main`'s copy does nothing: it is the initial ledger, the next Actions tick reloads from
+`harness-state` anyway, and B113 refuses the push. Use §12's worktree recipe:
 
 ```bash
-git pull
+git fetch origin harness-state
+git worktree add ../hs FETCH_HEAD        # the state branch, detached; nothing else in it
 python - <<'PY'
 import json, pathlib
-p = pathlib.Path("state/ledger.json")
+p = pathlib.Path("../hs/state/ledger.json")
 d = json.loads(p.read_text(encoding="utf-8"))
 d["window"]["rate_limited_until"] = None
 p.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
 PY
-git commit -am "ledger: clear rate_limited_until [skip ci]"
-git push
+git -C ../hs commit -am "ledger: clear rate_limited_until [skip ci]"
+git -C ../hs push origin HEAD:refs/heads/harness-state
+git worktree remove ../hs
 ```
 
 The `[skip ci]` matters (B115); without it the push would itself trigger a workflow. If the
@@ -420,6 +440,10 @@ end with `[skip ci]`. `main`'s copy is the initial ledger and what local mode st
 - Rebuild it after a corruption: `harness ledger --rebuild`, then commit the result to `harness-state`
   by hand (`git worktree add ../hs origin/harness-state`, copy, commit, push).
 - Never protect `harness-state`; it is written by the Actions token.
+- Every procedure in this document that writes the ledger goes through the recipe above:
+  §2 step 5 (rebuild after a conflicted ledger commit) and §4 (clear
+  `rate_limited_until`). If you find one that edits `state/ledger.json` on `main`, it is
+  a documentation bug — D28 is the ruling, this section is the procedure.
 
 ## 13. Usage-aware governance
 

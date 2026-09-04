@@ -23,13 +23,17 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "bb-config.json"
 
 # key -> (default, type, (min, max) or choices, restart, help)
+# A key belongs here only when a reader exists. `run.max_items_per_unit` sat here with none: it
+# reached the container as BB_MAX_ITEMS_PER_UNIT, no Python read a BB_ variable (I-4 confines
+# os.environ to config.py), and `local-loop` has no such flag - so it printed a restart hint and
+# the watcher showed it live while the loop ignored it. Per-unit item count is the dispatcher's
+# MAX_CONCURRENT_ITEMS, pinned to 1 in local mode by local/run.ps1's overrides (B123).
 SCHEMA: dict[str, tuple] = {
     "container.cpus":             (4, float, (0.5, 64), "container", "CPU cores for the container (docker --cpus)"),
     "container.memory_gb":        (8, float, (1, 512), "container", "memory limit in GB (docker --memory); this one KILLS (exit 137) - vite build + tsc peak on the product repo, so 8 not 6"),
     "container.pids_limit":       (512, int, (64, 65536), "container", "max processes in the container (fork-bomb guard)"),
     "container.cpu_shares":       (256, int, (2, 262144), "container", "CPU weight vs other processes; 1024 = default, 256 = a quarter"),
-    "run.loop_seconds":           (300, int, (10, 86400), "container", "seconds the loop sleeps between units when the dispatcher starts nothing (BB_LOOP_SECONDS)"),
-    "run.max_items_per_unit":     (1, int, (1, 10), "container", "work items processed per unit before the STOP check (BB_MAX_ITEMS_PER_UNIT); local mode runs one clone at a time regardless (B123)"),
+    "run.loop_seconds":           (300, int, (10, 86400), "container", "seconds the loop sleeps between units when the dispatcher starts nothing (BB_LOOP_SECONDS -> --loop-seconds)"),
     "watchdog.poll_seconds":      (10, int, (2, 600), "watchdog", "how often the host watchdog checks everything"),
     "watchdog.heartbeat_stale_seconds": (180, int, (30, 3600), "watchdog", "docker kill when HEARTBEAT is older than this (also the startup grace period)"),
     "watchdog.min_free_gb":       (5.0, float, (0.5, 1000), "watchdog", "docker stop when free disk on the work drive drops below this"),

@@ -193,7 +193,24 @@ jobs:
           # and `harness --json discover` prints exactly {"created": [<id>, ...]} (cmd_discover,
           # harness/__main__.py). Without --json it prints one bare id per line, which is not
           # JSON at all — the reader below must never be asked to parse that.
-          harness --json discover --mode triage | tee runs/discover.out
+          # D33 / B120: a budget stop is a normal outcome, not a failure. A red run here would
+          # page an operator for the scheduler working as designed, so the two commands below
+          # that can hit the governor exit 0 on it. harness/__main__.py maps BudgetExhausted to
+          # this code; RateLimited already exits 0 there, and .harness/HALT exits 0 too.
+          EXIT_BUDGET=4
+          if harness --json discover --mode triage | tee runs/discover.out; then
+            status=0
+          else
+            status=$?
+          fi
+          if [ "${status}" -eq "${EXIT_BUDGET}" ]; then
+            echo "budget exhausted during discover; nothing proposed this run"
+            exit 0
+          fi
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::harness discover exited ${status}"
+            exit "${status}"
+          fi
           ids="$(jq -r '[.created[]?] | map(tostring) | join(" ")' runs/discover.out)"
           if [ -z "${ids// }" ]; then
             echo "no discovered items to propose"
@@ -204,12 +221,20 @@ jobs:
           for n in $ids; do
             echo "::group::harness propose ${n}"
             if harness propose "$n"; then
-              echo "item ${n}: proposed"
+              status=0
             else
-              echo "::error::harness propose ${n} exited non-zero"
-              failed=1
+              status=$?
             fi
             echo "::endgroup::"
+            if [ "${status}" -eq 0 ]; then
+              echo "item ${n}: proposed"
+            elif [ "${status}" -eq "${EXIT_BUDGET}" ]; then
+              echo "budget exhausted at item ${n}; the rest stay discovered for the next run"
+              break
+            else
+              echo "::error::harness propose ${n} exited ${status}"
+              failed=1
+            fi
           done
           exit "$failed"
 

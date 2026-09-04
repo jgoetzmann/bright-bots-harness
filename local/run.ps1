@@ -18,7 +18,6 @@ param(
     [int]$PidsLimit = 512,
     [int]$CpuShares = 256,
     [int]$LoopSeconds = 300,
-    [int]$MaxItemsPerUnit = 1,
     [switch]$Build
 )
 $ErrorActionPreference = "Stop"
@@ -55,10 +54,12 @@ if ($existing -contains "bb") { docker rm -f bb | Out-Null; Write-Host "removed 
 $Filtered = (& (Join-Path $PSScriptRoot "container_env.ps1") -EnvFile $EnvFile | Select-Object -Last 1)
 if (-not $Filtered -or -not (Test-Path $Filtered)) { Write-Error "container_env.ps1 produced no filtered file"; exit 1 }
 
-# The loop reads its configuration from /work/.env (python -m harness local-loop --config /work/.env),
-# so repo_root inside the container is /work: state/, proposals/ and runs/ land on the writable mount
-# and never on the read-only package. Container paths and the local-mode shape are forced here;
-# every other key is the host's, minus the filtered credential.
+# The loop reads its configuration from /work/.env: entrypoint.sh execs
+# `python -m harness --config /work/.env local-loop --work /work --loop-seconds <BB_LOOP_SECONDS>`
+# (--config is a GLOBAL flag, so it precedes the subcommand or argparse exits 2). repo_root inside
+# the container is therefore /work: state/, proposals/ and runs/ land on the writable mount and
+# never on the read-only package. Container paths and the local-mode shape are forced here; every
+# other key is the host's, minus the filtered credential.
 $overrides = New-Object System.Collections.Specialized.OrderedDictionary
 $overrides["DB_PATH"] = "/data/harness.db"
 $overrides["RUNS_DIR"] = "/work/runs"
@@ -110,15 +111,18 @@ $mounts = @(
     "-v", "${Work}:/work",
     "-v", "bb-data:/data"
 )
+# BB_LOOP_SECONDS is read by local/entrypoint.sh, which passes it on as `--loop-seconds`. Nothing
+# under harness/ reads a BB_ variable and nothing may (I-4 confines os.environ to config.py), so a
+# BB_* knob is live only when the entrypoint forwards it as a CLI flag. Do not add one that does
+# not: BB_MAX_ITEMS_PER_UNIT used to sit here, was read by nobody, and still showed as configured.
 $envFlags = @(
     "-e", "BB_WORK_DIR=/work",
     "-e", "BB_LOOP_SECONDS=$LoopSeconds",
-    "-e", "BB_MAX_ITEMS_PER_UNIT=$MaxItemsPerUnit",
     "-e", "DB_PATH=/data/harness.db"
 )
 $mem = "{0}g" -f $MemoryGB
 Write-Host "resources: cpus=$Cpus memory=$mem pids-limit=$PidsLimit cpu-shares=$CpuShares (no tmpfs, no host ports)"
-Write-Host "settings: loop_seconds=$LoopSeconds max_items_per_unit=$MaxItemsPerUnit store=sqlite tier=0 db=/data/harness.db"
+Write-Host "settings: loop_seconds=$LoopSeconds store=sqlite tier=0 db=/data/harness.db (items per unit: MAX_CONCURRENT_ITEMS=1, B123)"
 Write-Host "mounts: ${Harness}:/harness:ro  ${Work}:/work  bb-data:/data"
 
 # on-failure: a wrongful kill (nonzero exit) self-heals; a graceful STOP exit (0) or an explicit

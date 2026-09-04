@@ -768,3 +768,117 @@ def test_b78_two_archives_in_the_same_second_land_in_two_directories(built):
     assert first.parent == second.parent == built.ctx.config.packages_dir
     assert not (first / "transcript.jsonl").exists()
     assert (second / "transcript.jsonl").exists()
+
+
+# --------------------------------------------------------------------------------------
+# The README's "What this is" paragraph is told at the tier the harness is at (audit
+# finding 1). `deliver` republishes this file verbatim as the body of the pull request it
+# opens on the product repository (B108), so a tier-0 claim of powerlessness in a tier-2
+# package is a false statement addressed to that repository's maintainer.
+# --------------------------------------------------------------------------------------
+
+TIER0_CLAIMS = (
+    "holds no credentials and cannot push",
+    "Nothing here has touched GitHub beyond unauthenticated public reads",
+)
+TIER2_FORK = "jgoetzmann-bot/brightboost"
+
+
+def _tier2_context(state, *, fork: str = TIER2_FORK):
+    """The same context the `state` fixture built, with the tier and fork of a Delivery 2 run.
+    `Config` is frozen, so the tier arrives by `dataclasses.replace` rather than by rewriting
+    the .env: nothing here may look at a token, and the fake GitHub client still refuses every
+    call (packaging must not reach GitHub at any tier)."""
+    import dataclasses
+
+    config = dataclasses.replace(state.config, permission_tier=2, fork_repo=fork)
+    return build_context(
+        config,
+        run_id="item-1",
+        runner=FakeRunner(state.tmp_path / "runner_fixtures"),
+        gh=_FakeGitHub(),
+        clock=FrozenClock(FROZEN_AT),
+        store=state.store,
+        clones=_FakeClones(),
+    )
+
+
+def test_readme_at_tier_0_still_says_it_holds_no_credentials_and_cannot_push(built):
+    """Tier 0 is unchanged: no credential, no push, nothing but unauthenticated reads."""
+    readme = (built.package / "README.md").read_text(encoding="utf-8")
+    assert built.config.permission_tier == 0
+    for claim in TIER0_CLAIMS:
+        assert claim in readme, f"tier 0 must keep saying {claim!r}"
+    assert "applying it is a human action" in readme
+    assert "permission tier 2" not in readme
+
+
+def test_readme_at_tier_2_drops_the_tier_0_claim_and_names_the_push(state):
+    """At tier 2 the harness does hold a credential and does push, so the README says so -
+    naming the fork it pushes to, and the two limits that hold anyway: it cannot merge,
+    approve or dismiss a review (I-12), and it cannot modify `.github/**` (I-15)."""
+    ctx = _tier2_context(state)
+    package = Path(packager.build(ctx, state.item_id, state.lease))
+    readme = (package / "README.md").read_text(encoding="utf-8")
+
+    for claim in TIER0_CLAIMS:
+        assert claim not in readme, f"tier 2 must not claim {claim!r}"
+    assert "permission tier 2" in readme
+    assert TIER2_FORK in readme
+    assert "pushes this branch" in readme
+    assert "opens the pull request" in readme
+    assert f"never pushes to `{REPO_SLUG}`" in readme
+    # The claim must be present but must not use the token I-12's source scan forbids: the
+    # invariant test greps every harness string for "dismiss" and cannot tell a disclaimer
+    # from an endpoint, so the prose says the same thing in words that pass both.
+    assert "neither merge a pull request nor act on a review (I-12)" in readme
+    assert "dismiss" not in readme
+    assert "`.github/**` (I-15" in readme
+    assert "merging it is a human action" in readme
+
+
+def test_readme_at_tier_2_changes_nothing_else_in_the_package(state):
+    """Only the paragraph moves. The §7.2 listing, the manifest and the verification steps a
+    reviewer follows are identical at both tiers."""
+    tier0 = Path(packager.build(state.ctx, state.item_id, state.lease))
+    tier0_readme = (tier0 / "README.md").read_text(encoding="utf-8")
+    tier0_manifest = json.loads((tier0 / "manifest.json").read_text(encoding="utf-8"))
+
+    ctx = _tier2_context(state)
+    tier2 = Path(packager.build(ctx, state.item_id, state.lease))
+    tier2_readme = (tier2 / "README.md").read_text(encoding="utf-8")
+
+    assert {p.name for p in tier2.iterdir()} == PACKAGE_ENTRIES
+    assert json.loads((tier2 / "manifest.json").read_text(encoding="utf-8")) == tier0_manifest
+    for marker in ("## How to verify", "git am ../patches/*.patch", "## What is in here"):
+        assert marker in tier0_readme and marker in tier2_readme
+    head, _, tail = tier0_readme.partition("## What this is")
+    tier2_head, _, tier2_tail = tier2_readme.partition("## What this is")
+    assert head == tier2_head
+    assert tail.split("## What changed", 1)[1] == tier2_tail.split("## What changed", 1)[1]
+
+
+def test_what_this_is_never_claims_more_than_the_tier_allows(state):
+    """Neither branch overclaims. Tier 0 says it holds nothing and cannot push; tier 2 claims a
+    push to the fork and nothing at all on the product repository, and both end at a human."""
+    import dataclasses
+
+    tier0 = " ".join(packager._what_this_is(dataclasses.replace(state.config, permission_tier=0)))
+    tier2 = " ".join(
+        packager._what_this_is(
+            dataclasses.replace(state.config, permission_tier=2, fork_repo=TIER2_FORK)
+        )
+    )
+    assert "holds no credentials and cannot push" in tier0
+    assert "cannot push" not in tier2, "tier 2 pushes; saying otherwise is the bug being fixed"
+    assert "neither merge a pull request nor act on a review (I-12)" in tier2
+    assert "dismiss" not in tier2  # I-12's token scan forbids it even in a disclaimer
+    assert f"never pushes to `{REPO_SLUG}`" in tier2
+    assert "human action" in tier0 and "human action" in tier2
+
+    no_fork = " ".join(
+        packager._what_this_is(
+            dataclasses.replace(state.config, permission_tier=2, fork_repo="")
+        )
+    )
+    assert "a fork of this repository" in no_fork

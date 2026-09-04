@@ -87,10 +87,12 @@ function Container-UptimeSeconds {
 # --force: a lease, so a commit a human pushed to the same fork branch between two passes is not
 # silently discarded. The lease must carry an explicit expected sha here - `--force-with-lease`
 # with no value reads a remote-TRACKING ref, and pushing to a URL has none, so the bare form is
-# rejected with "stale info" every time. So: ls-remote for the sha the fork has now, then lease
-# against exactly that ("" = the branch must not exist yet). A PUSHED marker next to the manifest
-# records the sha pushed, so a rewritten tip (a revise cycle) is pushed again and an unchanged one
-# is not. Opening the upstream PR from that branch stays a human act here.
+# rejected with "stale info" every time. The expected sha is the one this watchdog LAST LEFT on
+# that branch, recorded in the PUSHED marker next to the manifest (empty = we have never pushed
+# it, so the branch must not exist yet). Reading the fork's current sha and leasing against that
+# would be `--force` spelled longer: it agrees with whatever a human just pushed. The marker also
+# short-circuits an unchanged tip, so a rewritten one (a revise cycle) is pushed again and an
+# unchanged one is not. Opening the upstream PR from that branch stays a human act here.
 function Push-Delivered {
     $runs = Join-Path $Work "runs"
     if (-not (Test-Path $runs)) { return }
@@ -122,11 +124,21 @@ function Push-Delivered {
             }
         }
         if (-not $clone) { Write-Host "$(Stamp) $($dir.Name): no clone found for $branch"; continue }
-        $head = "$(cmd /c "git -C `"$clone`" rev-parse HEAD 2>&1")".Trim()
-        if ($head -notmatch '^[0-9a-f]{40}$') { Write-Host "$(Stamp) $($dir.Name): cannot read HEAD of $clone"; continue }
+        # The call operator, NOT `cmd /c "git -C `"$clone`" ..."`: inside an interpolated
+        # "$( ... )" the escaped quotes are eaten by the outer string, git is handed " <path>"
+        # with a leading space and exits 128 - so every item failed "cannot read HEAD" and this
+        # publisher pushed nothing at all. Verified on this host; see local/preflight.py.
+        $head = "$(& git -C $clone rev-parse HEAD 2>&1)".Trim()
+        if ($head -notmatch '^[0-9a-f]{40}$') { Write-Host "$(Stamp) $($dir.Name): cannot read HEAD of ${clone}: $head"; continue }
         $marker = Join-Path $dir.FullName "PUSHED"
-        if ((Test-Path $marker) -and ((Get-Content $marker -Raw) -match $head)) { continue }
-        $author = "$(cmd /c "git -C `"$clone`" log -1 --format=%ae 2>&1")".Trim()
+        $lease = ""
+        if (Test-Path $marker) {
+            $mk = (Get-Content $marker -Raw)
+            if ($mk -match $head) { continue }
+            $first = ("$mk".Trim() -split '\s+')[0]
+            if ($first -match '^[0-9a-f]{40}$') { $lease = $first }
+        }
+        $author = "$(& git -C $clone log -1 --format=%ae 2>&1)".Trim()
         if ($author -ne "harness@brightboost-harness") {
             Write-Host "$(Stamp) $($dir.Name): refusing to push $branch - tip author is '$author', not the harness (B139)"; continue
         }
@@ -142,21 +154,15 @@ function Push-Delivered {
         }
         $code = 1
         $out = @()
+        $found = ""
         try {
-            # The lease's expected value: what the fork's branch points at right now. An ls-remote
-            # that fails is NOT "the branch is absent" - pushing an empty lease then would be a
-            # wrong claim, so skip this item and try again on the next pass.
-            $ls = @(& git ls-remote $url "refs/heads/$branch" 2>&1 | ForEach-Object { "$_" })
-            if ($LASTEXITCODE -ne 0) {
-                $why = ($ls -join " | ")
-                if ($token) { $why = $why.Replace($token, "***").Replace($basic, "***") }
-                Write-Host "$(Stamp) $($dir.Name): cannot read $remote refs/heads/${branch}: $why"
-                continue
-            }
-            $lease = ""
-            foreach ($row in $ls) { if ("$row" -match '^([0-9a-f]{40})\s') { $lease = $Matches[1] } }
             $out = @(& git -C $clone push "--force-with-lease=refs/heads/${branch}:$lease" $url "HEAD:refs/heads/$branch" 2>&1 | ForEach-Object { "$_" })
             $code = $LASTEXITCODE
+            if ($code -ne 0) {
+                # Only to name the sha in the message; the lease decision is already made.
+                $ls = @(& git ls-remote $url "refs/heads/$branch" 2>&1 | ForEach-Object { "$_" })
+                foreach ($row in $ls) { if ("$row" -match '^([0-9a-f]{40})') { $found = $Matches[1] } }
+            }
         } finally {
             Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
         }
@@ -167,7 +173,13 @@ function Push-Delivered {
             Set-Content -Path $marker -Value "$head $branch $remote $when" -Encoding ascii
             Write-Host "$(Stamp) pushed $branch ($($head.Substring(0, 12))) to $remote from $($dir.Name)"
         } elseif ($text -match "stale info") {
-            Write-Host "$(Stamp) push REFUSED for $branch to ${remote}: the lease failed - the fork's branch moved since ls-remote (someone else pushed). Not forcing over it; inspect the branch by hand."
+            # The lease refused. Adopting the fork's tip is a decision a human makes, so say what
+            # is there and what to write into the marker; never retry with a wider force.
+            $now = if ($found) { $found.Substring(0, 12) } else { "(absent)" }
+            $was = if ($lease) { "this watchdog left $($lease.Substring(0, 12)) there" }
+                   else { "this watchdog has no PUSHED marker for it" }
+            Write-Host "$(Stamp) push REFUSED for $branch on ${remote}: the lease failed - $was, the fork now has $now, so someone else pushed. NOT forcing over it."
+            Write-Host "$(Stamp)   inspect $remote $branch; to accept its tip as the base and let the next pass overwrite it, put that sha first in $marker"
         } else {
             Write-Host "$(Stamp) push FAILED for $branch to ${remote}: $text"
         }

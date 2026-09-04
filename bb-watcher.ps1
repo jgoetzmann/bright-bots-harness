@@ -81,7 +81,6 @@ function Show-Snapshot {
         @("container.pids_limit", (Cfg "container" "pids_limit" 512), (Inspect "{{.HostConfig.PidsLimit}}")),
         @("container.cpu_shares", (Cfg "container" "cpu_shares" 256), (Inspect "{{.HostConfig.CpuShares}}")),
         @("run.loop_seconds", (Cfg "run" "loop_seconds" 300), $liveEnv["BB_LOOP_SECONDS"]),
-        @("run.max_items_per_unit", (Cfg "run" "max_items_per_unit" 1), $liveEnv["BB_MAX_ITEMS_PER_UNIT"]),
         @("(db)", "/data/harness.db", $liveEnv["DB_PATH"])
     )
     foreach ($r in $rows) {

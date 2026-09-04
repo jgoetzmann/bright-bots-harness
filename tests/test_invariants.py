@@ -1939,3 +1939,471 @@ def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
         assert isinstance(payload[key], (int, float)), f"{key} must be a number"
     for key in ("RUN_WINDOW_START", "RUN_WINDOW_END"):
         assert isinstance(payload[key], str), f"{key} must be a string"
+
+
+# ======================================================================================
+# Audit fixes — the workflow half of the dispatcher contract.
+# Appended by FIXER B; additions only, nothing above was edited. Two couplings that live
+# half in Python and half in YAML, and were free to drift because no test read both halves:
+#   * a scheduled job's spend gate vs. the reason strings harness/dispatcher.py returns;
+#   * discover.yml's id harvester vs. what `harness discover` actually prints.
+# Both are pinned here by reading the workflow text against the source of truth.
+# ======================================================================================
+
+import fnmatch
+
+DISPATCHER_PY = HARNESS_DIR / "dispatcher.py"
+
+# A dispatcher reason that means "capacity is gone". A spending job that proceeds through one
+# of these reaches Governor.authorize, raises BudgetExhausted, exits EXIT_BUDGET=4 and pages an
+# operator for the scheduler working as designed — which DECISIONS D33 forbids in as many words.
+MUST_STOP_REASON_PREFIXES = frozenset({
+    "rate limited until ",
+    "halted",
+    "reserve",
+    "weekly usage ",
+    "session usage ",
+    "carry leeway ",
+})
+# The one stop reason that must NOT stop a cheap, non-window-gated job. D32 puts the run window
+# on implement.yml, whose own three crons keep it; discovery is one triage call on a Sunday.
+MAY_PROCEED_REASON_PREFIXES = frozenset({
+    "outside run window (",
+})
+
+
+def _run_scripts(text: str) -> list[str]:
+    """Every step's `run:` script, dedented — the shell a workflow actually executes."""
+    scripts: list[str] = []
+    for block in _step_blocks(text):
+        lines = block.splitlines()
+        for index, line in enumerate(lines):
+            folded = re.match(r"^(\s*)run:\s*\|\s*$", line)
+            if folded:
+                indent = len(folded.group(1)) + 2
+                body: list[str] = []
+                for rest in lines[index + 1:]:
+                    if rest.strip() and len(rest) - len(rest.lstrip(" ")) < indent:
+                        break
+                    body.append(rest[indent:])
+                scripts.append("\n".join(body))
+                break
+            inline = re.match(r"^\s*run:\s*(\S.*?)\s*$", line)
+            if inline:
+                scripts.append(inline.group(1))
+                break
+    return scripts
+
+
+def _shell_lines(script: str) -> list[str]:
+    """The runnable lines of a shell script — comments and blanks dropped."""
+    out = []
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            out.append(stripped)
+    return out
+
+
+def _reason_prefix_and_sample(node: ast.AST) -> tuple[str, str] | None:
+    """``(literal prefix, a realistic sample)`` for one reason expression, or None.
+
+    A plain string is its own prefix and sample; an f-string's prefix is the constant text
+    before its first placeholder, and the sample fills every placeholder with ``1``.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value, node.value
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    prefix_parts: list[str] = []
+    sample_parts: list[str] = []
+    still_prefix = True
+    for part in node.values:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            sample_parts.append(part.value)
+            if still_prefix:
+                prefix_parts.append(part.value)
+        else:
+            still_prefix = False
+            sample_parts.append("1")
+    prefix = "".join(prefix_parts)
+    return (prefix, "".join(sample_parts)) if prefix else None
+
+
+def _dispatcher_tree() -> ast.AST:
+    return ast.parse(DISPATCHER_PY.read_text(encoding="utf-8"))
+
+
+def _plan_calls(tree: ast.AST) -> list[ast.Call]:
+    """Every ``Plan(...)`` construction in the module, in source order."""
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Plan"
+    ]
+    calls.sort(key=lambda node: (node.lineno, node.col_offset))
+    return calls
+
+
+def _dispatcher_reasons() -> dict[str, str]:
+    """Every reason literal harness/dispatcher.py can hand a caller, as prefix -> sample.
+
+    Read from the source, not from a hand-copied list: a new reason string appears here the
+    moment it is written, and the tests below then demand that a human classify it as stopping
+    or not. The three sites are ``usage_stop``'s returns, ``_window_reason``'s return, and the
+    literal ``reason=`` keywords of the ``Plan(...)`` constructions in ``plan``.
+    """
+    tree = _dispatcher_tree()
+    found: dict[str, str] = {}
+
+    def record(node: ast.AST) -> None:
+        pair = _reason_prefix_and_sample(node)
+        if pair is not None:
+            found[pair[0]] = pair[1]
+
+    for func in ast.walk(tree):
+        if isinstance(func, ast.FunctionDef) and func.name in ("usage_stop", "_window_reason"):
+            for node in ast.walk(func):
+                if isinstance(node, ast.Return) and node.value is not None:
+                    record(node.value)
+    for call in _plan_calls(tree):
+        for keyword in call.keywords:
+            if keyword.arg == "reason":
+                record(keyword.value)
+    return found
+
+
+def _case_blocks(text: str, subject: str = "$reason") -> list[str]:
+    """Every ``case "<subject>" in ... esac`` block in a workflow's shell, as text."""
+    opener = re.compile(r'^\s*case\s+"' + re.escape(subject) + r'"\s+in\s*$')
+    blocks: list[str] = []
+    for script in _run_scripts(text):
+        lines = script.splitlines()
+        start: int | None = None
+        for index, line in enumerate(lines):
+            if start is None:
+                if opener.match(line):
+                    start = index
+                continue
+            if line.strip() == "esac":
+                blocks.append("\n".join(lines[start:index + 1]))
+                start = None
+    return blocks
+
+
+def _case_clauses(block: str) -> list[tuple[list[str], str]]:
+    """Split one case block into ordered ``(shell glob patterns, clause body)`` pairs."""
+    clauses: list[tuple[list[str], str]] = []
+    patterns: list[str] | None = None
+    body: list[str] = []
+    for stripped in _shell_lines(block):
+        if stripped.startswith("case ") or stripped == "esac":
+            continue
+        if patterns is None:
+            assert stripped.endswith(")"), f"expected a case pattern, got {stripped!r}"
+            patterns = [
+                alt.strip().replace('"', "").replace("'", "")
+                for alt in stripped[:-1].split("|")
+            ]
+            body = []
+            continue
+        body.append(stripped)
+        if stripped.endswith(";;"):
+            clauses.append((patterns, "\n".join(body)))
+            patterns = None
+    assert patterns is None, f"unterminated case clause in:\n{block}"
+    return clauses
+
+
+def _case_body_for(block: str, sample: str) -> str:
+    """The body the shell would run for ``sample`` — first matching clause wins, as in sh."""
+    for patterns, body in _case_clauses(block):
+        for pattern in patterns:
+            if fnmatch.fnmatchcase(sample, pattern):
+                return body
+    raise AssertionError(f"no case clause matches {sample!r} in:\n{block}")
+
+
+def test_dispatcher_reasons_are_all_classified_as_stopping_or_not():
+    """Every reason literal in harness/dispatcher.py is either one that must stop a spending
+    job or one that explicitly may not. A new reason string fails here until a human decides
+    which it is — that is the whole point: Delivery 3 added four reasons nobody classified,
+    and discover.yml's gate went on matching the Delivery 2 three."""
+    prefixes = set(_dispatcher_reasons())
+    classified = MUST_STOP_REASON_PREFIXES | MAY_PROCEED_REASON_PREFIXES
+    unclassified = sorted(prefixes - classified)
+    assert not unclassified, (
+        "harness/dispatcher.py returns reasons no workflow test classifies: "
+        + ", ".join(repr(p) for p in unclassified)
+        + " — add each to MUST_STOP_REASON_PREFIXES or MAY_PROCEED_REASON_PREFIXES"
+    )
+    missing = sorted(classified - prefixes)
+    assert not missing, (
+        "these classified reasons are no longer produced by harness/dispatcher.py: "
+        + ", ".join(repr(p) for p in missing)
+    )
+
+
+def test_discover_yml_spend_gate_stops_on_every_usage_reason():
+    """discover.yml's `case "$reason"` predated D3's usage stops, so a normal weekly usage stop
+    fell through to `proceed=true`, spent a discover call, hit BudgetExhausted and paged an
+    operator (D33). Every must-stop reason now sets proceed=false, evaluated the way sh
+    evaluates it: first matching clause wins."""
+    reasons = _dispatcher_reasons()
+    blocks = _case_blocks(_d2_workflow("discover.yml"))
+    assert len(blocks) == 1, 'discover.yml must gate spend on exactly one `case "$reason"`'
+    block = blocks[0]
+    for prefix in sorted(MUST_STOP_REASON_PREFIXES):
+        body = _case_body_for(block, reasons[prefix])
+        assert "proceed=false" in body, (
+            f"discover.yml proceeds on {reasons[prefix]!r}; a usage stop must stop the job"
+        )
+        assert "proceed=true" not in body, f"discover.yml's clause for {prefix!r} is ambiguous"
+
+
+def test_discover_yml_spend_gate_does_not_stop_on_the_run_window():
+    """The other half: the run window bounds implement.yml through its own crons (D32).
+    Discovery is a single cheap triage call and is deliberately not window-gated, so
+    "outside run window (...)" — which discover's Sunday cron always sees — must proceed."""
+    reasons = _dispatcher_reasons()
+    block = _case_blocks(_d2_workflow("discover.yml"))[0]
+    for prefix in sorted(MAY_PROCEED_REASON_PREFIXES):
+        body = _case_body_for(block, reasons[prefix])
+        assert "proceed=true" in body, (
+            f"discover.yml stops on {reasons[prefix]!r}; the run window must not stop discovery"
+        )
+        assert "proceed=false" not in body
+
+
+def test_discover_yml_spend_gate_proceeds_on_the_ordinary_budget_reason():
+    """The default clause still lets the ordinary B211 plan reason through, so the fix cannot
+    have turned the gate into a permanent stop."""
+    block = _case_blocks(_d2_workflow("discover.yml"))[0]
+    ordinary = "budget 61% remaining, 1 of max 1 slots; weekly 39%, session 7%"
+    assert "proceed=true" in _case_body_for(block, ordinary)
+
+
+@pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
+def test_no_spending_workflow_gates_on_reason_with_an_incomplete_stop_set(name):
+    """Whichever spending workflow chooses to gate on the dispatcher's reason must gate on the
+    whole stop set. implement.yml is structurally immune (it consumes `.start`, which is empty
+    under every stop) and feedback.yml deliberately has no gate at all — its keyword sweep and
+    its reconciliation of stranded items must keep working while capacity is gone — so this
+    test binds discover.yml today and any workflow that grows a reason gate later."""
+    reasons = _dispatcher_reasons()
+    for block in _case_blocks(_d2_workflow(name)):
+        for prefix in sorted(MUST_STOP_REASON_PREFIXES):
+            body = _case_body_for(block, reasons[prefix])
+            assert "proceed=false" in body, (
+                f"{name} gates on the dispatcher reason but proceeds on {reasons[prefix]!r}"
+            )
+
+
+# --------------------------------------------------------------------------------------
+# The discover invocation and the id harvester are one contract.
+# --------------------------------------------------------------------------------------
+
+DISCOVER_CALL = re.compile(r"\bharness\s+((?:--[\w-]+\s+)*)discover\b")
+# What may precede a command in sh: nothing, a pipe/list operator, a subshell, or a keyword.
+# Anything else — `echo "... harness discover ..."` — is text about the command, not the call.
+COMMAND_POSITION = re.compile(
+    r"(?:^|[|;&(]|\b(?:if|then|else|elif|do|while|until|not)\s|\$\(|!)\s*$"
+)
+
+
+def _discover_call(line: str) -> re.Match[str] | None:
+    """The `harness ... discover` invocation on this shell line, if it really is one."""
+    for match in DISCOVER_CALL.finditer(line):
+        if COMMAND_POSITION.search(line[:match.start()]):
+            return match
+    return None
+
+
+def _discover_script(text: str) -> str | None:
+    """The one `run:` script that invokes `harness discover`, or None."""
+    for script in _run_scripts(text):
+        if any(_discover_call(line) for line in _shell_lines(script)):
+            return script
+    return None
+
+
+def test_cmd_discover_json_payload_is_the_created_key():
+    """The Python half of the contract, read from harness/__main__.py: with the global --json
+    flag `discover` prints one object whose only key is "created"; without it, one bare id per
+    line. The harvester below is written against the first form and nothing else."""
+    tree = ast.parse((HARNESS_DIR / "__main__.py").read_text(encoding="utf-8"))
+    func = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "cmd_discover"
+    )
+    dicts = [node for node in ast.walk(func) if isinstance(node, ast.Dict)]
+    assert len(dicts) == 1, "cmd_discover should build exactly one JSON payload"
+    keys = [key.value for key in dicts[0].keys if isinstance(key, ast.Constant)]
+    assert keys == ["created"], f"cmd_discover's --json payload keys are {keys}"
+
+
+def test_discover_yml_asks_for_json_and_harvests_the_created_ids():
+    """The step used to run `harness discover --mode triage` (bare ids, one per line) and then
+    parse runs/discover.out as JSON, so the harvest was always empty and the only automatic
+    discovered→proposed path in the system was dead. The two halves must agree: the global
+    --json flag precedes the subcommand, and the reader takes `.created` out of the very file
+    the invocation tees into."""
+    script = _discover_script(_d2_workflow("discover.yml"))
+    assert script is not None, "discover.yml must invoke `harness discover`"
+    lines = _shell_lines(script)
+    call = next((line for line in lines if _discover_call(line)), None)
+    assert call is not None
+    match = _discover_call(call)
+    assert "--json" in match.group(1), (
+        "the global --json flag must precede the subcommand: " + call
+    )
+    tee = re.search(r"\|\s*tee\s+([^\s;]+)", call)
+    assert tee, "the discover output must be teed to a file for the harvester and the artifact"
+    target = tee.group(1)
+    harvest = [line for line in lines if "jq" in line and target in line]
+    assert harvest, f"nothing in the step reads {target} back with jq"
+    assert any(".created" in line for line in harvest), (
+        f"the harvester must read `.created` out of {target}: {harvest}"
+    )
+
+
+def test_discover_yml_no_longer_carries_the_dead_json_guessing_parser():
+    """The replaced parser guessed at five shapes the CLI never emits and fell back to
+    `harness status --json`, which carries queue counts and no item ids at all. None of it may
+    come back: a reader that guesses is how the two halves drifted apart unnoticed."""
+    script = _discover_script(_d2_workflow("discover.yml"))
+    assert script is not None
+    for dead in ("pick_ids", "json.loads", "harness status"):
+        assert dead not in script, f"{dead!r} is the dead guessing parser"
+
+
+@pytest.mark.parametrize("name", ALL_WORKFLOWS)
+def test_no_workflow_invokes_discover_without_the_global_json_flag(name):
+    """Whoever adds the next `harness discover` call to a workflow gets the same contract: ask
+    for JSON, or do not parse the output as JSON."""
+    for script in _run_scripts(_d2_workflow(name)):
+        for line in _shell_lines(script):
+            match = _discover_call(line)
+            if match:
+                assert "--json" in match.group(1), (
+                    f"{name}: `harness discover` without the global --json flag: {line}"
+                )
+
+
+def _plan_to_json_keys() -> list[str]:
+    """The keys `harness dispatch` prints — Plan.to_json's payload, read from the source."""
+    cls = next(
+        node for node in ast.walk(_dispatcher_tree())
+        if isinstance(node, ast.ClassDef) and node.name == "Plan"
+    )
+    func = next(
+        node for node in ast.walk(cls)
+        if isinstance(node, ast.FunctionDef) and node.name == "to_json"
+    )
+    payload = next(node for node in ast.walk(func) if isinstance(node, ast.Dict))
+    return [key.value for key in payload.keys if isinstance(key, ast.Constant)]
+
+
+@pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
+def test_every_jq_key_read_off_the_dispatch_plan_exists_in_plan_to_json(name):
+    """The same agreement, for the other machine-readable output a workflow consumes:
+    `harness dispatch` always prints Plan.to_json (no --json flag involved), so every key
+    implement.yml and discover.yml pull out of it must be one Plan actually writes."""
+    keys = set(_plan_to_json_keys())
+    referenced: set[str] = set()
+    for script in _run_scripts(_d2_workflow(name)):
+        for line in _shell_lines(script):
+            if "jq" not in line or "$plan" not in line:
+                continue
+            referenced.update(re.findall(r"\.([A-Za-z_]\w*)", line))
+            referenced.update(re.findall(r'has\("([A-Za-z_]\w*)"\)', line))
+    unknown = sorted(referenced - keys)
+    assert not unknown, (
+        f"{name} reads {unknown} off the dispatch plan; Plan.to_json writes {sorted(keys)}"
+    )
+
+
+def test_implement_yml_takes_its_items_from_the_plans_start_list():
+    """implement.yml needs no reason gate because it consumes `.start`, and every dispatcher
+    stop returns `Plan(start=(), ...)` — an empty list means the run step finds nothing to do
+    and exits 0. Pinning both halves is what makes the absence of a gate in implement.yml a
+    decision rather than an oversight."""
+    text = _d2_workflow("implement.yml")
+    assert re.search(r"jq\s+-r\s+'\.start\[\]'", text), (
+        "implement.yml must harvest its items from the plan's .start list"
+    )
+    assert _case_blocks(text) == [], (
+        "implement.yml gates on .start, not on the reason; a reason gate here needs the full "
+        "stop set (see test_no_spending_workflow_gates_on_reason_with_an_incomplete_stop_set)"
+    )
+    tree = _dispatcher_tree()
+    func = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "plan"
+    )
+    calls = _plan_calls(func)
+    assert len(calls) >= 2, "harness.dispatcher.plan should build several plans"
+    for call in calls[:-1]:
+        start = next((kw.value for kw in call.keywords if kw.arg == "start"), None)
+        assert isinstance(start, ast.Tuple) and not start.elts, (
+            f"dispatcher.py:{call.lineno} returns a non-empty start for a stop; implement.yml's "
+            "gate assumes every stop plan starts nothing"
+        )
+
+
+def _exit_code_constant(name: str) -> int:
+    """One of harness/__main__.py's EXIT_* constants, read from the source."""
+    tree = ast.parse((HARNESS_DIR / "__main__.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == name:
+                assert isinstance(node.value, ast.Constant), f"{name} must be a literal"
+                return int(node.value.value)
+    raise AssertionError(f"{name} is not defined in harness/__main__.py")
+
+
+def test_discover_yml_treats_a_budget_exit_as_a_normal_outcome():
+    """The reason gate closes the common path, but capacity can also run out between the
+    dispatch step and the model call, or partway through the propose loop — and then the CLI
+    exits EXIT_BUDGET, `set -e` fails the step, ops.yml opens an issue whose step name contains
+    "propose", and an operator is paged for the scheduler working as designed (D33, B120: a
+    limit is a normal outcome). Both spending commands guard on that code, and the number in
+    the workflow is the number harness/__main__.py actually returns."""
+    budget = _exit_code_constant("EXIT_BUDGET")
+    script = _discover_script(_d2_workflow("discover.yml"))
+    assert script is not None
+    lines = _shell_lines(script)
+    assignments = [line for line in lines if re.fullmatch(r"EXIT_BUDGET=\d+", line)]
+    assert len(assignments) == 1, f"expected one EXIT_BUDGET assignment, got {assignments}"
+    assert assignments[0] == f"EXIT_BUDGET={budget}", (
+        f"discover.yml says {assignments[0]}; harness/__main__.py returns {budget}"
+    )
+    guards = [
+        index for index, line in enumerate(lines)
+        if "${EXIT_BUDGET}" in line and not line.startswith("EXIT_BUDGET=")
+    ]
+    assert len(guards) >= 2, (
+        "both `harness discover` and the `harness propose` loop must guard on EXIT_BUDGET"
+    )
+    for index in guards:
+        handler = lines[index + 1:index + 4]
+        assert any(line in ("exit 0", "break") for line in handler), (
+            f"the EXIT_BUDGET guard at {lines[index]!r} must exit 0 or break: {handler}"
+        )
+        assert not any("failed=1" in line for line in handler), (
+            "a budget stop must not be recorded as a failed run"
+        )
+
+
+def test_discover_yml_still_fails_the_run_on_a_real_error():
+    """The budget guard must not swallow everything: any other non-zero exit from `harness
+    discover` still fails the step, and a `harness propose` that fails for a non-budget reason
+    still sets `failed`, so a genuinely broken run is still red and still reaches ops.yml."""
+    script = _discover_script(_d2_workflow("discover.yml"))
+    lines = _shell_lines(script)
+    assert 'exit "${status}"' in lines, "a non-budget discover failure must fail the step"
+    assert "failed=1" in lines, "a non-budget propose failure must fail the step"
+    assert 'exit "$failed"' in lines, "the step's exit code must carry the propose failures"

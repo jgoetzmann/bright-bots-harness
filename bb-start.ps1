@@ -47,7 +47,6 @@ $runArgs = @{
     PidsLimit       = [int](Cfg "container" "pids_limit" 512)
     CpuShares       = [int](Cfg "container" "cpu_shares" 256)
     LoopSeconds     = [int](Cfg "run" "loop_seconds" 300)
-    MaxItemsPerUnit = [int](Cfg "run" "max_items_per_unit" 1)
 }
 if ($Build) { $runArgs.Build = $true }
 & (Join-Path $local "run.ps1") @runArgs

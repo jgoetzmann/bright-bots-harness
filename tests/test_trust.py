@@ -188,3 +188,38 @@ def test_B131_load_trust_returns_a_frozenset(tmp_path):
     assert isinstance(trusted, frozenset)
     with pytest.raises(AttributeError):
         trusted.add("mallory")  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# B131 - the shipped .harness/trust.txt itself, read from disk.
+# Appended; nothing above is edited. `SHIPPED_TRUST_FILE` above is a hand copy
+# of the file as it was written, so every test over it passes whatever the real
+# governance file says today. This one opens the real file.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SHIPPED_TRUST_PATH = REPO_ROOT / ".harness" / "trust.txt"
+
+
+def test_B131_the_shipped_trust_file_parses_to_real_handles_with_no_placeholder_left():
+    """B131 / handoff 5.5: the governance file as shipped. `load_trust` must return at least two
+    live handles - `identity.trust_file_ready()` gates tier readiness on exactly that count - and
+    not one of them may still be a `<...>` placeholder. Who may command the harness is a decision;
+    this is where changing it has to be made deliberately."""
+    assert SHIPPED_TRUST_PATH.is_file(), f"{SHIPPED_TRUST_PATH} is the governance file"
+    text = SHIPPED_TRUST_PATH.read_text(encoding="utf-8")
+    trusted = load_trust(SHIPPED_TRUST_PATH)
+
+    assert len(trusted) >= 2, f"the shipped file must name at least two handles: {sorted(trusted)}"
+    assert "jgoetzmann" in trusted, f"the operator must stay trusted: {sorted(trusted)}"
+    assert is_authorised("jgoetzmann", "OWNER", trusted) is True
+
+    left = sorted(h for h in trusted if "<" in h or ">" in h or "_HANDLE" in h.upper())
+    assert left == [], f"a placeholder is still being trusted: {left}"
+    # `Identity.trust_file_ready()` rejects the whole file when the placeholder survives
+    # anywhere in it, comments included, so the file is read the same way here.
+    assert "NATHAN_HANDLE" not in text.upper(), "the shipped placeholder is still in the file"
+    for handle in trusted:
+        assert handle, "the empty string is not a handle"
+        assert handle == handle.strip().lower(), f"not a normalised handle: {handle!r}"
+        assert all(c.isalnum() or c == "-" for c in handle), f"not a GitHub handle: {handle!r}"

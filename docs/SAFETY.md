@@ -117,7 +117,9 @@ only new argv element in Delivery 2 is `--max-budget-usd <PER_CALL_CAP_USD>`, a 
 **Guarantees:** there is exactly one door through which anything from your environment
 enters the program, so there is exactly one place to audit. Delivery 2 adds a second
 configuration source, `.harness/config.json`, and it is read by the same function
-(`load_config`) and accepts exactly eleven named keys; any other key is a startup error.
+(`load_config`) and accepts exactly the closed list of named keys in
+`config.CONFIG_JSON_KEYS` — sixteen of them since Delivery 3 added the five
+usage-governance knobs (D31/D32); any other key is a startup error.
 
 **Verify:** `grep -rn "os.environ" harness/` names only `harness/config.py`.
 

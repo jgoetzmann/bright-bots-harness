@@ -1,8 +1,11 @@
 """Machine-account readiness detection and ``HUMAN.md`` generation (spec §13, handoff §16).
 
-Delivery 2 activates ``brightboost-harness``: at tier 2 it holds one classic PAT scoped
-``public_repo`` and nothing else. This module still never authenticates. The credential's key
-name comes from ``config`` so this file never spells it (R3.3).
+Delivery 2 activates the machine account: at tier 2 it holds one classic PAT scoped
+``public_repo`` and nothing else. Its handle is *derived* — the owner of ``FORK_REPO``,
+``jgoetzmann-bot`` in this deployment (D29); the spec's ``brightboost-harness`` survives as
+the :data:`HANDLE` default and applies only until ``FORK_REPO`` is configured. This module
+still never authenticates. The credential's key name comes from ``config`` so this file never
+spells it (R3.3).
 """
 
 from __future__ import annotations
@@ -159,7 +162,8 @@ class Readiness:
 
 
 class Identity:
-    """The `brightboost-harness` machine account: detected and reported here, used by `gh.py`."""
+    """The machine account — `FORK_REPO`'s owner (`jgoetzmann-bot` here, D29), or the
+    `HANDLE` default until that is set: detected and reported here, used by `gh.py`."""
 
     handle: str = HANDLE
 

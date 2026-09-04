@@ -144,6 +144,35 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else "_None recorded._"
 
 
+def _what_this_is(config) -> list[str]:
+    """The README's "What this is" paragraph, told at the tier the harness is actually at.
+
+    `deliver` republishes this README verbatim as the body of the pull request it opens on the
+    product repository (B108), so at tier 2 the tier-0 sentences - no credentials, cannot push,
+    nothing but unauthenticated reads - would be a false statement addressed to the maintainer
+    of the repository the harness had just pushed to. Neither branch overclaims: tier 0 still
+    says it holds nothing, and tier 2 names only what `gh.py` can actually do (docs/SAFETY.md,
+    the tier table) and the two limits that hold whatever the credential is (I-12, I-15).
+    """
+    if int(getattr(config, "permission_tier", 0) or 0) < 2:
+        return [
+            "A change proposed by an automated harness that holds no credentials and cannot push.",
+            "Nothing here has touched GitHub beyond unauthenticated public reads. It is yours to",
+            "accept, amend, or discard; applying it is a human action.",
+        ]
+    fork = str(getattr(config, "fork_repo", "") or "").strip()
+    owns = f"`{fork}`" if fork else "a fork of this repository"
+    return [
+        "A change proposed by an automated harness running at permission tier 2. It holds one",
+        f"credential, belonging to a machine account that owns {owns}. It pushes this branch",
+        f"to that fork and opens the pull request from there; it never pushes to `{config.repo}`",
+        "itself, and it can neither merge a pull request nor act on a review (I-12). It cannot",
+        "modify `.github/**` (I-15: the token carries no `workflow` scope, and a diff that",
+        "touches CI is rejected before it is committed). It is yours to accept, amend, or",
+        "discard; merging it is a human action.",
+    ]
+
+
 def _prune(package_dir: Path) -> None:
     """B73: remove anything in the package directory that §7.2 does not name."""
     for entry in package_dir.iterdir():
@@ -411,9 +440,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         "",
         "## What this is",
         "",
-        "A change proposed by an automated harness that holds no credentials and cannot push.",
-        "Nothing here has touched GitHub beyond unauthenticated public reads. It is yours to",
-        "accept, amend, or discard; applying it is a human action.",
+        *_what_this_is(ctx.config),
         "",
         "## What changed",
         "",

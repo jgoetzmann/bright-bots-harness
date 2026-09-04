@@ -564,7 +564,7 @@ def _doctor_config_keys(
             continue
         keys[key] = raw[key]
         # Whole-word: a typo'd WEEKLY_CAP_USDD (B112) must not also indict WEEKLY_CAP_USD.
-        if re.search(rf"{re.escape(key)}", error_text):
+        if re.search(rf"\b{re.escape(key)}\b", error_text):
             problems.append(f"config key invalid or out of range: {key}")
     return keys
 

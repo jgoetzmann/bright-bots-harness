@@ -27,7 +27,12 @@ from harness.halt import check_halt
 from harness.redact import write_redacted
 from harness.store import WorkItem
 from harness.stages import load_prompt, run_model
-from harness.stages.propose import WorkPackage, parse_work_package
+from harness.stages.propose import (
+    PROPOSALS_DIR,
+    WorkPackage,
+    parse_work_package,
+    work_package_text,
+)
 
 __all__ = [
     "CHANGED_PATHS",
@@ -367,12 +372,15 @@ def _fullsend_decision(ctx: Context, pkg: WorkPackage) -> bool:
 
 
 def _read_spec(ctx: Context, item: Any) -> str:
-    if not item.spec_path:
+    """B226: the recorded spec when it is still on this disk, else the committed proposal."""
+    if not item.spec_path and not _proposal_exists(ctx, item):
         raise HarnessError(f"item {item.id} has no spec_path; run propose and approve first")
-    path = Path(item.spec_path)
-    if not path.exists():
-        raise HarnessError(f"spec file missing for item {item.id}: {path}")
-    return path.read_text(encoding="utf-8")
+    return work_package_text(item, repo_root=ctx.config.repo_root)
+
+
+def _proposal_exists(ctx: Context, item: Any) -> bool:
+    root = Path(ctx.config.repo_root) / PROPOSALS_DIR
+    return any(root.glob(f"{int(item.id)}-*.md"))
 
 
 def _guarded_changed_paths(ctx: Context, lease: Lease) -> list[str]:

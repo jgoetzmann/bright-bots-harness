@@ -88,7 +88,10 @@ jobs:
           set -euo pipefail
           if git fetch --quiet origin harness-state 2>/dev/null; then
             mkdir -p state
-            git show FETCH_HEAD:state/ledger.json > state/ledger.json
+            # Not `git show ... > state/ledger.json`: redirection truncates the target before
+            # git runs, so a failed show would leave an empty ledger behind.
+            git show FETCH_HEAD:state/ledger.json > state/ledger.json.new
+            mv state/ledger.json.new state/ledger.json
             echo "ledger loaded from harness-state"
           else
             echo "no harness-state branch yet; using the checked-in ledger"

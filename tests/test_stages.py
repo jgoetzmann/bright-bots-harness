@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1412,3 +1413,182 @@ def test_b219_an_item_already_proposing_returns_to_discovered_not_to_proposing(
         propose(rig.ctx, item_id)
 
     assert rig.store.get_work_item(item_id).state == "discovered"
+
+
+# --------------------------------------------------------------------------------------
+# B226 - the work package survives the run that produced it (D46)
+# --------------------------------------------------------------------------------------
+
+
+PROPOSAL_ON_DISK = """---
+issue: 7
+upstream_issue: 633
+title: "chore: delete the orphan"
+kind: chore
+---
+
+# chore: delete the orphan
+
+## Acceptance criteria
+- the file is gone
+"""
+
+
+def test_b226_the_recorded_spec_is_used_when_it_is_still_here(tmp_path):
+    """B226: unchanged in local mode, where propose and implement share a disk."""
+    from harness.stages.propose import work_package_text
+
+    spec = tmp_path / "runs" / "item-7" / "spec" / "7.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# from the spec file\n", encoding="utf-8")
+    item = SimpleNamespace(id=7, spec_path=str(spec))
+
+    assert work_package_text(item, repo_root=tmp_path) == "# from the spec file\n"
+
+
+def test_b226_a_dead_runners_spec_path_falls_back_to_the_committed_proposal(tmp_path):
+    """B226: the first live Actions run died here. `runs/` is ephemeral per runner and gate 1
+    -- a human merging the proposal PR -- necessarily puts propose and implement in different
+    runs, so the recorded absolute path belongs to a machine that no longer exists."""
+    from harness.stages.propose import work_package_text
+
+    (tmp_path / "proposals").mkdir()
+    (tmp_path / "proposals" / "7-chore-delete-the-orphan.md").write_text(
+        PROPOSAL_ON_DISK, encoding="utf-8"
+    )
+    item = SimpleNamespace(id=7, spec_path="/home/runner/work/gone/runs/item-7/spec/7.md")
+
+    text = work_package_text(item, repo_root=tmp_path)
+
+    assert text.startswith("# chore: delete the orphan")
+    assert "issue: 7" not in text, "the front matter must be stripped"
+
+
+def test_b226_the_proposal_is_found_by_id_not_by_deriving_the_slug(tmp_path):
+    """B226: the filename's slug comes from the proposal's own front-matter title, not the
+    item's, so the two do not match and the lookup has to glob the id prefix."""
+    from harness.stages.propose import work_package_text
+
+    (tmp_path / "proposals").mkdir()
+    (tmp_path / "proposals" / "7-a-slug-nobody-could-derive.md").write_text(
+        PROPOSAL_ON_DISK, encoding="utf-8"
+    )
+    item = SimpleNamespace(id=7, spec_path="", title="a completely different title")
+
+    assert "delete the orphan" in work_package_text(item, repo_root=tmp_path)
+
+
+def test_b226_a_similar_id_does_not_match(tmp_path):
+    """B226: item 7 must not pick up item 70's proposal."""
+    from harness.stages.propose import work_package_text
+
+    (tmp_path / "proposals").mkdir()
+    (tmp_path / "proposals" / "70-someone-elses.md").write_text(PROPOSAL_ON_DISK, encoding="utf-8")
+    item = SimpleNamespace(id=7, spec_path="")
+
+    with pytest.raises(HarnessError):
+        work_package_text(item, repo_root=tmp_path)
+
+
+def test_b226_neither_source_names_both_places_it_looked(tmp_path):
+    """B226: the old message named only the dead path, which reads like a local bug."""
+    from harness.stages.propose import work_package_text
+
+    item = SimpleNamespace(id=7, spec_path="/home/runner/work/gone/runs/item-7/spec/7.md")
+
+    with pytest.raises(HarnessError) as excinfo:
+        work_package_text(item, repo_root=tmp_path)
+
+    message = str(excinfo.value)
+    assert "runs/item-7/spec/7.md" in message
+    assert "proposals/7-*.md" in message
+    assert "does not survive between runs" in message
+
+
+def test_b226_strip_front_matter_leaves_a_body_without_one_alone():
+    """B226: the recorded spec has no front matter; only the published proposal does."""
+    from harness.stages.propose import strip_front_matter
+
+    body = "# just a body\n\nwith text\n"
+
+    assert strip_front_matter(body) == body
+
+
+def test_b226_strip_front_matter_drops_the_blank_line_after_the_block():
+    """B226: the published proposal is front matter + a blank line + the body."""
+    from harness.stages.propose import strip_front_matter
+
+    assert strip_front_matter(PROPOSAL_ON_DISK).startswith("# chore: delete the orphan")
+
+
+def test_b226_implement_reads_the_proposal_when_the_spec_is_gone(tmp_path, monkeypatch):
+    """B226: the end-to-end shape of the defect -- implement on a fresh runner."""
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+
+    item = rig.store.get_work_item(item_id)
+    spec = Path(item.spec_path)
+    proposals = Path(rig.config.repo_root) / "proposals"
+    proposals.mkdir(parents=True, exist_ok=True)
+    (proposals / f"{item_id}-whatever.md").write_text(
+        "---\nissue: 1\n---\n\n" + spec.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    spec.unlink()  # the runner that wrote it is gone
+
+    stub_implement_side_effects(monkeypatch, rig.log, gate_runner=lambda *a, **k: list(GREEN))
+    monkeypatch.setattr(
+        implement_mod, "CHANGED_PATHS", lambda *a, **k: ["src/lib/bundle.ts"]
+    )
+
+    implement(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "implementing"
+
+
+def test_b226_a_re_proposal_wins_over_the_older_file(tmp_path):
+    """B226: a re-propose under a changed title lands a second proposals/<id>-*.md beside the
+    first. The later one is the one that was approved."""
+    import os
+    import time
+    from harness.stages.propose import work_package_text
+
+    proposals = tmp_path / "proposals"
+    proposals.mkdir()
+    old = proposals / "7-the-first-attempt.md"
+    old.write_text("---\nissue: 7\n---\n\n# stale\n", encoding="utf-8")
+    new = proposals / "7-the-second-attempt.md"
+    new.write_text("---\nissue: 7\n---\n\n# current\n", encoding="utf-8")
+    os.utime(old, (time.time() - 600, time.time() - 600))
+    item = SimpleNamespace(id=7, spec_path="")
+
+    assert work_package_text(item, repo_root=tmp_path).strip() == "# current"
+
+
+def test_b226_equal_mtimes_fall_back_to_the_later_name(tmp_path):
+    """B226: a git checkout stamps every file with the same mtime, so the tie-break has to be
+    deterministic rather than arbitrary."""
+    import os
+    from harness.stages.propose import work_package_text
+
+    proposals = tmp_path / "proposals"
+    proposals.mkdir()
+    first = proposals / "7-aaa.md"
+    first.write_text("---\nissue: 7\n---\n\n# aaa\n", encoding="utf-8")
+    second = proposals / "7-zzz.md"
+    second.write_text("---\nissue: 7\n---\n\n# zzz\n", encoding="utf-8")
+    stamp = first.stat().st_mtime
+    os.utime(second, (stamp, stamp))
+    item = SimpleNamespace(id=7, spec_path="")
+
+    assert work_package_text(item, repo_root=tmp_path).strip() == "# zzz"
+
+
+def test_b226_a_non_integer_id_does_not_escape_the_error(tmp_path):
+    """B226: `int(item.id)` sat outside the guard, so a bad id raised past deliver's except."""
+    from harness.stages.propose import work_package_text
+
+    item = SimpleNamespace(id="not-a-number", spec_path="")
+
+    with pytest.raises(HarnessError):
+        work_package_text(item, repo_root=tmp_path)

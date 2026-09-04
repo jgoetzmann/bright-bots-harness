@@ -16,7 +16,18 @@ from harness.context import Context
 from harness.errors import GitHubError, HarnessError, IllegalTransition
 from harness.halt import check_halt
 from harness.redact import write_redacted
-from harness.stages.propose import parse_work_package
+from harness.stages.propose import parse_work_package, work_package_text
+
+
+def _spec_text(ctx: Context, item: Any) -> str:
+    """B226: the work package, from wherever it still exists; empty when it exists nowhere."""
+    try:
+        return work_package_text(item, repo_root=ctx.config.repo_root)
+    except HarnessError:
+        return ""
+
+
+
 
 __all__ = [
     "DECISION_TAIL_LINES",
@@ -216,7 +227,9 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     self_repo = str(ctx.config.self_repo)
     reviewers = sorted(str(handle) for handle in ctx.trusted)
 
-    spec_text = _read(Path(item.spec_path)) if item.spec_path else ""
+    # B226: same fallback as implement and the packager -- the PR body must not lose the work
+    # package just because propose ran on a different runner.
+    spec_text = _spec_text(ctx, item)
     pkg = parse_work_package(spec_text)
     upstream_issue = item.issue_number if item.external_ref.startswith("issue:") else None
     title = build_pr_title(pkg.title, item.title, upstream_issue)
@@ -544,7 +557,7 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             gates_label=gates_label,
             gate_lines=gate_lines,
             decisions=_decisions_tail(run_dir),
-            acceptance=_acceptance(item),
+            acceptance=_acceptance(ctx, item),
             pushed=pushed,
             committed=committed,
             now_iso=now_iso,
@@ -648,9 +661,14 @@ def _decisions_tail(run_dir: Path) -> list[str]:
     return [line for line in lines if line.strip()][-DECISION_TAIL_LINES:]
 
 
-def _acceptance(item: Any) -> list[str]:
-    """The work package's acceptance criteria, verbatim; empty when there is no spec."""
-    spec_text = _read(Path(item.spec_path)) if getattr(item, "spec_path", "") else ""
+def _acceptance(ctx: Context, item: Any) -> list[str]:
+    """The work package's acceptance criteria, verbatim; empty when there is no spec.
+
+    B226: resolved against ``config.repo_root``, not the process cwd. Its only caller is
+    ``handoff``, which has the Context; on Actions the two happen to coincide, and in local
+    and container mode they do not.
+    """
+    spec_text = _spec_text(ctx, item)
     if not spec_text.strip():
         return []
     try:

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "window": {
+    "period_start": "2026-09-07T00:00:00Z",
+    "spent_usd": 0.0,
+    "calls": 0,
+    "rate_limited_until": null
+  },
+  "observations": {},
+  "cursors": {
+    "notifications_last_seen": null,
+    "seen_comment_ids": [],
+    "keyword_denied": {}
+  },
+  "history": []
+}

@@ -1,11 +1,27 @@
-# implement.yml — every 6h, on dispatch, and on a merged proposal: drain the approved queue.
-# Spends capacity (implement is the expensive stage). Handoff §7.2; RUN-DECISIONS-D2 §15.
+# implement.yml — three runs inside the subscription's weekly window, on dispatch, and on a
+# merged proposal: drain the approved queue.
+# Spends capacity (implement is the expensive stage). Handoff §7.2; RUN-DECISIONS-D2 §15,
+# RUN-DECISIONS-D3 "Workflows".
 # Frozen step order: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
 name: implement
 
 on:
   schedule:
-    - cron: "23 */6 * * *"        # B124: non-zero, non-round minute
+    # RUN-DECISIONS-D3 "Workflows": the schedule follows the run window
+    # (RUN_WINDOW_START=mon 08:00 UTC → RUN_WINDOW_END=tue 20:00 UTC) instead of grinding
+    # round the clock. Three passes: Monday morning/afternoon/evening, Tuesday overnight and
+    # morning, and one wrap-up after the weekly reset. Minutes are non-zero and non-round (B124).
+    #
+    # DST drift, deliberately not corrected: GitHub cron is always UTC and never shifts, but the
+    # account's weekly reset is quoted in Pacific time (13:00 PT). While Pacific is on daylight
+    # time (PDT, UTC−7) that is 20:00 UTC and the last row fires 23 minutes after the reset, as
+    # intended. When Pacific returns to standard time (PST, UTC−8) the reset moves to 21:00 UTC
+    # and the same row fires 37 minutes *before* it — the wrap-up then sees the old window, spends
+    # nothing extra, and the next Monday row picks the new one up. The cost is one skipped wrap-up
+    # per winter; the fix, if it ever matters, is to move this row and RUN_WINDOW_END together.
+    - cron: "17 8,14,20 * * 1"    # Mon 08:17 / 14:17 / 20:17 UTC — the window opens Mon 08:00
+    - cron: "17 2,8,14 * * 2"     # Tue 02:17 / 08:17 / 14:17 UTC — the run-up to the reset
+    - cron: "23 20 * * 2"         # Tue 20:23 UTC — the wrap-up run after the weekly reset
   workflow_dispatch:
     inputs:
       issue:

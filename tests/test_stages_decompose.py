@@ -93,6 +93,11 @@ BASE_ENV = {
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "github",
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 
 

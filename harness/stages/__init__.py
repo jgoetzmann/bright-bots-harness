@@ -7,7 +7,7 @@ import re
 import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from harness import errors
 from harness.clock import iso
@@ -27,6 +27,7 @@ __all__ = [
     "load_prompt",
     "resolve_reset",
     "run_model",
+    "stamp_usage",
     "system_prompt",
 ]
 
@@ -96,6 +97,21 @@ def resolve_reset(raw: str | None, now: datetime) -> str:
     return iso(parsed.astimezone(timezone.utc))
 
 
+def stamp_usage(usage: Mapping[str, Any] | None, now: datetime) -> dict | None:
+    """D3: the runner reports the utilisation it saw, the stage says *when* it saw it.
+
+    ``observed_at`` never comes from the model's own output — the ledger uses it to decide
+    whether an observation belongs to the current window, so it is the harness's clock or
+    nothing at all. Anything that is not a mapping (an older fixture, a backend that reports
+    no usage) is ``None``: B114 still holds, no decision may depend on the signal existing.
+    """
+    if not isinstance(usage, Mapping):
+        return None
+    stamped: dict = dict(usage)
+    stamped["observed_at"] = iso(now)
+    return stamped
+
+
 def run_model(
     ctx: Context,
     *,
@@ -130,6 +146,9 @@ def run_model(
     )
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)
+    # D3: every call carries the rate-limit windows back from the inference headers. The
+    # governor stores them; the dispatcher and the usage stops read them from the ledger.
+    usage = stamp_usage(getattr(result, "usage", None), ctx.clock.now())
 
     limited = runner_base.is_rate_limited(result)
     reset_iso: str | None = None
@@ -149,7 +168,7 @@ def run_model(
             exit_reason=f"rate limited until {reset_iso}" if limited else result.error,
             transcript_path=str(transcript_path),
         )
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd)
+    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd, usage=usage)
 
     if limited:
         _rate_limited(

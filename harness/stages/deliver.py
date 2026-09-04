@@ -6,10 +6,11 @@ import json
 import logging
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from harness import clone as clone_mod
 from harness import gates, redact
+from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
 from harness.errors import GitHubError, HarnessError, IllegalTransition
@@ -18,12 +19,18 @@ from harness.redact import write_redacted
 from harness.stages.propose import parse_work_package
 
 __all__ = [
+    "DECISION_TAIL_LINES",
+    "HANDOFF_FROM_STATES",
+    "HANDOFF_NAME",
     "MAX_BODY_CHARS",
+    "MAX_COMMENT_CHARS",
     "PUSH_BRANCH",
     "SYNC_FORK",
+    "build_handoff_body",
     "build_pr_body",
     "build_pr_title",
     "deliver",
+    "handoff",
     "lease_from_store",
 ]
 
@@ -33,6 +40,19 @@ log = logging.getLogger("harness")
 #: here; the run artifact carries the rest.
 MAX_BODY_CHARS = 60000
 MAX_TITLE_CHARS = 100
+
+#: ``runs/item-<id>/HANDOFF.md`` — the note a stopped run leaves for the run that resumes it.
+HANDOFF_NAME = "HANDOFF.md"
+
+#: The same GitHub ceiling applies to the handoff comment as to a pull-request body.
+MAX_COMMENT_CHARS = 60000
+
+#: How much of the run's reasoning the handoff carries forward (B213).
+DECISION_TAIL_LINES = 20
+
+#: B214: the states a half-finished item can be handed off from. Anything else is either
+#: already parked (blocked, needs-human) or already gone (shipped, merged, abandoned).
+HANDOFF_FROM_STATES: tuple[str, ...] = ("implementing", "packaged", "revising")
 
 TRUNCATION_NOTE = (
     "\n\n> **Truncated here.** The complete `EVIDENCE.md` is in the run artifact "
@@ -388,3 +408,253 @@ def _recorded_url(ctx: Context) -> str:
     except ValueError:
         return ""
     return str(data.get("pr_url") or "") if isinstance(data, dict) else ""
+
+
+# --------------------------------------------------------------------------------------------
+# handoff (B212-B214): parking a half-finished item so a later run can resume it
+# --------------------------------------------------------------------------------------------
+
+
+def build_handoff_body(
+    *,
+    item_id: int,
+    title: str,
+    reason: str,
+    branch: str,
+    base_sha: str,
+    fork: str,
+    self_repo: str,
+    clone: Path,
+    gates_label: str,
+    gate_lines: Sequence[str],
+    decisions: Sequence[str],
+    acceptance: Sequence[str],
+    pushed: bool,
+    committed: bool,
+    now_iso: str,
+) -> str:
+    """B213: everything the next run (or a human) needs, and nothing that needs a credential.
+
+    Pure: the caller gathers the pieces, this renders them. The last section is the exact
+    command that picks the work up again.
+    """
+    push_note = (
+        f"pushed to `{fork}`"
+        if pushed
+        else "not pushed - no write credential, so the branch exists only in the clone"
+    )
+    parts: list[str] = [
+        f"# Handoff - item {item_id}",
+        "",
+        (
+            "The harness stopped part-way through this item and handed it back. Nothing was "
+            "merged and nothing was force-pushed: every commit made so far is on the branch "
+            "below, and one command resumes the work exactly where it stopped."
+        ),
+        "",
+        f"- **Reason:** {reason}",
+        f"- **Item:** `{self_repo}#{item_id}` - {title or '(no title recorded)'}",
+        f"- **Branch:** `{branch or '(none recorded)'}` - {push_note}",
+        f"- **Base commit:** `{base_sha or '(none recorded)'}`",
+        f"- **Fork:** `{fork or '(none configured)'}`",
+        f"- **Clone:** `{clone}`",
+        "- **Uncommitted work at the stop:** "
+        + ("committed as a wip commit" if committed else "none - the tree was clean"),
+        f"- **Handed off at:** {now_iso}",
+        "",
+        "## Gate results",
+        "",
+    ]
+    if gate_lines:
+        parts.append(f"The last recorded sequence (`gates/{gates_label}.json`):")
+        parts.append("")
+        parts.extend(str(line) for line in gate_lines)
+    else:
+        parts.append("_No gate sequence had been recorded when the harness stopped._")
+
+    parts.extend(["", f"## Last {DECISION_TAIL_LINES} decisions", ""])
+    if decisions:
+        parts.extend(str(line) for line in decisions)
+    else:
+        parts.append("_No decisions were recorded for this run._")
+
+    parts.extend(["", "## Remaining work", ""])
+    if acceptance:
+        parts.append(
+            "The work package's acceptance criteria, verbatim. The item never reached a "
+            "review package, so none of them is confirmed met:"
+        )
+        parts.append("")
+        parts.extend(f"- [ ] {str(line).strip()}" for line in acceptance)
+    else:
+        parts.append("_The work package listed no acceptance criteria._")
+
+    parts.extend(
+        [
+            "",
+            "## Next command",
+            "",
+            "```bash",
+            f"harness revise {item_id} --source continue",
+            "```",
+            "",
+        ]
+    )
+    return "\n".join(parts)
+
+
+def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
+    """B212-B214: park a half-finished item and carry it into the next run.
+
+    A usage stop is a normal outcome, not a failure. The work in the clone is committed,
+    pushed to the fork when there is a credential (never to upstream, never forced), written
+    up in ``runs/item-<id>/HANDOFF.md``, and the item goes back to ``approved`` with the
+    ledger carrying it. ``harness revise <id> --source continue`` is the other half.
+    """
+    item = ctx.store.get_work_item(item_id)
+    if item is None:
+        raise HarnessError(f"no work item {item_id}")
+
+    run_dir = Path(ctx.config.runs_dir) / f"item-{item_id}"
+    clone = run_dir / "clone"
+    if not clone.is_dir():
+        raise HarnessError(
+            f"no clone for item {item_id} at {clone}; there is no work in progress to hand off"
+        )
+
+    branch = str(item.branch_name or "")
+    fork = str(ctx.config.fork_repo or "")
+    self_repo = str(ctx.config.self_repo)
+    now_iso = iso(ctx.clock.now())
+
+    # 1. Nothing the model already wrote may be lost to a usage stop.
+    committed = _commit_wip(ctx, clone, reason)
+    # 2. B212: to the fork, only with a credential, and never with force.
+    pushed = _push_handoff(ctx, clone, branch, fork)
+
+    gates_label, gate_lines = _gate_summary(run_dir)
+    body = redact.redact(
+        build_handoff_body(
+            item_id=item_id,
+            title=str(item.title or ""),
+            reason=reason,
+            branch=branch,
+            base_sha=str(item.base_sha or ""),
+            fork=fork,
+            self_repo=self_repo,
+            clone=clone,
+            gates_label=gates_label,
+            gate_lines=gate_lines,
+            decisions=_decisions_tail(run_dir),
+            acceptance=_acceptance(item),
+            pushed=pushed,
+            committed=committed,
+            now_iso=now_iso,
+        )
+    )
+    path = run_dir / HANDOFF_NAME
+    write_redacted(path, body)
+
+    # 3. Say so where a human is watching, and where the next run will look.
+    if ctx.gh.can_write:
+        try:
+            ctx.gh.comment(self_repo, item_id, body[:MAX_COMMENT_CHARS])
+        except HarnessError as exc:
+            ctx.record_decision(f"handoff could not comment on {self_repo}#{item_id}: {exc}")
+    ctx.store.append_event(item_id, "warn", f"handoff: {reason}")
+    ctx.record_decision(
+        f"handed item {item_id} off ({reason}); the branch {branch or '(none)'} is "
+        + ("on the fork" if pushed else "in the clone only")
+        + f" and {path} says how to resume it with `harness revise {item_id} --source continue`"
+    )
+
+    # 4. B214: back to approved, and into the ledger's carry slot.
+    current = ctx.store.get_work_item(item_id) or item
+    if current.state in HANDOFF_FROM_STATES:
+        try:
+            ctx.store.transition(item_id, "approved", reason=f"handed off: {reason}")
+        except HarnessError as exc:
+            ctx.record_decision(f"could not return item {item_id} to approved on handoff: {exc}")
+    if ctx.ledger is not None:
+        ctx.ledger.set_carry(item_id, now_iso, reason)
+        try:
+            ctx.save_ledger()
+        except (HarnessError, OSError) as exc:
+            ctx.record_decision(f"could not persist the ledger after the handoff: {exc}")
+    log.info("handed off item %s: %s", item_id, reason)
+    return path
+
+
+def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:
+    """Commit whatever the stopped stage left behind, and only then. Returns whether it did."""
+    code, out, err = gates.run_command(["git", "status", "--porcelain"], clone)
+    if code != 0:
+        ctx.record_decision(
+            f"handoff could not read git status in {clone}: {(err or out).strip()[:200]}"
+        )
+        return False
+    if not out.strip():
+        return False
+    from harness.stages import implement as implement_mod  # lazy: implement imports stages
+
+    try:
+        implement_mod.COMMIT(clone, "wip: handoff (" + reason + ")")
+    except HarnessError as exc:
+        ctx.record_decision(f"handoff could not commit the working tree in {clone}: {exc}")
+        return False
+    ctx.record_decision(f"handoff committed the uncommitted work in {clone} as a wip commit")
+    return True
+
+
+def _push_handoff(ctx: Context, clone: Path, branch: str, fork: str) -> bool:
+    """B212: the carried branch goes to the fork, never upstream, and never with force."""
+    if not ctx.gh.can_write or not branch:
+        return False
+    try:
+        ctx.gh.push_branch(clone, branch, remote_repo=fork, force=False)
+    except HarnessError as exc:
+        ctx.record_decision(f"handoff could not push {branch} to {fork}: {exc}")
+        return False
+    ctx.record_decision(f"handoff pushed {branch} to {fork} (never upstream, never forced)")
+    return True
+
+
+def _gate_summary(run_dir: Path) -> tuple[str, list[str]]:
+    """The last gate sequence the run recorded: `gates/final.json`, else `gates/baseline.json`."""
+    for label in ("final", "baseline"):
+        raw = _read(run_dir / "gates" / f"{label}.json").strip()
+        if not raw:
+            continue
+        try:
+            rows = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rows, list):
+            continue
+        lines: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            code = row.get("exit_code")
+            verdict = "green" if code in (0, None) else f"RED (exit {code})"
+            lines.append(f"- `{row.get('name')}` - {verdict}")
+        if lines:
+            return label, lines
+    return "", []
+
+
+def _decisions_tail(run_dir: Path, limit: int = DECISION_TAIL_LINES) -> list[str]:
+    """The tail of the run's DECISIONS.md, so the next run inherits the reasoning (B213)."""
+    lines = [line.rstrip() for line in _read(run_dir / "DECISIONS.md").splitlines()]
+    return [line for line in lines if line.strip()][-limit:]
+
+
+def _acceptance(item: Any) -> list[str]:
+    """The work package's acceptance criteria, verbatim; empty when there is no spec."""
+    spec_text = _read(Path(item.spec_path)) if getattr(item, "spec_path", "") else ""
+    if not spec_text.strip():
+        return []
+    try:
+        return [line for line in parse_work_package(spec_text).acceptance if str(line).strip()]
+    except HarnessError:
+        return []

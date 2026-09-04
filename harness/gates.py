@@ -50,7 +50,7 @@ def _git_bash() -> str | None:
 
 
 def _resolve_argv(argv: Sequence[str]) -> tuple[str, ...]:
-    """Windows: node shims are batch files (.cmd), and bare ``bash`` is the WSL launcher.
+    r"""Windows: node shims are batch files (.cmd), and bare ``bash`` is the WSL launcher.
 
     ``C:\Windows\System32\bash.exe`` precedes Git Bash on PATH and fails without a WSL distro,
     so the product's ``bash scripts/*.sh`` gates run under the bash that ships with git.

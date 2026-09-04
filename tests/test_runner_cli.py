@@ -742,11 +742,15 @@ def test_b119_run_request_gains_max_budget_usd_as_its_last_field_defaulting_to_n
 
 
 def test_b119_run_result_gains_reset_at_as_its_last_field_defaulting_to_none(tmp_path):
-    """RUN-DECISIONS-D2 §12: RunResult.reset_at is the last field, default None."""
-    last = dataclasses.fields(RunResult)[-1]
+    """RUN-DECISIONS-D2 §12: RunResult.reset_at defaults to None and is the last field the
+    Delivery 2 runner defines. Delivery 3 appends ``usage`` after it (RUN-DECISIONS-D3
+    "Runner"), so reset_at is now second from last; its position relative to the D2 fields
+    and its default are what this pins."""
+    names = [f.name for f in dataclasses.fields(RunResult)]
+    reset_at = next(f for f in dataclasses.fields(RunResult) if f.name == "reset_at")
 
-    assert last.name == "reset_at"
-    assert last.default is None
+    assert names[-2:] == ["reset_at", "usage"]
+    assert reset_at.default is None
 
 
 # --------------------------------------------------------------------------
@@ -1017,3 +1021,562 @@ def test_d19_an_is_error_result_with_no_stderr_surfaces_the_cli_subtype(tmp_path
     assert result.ok is False
     assert result.error == "error_max_budget_usd"
     assert result.cost_usd == 0.153
+
+
+# --------------------------------------------------------------------------
+# Delivery 3 — RUN-DECISIONS-D3 "Runner" (B200-B203). Appended by the D3 spec-tester (T1);
+# additions only. The usage signal is the one rate_limit_event that
+# `claude -p --output-format stream-json --verbose` emits per call; nothing here starts a
+# process — every runner is built with the injectable spawn kwarg.
+# --------------------------------------------------------------------------
+
+# RUN-DECISIONS-D3 "Config" — the five new keys with their .env.example values (inline).
+D3_USAGE_ENV: dict[str, str] = {
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "mon 08:00",
+    "RUN_WINDOW_END": "tue 20:00",
+}
+
+# The verified 2026-09-03 event, verbatim from RUN-DECISIONS-D3 "Why".
+FIVE_HOUR_EPOCH = 1788519600  # 2026-09-04T11:00:00Z
+SEVEN_DAY_EPOCH = 1788897600  # 2026-09-08T20:00:00Z (Tuesday 20:00 UTC)
+FIVE_HOUR_ISO = "2026-09-04T11:00:00Z"
+SEVEN_DAY_ISO = "2026-09-08T20:00:00Z"
+
+
+def rate_limit_event(*, five_hour: float = 0.07, seven_day: float = 0.49,
+                     status: str = "allowed", five_hour_resets: int = FIVE_HOUR_EPOCH,
+                     seven_day_resets: int = SEVEN_DAY_EPOCH) -> dict:
+    """One rate_limit_event line exactly as RUN-DECISIONS-D3 "Why" records it."""
+    return {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": status,
+            "resetsAt": five_hour_resets,
+            "rateLimitType": "five_hour",
+            "overageStatus": "rejected",
+            "isUsingOverage": False,
+            "unifiedWindows": {
+                "five_hour": {"utilization": five_hour, "resetsAt": five_hour_resets},
+                "seven_day": {"utilization": seven_day, "resetsAt": seven_day_resets},
+            },
+        },
+    }
+
+
+def stream_result(**overrides) -> dict:
+    """The stream-json result line: the same fields as today's --output-format json."""
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": "the patch is ready",
+        "num_turns": 7,
+        "total_cost_usd": 0.4275,
+        "duration_ms": 18234,
+        "session_id": "01JABCDEF",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def stream_stdout(*objects: dict) -> str:
+    """JSON lines, one object per line, with the trailing newline a real CLI emits."""
+    return "".join(json.dumps(obj) + "\n" for obj in objects)
+
+
+def usage_dict(**overrides) -> dict:
+    """The RunResult.usage shape of RUN-DECISIONS-D3 "Runner"."""
+    payload = {
+        "five_hour": {"utilization": 0.07, "resets_at": FIVE_HOUR_ISO},
+        "seven_day": {"utilization": 0.49, "resets_at": SEVEN_DAY_ISO},
+        "status": "allowed",
+        "observed_at": "2026-09-03T12:00:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def usage_fixture_payload(**overrides) -> dict:
+    """A FakeRunner fixture body whose top-level keys are the RunResult field names."""
+    payload = {
+        "ok": True,
+        "text": "implemented",
+        "turns": 3,
+        "cost_usd": 0.5,
+        "allowance_pct": None,
+        "duration_ms": 1200,
+        "session_id": "fixture-session",
+        "exit_code": 0,
+        "transcript": [],
+        "error": None,
+        "reset_at": None,
+        "usage": usage_dict(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.fixture
+def d3_config(tmp_path, write_env):
+    """A Config from a complete .env — every D1 and D2 key plus the five D3 keys."""
+    from harness.config import load_config
+
+    path = write_env(tmp_path / "d3" / ".env", **D3_USAGE_ENV)
+    return load_config(env_path=path, environ={})
+
+
+# --------------------------------------------------------------------------
+# B200 - capture_usage swaps the output format in place and moves nothing else
+# --------------------------------------------------------------------------
+
+
+def test_b200_capture_usage_replaces_output_format_json_in_the_same_position(tmp_path):
+    """B200: with capture_usage=True the tokens after --print are
+    `--output-format stream-json --verbose`; the bare `json` token is gone and every other
+    flag keeps its B25 position."""
+    spawn = SpawnRecorder(stdout=stream_stdout(rate_limit_event(), stream_result()))
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert spawn.argv[1:5] == ["--print", "--output-format", "stream-json", "--verbose"]
+    assert spawn.argv == [
+        "claude",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        "30",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowed-tools",
+        "Read,Glob,Grep",
+        "--",
+        "do the thing",
+    ]
+    assert "json" not in spawn.argv
+    assert spawn.argv.count("--output-format") == 1
+    assert spawn.argv.count("--verbose") == 1
+
+
+def test_b200_the_default_runner_argv_is_the_unchanged_b25_argv(tmp_path):
+    """B200: capture_usage defaults to False, and then argv is exactly as B25 froze it —
+    `--output-format json`, no `--verbose`, nothing else touched."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert runner.capture_usage is False
+    assert spawn.argv == [
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--max-turns",
+        "30",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowed-tools",
+        "Read,Glob,Grep",
+        "--",
+        "do the thing",
+    ]
+    assert "--verbose" not in spawn.argv
+    assert "stream-json" not in spawn.argv
+
+
+def test_b200_capture_usage_false_explicitly_is_also_the_b25_argv(tmp_path):
+    """B200: False → argv exactly as B25 today; the kwarg is opt-in, not a rename."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=False)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert runner.capture_usage is False
+    assert spawn.argv[1:5] == ["--print", "--output-format", "json", "--max-turns"]
+    assert "--verbose" not in spawn.argv
+
+
+def test_b200_capture_usage_leaves_every_optional_flag_in_its_b25_order(tmp_path):
+    """B200/B25/B119: the swap is positional — the budget, tool, system-prompt and add-dir
+    flags keep their order, and the prompt is still last after the terminator."""
+    extra_a = tmp_path / "shared"
+    extra_b = tmp_path / "docs"
+    spawn = SpawnRecorder(stdout=stream_stdout(stream_result()))
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+    request = dataclasses.replace(
+        maximal_request(tmp_path, extra_a, extra_b), max_budget_usd=3.0
+    )
+
+    runner.run(request)
+
+    assert spawn.argv == [
+        "claude",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        "80",
+        "--max-budget-usd",
+        "3.0",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowed-tools",
+        "Read,Edit,Write,Bash,Glob,Grep",
+        "--disallowed-tools",
+        "WebFetch,WebSearch",
+        "--system-prompt",
+        "you are the harness",
+        "--add-dir",
+        str(extra_a),
+        "--add-dir",
+        str(extra_b),
+        "--",
+        "implement it",
+    ]
+
+
+def test_b200_capture_usage_never_adds_a_skip_permissions_flag(tmp_path):
+    """B200/B27 (I-3): the new flags do not open a path past the permission ceiling."""
+    spawn = SpawnRecorder(stdout=stream_stdout(rate_limit_event(), stream_result()))
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert not any("dangerously" in entry for entry in spawn.argv)
+    assert not any("skip-permissions" in entry for entry in spawn.argv)
+    index = spawn.argv.index("--permission-mode")
+    assert spawn.argv[index + 1] == "acceptEdits"
+
+
+# --------------------------------------------------------------------------
+# B201 - parse_stream is a pure helper: (result, last rate_limit_event)
+# --------------------------------------------------------------------------
+
+
+def test_b201_parse_stream_returns_the_result_and_the_usage(tmp_path):
+    """B201: parse_stream(stdout) -> (result, usage); the result is the result object and the
+    usage is the rate_limit_event's unified windows with epoch resets rendered as ISO-Z."""
+    from harness.runner.cli import parse_stream
+
+    stdout = stream_stdout(
+        {"type": "system", "subtype": "init", "session_id": "01JABCDEF"},
+        rate_limit_event(),
+        {"type": "assistant", "message": {"content": "working"}},
+        stream_result(),
+    )
+
+    result, usage = parse_stream(stdout)
+
+    assert result is not None
+    assert result["result"] == "the patch is ready"
+    assert result["num_turns"] == 7
+    assert result["total_cost_usd"] == pytest.approx(0.4275)
+    assert usage is not None
+    assert usage["five_hour"]["utilization"] == pytest.approx(0.07)
+    assert usage["five_hour"]["resets_at"] == FIVE_HOUR_ISO
+    assert usage["seven_day"]["utilization"] == pytest.approx(0.49)
+    assert usage["seven_day"]["resets_at"] == SEVEN_DAY_ISO
+    assert usage["status"] == "allowed"
+
+
+def test_b201_parse_stream_leaves_observed_at_to_the_stage(tmp_path):
+    """RUN-DECISIONS-D3 "Runner": observed_at is filled by the stage from the clock, not by the
+    runner — the parsed usage carries no clock reading of its own."""
+    from harness.runner.cli import parse_stream
+
+    _, usage = parse_stream(stream_stdout(rate_limit_event(), stream_result()))
+
+    assert usage is not None
+    assert usage.get("observed_at") in (None, "")
+
+
+def test_b201_parse_stream_keeps_the_last_rate_limit_event(tmp_path):
+    """B201: multiple rate_limit_events — the last one wins."""
+    from harness.runner.cli import parse_stream
+
+    stdout = stream_stdout(
+        rate_limit_event(five_hour=0.01, seven_day=0.10),
+        rate_limit_event(five_hour=0.04, seven_day=0.30),
+        rate_limit_event(five_hour=0.07, seven_day=0.49, status="allowed_warning"),
+        stream_result(),
+    )
+
+    _, usage = parse_stream(stdout)
+
+    assert usage is not None
+    assert usage["five_hour"]["utilization"] == pytest.approx(0.07)
+    assert usage["seven_day"]["utilization"] == pytest.approx(0.49)
+    assert usage["status"] == "allowed_warning"
+
+
+def test_b201_parse_stream_keeps_the_last_result_line(tmp_path):
+    """B201: the LAST line whose type == "result" is the result object."""
+    from harness.runner.cli import parse_stream
+
+    stdout = stream_stdout(
+        stream_result(result="first pass", num_turns=1),
+        rate_limit_event(),
+        stream_result(result="second pass", num_turns=9),
+    )
+
+    result, usage = parse_stream(stdout)
+
+    assert result is not None
+    assert result["result"] == "second pass"
+    assert result["num_turns"] == 9
+    assert usage is not None
+
+
+def test_b201_parse_stream_without_a_result_line_returns_none_and_the_usage(tmp_path):
+    """B201: no result line -> (None, usage) — the usage still survives so the governor can act
+    on the signal even when the call itself produced nothing parseable."""
+    from harness.runner.cli import parse_stream
+
+    stdout = stream_stdout(
+        {"type": "system", "subtype": "init"},
+        rate_limit_event(five_hour=0.66, seven_day=0.91),
+    )
+
+    result, usage = parse_stream(stdout)
+
+    assert result is None
+    assert usage is not None
+    assert usage["seven_day"]["utilization"] == pytest.approx(0.91)
+
+
+def test_b201_parse_stream_without_a_rate_limit_event_returns_none_usage(tmp_path):
+    """B201/B114: no decision may depend on the signal being present — a stream with no
+    rate_limit_event parses to (result, None), never to a guessed utilization."""
+    from harness.runner.cli import parse_stream
+
+    result, usage = parse_stream(stream_stdout(stream_result()))
+
+    assert result is not None
+    assert result["result"] == "the patch is ready"
+    assert usage is None
+
+
+def test_b201_parse_stream_of_empty_output_is_two_nones(tmp_path):
+    """B201: empty stdout carries neither a result nor a usage."""
+    from harness.runner.cli import parse_stream
+
+    assert parse_stream("") == (None, None)
+    assert parse_stream("\n\n") == (None, None)
+
+
+def test_b201_parse_stream_is_pure_and_repeatable(tmp_path):
+    """B201: a pure helper in runner/cli.py — the same text parses to the same values twice."""
+    from harness.runner.cli import parse_stream
+
+    stdout = stream_stdout(rate_limit_event(), stream_result())
+
+    assert parse_stream(stdout) == parse_stream(stdout)
+
+
+def test_b201_capture_usage_run_carries_the_usage_onto_the_run_result(tmp_path):
+    """B200/B201: with capture_usage=True stdout is JSON lines, the result line populates the
+    RunResult exactly as today, and the last rate_limit_event lands on RunResult.usage."""
+    spawn = SpawnRecorder(
+        stdout=stream_stdout(
+            rate_limit_event(five_hour=0.02, seven_day=0.20),
+            rate_limit_event(five_hour=0.07, seven_day=0.49),
+            stream_result(),
+        )
+    )
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.text == "the patch is ready"
+    assert result.turns == 7
+    assert result.cost_usd == pytest.approx(0.4275)
+    assert result.session_id == "01JABCDEF"
+    assert result.usage is not None
+    assert result.usage["five_hour"]["utilization"] == pytest.approx(0.07)
+    assert result.usage["seven_day"]["utilization"] == pytest.approx(0.49)
+    assert result.usage["seven_day"]["resets_at"] == SEVEN_DAY_ISO
+
+
+def test_b201_a_stream_without_a_result_line_is_unparseable(tmp_path):
+    """B201/B30: no result line → treat as unparseable — ok is False and an error is set."""
+    spawn = SpawnRecorder(
+        returncode=0, stdout=stream_stdout(rate_limit_event()), stderr="nothing on stdout"
+    )
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.error is not None
+
+
+def test_b201_a_run_without_the_signal_has_usage_none(tmp_path):
+    """B201/B114: no rate_limit_event in the stream → RunResult.usage is None, and the run is
+    still a success."""
+    spawn = SpawnRecorder(stdout=stream_stdout(stream_result()))
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.usage is None
+
+
+def test_b201_the_default_runner_reports_no_usage(tmp_path):
+    """B200/B201: without capture_usage the CLI answers plain JSON and usage stays None."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok", num_turns=1))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.usage is None
+
+
+def test_b201_run_result_gains_usage_as_its_last_field_defaulting_to_none(tmp_path):
+    """RUN-DECISIONS-D3: RunResult.usage is the LAST field, after reset_at, default None."""
+    names = [f.name for f in dataclasses.fields(RunResult)]
+
+    assert names[-2:] == ["reset_at", "usage"]
+    assert dataclasses.fields(RunResult)[-1].default is None
+    assert run_result().usage is None
+
+
+def test_b201_is_rate_limited_is_unchanged_by_a_usage_carrying_result(tmp_path):
+    """RUN-DECISIONS-D3 "Runner": is_rate_limited unchanged — a successful call that happens to
+    report 99 % weekly utilization is not a rate-limited call."""
+    from harness.runner.base import is_rate_limited
+
+    spawn = SpawnRecorder(
+        stdout=stream_stdout(rate_limit_event(five_hour=0.95, seven_day=0.99), stream_result())
+    )
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is True
+    assert result.reset_at is None
+    assert is_rate_limited(result) is False
+
+
+# --------------------------------------------------------------------------
+# B202 - get_runner builds the CLI runner with capture_usage on
+# --------------------------------------------------------------------------
+
+
+def test_b202_get_runner_builds_the_cli_runner_with_capture_usage_true(d3_config):
+    """B202: get_runner(config) builds ClaudeCliRunner(capture_usage=True) for backend "cli",
+    so every real call carries the usage signal home."""
+    config = dataclasses.replace(d3_config, backend="cli")
+
+    runner = get_runner(config)
+
+    assert isinstance(runner, ClaudeCliRunner)
+    assert runner.name == "cli"
+    assert runner.capture_usage is True
+
+
+def test_b202_get_runner_still_builds_the_fake_runner_for_backend_fake(d3_config):
+    """B202/B24: the fake backend is unchanged — no CLI runner, no capture flag."""
+    config = dataclasses.replace(d3_config, backend="fake")
+
+    runner = get_runner(config)
+
+    assert isinstance(runner, FakeRunner)
+    assert runner.name == "fake"
+
+
+def test_b202_a_directly_constructed_cli_runner_still_defaults_to_off(tmp_path):
+    """B202/B200: only get_runner opts in; the constructor default stays False so D1 callers
+    keep the D1 argv."""
+    assert ClaudeCliRunner().capture_usage is False
+    assert ClaudeCliRunner(claude_bin="claude-2.1.251").capture_usage is False
+
+
+def test_b202_the_runner_from_get_runner_emits_the_stream_argv(tmp_path, d3_config):
+    """B202/B200: the runner get_runner hands back really does ask for stream-json."""
+    config = dataclasses.replace(d3_config, backend="cli")
+    runner = get_runner(config)
+    spawn = SpawnRecorder(stdout=stream_stdout(rate_limit_event(), stream_result()))
+    runner.spawn = spawn
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert spawn.argv[1:5] == ["--print", "--output-format", "stream-json", "--verbose"]
+    assert result.usage is not None
+
+
+# --------------------------------------------------------------------------
+# B203 - the fake runner replays a usage fixture
+# --------------------------------------------------------------------------
+
+
+def test_b203_fake_runner_copies_the_usage_key_onto_the_run_result(tmp_path):
+    """B203: a FakeRunner fixture key `usage` (the RunResult shape) is copied through."""
+    runner = fake_runner_with(tmp_path, "implement", usage_fixture_payload())
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is True
+    assert result.usage == usage_dict()
+    assert result.usage["seven_day"]["utilization"] == pytest.approx(0.49)
+
+
+def test_b203_the_fixture_usage_may_omit_observed_at(tmp_path):
+    """B203: observed_at is optional in the fixture — the stage stamps it from the clock."""
+    usage = usage_dict()
+    usage.pop("observed_at")
+    runner = fake_runner_with(tmp_path, "implement", usage_fixture_payload(usage=usage))
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.usage is not None
+    assert result.usage.get("observed_at") is None
+    assert result.usage["five_hour"]["resets_at"] == FIVE_HOUR_ISO
+
+
+def test_b203_a_fixture_without_usage_has_usage_none(tmp_path):
+    """B203/B114: absent -> None; the fake path never invents a utilization."""
+    payload = usage_fixture_payload()
+    payload.pop("usage")
+    runner = fake_runner_with(tmp_path, "implement", payload)
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is True
+    assert result.usage is None
+
+
+def test_b203_a_missing_fixture_has_usage_none(tmp_path):
+    """B203/B114: the no-fixture failure result carries no usage either."""
+    runner = fake_runner_with(tmp_path, "implement", usage_fixture_payload())
+
+    result = runner.run(dataclasses.replace(minimal_request(tmp_path), stage="decompose"))
+
+    assert result.ok is False
+    assert result.usage is None
+
+
+def test_b203_a_rate_limited_fixture_may_still_carry_usage(tmp_path):
+    """B203/B119: the two signals are independent — a rate-limited fixture can also report the
+    utilization that caused it."""
+    from harness.runner.base import is_rate_limited
+
+    payload = rate_limited_payload()
+    payload["usage"] = usage_dict(seven_day={"utilization": 0.99, "resets_at": SEVEN_DAY_ISO})
+    runner = fake_runner_with(tmp_path, "implement", payload)
+
+    result = runner.run(implement_request(tmp_path))
+
+    assert result.ok is False
+    assert is_rate_limited(result) is True
+    assert result.usage is not None
+    assert result.usage["seven_day"]["utilization"] == pytest.approx(0.99)

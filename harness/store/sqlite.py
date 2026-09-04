@@ -230,7 +230,10 @@ LABELS: dict[str, str] = {
 
 # The one transition table, shared by both stores: RUN-DECISIONS-D2 section 3 minus the three
 # pairs Delivery 1 pins illegal (B11: discovered->blocked, approved->blocked,
-# shipped->abandoned). ``"new"`` is the pseudo-state of a row that does not exist yet.
+# shipped->abandoned), plus revising->approved, which RUN-DECISIONS-D3 "Handoff and continue"
+# step 6 requires ("transition the item to `approved` from whichever of
+# `implementing`/`packaged`/`revising` it is in"). ``"new"`` is the pseudo-state of a row that
+# does not exist yet.
 TRANSITIONS: dict[str, frozenset[str]] = {
     "new": frozenset({"discovered"}),
     "discovered": frozenset({"proposing", "proposed", "abandoned"}),
@@ -240,7 +243,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "implementing": frozenset({"packaged", "approved", "blocked", "abandoned"}),
     "packaged": frozenset({"shipped", "revising", "approved", "blocked", "abandoned"}),
     "shipped": frozenset({"revising", "merged", "needs-human", "blocked"}),
-    "revising": frozenset({"shipped", "needs-human", "blocked", "abandoned"}),
+    "revising": frozenset({"shipped", "needs-human", "approved", "blocked", "abandoned"}),
     "needs-human": frozenset({"revising", "shipped", "abandoned"}),
     "blocked": frozenset({"approved", "discovered", "abandoned"}),
     "merged": frozenset(),

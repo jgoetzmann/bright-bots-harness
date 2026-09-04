@@ -100,6 +100,13 @@ BASE_ENV = {
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "github",
+    # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
+    # window is left empty (= always open) so the D2 behaviour above is unchanged.
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 
 
@@ -1015,3 +1022,337 @@ def test_deliver_never_files_an_issue_anywhere(tmp_path):
     assert s.gh.calls_named("create_issue") == []
     assert set(s.gh.repos[SELF_REPO]) == before_self
     assert s.gh.repos[UPSTREAM] == {}
+
+
+# ======================================================================================
+# Delivery 3 additions - `stages.deliver.handoff` (RUN-DECISIONS-D3 "Handoff and continue").
+# Appended by the D3 spec-tester (T2); additions only. Nothing above was edited except the
+# BASE_ENV data constant, which gained the five keys D3 makes required in every `.env`.
+# ======================================================================================
+
+# RUN-DECISIONS-D3 step 6: the reason a usage stop hands off with (a B206 string).
+HANDOFF_REASON = "weekly usage 91% >= 90%"
+NEXT_COMMAND = f"harness revise {ITEM} --source continue"
+# Gate names written to the run dir. `final.json` wins; `baseline.json` is the fallback.
+FINAL_GATE_GREEN = "npm run lint"
+FINAL_GATE_RED = "npm run test:unit"
+BASELINE_ONLY_GATE = "npx prisma generate"
+DECISION_SENTINEL = "DECISION-SENTINEL-8a41"
+ACCEPTANCE_LINE = "`npm run test:unit` passes with the new case."
+HANDOFF_WRITES = frozenset({"push_branch", "comment", "set_labels"})
+
+
+def gate_dict(name: str, *, exit_code: int) -> dict:
+    """One `GateResult` as `dataclasses.asdict` writes it into gates/*.json (D1 "Gates")."""
+    tail = "ok" if exit_code == 0 else "FAIL 1 of 42"
+    return {
+        "name": name,
+        "argv": name.split(),
+        "exit_code": exit_code,
+        "stdout_tail": f"{name}: {tail}\n",
+        "stderr_tail": "",
+    }
+
+
+def write_gate_files(run_dir: Path, *, final: bool = True, baseline: bool = True) -> None:
+    if baseline:
+        _w(run_dir / "gates" / "baseline.json",
+           json.dumps([gate_dict(BASELINE_ONLY_GATE, exit_code=0)], indent=2) + "\n")
+    if final:
+        _w(run_dir / "gates" / "final.json",
+           json.dumps([gate_dict(FINAL_GATE_GREEN, exit_code=0),
+                       gate_dict(FINAL_GATE_RED, exit_code=1)], indent=2) + "\n")
+
+
+def write_decisions(run_dir: Path, *, count: int = 25, secret: bool = True) -> list[str]:
+    """`count` DECISIONS.md lines; the newest carries a sentinel, one of the oldest a token."""
+    lines = [f"- 2026-09-02T{8 + i // 12:02d}:{i % 60:02d}:00Z decision {i:02d} recorded"
+             for i in range(count)]
+    if secret and count > 3:
+        lines[2] = f"- 2026-09-02T08:02:00Z npm notice using {FAKE_SECRET} for the registry"
+    lines[-1] = f"- 2026-09-02T11:59:00Z {DECISION_SENTINEL} last decision before the stop"
+    _w(run_dir / "DECISIONS.md", "\n".join(lines) + "\n")
+    return lines
+
+
+def setup_handoff(tmp_path: Path, *, state: str = "implementing", can_write: bool = True,
+                  final: bool = True, baseline: bool = True, decisions: bool = True):
+    """The `setup_deliver` rig, plus the run-dir evidence `handoff` reads (D3 step 4)."""
+    s = setup_deliver(tmp_path, state=state, can_write=can_write,
+                      with_package=(state == "packaged"))
+    write_gate_files(s.run_dir, final=final, baseline=baseline)
+    if decisions:
+        write_decisions(s.run_dir)
+    return s
+
+
+def handoff_fn():
+    """Imported lazily so a build without D3 fails only these tests, never the D2 ones."""
+    from harness.stages.deliver import handoff
+
+    return handoff
+
+
+def handoff_text(s) -> str:
+    path = s.run_dir / "HANDOFF.md"
+    assert path.is_file(), f"HANDOFF.md was not written to {s.run_dir} (B213)"
+    return path.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------
+# B212 - the handoff pushes the work branch to the fork, without force, and opens nothing
+# --------------------------------------------------------------------------------------
+def test_B212_handoff_pushes_the_branch_to_the_fork_without_force(tmp_path):
+    """B212: with a token, exactly one push_branch to FORK_REPO, force False, on the item's
+    branch, from the item's clone - never the upstream repository."""
+    s = setup_handoff(tmp_path)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    pushed = s.gh.calls_named("push_branch")
+    assert len(pushed) == 1, f"expected one push_branch, got {s.gh.calls}"
+    assert pushed[0]["branch"] == BRANCH
+    assert pushed[0]["remote_repo"] == FORK
+    assert pushed[0]["force"] is False
+    assert Path(pushed[0]["clone"]).resolve() == s.repo.resolve()
+    assert all(c["remote_repo"] == FORK for c in s.gh.calls
+               if c["name"] in ("push_branch", "push_ref"))
+    assert UPSTREAM not in {c.get("remote_repo") for c in s.gh.calls}
+
+
+def test_B212_handoff_without_a_token_pushes_nothing_at_all(tmp_path):
+    """B212: can_write False -> no push_branch, no push_ref, no HTTP write; the handoff is
+    still written and the item still parked."""
+    s = setup_handoff(tmp_path, can_write=False)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.gh.calls_named("push_branch") == []
+    assert s.gh.calls_named("push_ref") == []
+    assert s.gh.sent == []
+    assert not any("git push" in r for r in s.gh.refused), s.gh.refused
+    assert NEXT_COMMAND in handoff_text(s)
+
+
+def test_B212_handoff_never_opens_a_pull_request(tmp_path):
+    """B212: a handoff is not a delivery - no create_pull, no reviewers, no PR anywhere."""
+    s = setup_handoff(tmp_path)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.gh.calls_named("create_pull") == []
+    assert s.gh.calls_named("request_reviewers") == []
+    assert s.gh.prs[UPSTREAM] == {}
+    assert s.gh.prs[SELF_REPO] == {}
+    names = {c["name"] for c in s.gh.calls}
+    assert names <= GH_SURFACE, names - GH_SURFACE
+    assert (names & WRITE_METHODS) <= HANDOFF_WRITES, (names & WRITE_METHODS) - HANDOFF_WRITES
+
+
+def test_B212_handoff_from_packaged_also_pushes_only_to_the_fork(tmp_path):
+    """B212: the same push rule from `packaged`, the other state a usage stop can land in."""
+    s = setup_handoff(tmp_path, state="packaged")
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    pushed = s.gh.calls_named("push_branch")
+    assert len(pushed) == 1
+    assert pushed[0]["remote_repo"] == FORK
+    assert pushed[0]["force"] is False
+    assert s.gh.calls_named("create_pull") == []
+
+
+def test_B212_handoff_commits_a_dirty_tree_through_implement_commit_before_pushing(
+    tmp_path, monkeypatch
+):
+    """B212 / D3 step 2: uncommitted work is committed via implement.COMMIT with a wip message
+    naming the reason, and only then is the branch pushed."""
+    from harness.stages import implement as implement_mod
+
+    s = setup_handoff(tmp_path)
+    _w(s.repo / "src" / "pages" / "Dashboard.test.tsx", "// half-written test\n")
+    order: list[str] = []
+    commits: list[tuple[str, str]] = []
+
+    def record_commit(clone, message):
+        order.append("commit")
+        commits.append((str(clone), str(message)))
+
+    monkeypatch.setattr(implement_mod, "COMMIT", record_commit)
+    real_push = s.gh.push_branch
+
+    def watched_push(*args, **kwargs):
+        order.append("push")
+        return real_push(*args, **kwargs)
+
+    s.gh.push_branch = watched_push
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert len(commits) == 1, f"a dirty tree must be committed once, got {commits}"
+    assert Path(commits[0][0]).resolve() == s.repo.resolve()
+    assert commits[0][1] == f"wip: handoff ({HANDOFF_REASON})"
+    assert order == ["commit", "push"], order
+
+
+def test_B212_handoff_on_a_clean_tree_commits_nothing(tmp_path, monkeypatch):
+    """B212 / D3 step 2: `git status --porcelain` empty -> COMMIT is never called."""
+    from harness.stages import implement as implement_mod
+
+    s = setup_handoff(tmp_path)
+    commits: list = []
+    monkeypatch.setattr(implement_mod, "COMMIT", lambda *a, **k: commits.append(a))
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert commits == [], "a clean tree must not be committed"
+    assert len(s.gh.calls_named("push_branch")) == 1
+
+
+# --------------------------------------------------------------------------------------
+# B213 - runs/item-N/HANDOFF.md says what stopped, where the work is, and how to resume
+# --------------------------------------------------------------------------------------
+def test_B213_handoff_md_records_the_reason_branch_base_and_next_command(tmp_path):
+    """B213: HANDOFF.md exists under runs/item-N and carries the reason, the branch, the base
+    sha, the fork, and the exact command that resumes the work."""
+    s = setup_handoff(tmp_path)
+    path = handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    text = handoff_text(s)
+    assert Path(path).resolve() == (s.run_dir / "HANDOFF.md").resolve()
+    assert HANDOFF_REASON in text
+    assert BRANCH in text
+    assert s.base in text
+    assert FORK in text
+    assert NEXT_COMMAND in text
+
+
+def test_B213_handoff_md_lists_the_final_gate_names(tmp_path):
+    """B213: the last gate results come from gates/final.json - every gate name appears."""
+    s = setup_handoff(tmp_path)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    text = handoff_text(s)
+    assert FINAL_GATE_GREEN in text
+    assert FINAL_GATE_RED in text
+
+
+def test_B213_handoff_md_falls_back_to_the_baseline_gate_names(tmp_path):
+    """B213: with no gates/final.json the baseline results are reported instead."""
+    s = setup_handoff(tmp_path, final=False)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert BASELINE_ONLY_GATE in handoff_text(s)
+
+
+def test_B213_handoff_md_survives_a_run_dir_with_no_gate_results(tmp_path):
+    """B213: no gates at all is not a crash - the handoff is still written and resumable."""
+    s = setup_handoff(tmp_path, final=False, baseline=False, decisions=False)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    text = handoff_text(s)
+    assert NEXT_COMMAND in text
+    assert HANDOFF_REASON in text
+
+
+def test_B213_handoff_md_carries_the_recent_decisions_and_the_remaining_work(tmp_path):
+    """B213: the tail of DECISIONS.md and the acceptance criteria still unmet are listed
+    verbatim, so the next run knows where it stopped."""
+    s = setup_handoff(tmp_path)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    text = handoff_text(s)
+    assert DECISION_SENTINEL in text
+    assert "decision 00 recorded" not in text, "only the last 20 decisions belong in a handoff"
+    assert ACCEPTANCE_LINE in text
+
+
+def test_B213_handoff_md_is_redacted(tmp_path):
+    """B213 / I-13: a token in the decisions log reaches HANDOFF.md only as [REDACTED]."""
+    s = setup_handoff(tmp_path)
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    text = handoff_text(s)
+    assert FAKE_SECRET not in text
+    for entry in s.gh.sent:
+        assert FAKE_SECRET not in json.dumps(entry["payload"]), entry["url"]
+
+
+# --------------------------------------------------------------------------------------
+# B214 - the item goes back to approved, the carry is recorded, the thread is told
+# --------------------------------------------------------------------------------------
+def test_B214_handoff_from_implementing_returns_the_item_to_approved(tmp_path):
+    """B214: an item stopped mid-implement is parked in `approved`, ready to be continued."""
+    s = setup_handoff(tmp_path, state="implementing")
+    assert s.store.get_work_item(ITEM).state == "implementing"
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.store.get_work_item(ITEM).state == "approved"
+    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+
+
+def test_B214_handoff_from_packaged_returns_the_item_to_approved(tmp_path):
+    """B214: the same from `packaged` - the package is kept, the item is parked."""
+    s = setup_handoff(tmp_path, state="packaged")
+    assert s.store.get_work_item(ITEM).state == "packaged"
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.store.get_work_item(ITEM).state == "approved"
+    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+
+
+def test_B214_handoff_sets_the_carry_issue_in_the_ledger_window(tmp_path):
+    """B214: ledger.set_carry(item, now, reason) and ctx.save_ledger() - the carried issue is
+    in memory and on disk, with the reason that stopped it."""
+    s = setup_handoff(tmp_path)
+    assert s.ctx.ledger.carry_issue() is None
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.ctx.ledger.carry_issue() == ITEM
+    carry = s.ctx.ledger.window["carry"]
+    assert carry["issue"] == ITEM
+    assert carry["reason"] == HANDOFF_REASON
+    assert carry["since"] == iso(T0)
+    saved = json.loads(Path(s.ctx.ledger_path).read_text(encoding="utf-8"))
+    assert saved["window"]["carry"]["issue"] == ITEM
+
+
+def test_B214_handoff_comments_on_the_item_when_it_can_write(tmp_path):
+    """B214: with a token the HANDOFF.md body is posted to the item's own thread."""
+    s = setup_handoff(tmp_path)
+    before = len(s.gh.comments_of(ITEM))
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    new = s.gh.comments_of(ITEM)[before:]
+    assert new, "no comment was posted for the handoff"
+    bodies = "\n".join(c["body"] for c in new)
+    assert NEXT_COMMAND in bodies
+    assert HANDOFF_REASON in bodies
+    assert FAKE_SECRET not in bodies
+    assert all(c["repo"] == SELF_REPO for c in s.gh.calls_named("comment"))
+
+
+def test_B214_handoff_posts_no_comment_without_a_token(tmp_path):
+    """B214: can_write False -> no comment call, and nothing refused either."""
+    s = setup_handoff(tmp_path, can_write=False)
+    before = len(s.gh.comments_of(ITEM))
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.gh.calls_named("comment") == []
+    assert len(s.gh.comments_of(ITEM)) == before
+    assert not any(r.endswith("/comments") for r in s.gh.refused), s.gh.refused
+
+
+@pytest.mark.parametrize("can_write", [True, False], ids=["with-token", "without-token"])
+def test_B214_handoff_always_appends_an_event(tmp_path, can_write):
+    """B214: `store.append_event` happens either way - the local record never depends on a
+    token, and a decision is recorded in the run dir."""
+    s = setup_handoff(tmp_path, can_write=can_write)
+    before = len(s.store.events(ITEM))
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    events = s.store.events(ITEM)
+    assert len(events) > before, "handoff appended no event"
+    assert any(HANDOFF_REASON in e["message"] or "handoff" in e["message"].lower()
+               for e in events[before:]), events[before:]
+    assert (s.run_dir / "DECISIONS.md").read_text(encoding="utf-8").count("\n") >= 25
+
+
+def test_B214_handoff_of_an_item_that_is_already_approved_parks_it_without_a_transition(
+    tmp_path
+):
+    """B214: `approved` is where the handoff puts an item; asked again it stays there and the
+    carry is still recorded (the run loop may hand off before the stage moved the state)."""
+    s = setup_handoff(tmp_path, state="approved")
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.store.get_work_item(ITEM).state == "approved"
+    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.ctx.ledger.carry_issue() == ITEM
+
+
+def test_B214_handoff_without_a_clone_raises_and_writes_nothing(tmp_path):
+    """D3 step 1: `runs/item-N/clone` must exist; without it the handoff is a HarnessError and
+    no push, no comment and no state change happen."""
+    s = setup_handoff(tmp_path)
+    s.repo.rename(tmp_path / "clone-gone")  # rmtree cannot remove a git object store on Windows
+    with pytest.raises(HarnessError):
+        handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.gh.calls_named("push_branch") == []
+    assert s.gh.calls_named("create_pull") == []
+    assert s.store.get_work_item(ITEM).state == "implementing"

@@ -65,6 +65,11 @@ DEFAULT_ENV: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }
@@ -255,3 +260,15 @@ def fake_runner(runner_fixtures_dir: Path):
     from harness.runner.fake import FakeRunner
 
     return FakeRunner(runner_fixtures_dir)
+
+
+# --------------------------------------------------------------------------
+# Delivery 3 - two Delivery 2 expectations that RUN-DECISIONS-D3 supersedes
+# --------------------------------------------------------------------------
+#
+# Both test functions named below are frozen (an existing test function is
+# never edited), and both assert exactly what RUN-DECISIONS-D3 replaces. The
+# D3 spec-tester wrote a replacement for each, so the behaviour stays pinned;
+# only the superseded expectation is marked ``xfail(strict=True)``, so it
+# fails loudly again the day the D3 shape is reverted.
+# See .fullsend/notes/test-corrections-d3.md for the quoted design lines.

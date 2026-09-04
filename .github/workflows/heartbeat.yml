@@ -1,6 +1,8 @@
 # heartbeat.yml — weekly: prove the scheduler is alive by posting one comment to the tracking issue.
 # Spends nothing: BACKEND=fake, no model call, no secret beyond GITHUB_TOKEN. Handoff §11.1 (B144).
 # Absence of the weekly comment is the alarm.
+# RUN-DECISIONS-D3 "Workflows": the comment also reports the last observed subscription
+# utilization from state/ledger.json `window.usage`, when one has ever been observed.
 name: heartbeat
 
 on:
@@ -162,6 +164,30 @@ jobs:
             lines.push(`- calls: ${fmt(w.calls)}`);
             lines.push(`- rate_limited_until: ${fmt(w.rate_limited_until)}`);
             lines.push(`- history entries: ${Array.isArray(ledger.history) ? ledger.history.length : '?'}`);
+            lines.push('');
+
+            // RUN-DECISIONS-D3: the last rate_limit_event the runner saw, stored as window.usage.
+            // Reported, never depended on — an absent signal is a normal state and the USD path
+            // (WEEKLY_CAP_USD / RESERVE_PCT / PER_CALL_CAP_USD) governs alone (B114 kept).
+            const usage = w.usage || null;
+            const pct = (u) =>
+              (u && typeof u.utilization === 'number' ? `${Math.round(u.utilization * 1000) / 10}%` : '?');
+            lines.push('### subscription usage (last observed)');
+            if (usage) {
+              const week = usage.seven_day || {};
+              const session = usage.five_hour || {};
+              lines.push(`- weekly (seven_day): ${pct(week)} of WEEKLY_USAGE_STOP_PCT ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% — resets ${fmt(week.resets_at)}`);
+              lines.push(`- session (five_hour): ${pct(session)} of SESSION_USAGE_STOP_PCT ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% — resets ${fmt(session.resets_at)}`);
+              lines.push(`- status: ${fmt(usage.status)}`);
+              lines.push(`- observed_at: ${fmt(usage.observed_at)}`);
+            } else {
+              lines.push('- none observed yet: no `rate_limit_event` has been recorded. Nothing depends on this signal (B114); the USD caps govern alone.');
+            }
+            lines.push(`- run window: ${fmt(cfg.RUN_WINDOW_START)} → ${fmt(cfg.RUN_WINDOW_END)} UTC; carry leeway OVERRUN_PCT ${fmt(cfg.OVERRUN_PCT)}%`);
+            const carry = w.carry || null;
+            lines.push(carry
+              ? `- carried item: #${fmt(carry.issue)} since ${fmt(carry.since)} — ${fmt(carry.reason)}`
+              : '- carried item: none');
             lines.push('');
             lines.push('### last successful run');
             for (const [k, v] of Object.entries(lastSuccess)) lines.push(`- ${k}: ${v}`);

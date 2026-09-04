@@ -52,7 +52,10 @@ harness doctor            # every config key with its value; exit 3 names any mi
 
 `harness dispatch` is pure: run twice against an unchanged ledger it prints byte-identical
 plans. Its `reason` string is the fastest diagnosis in the system — `halted`, `reserve`,
-`rate limited until …`, or `budget N% remaining, k of max n slots`.
+`rate limited until …`, `weekly usage 91% >= 90%`, `session usage 72% >= 70%`,
+`carry leeway 10% reached`, `outside run window (mon 08:00-tue 20:00 UTC)`, or
+`budget N% remaining, k of max n slots` (with `; weekly 49%, session 7%` appended when the
+subscription's utilization is known). The last four are §13.
 
 ---
 
@@ -417,3 +420,129 @@ end with `[skip ci]`. `main`'s copy is the initial ledger and what local mode st
 - Rebuild it after a corruption: `harness ledger --rebuild`, then commit the result to `harness-state`
   by hand (`git worktree add ../hs origin/harness-state`, copy, commit, push).
 - Never protect `harness-state`; it is written by the Actions token.
+
+## 13. Usage-aware governance
+
+Since Delivery 3 the harness watches the subscription's **own** utilization, not only the dollars
+it has counted. This section is what to read when the queue is full, nothing is halted, nothing is
+rate limited, and `harness dispatch` still starts nothing.
+
+### 13.1 The signal
+
+`claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call:
+
+```json
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1788519600,
+ "rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false,
+ "unifiedWindows":{"five_hour":{"utilization":0.07,"resetsAt":1788519600},
+                   "seven_day":{"utilization":0.49,"resetsAt":1788897600}}}}
+```
+
+`utilization` is a fraction, 0..1, of the subscription's allowance for that window. It comes from
+the inference response headers, so the long-lived `setup-token` used in Actions mode receives it
+too. The runner keeps the last one of a call; the stage stamps `observed_at` from the clock and the
+governor stores it in `state/ledger.json` under `window.usage`:
+
+```bash
+harness ledger --json                       # window.usage, window.carry, medians, rate-limit state
+git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the copy Actions uses (§12)
+```
+
+The weekly heartbeat comment prints the same numbers under **subscription usage (last observed)**,
+so the tracking issue is the phone-readable view.
+
+**Nothing depends on the signal.** With `usage` absent — a fake backend, an older CLI, a call that
+never reached inference — every decision falls back to the USD path (`WEEKLY_CAP_USD`,
+`RESERVE_PCT`, `PER_CALL_CAP_USD`) and behaves exactly as it did in Delivery 2. That is B114, kept
+as a "must not depend" rule rather than the "no signal exists" claim it started as (DECISIONS D31).
+`WEEKLY_CAP_USD` therefore ships at `400.00`: high enough that the dollar backstop does not bind
+before the usage stop when the signal is present, and still hard when it is not.
+
+### 13.2 The two stops
+
+| Knob | Ships as | Trips when | `reason` |
+|---|---|---|---|
+| `WEEKLY_USAGE_STOP_PCT` | `90` | `seven_day.utilization * 100 >= 90` | `weekly usage 91% >= 90%` |
+| `SESSION_USAGE_STOP_PCT` | `70` | `five_hour.utilization * 100 >= 70` | `session usage 72% >= 70%` |
+
+The governor raises `BudgetExhausted(reason)` **before** the USD checks, and the dispatcher applies
+the same rule in its own order: rate limit → halted → **usage stop** → reserve (USD) → run window →
+candidates. A stop is a normal outcome, not an incident: the command exits 0, the item is handed off
+(§13.4), and the next window picks it up.
+
+What it looks like: `harness dispatch` prints an empty `start` with one of those reasons; the item
+keeps its label; no comment claims failure. Nothing to do. If you need the work anyway, the honest
+options are to wait for the reset in `window.usage.seven_day.resets_at`, or to raise the knob in a
+reviewed PR (§13.5) and accept that your own interactive Claude use that week is competing with the
+harness for the same allowance.
+
+### 13.3 The run window
+
+`RUN_WINDOW_START=mon 08:00` and `RUN_WINDOW_END=tue 20:00` are UTC, lowercase three-letter weekday,
+and may wrap past Sunday. Outside the window **no new item starts**; the plan's reason is
+`outside run window (mon 08:00-tue 20:00 UTC)`. Both keys empty means always open.
+
+The window is not the schedule. `.github/workflows/implement.yml` carries three crons —
+`17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2` — which are when GitHub wakes the job up; the
+window is what the dispatcher enforces once it is awake. **Move both together**, or the job wakes to
+find nothing eligible and burns a minute of Actions time saying so.
+
+The last cron is the wrap-up run, 23 minutes after this account's weekly reset (Tue 20:00 UTC =
+13:00 PT). GitHub cron is always UTC and never shifts, while the reset is quoted in Pacific time, so
+when Pacific leaves daylight time the reset moves to 21:00 UTC and that row fires before it rather
+than after: one skipped wrap-up per winter, no spend, and the following Monday picks the new window
+up. The comment in `implement.yml` says the same thing. Correcting it means moving that row and
+`RUN_WINDOW_END` by an hour, together.
+
+`harness run --item N` bypasses the window on purpose — that is how you drive one item by hand on a
+Thursday. It does **not** bypass the usage stops.
+
+### 13.4 The leeway, the handoff, and the continue
+
+A weekly reset in the middle of an implementation used to mean a branch abandoned halfway. Now:
+
+1. A stop (usage or rate limit) inside `implement` / `continue` / `package` / `deliver` triggers a
+   **handoff**: anything uncommitted is committed as `wip: handoff (<reason>)`, the branch is pushed
+   to the **fork** (never upstream, never forced), `runs/item-N/HANDOFF.md` is written and posted as
+   a comment, the item returns to `harness:approved`, the ledger records a **carry**
+   (`window.carry` = issue, since, reason), and the command exits **0**.
+2. `HANDOFF.md` is the operator's page: the reason, the branch, the base sha, the fork, the last gate
+   results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and the exact next
+   command — `harness revise <id> --source continue`.
+3. The carried item is the **first** thing the next run starts, **even outside the run window**, and
+   it may spend against `OVERRUN_PCT` (`10`) of the fresh week instead of waiting for
+   `WEEKLY_USAGE_STOP_PCT`. When that leeway is used up the reason is `carry leeway 10% reached` and
+   the item is handed off again — same branch, same file, no work lost.
+4. Green gates → the item goes `harness:packaged`, the carry is cleared, and the ordinary package and
+   deliver steps run. Red → `harness:blocked`, nothing pushed, as always (B136).
+
+Only one item is carried at a time. To look at it, or to resume it by hand:
+
+```bash
+harness ledger --json                # window.carry names the issue, when, and why
+cat runs/item-42/HANDOFF.md          # after a run on this machine
+harness revise 42 --source continue  # what the run loop does for you
+```
+
+To drop a carry instead of resuming it, relabel the issue `harness:blocked` and delete
+`runs/item-N/HANDOFF.md`; the next dispatch then treats it as an ordinary blocked item.
+
+### 13.5 Changing the knobs
+
+All five live in `.env` and may be overridden in `.harness/config.json`, which is CODEOWNERS-
+protected — so changing them is a reviewed PR, which is the point. `.harness/README.md` carries the
+table of ranges. After merging, confirm what the harness actually loaded:
+
+```bash
+harness doctor      # every key with its value; exit 3 names any missing or out-of-range one
+harness dispatch    # the reason string reflects the new knobs immediately, and starts nothing
+```
+
+Ranges are enforced at startup, not at spend time: `0 < WEEKLY_USAGE_STOP_PCT <= 100`,
+`0 < SESSION_USAGE_STOP_PCT <= 100`, `0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT`, and both window
+keys either empty or matching `^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):[0-5]\d$`. A typo is
+a `harness doctor` failure naming the key, never a silently different budget.
+
+Three things these knobs deliberately cannot do: make the harness merge anything, move a gate, or
+let it spend past `WEEKLY_CAP_USD` — the USD cap and the reserve still apply underneath, and a usage
+stop never removes them.

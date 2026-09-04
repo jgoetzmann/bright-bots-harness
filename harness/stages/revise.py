@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from harness import gates, redact
@@ -27,6 +28,7 @@ from harness.stages import implement as implement_mod
 from harness.stages.propose import parse_work_package
 
 __all__ = [
+    "CONTINUE",
     "FAILING_CONCLUSIONS",
     "HARNESS_AUTHOR_EMAILS",
     "TRUSTED_ASSOCIATIONS",
@@ -58,6 +60,11 @@ HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harnes
 
 #: B131: review feedback is fed to the model only from trusted handles with one of these.
 TRUSTED_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+#: B215: the fourth source. Not a revision of a delivered branch at all - it resumes an item
+#: that a usage stop handed off mid-flight (``deliver.handoff``), from ``approved`` back into
+#: ``implementing``, and hands the run loop a ``packaged`` item when the gates are green.
+CONTINUE = "continue"
 
 
 # --------------------------------------------------------------------------------------------
@@ -153,7 +160,7 @@ def revise(
     ctx: Context,
     item_id: int,
     *,
-    source: Literal["ci", "conflict", "review"],
+    source: Literal["ci", "conflict", "review", "continue"],
     notes: str = "",
     lease: Lease | None = None,
 ) -> Lease | None:
@@ -166,7 +173,17 @@ def revise(
     entry_state = str(item.state)
     nested = lease is not None
     explicit = bool(notes.strip())
-    if entry_state == "shipped":
+    resuming = source == CONTINUE
+    if resuming:
+        # B215: continue picks up a handed-off item, so its entry state is the one the handoff
+        # left behind - approved, with the branch the carried work sits on.
+        if entry_state != "approved" or not item.branch_name:
+            raise IllegalTransition(
+                f"illegal transition {entry_state} -> implementing for work item {item_id}: "
+                "revise --source continue requires an approved item with a branch, as "
+                "deliver.handoff leaves it (B215)"
+            )
+    elif entry_state == "shipped":
         pass
     elif entry_state == "needs-human":
         if not explicit:
@@ -184,7 +201,14 @@ def revise(
 
     cap = int(ctx.config.max_revise_cycles)
     cycles = _cycle_count(ctx, item_id)
-    if cycles >= cap and not explicit:
+    if resuming and cycles >= cap:
+        # A carried item is not going round a review loop; it is the same first attempt, split
+        # across two runs by a usage stop. The revise cap counts revisions, not resumptions.
+        ctx.record_decision(
+            f"continue resumes item {item_id} after {cycles} recorded revise run(s); the "
+            f"cap of {cap} counts revision cycles, not handoffs (B215)"
+        )
+    elif cycles >= cap and not explicit:
         # B137: the cap is a stop, and a human is the only thing that restarts it.
         _to_needs_human(
             ctx,
@@ -198,14 +222,17 @@ def revise(
         blockers = ctx.clones.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))
-    ctx.store.transition(
-        item_id, "revising", reason=f"revise ({source}) started, cycle {cycles + 1} of {cap}"
-    )
-    the_lease = (
-        lease
-        if lease is not None
-        else ctx.clones.acquire(item, branch=item.branch_name, from_fork=True)
-    )
+    if resuming:
+        ctx.store.transition(
+            item_id,
+            "implementing",
+            reason=f"continue: resuming the carried work on {item.branch_name}",
+        )
+    else:
+        ctx.store.transition(
+            item_id, "revising", reason=f"revise ({source}) started, cycle {cycles + 1} of {cap}"
+        )
+    the_lease = lease if lease is not None else _acquire(ctx, item, source)
     try:
         return _revise_leased(
             ctx,
@@ -221,6 +248,32 @@ def revise(
         _back_to(ctx, item_id, entry_state, "halted mid-revise")
         ctx.clones.release(the_lease, keep=False)
         raise
+
+
+def _acquire(ctx: Context, item: Any, source: str) -> Lease:
+    """The clone this cycle works in.
+
+    B215: a resumed item re-acquires its branch from the fork, unless the clone is still on
+    disk - in local mode the carried commits may exist nowhere else, and a fresh clone would
+    throw them away.
+    """
+    if source == CONTINUE:
+        clone_dir = Path(ctx.config.runs_dir) / f"item-{item.id}" / "clone"
+        if (clone_dir / ".git").exists():
+            try:
+                lease = deliver_mod.lease_from_store(ctx, item)
+            except HarnessError as exc:
+                ctx.record_decision(
+                    f"continue could not reuse the clone at {clone_dir} ({exc}); "
+                    "re-acquiring the branch from the fork"
+                )
+            else:
+                ctx.record_decision(
+                    f"continue reuses the clone already at {clone_dir} on branch "
+                    f"{lease.branch}; the carried work is not re-cloned over"
+                )
+                return lease
+    return ctx.clones.acquire(item, branch=item.branch_name, from_fork=True)
 
 
 def _revise_leased(
@@ -249,7 +302,13 @@ def _revise_leased(
 
     upstream = str(ctx.config.upstream_repo)
     fork_owner = str(ctx.config.fork_repo or "").split("/")[0]
-    pr = deliver_mod._find_open_pull(ctx, upstream, f"{fork_owner}:{lease.branch}")
+    # A resumed item has never been delivered, so there is no pull request to read and no
+    # reason to spend an API call looking for one.
+    pr = (
+        None
+        if source == CONTINUE
+        else deliver_mod._find_open_pull(ctx, upstream, f"{fork_owner}:{lease.branch}")
+    )
     conflicted: list[str] = []
     if source == "conflict":
         conflicted = deliver_mod._conflicted_files(lease)
@@ -325,6 +384,8 @@ def _revise_leased(
         _continue_rebase(ctx, item_id, lease)
     else:
         implement_mod._format_and_commit(ctx, pkg, item, lease, changed, first=False)
+    if source == CONTINUE:
+        return _gate_and_hand_over(ctx, item, lease)
     return _gate_and_ship(ctx, item, lease, entry_state=entry_state, source=source)
 
 
@@ -396,6 +457,57 @@ def _gate_and_ship(
     return lease
 
 
+def _gate_and_hand_over(ctx: Context, item: Any, lease: Lease) -> Lease | None:
+    """B215: the resumed work is re-gated exactly as a revision is.
+
+    Green hands the item to the run loop as ``packaged`` and drops the ledger's carry; the run
+    loop builds the review package and delivers it. Red blocks the item and pushes nothing,
+    the same rule as B136 - a resumed item gets no easier ride than a revised one.
+    """
+    item_id = int(item.id)
+    check_halt(ctx.config.halt_file)
+    baseline_red = _baseline_red(ctx, item_id)
+    final = list(implement_mod.GATE_RUNNER(lease.path, baseline=False))
+    implement_mod._write_gates(ctx, "final", final)
+    new_failures = [r for r in final if r.exit_code != 0 and r.name not in baseline_red]
+    if new_failures:
+        names = ", ".join(f"{r.name} (exit {r.exit_code})" for r in new_failures)
+        _remember_signature(ctx, item_id, gates.signature(new_failures))
+        implement_mod._block(
+            ctx, item_id, lease, f"gates red after continue: {names}; nothing pushed"
+        )
+        return None
+    carried = sorted({r.name for r in final if r.exit_code != 0})
+    ctx.record_decision(
+        "gate sequence has no new failures after continue"
+        + (f"; pre-existing reds carried: {', '.join(carried)}" if carried else "; fully green")
+        + "; no gate was widened, skipped or retimed"
+    )
+    ctx.store.transition(
+        item_id,
+        "packaged",
+        reason=(
+            "continue: the carried work is green again; the review package and the delivery "
+            "pull request follow in this run"
+        ),
+    )
+    _clear_carry(ctx, item_id)
+    ctx.store.append_event(item_id, "info", f"continue finished on {lease.branch}")
+    return lease
+
+
+def _clear_carry(ctx: Context, item_id: int) -> None:
+    """The item is no longer carried: the next dispatch treats it like any other (B215)."""
+    if ctx.ledger is None:
+        return
+    ctx.ledger.clear_carry()
+    ctx.record_decision(f"item {item_id} is no longer carried; the ledger's carry slot is clear")
+    try:
+        ctx.save_ledger()
+    except (HarnessError, OSError) as exc:
+        ctx.record_decision(f"could not persist the ledger after clearing the carry: {exc}")
+
+
 # --------------------------------------------------------------------------------------------
 # feedback by source
 # --------------------------------------------------------------------------------------------
@@ -414,6 +526,8 @@ def _feedback(
     shaped: list[GateResult] = []
     upstream = str(ctx.config.upstream_repo)
 
+    if source == CONTINUE:
+        chunks.append(_handoff_feedback(ctx, item))
     if source == "conflict":
         for path in conflicted:
             content = deliver_mod._read(lease.path / path)
@@ -432,6 +546,28 @@ def _feedback(
     if notes.strip():
         chunks.append("## Notes from the trusted /harness command\n\n" + notes.strip() + "\n")
     return "\n".join(chunks), shaped
+
+
+def _handoff_feedback(ctx: Context, item: Any) -> str:
+    """B215: ``HANDOFF.md`` verbatim, as the resumed run's brief.
+
+    It is quoted like every other source - the caller wraps the whole feedback in a labelled
+    data block, so nothing the previous run wrote is read as an instruction. When the note is
+    missing (a handoff that never got that far) the branch itself is the brief.
+    """
+    run_dir = Path(ctx.config.runs_dir) / f"item-{item.id}"
+    text = deliver_mod._read(run_dir / deliver_mod.HANDOFF_NAME).strip()
+    header = (
+        "## Resuming work that a usage stop handed off\n\n"
+        "The branch already carries the commits the earlier run made. Finish the work "
+        "package: make its acceptance criteria true and leave every gate green.\n"
+    )
+    if not text:
+        return (
+            header
+            + "\nNo HANDOFF.md was written, so there is no note beyond the branch itself.\n"
+        )
+    return header + "\n### HANDOFF.md\n\n" + text + "\n"
 
 
 def _ci_feedback(ctx: Context, upstream: str, pr: dict | None) -> tuple[str, list[GateResult]]:

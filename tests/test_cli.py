@@ -59,6 +59,11 @@ MAX_SUBISSUES=8
 SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
 STORE_BACKEND=sqlite
+WEEKLY_USAGE_STOP_PCT=90
+SESSION_USAGE_STOP_PCT=70
+OVERRUN_PCT=10
+RUN_WINDOW_START=
+RUN_WINDOW_END=
 HARNESS_GITHUB_TOKEN=
 ANTHROPIC_API_KEY=
 """
@@ -1418,3 +1423,344 @@ def test_B65_d2_decompose_of_an_unreachable_issue_exits_1_without_a_model_call(
     assert cli.main(["decompose", "999"]) == 1
     assert stage_run_count(tmp_path) == 0
     capsys.readouterr()
+
+
+# --------------------------------------------------------------------------
+# Delivery 3 — the run loop's handoff/continue routing (RUN-DECISIONS-D3
+# "Handoff and continue", B214/B215). Appended by the D3 spec-tester (T2);
+# additions only. Nothing above was edited except the ENV_BODY data constant,
+# which gained the five keys D3 makes required in every `.env` (the run window
+# is left empty there — "both empty = always open" — so D2 behaviour is
+# unchanged).
+# --------------------------------------------------------------------------
+
+# RUN-DECISIONS-D3 "Config": the five new keys, with their .env.example values. ENV_BODY
+# carries them already; this is the documented list the fixtures are built from.
+D3_ENV_LINES = """\
+WEEKLY_USAGE_STOP_PCT=90
+SESSION_USAGE_STOP_PCT=70
+OVERRUN_PCT=10
+RUN_WINDOW_START=mon 08:00
+RUN_WINDOW_END=tue 20:00
+"""
+D3_BRANCH = "harness/fix-816-bundle-size-check-misreports-esm"
+D3_BASE_SHA = "0123456789abcdef0123456789abcdef01234567"
+D3_STOP_REASON = "weekly usage 91% >= 90%"
+HARNESS_EMAIL = "harness@brightboost-harness"
+
+
+def d3_handoff_body(item_id: int, *, reason: str = D3_STOP_REASON) -> str:
+    """A B213-shaped HANDOFF.md: the reason, the branch, and the resume command."""
+    return (
+        f"# Handoff - item {item_id}\n\n"
+        f"Stopped because: {reason}\n\n"
+        f"- branch: `{D3_BRANCH}`\n"
+        f"- base: `{D3_BASE_SHA}`\n\n"
+        "## Next command\n\n"
+        f"```\nharness revise {item_id} --source continue\n```\n"
+    )
+
+
+def write_handoff(tmp_path: Path, item_id: int, *, reason: str = D3_STOP_REASON) -> Path:
+    path = tmp_path / "runs" / f"item-{item_id}" / "HANDOFF.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(d3_handoff_body(item_id, reason=reason), encoding="utf-8", newline="\n")
+    return path
+
+
+def write_carry_ledger(tmp_path: Path, *, carry_issue: int | None = None,
+                       reason: str = D3_STOP_REASON) -> Path:
+    """A D3 ledger: the D2 window plus `usage` and `carry` (RUN-DECISIONS-D3 "Ledger")."""
+    path = write_ledger(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["usage"] = None
+    payload["window"]["carry"] = (
+        None if carry_issue is None
+        else {"issue": carry_issue, "since": iso_now(-120), "reason": reason}
+    )
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def set_item_fields(tmp_path: Path, item_id: int, **fields: object) -> None:
+    store = open_store(tmp_path)
+    store.update_work_item(item_id, **fields)
+    store.close()
+
+
+def write_spec(tmp_path: Path, item_id: int) -> Path:
+    path = tmp_path / "runs" / f"item-{item_id}" / "spec" / f"{item_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SPEC_816, encoding="utf-8", newline="\n")
+    return path
+
+
+def _git_here(*args: str, cwd: Path) -> str:
+    argv = ["git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args]
+    proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+    assert proc.returncode == 0, f"{' '.join(argv)} failed: {proc.stderr}"
+    return proc.stdout.strip()
+
+
+def make_clone_repo(tmp_path: Path, item_id: int) -> tuple[Path, str]:
+    """A real, clean git clone at runs/item-N/clone with the work branch checked out."""
+    clone = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone.mkdir(parents=True, exist_ok=True)
+    _git_here("init", "-q", cwd=clone)
+    _git_here("symbolic-ref", "HEAD", "refs/heads/main", cwd=clone)
+    (clone / "scripts").mkdir(exist_ok=True)
+    (clone / "scripts" / "check-bundle-size.js").write_text(
+        "export const total = 0;\n", encoding="utf-8", newline="\n"
+    )
+    _git_here("add", "-A", cwd=clone)
+    _git_here("-c", f"user.email={HARNESS_EMAIL}", "-c", "user.name=harness", "commit", "-q",
+              "-m", "chore: seed", cwd=clone)
+    base = _git_here("rev-parse", "HEAD", cwd=clone)
+    _git_here("checkout", "-q", "-b", D3_BRANCH, cwd=clone)
+    return clone, base
+
+
+def lease_on(monkeypatch, clone: Path, base_sha: str) -> None:
+    """CloneManager.acquire hands back the local clone; nothing is fetched."""
+
+    def fake_acquire(self, item, *args, **kwargs):
+        return clone_mod.Lease(
+            run_id=f"item-{item.id}", path=clone, base_sha=base_sha, branch=D3_BRANCH
+        )
+
+    monkeypatch.setattr(clone_mod.CloneManager, "acquire", fake_acquire)
+
+
+def record_stages(monkeypatch, ran: list, *, implement_raises: Exception | None = None,
+                  transition_first: str | None = None):
+    """Replace every stage callable the run loop can reach and record which one ran.
+
+    Patched in all three places a build may reach them from: the registry
+    (`harness.stages.STAGES`), the defining module, and the CLI module itself.
+    """
+    import harness.stages as stages_mod
+    import harness.stages.deliver as deliver_mod
+    import harness.stages.implement as implement_mod
+    import harness.stages.package as package_mod
+    import harness.stages.revise as revise_mod
+
+    def fake_implement(ctx, item_id, *args, **kwargs):
+        ran.append(("implement", item_id, dict(kwargs)))
+        if transition_first is not None:
+            ctx.store.transition(item_id, transition_first, reason="test setup")
+        if implement_raises is not None:
+            raise implement_raises
+        return None
+
+    def fake_revise(ctx, item_id, *args, **kwargs):
+        ran.append(("revise", item_id, dict(kwargs)))
+        return None
+
+    def fake_package(ctx, item_id, *args, **kwargs):
+        ran.append(("package", item_id, dict(kwargs)))
+        return None
+
+    def fake_deliver(ctx, item_id, *args, **kwargs):
+        ran.append(("deliver", item_id, dict(kwargs)))
+        return ""
+
+    fakes = {
+        "implement": (implement_mod, "implement", fake_implement),
+        "revise": (revise_mod, "revise", fake_revise),
+        "package": (package_mod, "package", fake_package),
+        "deliver": (deliver_mod, "deliver", fake_deliver),
+    }
+    for stage, (module, attr, fake) in fakes.items():
+        monkeypatch.setattr(module, attr, fake, raising=False)
+        monkeypatch.setattr(cli, attr, fake, raising=False)
+        registry = getattr(stages_mod, "STAGES", None)
+        if isinstance(registry, dict) and stage in registry:
+            monkeypatch.setitem(registry, stage, fake)
+    return ran
+
+
+def record_handoff(monkeypatch, calls: list):
+    """Record every `handoff(ctx, item_id, reason=...)` without doing any of its work."""
+    import harness.stages.deliver as deliver_mod
+
+    def fake_handoff(ctx, item_id, *, reason, **kwargs):
+        calls.append({"item_id": item_id, "reason": reason})
+        return Path("HANDOFF.md")
+
+    monkeypatch.setattr(deliver_mod, "handoff", fake_handoff, raising=False)
+    monkeypatch.setattr(cli, "handoff", fake_handoff, raising=False)
+    return calls
+
+
+def stage_names(ran: list) -> list[str]:
+    return [entry[0] for entry in ran]
+
+
+# --------------------------------------------------------------------------
+# B215 - the run loop continues a carried item instead of implementing it again
+# --------------------------------------------------------------------------
+
+
+def test_B215_run_routes_an_approved_item_with_a_handoff_to_revise_continue(
+    tmp_path, monkeypatch, capsys
+):
+    """B215 (RUN-DECISIONS-D3 `__main__.run`): an approved item that has a branch_name and a
+    runs/item-N/HANDOFF.md is continued — `revise(source="continue")` runs and `implement`
+    is never called."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    clone, base = make_clone_repo(tmp_path, item_id)
+    set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base,
+                    spec_path=str(tmp_path / "runs" / f"item-{item_id}" / "spec"
+                                  / f"{item_id}.md"))
+    write_handoff(tmp_path, item_id)
+    write_carry_ledger(tmp_path)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    lease_on(monkeypatch, clone, base)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert "revise" in stage_names(ran), f"the carried item was not continued: {ran} {captured}"
+    assert "implement" not in stage_names(ran), f"implement must not run again: {ran}"
+    revise_calls = [entry for entry in ran if entry[0] == "revise"]
+    assert len(revise_calls) == 1
+    assert revise_calls[0][1] == item_id
+    assert revise_calls[0][2].get("source") == "continue", revise_calls[0][2]
+    assert rc == 0, captured
+
+
+def test_B215_run_routes_a_carried_item_named_only_by_the_ledger_to_revise_continue(
+    tmp_path, monkeypatch, capsys
+):
+    """B215: `ledger.carry_issue() == item.id` is the other half of the condition — with the
+    carry recorded and no HANDOFF.md on disk the item is still continued, not implemented."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    clone, base = make_clone_repo(tmp_path, item_id)
+    set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base)
+    write_carry_ledger(tmp_path, carry_issue=item_id)
+    assert not (tmp_path / "runs" / f"item-{item_id}" / "HANDOFF.md").exists()
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    lease_on(monkeypatch, clone, base)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert "revise" in stage_names(ran), f"the carried item was not continued: {ran} {captured}"
+    assert "implement" not in stage_names(ran)
+    assert [entry[2].get("source") for entry in ran if entry[0] == "revise"] == ["continue"]
+    assert rc == 0, captured
+
+
+def test_B215_run_still_implements_an_approved_item_with_no_handoff_and_no_carry(
+    tmp_path, monkeypatch, capsys
+):
+    """B215: the routing condition is exactly `branch_name and (HANDOFF.md or carry)` — a
+    fresh approved item is implemented as in Delivery 2, never continued."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    write_carry_ledger(tmp_path)
+    assert not (tmp_path / "runs" / f"item-{item_id}" / "HANDOFF.md").exists()
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    clone_dir = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert "implement" in stage_names(ran), f"a fresh item must be implemented: {ran} {captured}"
+    assert "revise" not in stage_names(ran), f"nothing to continue: {ran}"
+    assert rc == 0, captured
+
+
+# --------------------------------------------------------------------------
+# B214 - a usage stop mid-run is handed off, and the run exits 0
+# --------------------------------------------------------------------------
+
+
+def test_B214_budget_exhausted_in_implement_is_handed_off_and_the_run_exits_zero(
+    tmp_path, monkeypatch, capsys
+):
+    """B214 (RUN-DECISIONS-D3 `__main__.run`): `BudgetExhausted` out of implement is caught,
+    `handoff(ctx, id, reason=str(exc))` is called once, and the run exits 0 — a usage stop is
+    a normal outcome, like B120's rate limit."""
+    from harness.errors import BudgetExhausted
+
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    clone, base = make_clone_repo(tmp_path, item_id)
+    set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base)
+    write_carry_ledger(tmp_path)
+    ran: list = []
+    record_stages(monkeypatch, ran, implement_raises=BudgetExhausted(D3_STOP_REASON))
+    calls = record_handoff(monkeypatch, [])
+    lease_on(monkeypatch, clone, base)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"a usage stop is a normal outcome, exit 0; got {rc}: {captured}"
+    assert calls == [{"item_id": item_id, "reason": D3_STOP_REASON}], f"{calls} {captured}"
+    assert "package" not in stage_names(ran), f"a stopped item is not packaged: {ran}"
+
+
+def test_B214_budget_exhausted_hands_the_item_back_to_approved_with_a_handoff_file(
+    tmp_path, monkeypatch, capsys
+):
+    """B214 end to end: the real `handoff` runs — the item is parked in `approved`, its
+    HANDOFF.md names the resume command, and the carried issue is saved in the ledger."""
+    from harness.errors import BudgetExhausted
+
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    spec = write_spec(tmp_path, item_id)
+    clone, base = make_clone_repo(tmp_path, item_id)
+    set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base,
+                    spec_path=str(spec))
+    write_carry_ledger(tmp_path)
+    ran: list = []
+    record_stages(monkeypatch, ran, implement_raises=BudgetExhausted(D3_STOP_REASON),
+                  transition_first="implementing")
+    lease_on(monkeypatch, clone, base)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"a usage stop is a normal outcome, exit 0; got {rc}: {captured}"
+    assert item_state(tmp_path, item_id) == "approved"
+    handoff_md = tmp_path / "runs" / f"item-{item_id}" / "HANDOFF.md"
+    assert handoff_md.is_file(), f"no HANDOFF.md under runs/item-{item_id}: {captured}"
+    text = handoff_md.read_text(encoding="utf-8")
+    assert f"harness revise {item_id} --source continue" in text
+    assert D3_STOP_REASON in text
+    assert read_ledger(tmp_path)["window"]["carry"]["issue"] == item_id
+    assert not list((tmp_path / "packages").iterdir())

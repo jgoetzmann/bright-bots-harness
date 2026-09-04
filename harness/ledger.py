@@ -15,7 +15,15 @@ from harness.clock import as_utc, iso, parse_iso
 from harness.errors import HarnessError
 from harness.redact import guarded_write
 
-__all__ = ["Ledger", "load", "save", "rebuild", "HISTORY_CAP", "EPOCH"]
+__all__ = [
+    "Ledger",
+    "load",
+    "save",
+    "rebuild",
+    "HISTORY_CAP",
+    "EPOCH",
+    "USAGE_WINDOWS",
+]
 
 SCHEMA = 1
 HISTORY_CAP = 500
@@ -41,17 +49,87 @@ _TRANSITION_COMMENT = re.compile(
 )
 
 
+#: The window keys D3 adds. Both are absent until something is observed or carried, and
+#: both read as ``None`` while absent, so a Delivery 2 ledger file and a Delivery 2
+#: comparison of the window dict are unchanged by their arrival.
+OPTIONAL_WINDOW_KEYS: tuple[str, ...] = ("usage", "carry")
+
+#: The two unified windows the CLI reports (D3 "Why").
+USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
+
+
+class _Window(dict):
+    """The window mapping: ``window["usage"]`` and ``window["carry"]`` are ``None``, not a
+    ``KeyError``, before anything has been observed or carried (D3 "Ledger")."""
+
+    def __missing__(self, key: str):
+        if key in OPTIONAL_WINDOW_KEYS:
+            return None
+        raise KeyError(key)
+
+
 def _empty_window(period_start: str) -> dict:
-    return {
-        "period_start": period_start,
-        "spent_usd": 0.0,
-        "calls": 0,
-        "rate_limited_until": None,
-    }
+    return _Window(
+        {
+            "period_start": period_start,
+            "spent_usd": 0.0,
+            "calls": 0,
+            "rate_limited_until": None,
+        }
+    )
+
+
+def _fraction(value: object) -> float | None:
+    """A utilization as a 0..1 float, or ``None`` when it is not a number."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalise_usage(usage: dict, now_iso: str) -> dict:
+    """The stored shape: the two windows, whatever else came with them, then observed_at."""
+    stored: dict = {}
+    for name in USAGE_WINDOWS:
+        window = usage.get(name)
+        if not isinstance(window, dict):
+            continue
+        stored[name] = {
+            "utilization": _fraction(window.get("utilization")),
+            "resets_at": window.get("resets_at", window.get("resetsAt")),
+        }
+    for key, value in usage.items():
+        if key in USAGE_WINDOWS or key == "observed_at":
+            continue
+        stored[key] = value
+    stored["observed_at"] = str(usage.get("observed_at") or now_iso or "")
+    return stored
 
 
 def _empty_cursors() -> dict:
     return {"notifications_last_seen": None, "seen_comment_ids": [], "keyword_denied": {}}
+
+
+def _render_usage(usage: dict) -> dict:
+    """The on-disk usage object: the two windows, anything else observed, then observed_at."""
+    out: dict = {}
+    for name in USAGE_WINDOWS:
+        window = usage.get(name)
+        if not isinstance(window, dict):
+            continue
+        out[name] = {
+            "utilization": _fraction(window.get("utilization")),
+            "resets_at": window.get("resets_at"),
+        }
+    for key, value in usage.items():
+        if key in USAGE_WINDOWS or key == "observed_at":
+            continue
+        out[key] = value
+    if usage.get("observed_at") is not None:
+        out["observed_at"] = str(usage.get("observed_at"))
+    return out
 
 
 def _usd(value: object) -> float:
@@ -155,6 +233,94 @@ class Ledger:
         self.window["calls"] = 0
         return True
 
+    # -- usage (D3, B204/B205) -------------------------------------------------------------
+
+    def observe_usage(self, usage: dict | None, now_iso: str) -> None:
+        """Store the subscription signal, rolling the window when the week has reset (B204).
+
+        ``None`` is not an observation and never erases the last one: B114 survives as "no
+        decision may DEPEND on the signal", so a fake-backed call simply leaves what the last
+        real call saw. When the newly reported ``seven_day.resets_at`` differs from the one
+        already stored and ``now`` is at or past that stored reset, the subscription week has
+        turned over: the window restarts at the reset instant and ``carry`` survives it (B205).
+        """
+        if not isinstance(usage, dict) or not usage:
+            return
+        previous = self._observed_reset()
+        stored = _normalise_usage(usage, now_iso)
+        self.window["usage"] = stored
+        current = (stored.get("seven_day") or {}).get("resets_at")
+        if not previous or not current or str(current) == str(previous):
+            return
+        try:
+            now = parse_iso(str(now_iso))
+            boundary = parse_iso(str(previous))
+        except ValueError:
+            return
+        if now < boundary:
+            return
+        self.window["period_start"] = str(previous)
+        self.window["spent_usd"] = 0.0
+        self.window["calls"] = 0
+
+    def _observed_reset(self) -> str | None:
+        """The ``seven_day.resets_at`` of the observation currently stored, if any."""
+        usage = self.window.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        window = usage.get("seven_day")
+        if not isinstance(window, dict):
+            return None
+        value = window.get("resets_at")
+        return str(value) if value else None
+
+    def _utilization(self, name: str) -> float | None:
+        usage = self.window.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        observed_at = usage.get("observed_at")
+        start = self.window.get("period_start")
+        if observed_at and start:
+            try:
+                if parse_iso(str(observed_at)) < parse_iso(str(start)):
+                    return None
+            except ValueError:
+                pass
+        window = usage.get(name)
+        if not isinstance(window, dict):
+            return None
+        return _fraction(window.get("utilization"))
+
+    def weekly_utilization(self) -> float | None:
+        """The seven-day utilization as a fraction; ``None`` when it predates this window."""
+        return self._utilization("seven_day")
+
+    def session_utilization(self) -> float | None:
+        """The five-hour utilization as a fraction; ``None`` when it predates this window."""
+        return self._utilization("five_hour")
+
+    # -- carry (D3, B214/B215) -------------------------------------------------------------
+
+    def set_carry(self, issue: int, since: str, reason: str) -> None:
+        """Mark one item as carried across the window: it resumes before anything else."""
+        self.window["carry"] = {
+            "issue": int(issue),
+            "since": str(since),
+            "reason": str(reason),
+        }
+
+    def clear_carry(self) -> None:
+        self.window["carry"] = None
+
+    def carry_issue(self) -> int | None:
+        carry = self.window.get("carry")
+        if not isinstance(carry, dict):
+            return None
+        try:
+            return int(carry.get("issue"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
     # -- cursors ---------------------------------------------------------------------------
 
     def seen(self, comment_id: str) -> bool:
@@ -179,6 +345,18 @@ class Ledger:
             "calls": int(self.window.get("calls", 0)),
             "rate_limited_until": self.window.get("rate_limited_until"),
         }
+        # D3: usage and carry are written once they exist. A ledger that never saw the
+        # signal is byte-identical to the Delivery 2 file it was before.
+        usage = self.window.get("usage")
+        if isinstance(usage, dict) and usage:
+            window["usage"] = _render_usage(usage)
+        carry = self.window.get("carry")
+        if isinstance(carry, dict) and carry:
+            window["carry"] = {
+                "issue": int(carry.get("issue", 0)),
+                "since": str(carry.get("since", "")),
+                "reason": str(carry.get("reason", "")),
+            }
         observations: dict = {}
         for stage, obs in self.observations.items():
             rendered: dict = {
@@ -221,6 +399,8 @@ class Ledger:
         schema = raw.get("schema") if isinstance(raw, dict) else None
         if schema != SCHEMA:
             raise HarnessError(f"ledger schema must be {SCHEMA}; got {schema!r}")
+        # D3: a file written before the usage keys existed simply has neither; both then
+        # read as None through the window's own default.
         window = _empty_window(EPOCH)
         window.update(dict(raw.get("window") or {}))
         cursors = _empty_cursors()

@@ -19,7 +19,7 @@ from harness import __version__, keywords, verify_pin
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
-from harness.config import load_config
+from harness.config import in_run_window, load_config
 from harness.context import build_context
 from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
 from harness.errors import (
@@ -36,8 +36,10 @@ from harness.errors import (
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness.packager import archive as archive_package
+from harness.packager import build as build_package
 from harness.redact import allowed_roots, guarded_write, set_write_roots
 from harness.stages import STAGES
+from harness.stages import deliver as deliver_stage
 from harness.store import LABELS, STATES
 from harness.trust import load_trust
 
@@ -163,7 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     revise = sub.add_parser("revise", help="one bounded revision cycle")
     revise.add_argument("item_id", type=int, metavar="item-id")
-    revise.add_argument("--source", required=True, choices=("ci", "conflict", "review"))
+    revise.add_argument(
+        "--source", required=True, choices=("ci", "conflict", "review", "continue")
+    )
     revise.add_argument("--notes", default="", metavar="TEXT")
 
     decompose = sub.add_parser("decompose", help="split one issue into sub-issues")
@@ -276,6 +280,67 @@ def _past_until(until: dtime | None, ctx) -> bool:
         return False
     local_now = ctx.clock.now().astimezone()
     return local_now.time() >= until
+
+
+def _carry_issue(ledger) -> int | None:
+    """The item the ledger is carrying across a usage stop, if any (D3). ``None`` when the
+    ledger has never carried anything, or predates the carry slot."""
+    getter = getattr(ledger, "carry_issue", None)
+    if getter is None:
+        return None
+    value = getter()
+    return int(value) if value is not None else None
+
+
+def _window_text(config) -> str:
+    """The run window as the dispatcher names it in a reason: ``mon 08:00-tue 20:00 UTC``."""
+    start = str(getattr(config, "run_window_start", "") or "")
+    end = str(getattr(config, "run_window_end", "") or "")
+    return f"{start}-{end} UTC" if start and end else "always open"
+
+
+def _is_carried(config, item, carry: int | None) -> bool:
+    """B215 routing: an item a handoff parked resumes where it stopped instead of starting
+    over. Either the ledger still carries it, or its run directory holds the handoff note."""
+    if not getattr(item, "branch_name", ""):
+        return False
+    if carry is not None and int(carry) == int(item.id):
+        return True
+    return (Path(config.runs_dir) / f"item-{item.id}" / deliver_stage.HANDOFF_NAME).exists()
+
+
+def _package(ctx, item_id: int, lease: Lease) -> Path:
+    """The review package for one item.
+
+    A resumed item is already ``packaged`` when ``continue`` hands it back (B215), and
+    ``packaged -> packaged`` is not a legal transition, so the artifact is built directly.
+    Every other item goes through the package stage unchanged.
+    """
+    item = ctx.store.get_work_item(item_id)
+    if item is not None and item.state == "packaged":
+        path = build_package(ctx, item_id, lease)
+        ctx.store.append_event(item_id, "info", f"packaged into {path}")
+        ctx.record_decision(
+            f"built the review package for the resumed item {item_id} at {path}; the item was "
+            "already packaged by continue"
+        )
+        return path
+    return STAGES["package"](ctx, item_id, lease)
+
+
+def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
+    """B212-B214: park the item, say so, and let the run end cleanly (D3)."""
+    reason = str(exc) or exc.__class__.__name__
+    record = {"item": int(item_id), "reason": reason, "handoff": None}
+    try:
+        path = deliver_stage.handoff(ctx, item_id, reason=reason)
+    except HarnessError as inner:
+        LOG.warning("item %s could not be handed off: %s", item_id, inner)
+        print(f"{reason}; item {item_id} could not be handed off: {inner}")
+        return record
+    record["handoff"] = str(path)
+    print(f"{reason}; item {item_id} handed off, see {path}")
+    return record
 
 
 def _lease_for(ctx, item) -> Lease:
@@ -781,6 +846,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if reset_ids:
         LOG.info("run: reset %d stale running item(s): %s", len(reset_ids), reset_ids)
 
+    carry = _carry_issue(listing_ctx.ledger)
     if args.item is not None:
         item = listing_ctx.store.get_work_item(args.item)
         if item is None:
@@ -790,6 +856,29 @@ def cmd_run(args: argparse.Namespace) -> int:
         item_ids = [args.item]
     else:
         item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
+        # D3 (B209/B210): outside the run window only the carried item may start. `--item` is
+        # a human at the keyboard, so it bypasses the window - and only the window: the usage
+        # stops are the governor's, and every stage still passes through them.
+        if not in_run_window(config, listing_ctx.clock.now()):
+            window = _window_text(config)
+            item_ids = [i for i in item_ids if carry is not None and int(i) == int(carry)]
+            if not item_ids:
+                _emit(
+                    {
+                        "ran": [],
+                        "packages": [],
+                        "delivered": [],
+                        "resumed": [],
+                        "reset": reset_ids,
+                        "stopped_at_deadline": False,
+                        "rate_limited_until": None,
+                        "handed_off": None,
+                    },
+                    f"outside run window ({window}); nothing started",
+                    args,
+                )
+                return EXIT_OK
+            LOG.info("run: outside the run window (%s); only carried item %s starts", window, carry)
 
     if not item_ids:
         _emit(
@@ -797,9 +886,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "ran": [],
                 "packages": [],
                 "delivered": [],
+                "resumed": [],
                 "reset": reset_ids,
                 "stopped_at_deadline": False,
                 "rate_limited_until": None,
+                "handed_off": None,
             },
             "nothing approved to run",
             args,
@@ -809,8 +900,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     ran: list[int] = []
     packages: list[str] = []
     delivered: list[str] = []
+    resumed_ids: list[int] = []
     stopped_at_deadline = False
     rate_limited_until: str | None = None
+    handed_off: dict | None = None
     ctx = None
 
     try:
@@ -819,43 +912,58 @@ def cmd_run(args: argparse.Namespace) -> int:
             if args.session_pct is not None:
                 ctx.governor.begin_session(args.session_pct)
 
-            # implement
-            check_halt(config.halt_file)
-            if _past_until(until, ctx):
-                stopped_at_deadline = True
-                break
-            LOG.debug("run: implement item %s", item_id)
-            lease = STAGES["implement"](ctx, item_id)
-
-            # package
-            check_halt(config.halt_file)
-            if _past_until(until, ctx):
-                stopped_at_deadline = True
-                ran.append(item_id)
-                break
-            LOG.debug("run: package item %s", item_id)
-            package_dir = STAGES["package"](ctx, item_id, lease)
-
-            ran.append(item_id)
-            packages.append(str(package_dir))
-
-            # deliver (§14): only when a write credential exists; the branch is left for
-            # the host otherwise.
-            if ctx.gh.can_write:
+            try:
+                # implement, or continue where a handoff stopped (B215)
                 check_halt(config.halt_file)
                 if _past_until(until, ctx):
                     stopped_at_deadline = True
                     break
-                LOG.debug("run: deliver item %s", item_id)
-                pr_url = STAGES["deliver"](ctx, item_id)
-                if pr_url:
-                    delivered.append(pr_url)
+                resumed = _is_carried(config, _require_item(ctx, item_id), carry)
+                if resumed:
+                    LOG.debug("run: continue item %s", item_id)
+                    lease = STAGES["revise"](ctx, item_id, source="continue")
+                    if lease is None:
+                        # The stage parked or blocked the item and said why on the issue.
+                        LOG.info("run: item %s did not resume; moving on", item_id)
+                        _save_ledger(ctx)
+                        continue
+                    resumed_ids.append(item_id)
+                else:
+                    LOG.debug("run: implement item %s", item_id)
+                    lease = STAGES["implement"](ctx, item_id)
+
+                # package
+                check_halt(config.halt_file)
+                if _past_until(until, ctx):
+                    stopped_at_deadline = True
+                    ran.append(item_id)
+                    break
+                LOG.debug("run: package item %s", item_id)
+                package_dir = _package(ctx, item_id, lease)
+
+                ran.append(item_id)
+                packages.append(str(package_dir))
+
+                # deliver (§14): only when a write credential exists; the branch is left for
+                # the host otherwise.
+                if ctx.gh.can_write:
+                    check_halt(config.halt_file)
+                    if _past_until(until, ctx):
+                        stopped_at_deadline = True
+                        break
+                    LOG.debug("run: deliver item %s", item_id)
+                    pr_url = STAGES["deliver"](ctx, item_id)
+                    if pr_url:
+                        delivered.append(pr_url)
+            except (BudgetExhausted, RateLimited) as exc:
+                # D3: a usage stop, a budget stop and a rate limit are all normal outcomes,
+                # not failures (B120). The item is handed off with its work committed and
+                # carried in the ledger, and the run ends at 0 without starting anything else.
+                if isinstance(exc, RateLimited):
+                    rate_limited_until = exc.reset_at or "unknown"
+                handed_off = _hand_off(ctx, item_id, exc)
+                break
             _save_ledger(ctx)
-    except RateLimited as exc:
-        # B120: a rate limit is a normal condition. The stage already returned the item to
-        # its prior state and wrote rate_limited_until; report and succeed.
-        rate_limited_until = exc.reset_at or "unknown"
-        print(f"rate limited until {rate_limited_until}; no further stage started")
     finally:
         if ctx is not None:
             _save_ledger(ctx)
@@ -864,15 +972,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         "ran": ran,
         "packages": packages,
         "delivered": delivered,
+        "resumed": resumed_ids,
         "reset": reset_ids,
         "stopped_at_deadline": stopped_at_deadline,
         "rate_limited_until": rate_limited_until,
+        "handed_off": handed_off,
     }
     lines = [f"ran {len(ran)} item(s)"]
     lines.extend(f"  {p}" for p in packages)
     lines.extend(f"  delivered {url}" for url in delivered)
+    lines.extend(f"  resumed item {i} from a handoff" for i in resumed_ids)
     if stopped_at_deadline:
         lines.append(f"stopped: --until {args.until} reached; no new stage started")
+    if handed_off is not None:
+        lines.append(
+            f"handed off item {handed_off['item']}: {handed_off['reason']}; "
+            "nothing further started"
+        )
     _emit(payload, "\n".join(lines), args)
     return EXIT_OK
 

@@ -9,7 +9,7 @@ from datetime import timedelta
 
 from harness.clock import Clock, iso
 from harness.config import Config
-from harness.dispatcher import estimate_usd
+from harness.dispatcher import estimate_usd, usage_stop
 from harness.errors import BudgetExhausted, ConfigError
 from harness.ledger import Ledger
 from harness.store import Store
@@ -146,6 +146,27 @@ class Governor:
             return needed <= self._spend_ceiling_usd()
         return self.estimate(stage) <= self.spendable_pct()
 
+    # -- usage stops (D3, B206-B208) --------------------------------------------------------
+
+    def usage_stop_reason(self, *, carry: bool = False) -> str | None:
+        """Why the subscription signal says to stop, or ``None`` (B206).
+
+        ``None`` without a ledger and ``None`` while nothing has been observed (B207): the USD
+        path then governs exactly as in Delivery 2. ``carry=True`` is the item carried across a
+        weekly reset, which runs on ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
+        The rule itself lives in :func:`harness.dispatcher.usage_stop` so that admission and
+        the plan cannot drift apart.
+        """
+        if self.ledger is None:
+            return None
+        return usage_stop(self.ledger, self.config, carry=carry)
+
+    def _is_carry(self, work_item_id: int) -> bool:
+        if self.ledger is None:
+            return False
+        carried = self.ledger.carry_issue()
+        return carried is not None and int(carried) == int(work_item_id)
+
     # -- admission -------------------------------------------------------------------------
 
     def _max_turns(self, stage: str) -> int:
@@ -159,6 +180,10 @@ class Governor:
 
     def authorize(self, work_item_id: int, stage: str) -> Authorization:
         if self.ledger is not None:
+            # B208: an observed usage stop refuses the call before any USD arithmetic.
+            stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
+            if stop is not None:
+                raise BudgetExhausted(stop)
             now_iso = iso(self.clock.now())
             if self.ledger.rate_limited(now_iso):
                 until = self.ledger.window.get("rate_limited_until")
@@ -192,14 +217,23 @@ class Governor:
         return auth
 
     def record(
-        self, auth: Authorization, *, allowance_pct: float, cost_usd: float | None
+        self,
+        auth: Authorization,
+        *,
+        allowance_pct: float,
+        cost_usd: float | None,
+        usage: dict | None = None,
     ) -> None:
+        """Book the call. ``usage`` is the D3 subscription signal the stage observed, if any;
+        it reaches the ledger before the spend so a weekly reset rolls the window first
+        (B204/B205). ``None`` records nothing and erases nothing (B114)."""
         amount = 0.0 if allowance_pct is None else float(allowance_pct)
         start, _end = self._ensure_period()
         self.store.consume_budget(BUDGET_UNIT, start, amount)
         self.session_consumed += amount
         if self.ledger is not None:
             ledger = self._ensure_window()
+            ledger.observe_usage(usage, iso(self.clock.now()))
             ledger.record(
                 ts=iso(self.clock.now()),
                 stage=auth.stage,

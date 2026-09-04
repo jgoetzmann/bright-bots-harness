@@ -12,7 +12,7 @@ a phone. The model never merges anything.
 | | **Actions mode — the product** | **Local mode — proof of concept, debugger** |
 |---|---|---|
 | Queue | GitHub issues in this repository, one `harness:*` label each | `harness.db` (SQLite) on your disk |
-| Scheduler | `.github/workflows/`: discover weekly, implement every 6 h, feedback every 3 h | you, at a terminal — or the `bb` container's loop |
+| Scheduler | `.github/workflows/`: discover weekly, implement three times inside the subscription's weekly window (Mon 08:00 – Tue 20:00 UTC), feedback every 3 h | you, at a terminal — or the `bb` container's loop |
 | Credentials | `HARNESS_GITHUB_TOKEN` (machine account, `public_repo` only) and `CLAUDE_CODE_OAUTH_TOKEN`, as repo secrets | the Claude token only; the GitHub token is filtered out of the container |
 | Publishes | pushes to a fork it owns, opens PRs upstream, comments here | nothing; the package stays on disk |
 | `.env` | `PERMISSION_TIER=2`, `STORE_BACKEND=github` | `PERMISSION_TIER=0`, `STORE_BACKEND=sqlite` — the defaults |
@@ -32,8 +32,10 @@ five commands below work with no token, no network, and no spend.
    The code to merge, approve, or dismiss a review does not exist (I-12).
 
 Everything between the gates is bounded: a per-call cap (`PER_CALL_CAP_USD`), a weekly cap
-(`WEEKLY_CAP_USD`) with a reserve, a revise cap (`MAX_REVISE_CYCLES`), a pinned gate
-sequence, and a trust list for anyone who wants to steer it. See [docs/SAFETY.md](docs/SAFETY.md).
+(`WEEKLY_CAP_USD`) with a reserve, two subscription-utilization stops
+(`WEEKLY_USAGE_STOP_PCT`, `SESSION_USAGE_STOP_PCT`), a weekly run window, a revise cap
+(`MAX_REVISE_CYCLES`), a pinned gate sequence, and a trust list for anyone who wants to
+steer it. See [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Requirements
 
@@ -105,7 +107,7 @@ Then `harness archive 1 [--with-transcript]` promotes it into `packages/`.
 ```bash
 harness dispatch                  # JSON plan of what may start now; starts nothing
 harness deliver 1                 # push the branch to the fork, open the upstream PR
-harness revise 1 --source ci      # one bounded revision cycle: ci | conflict | review
+harness revise 1 --source ci      # one bounded revision cycle: ci | conflict | review | continue
 harness decompose 42              # split issue 42 into sub-issues, here only
 harness sweep                     # poll notifications, parse trusted keywords, enqueue
 harness ledger [--json] [--rebuild]   # spend, medians, window, rate-limit state
@@ -125,12 +127,34 @@ Comments on the product repository are polled, not pushed, so they take up to
 
 ## Budget
 
-Every stage asks the governor before it spends. Delivery 2 backs the governor with
+Every stage asks the governor before it spends. The governor is backed by
 `state/ledger.json`: accumulated `total_cost_usd` per window against `WEEKLY_CAP_USD`,
 `RESERVE_PCT` held back, a median per stage once three observations exist, and
 `rate_limited_until` when the CLI reports a usage limit — which returns the item to its
-previous state and exits 0, not an incident. No module claims to know the remaining
-subscription allowance, because nothing exposes it (B114).
+previous state and exits 0, not an incident.
+
+Delivery 3 adds the subscription's own numbers. Every `claude` call under
+`--output-format stream-json` reports a `rate_limit_event` carrying `five_hour` and
+`seven_day` utilization; the runner keeps the last one, the ledger stores it as
+`window.usage`, and the weekly heartbeat prints it. Four things read it:
+
+| Knob | Ships as | Effect |
+|---|---|---|
+| `WEEKLY_USAGE_STOP_PCT` | `90` | nothing new starts once seven-day utilization reaches it |
+| `SESSION_USAGE_STOP_PCT` | `70` | the same for the rolling five-hour window |
+| `RUN_WINDOW_START` / `RUN_WINDOW_END` | `mon 08:00` – `tue 20:00` UTC | outside it no new item starts |
+| `OVERRUN_PCT` | `10` | leeway for one **carried** item after a weekly reset |
+
+A stop is a normal outcome, never an incident: the half-finished item is handed off — branch
+committed and pushed to the fork, `runs/item-N/HANDOFF.md` written and posted, item back to
+`harness:approved`, exit 0 — and the next window resumes it first with
+`harness revise <id> --source continue`, even outside the run window.
+
+The USD caps stay underneath and stay hard, because **no decision depends on the signal
+being present** (B114): with no `usage` observed, the dollar path governs exactly as it did
+in Delivery 2. `WEEKLY_CAP_USD` ships at `400.00` so the dollar backstop cannot bind before
+the usage stop when the signal is there. The whole procedure is
+[docs/OPERATIONS.md](docs/OPERATIONS.md) §13.
 
 ## The kill switch
 
@@ -180,4 +204,5 @@ The full list, each with a verify-it-yourself command, is in [docs/SAFETY.md](do
 No merge, no review approval, no auto-merge on green. No push to the product repository —
 only to the fork. No issue on the product repository. No edit to `.github/**` anywhere. No
 second fork, no stacked branches. No web UI; GitHub is the UI. No concurrency above one in
-local mode. No measurement of remaining subscription allowance. No self-hosted runners.
+local mode. No self-hosted runners. It reads the subscription's reported utilization,
+but nothing it does depends on that number being there.

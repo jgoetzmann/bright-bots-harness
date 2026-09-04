@@ -15,7 +15,11 @@ DEFAULT_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "runner"
 
 
 class FakeRunner:
-    """Returns the fixture for ``request.stage``; ``"rate_limited": true`` replays exhaustion."""
+    """Returns the fixture for ``request.stage``.
+
+    ``"rate_limited": true`` replays exhaustion; a ``"usage"`` key replays the subscription
+    signal (B203) in the same shape the CLI backend produces, ``observed_at`` optional.
+    """
 
     name = "fake"
 
@@ -40,6 +44,7 @@ class FakeRunner:
 
         rate_limited = bool(data.get("rate_limited", False))
         reset_at = data.get("reset_at")
+        usage = data.get("usage")
 
         return RunResult(
             ok=False if rate_limited else bool(data.get("ok", False)),
@@ -53,6 +58,7 @@ class FakeRunner:
             transcript=tuple(data.get("transcript") or ()),
             error=data.get("error"),
             reset_at=str(reset_at) if reset_at is not None else None,
+            usage=dict(usage) if isinstance(usage, dict) else None,
         )
 
 

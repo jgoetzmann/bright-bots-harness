@@ -538,6 +538,11 @@ D2_GOV_ENV: dict[str, str] = {
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
     "RESERVE_PCT": "10",
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 # RUN-DECISIONS-D2 §5 — the static USD estimates, and their share of a 25.00 cap.
 STATIC_USD = {
@@ -921,4 +926,390 @@ def test_s11_without_a_ledger_a_weekly_cap_in_usd_does_not_change_admission(
     governor = Governor(store, config, frozen_clock)
 
     assert governor.can_fund("implement") is True
+    assert isinstance(governor.authorize(item_id, "implement"), Authorization)
+
+
+# --------------------------------------------------------------------------
+# Delivery 3 — RUN-DECISIONS-D3 "Governor" (B206, B207, B208). Appended by the D3
+# spec-tester (T1); additions only.
+#
+# The .env.example thresholds are weekly 90 %, session 70 %, carry leeway 10 %. The clock is
+# still frozen at 2026-09-01T12:00:00Z, inside the window starting 2026-08-31T00:00:00Z, so an
+# observation stamped at that instant is fresh.
+# --------------------------------------------------------------------------
+
+# RUN-DECISIONS-D3 "Config" — the five new keys with their .env.example values (inline).
+D3_GOV_ENV: dict[str, str] = {
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "mon 08:00",
+    "RUN_WINDOW_END": "tue 20:00",
+}
+D3_SEVEN_DAY_RESET = "2026-09-08T20:00:00Z"
+D3_FIVE_HOUR_RESET = "2026-09-04T11:00:00Z"
+FROZEN_NOW_ISO = "2026-09-01T12:00:00Z"
+
+
+def d3_usage(*, weekly: float = 0.49, session: float = 0.07) -> dict:
+    """The RUN-DECISIONS-D3 usage shape; utilization is a fraction 0..1."""
+    return {
+        "five_hour": {"utilization": session, "resets_at": D3_FIVE_HOUR_RESET},
+        "seven_day": {"utilization": weekly, "resets_at": D3_SEVEN_DAY_RESET},
+        "status": "allowed",
+        "observed_at": FROZEN_NOW_ISO,
+    }
+
+
+@pytest.fixture
+def make_d3_config(tmp_path, write_env):
+    """Build a Config carrying every D1, D2 and D3 key, each in its own directory."""
+    counter = itertools.count()
+
+    def _make(**overrides):
+        directory = tmp_path / f"d3cfg{next(counter)}"
+        values = {**D2_GOV_ENV, **D3_GOV_ENV, **overrides}
+        return load_config(env_path=write_env(directory / ".env", **values), environ={})
+
+    return _make
+
+
+@pytest.fixture
+def d3_config(make_d3_config):
+    """The .env.example thresholds: weekly 90 %, session 70 %, leeway 10 %."""
+    return make_d3_config()
+
+
+@pytest.fixture
+def d3_ledger():
+    """An empty Ledger whose window is the frozen clock's period."""
+    from harness.ledger import Ledger
+
+    return Ledger.empty(PERIOD_START)
+
+
+@pytest.fixture
+def usage_governor(store, d3_config, frozen_clock, d3_ledger):
+    return Governor(store, d3_config, frozen_clock, ledger=d3_ledger)
+
+
+def observe(ledger, **kwargs) -> None:
+    ledger.observe_usage(d3_usage(**kwargs), FROZEN_NOW_ISO)
+
+
+# --------------------------------------------------------------------------
+# B206 - the stop reasons, word for word, with the percentages as integers
+# --------------------------------------------------------------------------
+
+
+def test_b206_weekly_usage_at_or_past_the_stop_gives_the_exact_reason(usage_governor, d3_ledger):
+    """B206: weekly >= WEEKLY_USAGE_STOP_PCT/100 → "weekly usage 91% >= 90%" — both
+    percentages rounded to integers."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+
+    assert usage_governor.usage_stop_reason() == "weekly usage 91% >= 90%"
+
+
+def test_b206_session_usage_at_or_past_the_stop_gives_the_exact_reason(usage_governor, d3_ledger):
+    """B206: session >= SESSION_USAGE_STOP_PCT/100 → "session usage 72% >= 70%"."""
+    observe(d3_ledger, weekly=0.10, session=0.72)
+
+    assert usage_governor.usage_stop_reason() == "session usage 72% >= 70%"
+
+
+def test_b206_usage_under_both_thresholds_is_no_stop(usage_governor, d3_ledger):
+    """B206: the ordinary case — 49 % weekly and 7 % session stop nothing."""
+    observe(d3_ledger, weekly=0.49, session=0.07)
+
+    assert usage_governor.usage_stop_reason() is None
+    assert usage_governor.usage_stop_reason(carry=False) is None
+
+
+def test_b206_the_weekly_threshold_is_inclusive(usage_governor, d3_ledger):
+    """B206: the comparison is >=, so exactly 90 % stops."""
+    observe(d3_ledger, weekly=0.90, session=0.10)
+
+    assert usage_governor.usage_stop_reason() == "weekly usage 90% >= 90%"
+
+
+def test_b206_the_session_threshold_is_inclusive(usage_governor, d3_ledger):
+    """B206: exactly 70 % session stops too."""
+    observe(d3_ledger, weekly=0.10, session=0.70)
+
+    assert usage_governor.usage_stop_reason() == "session usage 70% >= 70%"
+
+
+def test_b206_one_point_below_the_weekly_threshold_does_not_stop(usage_governor, d3_ledger):
+    """B206: 89 % is under 90 % — the run continues."""
+    observe(d3_ledger, weekly=0.89, session=0.10)
+
+    assert usage_governor.usage_stop_reason() is None
+
+
+def test_b206_the_weekly_rule_is_reported_when_both_thresholds_are_past(
+    usage_governor, d3_ledger
+):
+    """B206: RUN-DECISIONS-D3 lists the weekly rule first — with both past, the weekly one is
+    the reason the operator sees."""
+    observe(d3_ledger, weekly=0.95, session=0.85)
+
+    assert usage_governor.usage_stop_reason() == "weekly usage 95% >= 90%"
+
+
+def test_b206_the_configured_thresholds_appear_in_the_reason(make_d3_config, store,
+                                                             frozen_clock, d3_ledger):
+    """B206: the percentages come from the config, not from a constant — a house with an 85 %
+    weekly stop and a 60 % session stop says so."""
+    config = make_d3_config(WEEKLY_USAGE_STOP_PCT="85", SESSION_USAGE_STOP_PCT="60")
+    governor = Governor(store, config, frozen_clock, ledger=d3_ledger)
+
+    observe(d3_ledger, weekly=0.86, session=0.10)
+    assert governor.usage_stop_reason() == "weekly usage 86% >= 85%"
+
+    observe(d3_ledger, weekly=0.10, session=0.61)
+    assert governor.usage_stop_reason() == "session usage 61% >= 60%"
+
+
+def test_b206_the_percentages_are_rounded_to_integers(usage_governor, d3_ledger):
+    """B206: a utilization of 0.9149 reads as 91 %, not 91.49 % — the reason is for a human."""
+    observe(d3_ledger, weekly=0.9149, session=0.1234)
+
+    assert usage_governor.usage_stop_reason() == "weekly usage 91% >= 90%"
+
+
+def test_b206_carry_uses_the_overrun_leeway_instead_of_the_weekly_stop(
+    usage_governor, d3_ledger
+):
+    """B206: with carry=True the weekly rule uses OVERRUN_PCT — at 12 % weekly the carried item
+    is out of leeway while an ordinary item is nowhere near the 90 % stop."""
+    observe(d3_ledger, weekly=0.12, session=0.10)
+
+    assert usage_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
+    assert usage_governor.usage_stop_reason(carry=False) is None
+
+
+def test_b206_carry_under_the_leeway_may_continue(usage_governor, d3_ledger):
+    """B206: just after the weekly reset the carried item still has leeway — 5 % is under 10 %."""
+    observe(d3_ledger, weekly=0.05, session=0.05)
+
+    assert usage_governor.usage_stop_reason(carry=True) is None
+
+
+def test_b206_the_carry_leeway_boundary_is_inclusive(usage_governor, d3_ledger):
+    """B206: "until weekly usage reaches this" — at exactly 10 % the leeway is spent."""
+    observe(d3_ledger, weekly=0.10, session=0.05)
+
+    assert usage_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
+
+
+def test_b206_the_carry_leeway_reason_names_the_configured_overrun(make_d3_config, store,
+                                                                   frozen_clock, d3_ledger):
+    """B206: the leeway percentage in the reason is OVERRUN_PCT, rounded to an integer."""
+    config = make_d3_config(OVERRUN_PCT="25")
+    governor = Governor(store, config, frozen_clock, ledger=d3_ledger)
+    observe(d3_ledger, weekly=0.30, session=0.05)
+
+    assert governor.usage_stop_reason(carry=True) == "carry leeway 25% reached"
+
+
+def test_b206_a_carried_item_still_obeys_the_session_stop(usage_governor, d3_ledger):
+    """B206: only the weekly rule changes for a carried item — the five-hour stop still applies,
+    so a carry cannot burn through the session window."""
+    observe(d3_ledger, weekly=0.05, session=0.72)
+
+    assert usage_governor.usage_stop_reason(carry=True) == "session usage 72% >= 70%"
+
+
+# --------------------------------------------------------------------------
+# B207 - without a ledger, or without the signal, there is no usage stop
+# --------------------------------------------------------------------------
+
+
+def test_b207_no_ledger_means_no_usage_stop(store, d3_config, frozen_clock):
+    """B207: without a ledger the governor is the Delivery 1 governor — usage_stop_reason is
+    None, whichever way it is asked."""
+    governor = Governor(store, d3_config, frozen_clock)
+
+    assert governor.usage_stop_reason() is None
+    assert governor.usage_stop_reason(carry=True) is None
+
+
+def test_b207_a_ledger_that_never_saw_the_signal_has_no_usage_stop(usage_governor):
+    """B207/B114: usage=None → None. No decision may DEPEND on the signal being present."""
+    assert usage_governor.usage_stop_reason() is None
+    assert usage_governor.usage_stop_reason(carry=True) is None
+
+
+def test_b207_an_observation_of_none_leaves_the_governor_without_a_stop(
+    usage_governor, d3_ledger
+):
+    """B207: a call that reported no rate_limit_event does not create a stop out of nothing."""
+    d3_ledger.observe_usage(None, FROZEN_NOW_ISO)
+
+    assert usage_governor.usage_stop_reason() is None
+
+
+def test_b207_a_stale_observation_is_not_a_usage_stop(usage_governor, d3_ledger, item_id):
+    """B207/B204: a reading from before the window's start does not answer for this window, so
+    it neither stops the run nor refuses authorization."""
+    stale = d3_usage(weekly=0.99, session=0.99)
+    stale["observed_at"] = "2026-08-25T00:00:00Z"
+    d3_ledger.observe_usage(stale, "2026-08-25T00:00:00Z")
+
+    assert usage_governor.usage_stop_reason() is None
+    assert isinstance(usage_governor.authorize(item_id, "implement"), Authorization)
+
+
+def test_b207_without_usage_the_usd_path_still_governs(usage_governor, d3_ledger, item_id):
+    """B207: with usage=None the USD path (WEEKLY_CAP_USD/RESERVE_PCT) governs exactly as in
+    Delivery 2 — spending past the reserve line still refuses."""
+    assert usage_governor.usage_stop_reason() is None
+    spend(d3_ledger, RESERVE_LINE_USD)
+
+    with pytest.raises(BudgetExhausted):
+        usage_governor.authorize(item_id, "implement")
+
+
+def test_b207_record_forwards_the_usage_to_the_ledger(usage_governor, d3_ledger, item_id):
+    """RUN-DECISIONS-D3 "Governor": record(auth, *, allowance_pct, cost_usd, usage=None) hands
+    the usage to ledger.observe_usage, which is how the stop threshold ever fires."""
+    auth = usage_governor.authorize(item_id, "implement")
+
+    usage_governor.record(auth, allowance_pct=None, cost_usd=1.0, usage=d3_usage(weekly=0.91))
+
+    assert d3_ledger.weekly_utilization() == pytest.approx(0.91)
+    assert d3_ledger.window["spent_usd"] == pytest.approx(1.0)
+    assert usage_governor.usage_stop_reason() == "weekly usage 91% >= 90%"
+
+
+def test_b207_record_without_usage_records_the_spend_and_no_signal(
+    usage_governor, d3_ledger, item_id
+):
+    """RUN-DECISIONS-D3 "Governor": the kwarg defaults to None and the D2 record path is
+    unchanged — cost lands, utilization stays unknown."""
+    auth = usage_governor.authorize(item_id, "implement")
+
+    usage_governor.record(auth, allowance_pct=None, cost_usd=2.0)
+
+    assert d3_ledger.window["spent_usd"] == pytest.approx(2.0)
+    assert d3_ledger.weekly_utilization() is None
+    assert usage_governor.usage_stop_reason() is None
+
+
+# --------------------------------------------------------------------------
+# B208 - authorize raises BudgetExhausted(reason) before any store write
+# --------------------------------------------------------------------------
+
+
+def test_b208_authorize_raises_with_the_usage_reason_as_its_message(
+    usage_governor, d3_ledger, item_id
+):
+    """B208: authorize raises BudgetExhausted(reason) when usage_stop_reason() is not None, and
+    the message is that reason word for word."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "implement")
+
+    assert str(excinfo.value) == "weekly usage 91% >= 90%"
+
+
+def test_b208_the_session_stop_also_refuses_authorization(usage_governor, d3_ledger, item_id):
+    """B208: the five-hour window stops work too."""
+    observe(d3_ledger, weekly=0.10, session=0.72)
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "implement")
+
+    assert str(excinfo.value) == "session usage 72% >= 70%"
+
+
+def test_b208_a_refused_authorize_writes_nothing_to_the_store_or_the_ledger(
+    usage_governor, d3_ledger, store, item_id
+):
+    """B208: the check runs BEFORE any store write — no stage run is opened, no budget is
+    consumed, and the ledger JSON is untouched."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+    ledger_before = d3_ledger.to_json()
+    runs_before = store.list_stage_runs(work_item_id=item_id)
+
+    with pytest.raises(BudgetExhausted):
+        usage_governor.authorize(item_id, "implement")
+
+    assert store.list_stage_runs(work_item_id=item_id) == runs_before
+    assert store.list_stage_runs(work_item_id=item_id) == []
+    assert d3_ledger.to_json() == ledger_before
+    assert d3_ledger.window["calls"] == 0
+    assert d3_ledger.window["spent_usd"] == 0.0
+
+
+def test_b208_the_usage_stop_is_checked_before_the_usd_checks(
+    usage_governor, d3_ledger, item_id
+):
+    """B208: the usage stop comes first — with both the reserve line and the weekly stop past,
+    the operator is told about the usage, not about the dollars."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+    spend(d3_ledger, RESERVE_LINE_USD)
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "implement")
+
+    assert str(excinfo.value) == "weekly usage 91% >= 90%"
+
+
+def test_b208_usage_under_the_thresholds_still_authorizes(usage_governor, d3_ledger, item_id):
+    """B208: the stop is the exception, not the rule — 49 % weekly funds an implement."""
+    observe(d3_ledger, weekly=0.49, session=0.07)
+
+    auth = usage_governor.authorize(item_id, "implement")
+
+    assert isinstance(auth, Authorization)
+    assert auth.max_budget_usd == pytest.approx(3.0)
+
+
+def test_b208_the_carried_item_is_judged_by_the_leeway(usage_governor, d3_ledger, store,
+                                                       item_id):
+    """B208: authorize uses carry=<work_item_id == ledger.carry_issue()> — at 12 % weekly an
+    ordinary item is funded while the carried one is out of leeway."""
+    observe(d3_ledger, weekly=0.12, session=0.10)
+    other_id = store.create_work_item(kind="issue", external_ref="issue:823", title="other")
+
+    assert isinstance(usage_governor.authorize(item_id, "implement"), Authorization)
+
+    d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "implement")
+    assert str(excinfo.value) == "carry leeway 10% reached"
+    assert isinstance(usage_governor.authorize(other_id, "implement"), Authorization)
+
+
+def test_b208_a_carried_item_inside_the_leeway_is_authorized(usage_governor, d3_ledger,
+                                                             item_id):
+    """B208: the point of the leeway — after the weekly reset the carried item continues."""
+    observe(d3_ledger, weekly=0.03, session=0.05)
+    d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
+
+    assert isinstance(usage_governor.authorize(item_id, "implement"), Authorization)
+
+
+def test_b208_a_carried_item_at_the_weekly_stop_is_refused_by_the_leeway(
+    usage_governor, d3_ledger, item_id
+):
+    """B208: the leeway is stricter than the weekly stop, never looser — at 91 % the carried
+    item is refused for leeway, and nothing is written."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+    d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "implement")
+
+    assert str(excinfo.value) == "carry leeway 10% reached"
+
+
+def test_b208_without_a_ledger_authorize_is_the_delivery_1_path(store, d3_config, frozen_clock,
+                                                                item_id):
+    """B208/B207: no ledger, no usage stop — the D1 percentage governor decides alone."""
+    governor = Governor(store, d3_config, frozen_clock)
+
     assert isinstance(governor.authorize(item_id, "implement"), Authorization)

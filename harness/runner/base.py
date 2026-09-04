@@ -59,6 +59,11 @@ class RunResult:
     #: duration such as ``"+PT30M"`` for the stage to add to its clock (D2 §12). ``None``
     #: on every other outcome.
     reset_at: str | None = None
+    #: The subscription usage the CLI reported alongside the call (D3, B200-B203):
+    #: ``{"five_hour": {"utilization": float, "resets_at": iso}, "seven_day": {...},
+    #: "status": str}``. ``None`` whenever the backend saw no signal — no decision may
+    #: depend on it being there (B114).
+    usage: dict | None = None
 
 
 class Runner(Protocol):
@@ -81,7 +86,9 @@ def get_runner(config: "Config") -> Runner:
     if backend == "cli":
         from harness.runner.cli import ClaudeCliRunner
 
-        return ClaudeCliRunner()
+        # B202: the real backend always asks for the usage stream; the flag stays off by
+        # default so a hand-built runner keeps the Delivery 2 argv.
+        return ClaudeCliRunner(capture_usage=True)
     if backend == "fake":
         from harness.runner.fake import FakeRunner
 

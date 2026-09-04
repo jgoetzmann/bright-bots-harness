@@ -6,10 +6,12 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Mapping
 
+from harness.clock import as_utc
 from harness.errors import ConfigError
 
 __all__ = [
@@ -23,6 +25,9 @@ __all__ = [
     "TOKEN_KEY_NAME",
     "CONFIG_JSON_KEYS",
     "CONFIG_JSON_RELATIVE",
+    "RUN_WINDOW_PATTERN",
+    "WINDOW_DAYS",
+    "in_run_window",
 ]
 
 SECRET_KEYS: tuple[str, ...] = ("HARNESS_GITHUB_TOKEN", "ANTHROPIC_API_KEY")
@@ -74,6 +79,11 @@ FIELD_KEYS: tuple[str, ...] = (
     "SELF_REPO",
     "TRACKING_ISSUE",
     "STORE_BACKEND",
+    "WEEKLY_USAGE_STOP_PCT",
+    "SESSION_USAGE_STOP_PCT",
+    "OVERRUN_PCT",
+    "RUN_WINDOW_START",
+    "RUN_WINDOW_END",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
@@ -94,6 +104,11 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
+    "WEEKLY_USAGE_STOP_PCT",
+    "SESSION_USAGE_STOP_PCT",
+    "OVERRUN_PCT",
+    "RUN_WINDOW_START",
+    "RUN_WINDOW_END",
 )
 
 #: Where the override file lives, relative to the directory holding `.env`.
@@ -118,6 +133,16 @@ _TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(r"^github_pat_[A-Za-z0-9_]{40,}$"),
     re.compile(r"^ghp_[A-Za-z0-9]{30,}$"),
 )
+
+#: The run window's three-letter UTC weekday names, in ``datetime.weekday()`` order (D3).
+WINDOW_DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+#: A run-window endpoint: a lowercase weekday and a 24-hour UTC time (D3 config table).
+RUN_WINDOW_PATTERN = re.compile(r"^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):[0-5]\d$")
+
+#: Minutes in one day and one week, for the wrap-aware window comparison.
+_DAY_MINUTES = 24 * 60
+_WEEK_MINUTES = 7 * _DAY_MINUTES
 
 _ALLOWED_TIERS: tuple[int, ...] = (0, 2)
 _STORE_BACKENDS: tuple[str, ...] = ("sqlite", "github")
@@ -163,6 +188,11 @@ class Config:
     tracking_issue: int | None
     store_backend: Literal["sqlite", "github"]
     repo_root: Path
+    weekly_usage_stop_pct: float
+    session_usage_stop_pct: float
+    overrun_pct: float
+    run_window_start: str
+    run_window_end: str
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -239,6 +269,19 @@ def _require_repo(values: Mapping[str, str], key: str) -> str:
     raw = values[key].strip()
     if not _repo_shaped(raw):
         raise ConfigError(f"{key} must be owner/name; got {values[key]!r}")
+    return raw
+
+
+def _require_window(values: Mapping[str, str], key: str) -> str:
+    """One run-window endpoint: ``"mon 08:00"`` (UTC) or ``""`` for "no window" (D3)."""
+    raw = values.get(key, "").strip()
+    if not raw:
+        return ""
+    if RUN_WINDOW_PATTERN.match(raw) is None:
+        raise ConfigError(
+            f"{key} must be a UTC weekday and time such as 'mon 08:00', or empty; "
+            f"got {values.get(key, '')!r}"
+        )
     return raw
 
 
@@ -467,6 +510,35 @@ def load_config(
             f"got MAX_CONCURRENT_ITEMS={max_concurrent_items}, STORE_BACKEND={store_backend}"
         )
 
+    # --- Delivery 3 keys (RUN-DECISIONS-D3 "Config"), in Config field order ---
+
+    weekly_usage_stop_pct = _require_float(values, "WEEKLY_USAGE_STOP_PCT")
+    if not 0 < weekly_usage_stop_pct <= 100:
+        raise ConfigError(
+            f"WEEKLY_USAGE_STOP_PCT must be in (0, 100]; got {weekly_usage_stop_pct}"
+        )
+
+    session_usage_stop_pct = _require_float(values, "SESSION_USAGE_STOP_PCT")
+    if not 0 < session_usage_stop_pct <= 100:
+        raise ConfigError(
+            f"SESSION_USAGE_STOP_PCT must be in (0, 100]; got {session_usage_stop_pct}"
+        )
+
+    overrun_pct = _require_float(values, "OVERRUN_PCT")
+    if not 0 <= overrun_pct < weekly_usage_stop_pct:
+        raise ConfigError(
+            f"OVERRUN_PCT must be in [0, WEEKLY_USAGE_STOP_PCT); got {overrun_pct} "
+            f"with WEEKLY_USAGE_STOP_PCT={weekly_usage_stop_pct}"
+        )
+
+    run_window_start = _require_window(values, "RUN_WINDOW_START")
+    run_window_end = _require_window(values, "RUN_WINDOW_END")
+    if bool(run_window_start) != bool(run_window_end):
+        raise ConfigError(
+            "RUN_WINDOW_START and RUN_WINDOW_END must both be set or both be empty; got "
+            f"RUN_WINDOW_START={run_window_start!r}, RUN_WINDOW_END={run_window_end!r}"
+        )
+
     if permission_tier == 2:
         if store_backend != "github":
             raise ConfigError(
@@ -510,9 +582,45 @@ def load_config(
         tracking_issue=tracking_issue,
         store_backend=store_backend,
         repo_root=base_dir,
+        weekly_usage_stop_pct=weekly_usage_stop_pct,
+        session_usage_stop_pct=session_usage_stop_pct,
+        overrun_pct=overrun_pct,
+        run_window_start=run_window_start,
+        run_window_end=run_window_end,
     )
     _LAST_CONFIG = config
     return config
+
+
+def _window_minute(point: str) -> int | None:
+    """``"mon 08:00"`` -> the minute of the UTC week; ``None`` when unparseable."""
+    text = (point or "").strip().lower()
+    if not text or RUN_WINDOW_PATTERN.match(text) is None:
+        return None
+    day, _, clock = text.partition(" ")
+    hour, _, minute = clock.partition(":")
+    return WINDOW_DAYS.index(day) * _DAY_MINUTES + int(hour) * 60 + int(minute)
+
+
+def in_run_window(config: Config, now: datetime) -> bool:
+    """True when ``now`` (UTC) falls inside ``[run_window_start, run_window_end)`` (D3).
+
+    Pure and wrap-aware: a window whose end is earlier in the week than its start runs past
+    Sunday into the next week. Both endpoints empty means the window is always open, and so
+    does an endpoint the harness cannot parse — the window narrows what runs, it never
+    invents a stop.
+    """
+    start = _window_minute(getattr(config, "run_window_start", ""))
+    end = _window_minute(getattr(config, "run_window_end", ""))
+    if start is None or end is None:
+        return True
+    moment = as_utc(now)
+    current = (
+        moment.weekday() * _DAY_MINUTES + moment.hour * 60 + moment.minute
+    ) % _WEEK_MINUTES
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end
 
 
 def github_token() -> str:

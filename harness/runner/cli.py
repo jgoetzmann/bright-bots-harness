@@ -1,4 +1,4 @@
-"""The ``claude`` CLI backend (SPEC 5.4.3; D2 §6.1 budget flag and §6.3 rate-limit outcome)."""
+"""The ``claude`` CLI backend (SPEC 5.4.3; D2 §6.1 and §6.3; D3 the usage stream, B200-B202)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -63,6 +63,99 @@ def _normalise_iso(raw: str) -> str:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: The stream event that carries the subscription windows (D3 "Why").
+RATE_LIMIT_EVENT = "rate_limit_event"
+
+#: The two unified windows the CLI reports, in the order they are stored.
+USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
+
+
+def _reset_iso(value: object) -> str | None:
+    """``resetsAt`` as ISO-Z: the CLI sends epoch seconds; a string is passed through."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.isdigit():
+            return _reset_iso(int(text))
+        return _normalise_iso(text)
+    return None
+
+
+def usage_from_event(event: Mapping[str, Any]) -> dict | None:
+    """One ``rate_limit_event`` as the :attr:`RunResult.usage` shape, or ``None``.
+
+    Tolerant on purpose (B114): anything missing simply drops out, and an event with no
+    recognisable window is no observation at all rather than a zero one.
+    """
+    if not isinstance(event, Mapping):
+        return None
+    info: Any = event.get("rate_limit_info")
+    if not isinstance(info, Mapping):
+        info = event if "unifiedWindows" in event else None
+    if not isinstance(info, Mapping):
+        return None
+    windows = info.get("unifiedWindows")
+    if not isinstance(windows, Mapping):
+        return None
+    usage: dict = {}
+    for name in USAGE_WINDOWS:
+        window = windows.get(name)
+        if not isinstance(window, Mapping):
+            continue
+        utilization = _as_float(window.get("utilization"))
+        if utilization is None:
+            continue
+        usage[name] = {
+            "utilization": utilization,
+            "resets_at": _reset_iso(window.get("resetsAt", window.get("resets_at"))),
+        }
+    if not usage:
+        return None
+    status = info.get("status")
+    if isinstance(status, str) and status:
+        usage["status"] = status
+    return usage
+
+
+def parse_stream(stdout: str) -> tuple[dict | None, dict | None]:
+    """``(result object, usage)`` from ``--output-format stream-json`` output (B201).
+
+    Pure. The LAST line whose ``type`` is ``"result"`` is the result object (the same fields
+    the non-streaming JSON carries); every ``rate_limit_event`` updates the usage and the last
+    one wins. Lines that are not JSON objects are ignored, and no result line at all is
+    ``(None, usage)`` — the caller treats that as unparseable output (B30).
+    """
+    result: dict | None = None
+    usage: dict | None = None
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            event: Any = json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "result":
+            result = event
+            continue
+        if kind == RATE_LIMIT_EVENT:
+            found = usage_from_event(event)
+            if found is not None:
+                usage = found
+    if usage is None and isinstance(result, dict):
+        # Some builds fold the last observation into the result line itself.
+        usage = usage_from_event(result)
+    return result, usage
+
+
 class ClaudeCliRunner:
     """Runs one stage by shelling out to the ``claude`` binary."""
 
@@ -72,19 +165,31 @@ class ClaudeCliRunner:
         self,
         claude_bin: str = "claude",
         spawn: Callable[..., subprocess.CompletedProcess] | None = None,
+        capture_usage: bool = False,
     ) -> None:
         self.claude_bin = claude_bin
         self.spawn = spawn if spawn is not None else _spawn_resolved
+        #: B200: ask for the JSON-lines stream so every ``rate_limit_event`` is visible.
+        #: Off by default, which keeps the Delivery 2 argv byte-for-byte.
+        self.capture_usage = bool(capture_usage)
 
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """The order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` after ``--max-turns``."""
+        """The order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` after ``--max-turns``.
+
+        B200: with ``capture_usage`` the ``--output-format json`` pair becomes
+        ``--output-format stream-json --verbose`` in that same position; nothing else moves.
+        """
+        output_format: list[str] = (
+            ["--output-format", "stream-json", "--verbose"]
+            if self.capture_usage
+            else ["--output-format", "json"]
+        )
         argv: list[str] = [
             self.claude_bin,
             "--print",
-            "--output-format",
-            "json",
+            *output_format,
             "--max-turns",
             str(request.max_turns),
         ]
@@ -145,36 +250,56 @@ class ClaudeCliRunner:
         stdout = _as_text(getattr(proc, "stdout", ""))
         stderr = _as_text(getattr(proc, "stderr", ""))
         exit_code = int(getattr(proc, "returncode", 0) or 0)
+        data, usage = self.parse_stdout(stdout)
 
         if exit_code != 0:
             # B119: exhaustion is an outcome with a reset time, not a generic failure.
             combined = f"{stdout}\n{stderr}"
             if RATE_LIMIT_PATTERN.search(combined):
                 return self._failure(
-                    request, exit_code, stderr or stdout, reset_at=parse_reset_at(combined)
+                    request,
+                    exit_code,
+                    stderr or stdout,
+                    reset_at=parse_reset_at(combined),
+                    usage=usage,
                 )
             # A budget stop (D19: `subtype` error_max_budget_usd) exits 1 with a complete JSON
             # result; keep its cost, turns and reason rather than dumping the JSON as the error.
-            try:
-                errored: Any = json.loads(stdout)
-            except (ValueError, TypeError):
-                errored = None
-            if isinstance(errored, dict) and errored.get("is_error"):
-                return self._from_json(request, errored, stderr, exit_code)
-            return self._failure(request, exit_code, stderr or stdout)
+            if isinstance(data, dict) and data.get("is_error"):
+                return self._from_json(request, data, stderr, exit_code, usage=usage)
+            return self._failure(request, exit_code, stderr or stdout, usage=usage)
 
+        if not isinstance(data, dict):
+            return self._failure(
+                request,
+                exit_code,
+                stderr or "claude produced unparseable stdout",
+                usage=usage,
+            )
+
+        return self._from_json(request, data, stderr, exit_code, usage=usage)
+
+    # -- parsing -------------------------------------------------------------
+
+    def parse_stdout(self, stdout: str) -> tuple[dict | None, dict | None]:
+        """``(result object, usage)``: JSON lines when streaming (B201), one object otherwise."""
+        if self.capture_usage:
+            return parse_stream(stdout)
         try:
             data: Any = json.loads(stdout)
         except (ValueError, TypeError):
             data = None
-        if not isinstance(data, dict):
-            return self._failure(request, exit_code, stderr or "claude produced unparseable stdout")
+        return (data if isinstance(data, dict) else None), None
 
-        return self._from_json(request, data, stderr, exit_code)
-
-    # -- parsing -------------------------------------------------------------
-
-    def _from_json(self, request: RunRequest, data: dict, stderr: str, exit_code: int) -> RunResult:
+    def _from_json(
+        self,
+        request: RunRequest,
+        data: dict,
+        stderr: str,
+        exit_code: int,
+        *,
+        usage: dict | None = None,
+    ) -> RunResult:
         """Every JSON field is optional; a missing one is ``None`` (B28, B29)."""
         text = _as_str(data.get("result"))
         if text is None:
@@ -204,6 +329,7 @@ class ClaudeCliRunner:
                 {"raw": data},
             ),
             error=error,
+            usage=usage,
         )
 
     def _failure(
@@ -213,6 +339,7 @@ class ClaudeCliRunner:
         stderr: str,
         *,
         reset_at: str | None = None,
+        usage: dict | None = None,
     ) -> RunResult:
         """The single failure shape: ``ok=False`` and a redacted stderr tail (B30)."""
         return RunResult(
@@ -227,6 +354,7 @@ class ClaudeCliRunner:
             transcript=({"role": "user", "content": request.prompt},),
             error=redact(stderr[-STDERR_TAIL_CHARS:]),
             reset_at=reset_at,
+            usage=usage,
         )
 
 

@@ -452,11 +452,14 @@ ALL_WORKFLOWS = (
     "selftest.yml",
 )
 # RUN-DECISIONS-D2 §15 / handoff §7.1 — the frozen crons. ops.yml and selftest.yml have none.
+# Delivery 3 replaced implement.yml's single every-6h cron with the three that bound the
+# Mon 08:00 -> Tue 20:00 UTC run window (RUN-DECISIONS-D3 "Workflows"), so each entry is the
+# full expected list rather than one string.
 FROZEN_CRONS = {
-    "discover.yml": "17 7 * * 0",
-    "implement.yml": "23 */6 * * *",
-    "feedback.yml": "41 */3 * * 1-5",
-    "heartbeat.yml": "5 9 * * 1",
+    "discover.yml": ["17 7 * * 0"],
+    "implement.yml": ["17 8,14,20 * * 1", "17 2,8,14 * * 2", "23 20 * * 2"],
+    "feedback.yml": ["41 */3 * * 1-5"],
+    "heartbeat.yml": ["5 9 * * 1"],
 }
 ROUND_MINUTES = (0, 15, 30, 45)
 
@@ -585,6 +588,11 @@ CONFIG_JSON_KEYS = (
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
+    "WEEKLY_USAGE_STOP_PCT",
+    "SESSION_USAGE_STOP_PCT",
+    "OVERRUN_PCT",
+    "RUN_WINDOW_START",
+    "RUN_WINDOW_END",
 )
 
 # RUN-DECISIONS-D2 §2 — the D2 .env keys, .env.example values (inline; duplicated on purpose).
@@ -601,6 +609,11 @@ D2_ENV_KEYS: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 
 # RUN-DECISIONS-D2 §10 — a minimal tree carrying every pinned path.
@@ -1584,7 +1597,7 @@ def test_b124_crons_are_exactly_the_frozen_schedule(name):
     two event-driven workflows carry none."""
     crons = _cron_values(_d2_workflow(name))
     if name in FROZEN_CRONS:
-        assert crons == [FROZEN_CRONS[name]], f"{name}: crons {crons} != {[FROZEN_CRONS[name]]}"
+        assert crons == FROZEN_CRONS[name], f"{name}: crons {crons} != {FROZEN_CRONS[name]}"
     else:
         assert crons == [], f"{name} must not be scheduled (handoff §7.1): {crons}"
 
@@ -1830,3 +1843,99 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 
     assert ignored("HALT"), "the root HALT must stay ignored (I-6)"
     assert not ignored(".harness/HALT"), ".harness/HALT must be committable (B149)"
+
+
+# ======================================================================================
+# Delivery 3 additions — the implement schedule (RUN-DECISIONS-D3 "Workflows").
+# Appended by the D3 spec-tester (T2); additions only, nothing above was edited.
+# ======================================================================================
+
+# RUN-DECISIONS-D3 "Workflows": implement.yml follows the run window
+# (RUN_WINDOW_START=mon 08:00 → RUN_WINDOW_END=tue 20:00 UTC) instead of grinding round the
+# clock, with one wrap-up run after the weekly reset. The other three are unchanged.
+D3_IMPLEMENT_CRONS = ["17 8,14,20 * * 1", "17 2,8,14 * * 2", "23 20 * * 2"]
+D3_UNCHANGED_CRONS = {
+    "discover.yml": "17 7 * * 0",
+    "feedback.yml": "41 */3 * * 1-5",
+    "heartbeat.yml": "5 9 * * 1",
+}
+
+
+def test_b215_implement_yml_carries_exactly_the_three_d3_crons():
+    """RUN-DECISIONS-D3 "Workflows" (the schedule B209–B215's run window and carry loop are
+    built on): implement.yml is scheduled three times and only three times — Monday inside
+    the window, the run-up to the Tuesday reset, and the wrap-up run after it."""
+    crons = _cron_values(_d2_workflow("implement.yml"))
+    assert crons == D3_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D3_IMPLEMENT_CRONS}"
+
+
+def test_b215_the_d3_implement_crons_stay_inside_the_run_window():
+    """RUN-DECISIONS-D3 "Workflows": every scheduled implement run falls on Monday or Tuesday
+    — the days RUN_WINDOW_START/END span — and the last one is the post-reset wrap-up."""
+    crons = _cron_values(_d2_workflow("implement.yml"))
+    for cron in crons:
+        minute, hour, dom, month, dow = cron.split()
+        assert dom == "*" and month == "*", f"implement.yml: unexpected date field in {cron!r}"
+        assert dow in ("1", "2"), f"implement.yml: {cron!r} runs outside Mon–Tue"
+    assert crons[-1].split()[4] == "2", "the wrap-up run must be on Tuesday"
+    assert crons[-1].split()[1] == "20", "the wrap-up run must follow the 20:00 UTC reset"
+
+
+@pytest.mark.parametrize("name", ALL_WORKFLOWS)
+def test_b124_d3_every_cron_minute_is_still_non_zero_and_not_a_quarter_hour(name):
+    """B124 (handoff §7.1) re-checked over the D3 schedule: every cron minute in every
+    workflow is a literal, non-zero, non-round integer — no `*`, no `*/n`, no top of the
+    hour, so the harness never joins the crowd GitHub queues at :00."""
+    crons = _cron_values(_d2_workflow(name))
+    if name == "implement.yml":
+        assert len(crons) == 3, f"implement.yml must carry the three D3 crons: {crons}"
+    for cron in crons:
+        fields = cron.split()
+        assert len(fields) == 5, f"{name}: malformed cron {cron!r}"
+        minute = fields[0]
+        assert minute.isdigit(), f"{name}: cron minute must be a literal integer: {cron!r}"
+        assert int(minute) != 0, f"{name}: cron minute must be non-zero: {cron!r}"
+        assert int(minute) not in ROUND_MINUTES, f"{name}: cron minute is round: {cron!r}"
+
+
+def test_b215_d3_changed_only_the_implement_schedule():
+    """RUN-DECISIONS-D3 "Workflows": discover.yml, feedback.yml and heartbeat.yml are
+    unchanged, and the two event-driven workflows are still unscheduled."""
+    for name, cron in D3_UNCHANGED_CRONS.items():
+        assert _cron_values(_d2_workflow(name)) == [cron], name
+    for name in ("ops.yml", "selftest.yml"):
+        assert _cron_values(_d2_workflow(name)) == [], name
+
+
+def test_b215_implement_yml_documents_the_dst_drift():
+    """RUN-DECISIONS-D3 "Workflows": the wrap-up cron is pinned to UTC while the weekly reset
+    is quoted in Pacific time, so the drift is commented where the crons are, not inferred."""
+    text = _d2_workflow("implement.yml")
+    lowered = text.lower()
+    assert "dst" in lowered or "daylight" in lowered, "the DST drift must be commented"
+    assert "utc" in lowered
+
+
+# RUN-DECISIONS-D3 "Config": the knob set in .harness/config.json grows by exactly these five.
+D3_CONFIG_JSON_KEYS = tuple(sorted(set(CONFIG_JSON_KEYS) | {
+    "WEEKLY_USAGE_STOP_PCT", "SESSION_USAGE_STOP_PCT", "OVERRUN_PCT",
+    "RUN_WINDOW_START", "RUN_WINDOW_END",
+}))
+
+
+def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
+    """B112 / RUN-DECISIONS-D3 "Config" ("Knob keys in .harness/config.json: add the five to
+    the allowed set"): the file is still an object of operational knobs only, now sixteen of
+    them — the two usage stops, the carry leeway and the two run-window bounds join the D2
+    eleven, and nothing else does."""
+    path = REPO_ROOT / ".harness" / "config.json"
+    assert path.is_file(), ".harness/config.json is required"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    assert set(payload) == set(D3_CONFIG_JSON_KEYS), (
+        f"keys differ from the D3 knob set: {sorted(payload)}"
+    )
+    for key in ("WEEKLY_USAGE_STOP_PCT", "SESSION_USAGE_STOP_PCT", "OVERRUN_PCT"):
+        assert isinstance(payload[key], (int, float)), f"{key} must be a number"
+    for key in ("RUN_WINDOW_START", "RUN_WINDOW_END"):
+        assert isinstance(payload[key], str), f"{key} must be a string"

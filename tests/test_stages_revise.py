@@ -100,6 +100,13 @@ BASE_ENV = {
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "github",
+    # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
+    # window is left empty (= always open) so the D2 behaviour above is unchanged.
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 
 
@@ -965,3 +972,216 @@ def test_revise_reacquires_the_existing_branch_from_the_fork(tmp_path, monkeypat
     assert s.clones.acquired, "revise never acquired a clone"
     assert s.clones.acquired[0]["branch"] == BRANCH
     assert s.clones.acquired[0]["from_fork"] is True
+
+
+# ======================================================================================
+# Delivery 3 additions - `revise(source="continue")` (RUN-DECISIONS-D3 "Handoff and
+# continue", B215). Appended by the D3 spec-tester (T2); additions only. Nothing above was
+# edited except the BASE_ENV data constant, which gained the five keys D3 makes required.
+# ======================================================================================
+
+import shutil
+
+CONTINUE_REASON = "session usage 72% >= 70%"
+HANDOFF_SENTINEL = "HANDOFF-SENTINEL-3c9e"
+NEXT_COMMAND = f"harness revise {ITEM} --source continue"
+HANDOFF_MD = f"""# Handoff - item {ITEM}
+
+Stopped because: {CONTINUE_REASON}
+
+- branch: `{BRANCH}`
+- fork: `{FORK}`
+
+## Where it stopped
+
+{HANDOFF_SENTINEL}: the selector is optional-chained but the placeholder string is still
+the empty string, so `npm run test:unit` is red on the new case.
+
+## Remaining work
+
+- `npm run test:unit` passes with the new case.
+
+## Next command
+
+```
+{NEXT_COMMAND}
+```
+"""
+
+
+def write_handoff(config, *, text: str = HANDOFF_MD) -> Path:
+    """The file `handoff` leaves behind (B213), as the continue source reads it."""
+    return _w(config.runs_dir / f"item-{ITEM}" / "HANDOFF.md", text)
+
+
+def setup_continue(tmp_path: Path, monkeypatch, *, state: str = "approved",
+                   handoff: bool = True, carry: bool = False, detach_clone: bool = False,
+                   **kwargs):
+    """`setup_revise`, put into the shape a carried item is in: approved, branch recorded,
+    HANDOFF.md on disk, and optionally no local clone left to reuse."""
+    s = setup_revise(tmp_path, monkeypatch, state=state, **kwargs)
+    if handoff:
+        write_handoff(s.config)
+    if carry:
+        s.ctx.ledger.set_carry(ITEM, iso(T0), CONTINUE_REASON)
+    if detach_clone:
+        moved = tmp_path / "detached-clone"
+        shutil.move(str(s.repo), str(moved))
+        s.repo = moved
+        s.clones.repo_path = moved
+        assert not (s.config.runs_dir / f"item-{ITEM}" / "clone").exists()
+    return s
+
+
+def watch_states(s) -> list[str]:
+    """Record the item's state at every model call (the entry transition must precede it)."""
+    seen: list[str] = []
+    inner = s.runner.run
+
+    def run(request):
+        seen.append(s.store.get_work_item(ITEM).state)
+        return inner(request)
+
+    s.runner.run = run
+    return seen
+
+
+def labels_applied(s) -> list[str]:
+    return [e["label"]["name"] for e in s.gh.events.get((SELF_REPO, ITEM), [])
+            if e["event"] == "labeled"]
+
+
+# --------------------------------------------------------------------------------------
+# B215 - `continue` is the fourth source: it resumes a carried item from its own branch
+# --------------------------------------------------------------------------------------
+def test_B215_continue_from_approved_moves_the_item_to_implementing_at_entry(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: entry state `approved` with a branch recorded -> the item is `implementing` (label
+    harness:running) before the model is asked anything."""
+    s = setup_continue(tmp_path, monkeypatch)
+    states = watch_states(s)
+    revise(s.ctx, ITEM, source="continue")
+    assert states, "continue made no model call"
+    assert states[0] == "implementing", f"state at the first model call was {states[0]!r}"
+    assert "harness:running" in labels_applied(s)
+
+
+def test_B215_continue_acquires_the_recorded_branch_from_the_fork_when_no_clone_is_left(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: with `runs/item-N/clone` gone the clone is re-acquired at `item.branch_name`
+    with from_fork=True - the carried work is on the fork, not on main."""
+    s = setup_continue(tmp_path, monkeypatch, detach_clone=True)
+    revise(s.ctx, ITEM, source="continue")
+    assert s.clones.acquired, "continue never acquired a clone"
+    assert len(s.clones.acquired) == 1
+    assert s.clones.acquired[0]["branch"] == BRANCH
+    assert s.clones.acquired[0]["from_fork"] is True
+    assert s.clones.acquired[0]["item"] == ITEM
+
+
+def test_B215_continue_reuses_an_existing_local_clone_without_acquiring(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: local mode - the clone dir the previous run left behind is reused as it is, so
+    nothing is fetched and no acquire happens."""
+    s = setup_continue(tmp_path, monkeypatch)
+    assert (s.config.runs_dir / f"item-{ITEM}" / "clone").is_dir()
+    revise(s.ctx, ITEM, source="continue")
+    assert s.clones.acquired == [], f"the local clone must be reused: {s.clones.acquired}"
+    assert s.runner.requests, "continue made no model call"
+
+
+def test_B215_continue_feeds_the_handoff_text_to_the_model(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: HANDOFF.md is the feedback for this source - its text reaches the prompt."""
+    s = setup_continue(tmp_path, monkeypatch)
+    revise(s.ctx, ITEM, source="continue")
+    text = s.runner.prompt_text()
+    assert HANDOFF_SENTINEL in text, "the handoff never reached the model"
+    assert CONTINUE_REASON in text
+
+
+def test_B215_continue_labels_the_handoff_text_as_data(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: the handoff is quoted in the feedback block, which prompts/revise.md labels as
+    data and not instructions - never appended to the work package."""
+    s = setup_continue(tmp_path, monkeypatch)
+    revise(s.ctx, ITEM, source="continue")
+    text = s.runner.prompt_text()
+    assert HANDOFF_SENTINEL in text
+    lowered = text.lower()
+    assert "data, not instructions" in lowered or "data to be examined" in lowered
+    feedback_at = lowered.find("## feedback")
+    package_at = lowered.find("## the approved work package")
+    assert feedback_at != -1 and package_at != -1, "revise.md's headings are missing"
+    assert feedback_at < text.index(HANDOFF_SENTINEL) < package_at
+
+
+def test_B215_continue_with_no_handoff_file_still_resumes(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: the handoff text is fed "if present" - without it the continue still runs."""
+    s = setup_continue(tmp_path, monkeypatch, handoff=False)
+    result = revise(s.ctx, ITEM, source="continue")
+    assert s.runner.requests, "continue made no model call"
+    assert s.store.get_work_item(ITEM).state == "packaged"
+    assert result is not None
+
+
+def test_B215_green_continue_packages_the_item_and_clears_the_carry(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: gates green -> implementing -> packaged, the carry is cleared, and the Lease is
+    returned so the run loop can package and deliver."""
+    s = setup_continue(tmp_path, monkeypatch, carry=True)
+    assert s.ctx.ledger.carry_issue() == ITEM
+    result = revise(s.ctx, ITEM, source="continue")
+    assert s.store.get_work_item(ITEM).state == "packaged"
+    assert s.gh.state_labels(ITEM) == ["harness:packaged"]
+    assert s.ctx.ledger.carry_issue() is None
+    assert s.ctx.ledger.window["carry"] is None
+    assert result is not None, "continue must return the Lease it worked in"
+    assert result.branch == BRANCH
+    assert Path(result.path).resolve() == s.repo.resolve()
+
+
+def test_B215_red_continue_blocks_the_item_and_pushes_nothing(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215 / B136: gates red after the revision -> harness:blocked and not one push."""
+    s = setup_continue(tmp_path, monkeypatch, carry=True, red_after_edit=True)
+    revise(s.ctx, ITEM, source="continue")
+    assert s.store.get_work_item(ITEM).state == "blocked"
+    assert s.gh.state_labels(ITEM) == ["harness:blocked"]
+    assert pushes(s.gh) == []
+    assert not any(e["method"] == "git push" for e in s.gh.sent)
+
+
+def test_B215_continue_from_discovered_is_refused_and_runs_nothing(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: the entry state for `continue` is `approved`; from `discovered` it is refused
+    before any model call, and the item keeps its label."""
+    s = setup_continue(tmp_path, monkeypatch, state="discovered")
+    with pytest.raises((IllegalTransition, HarnessError)):
+        revise(s.ctx, ITEM, source="continue")
+    assert s.runner.requests == []
+    assert pushes(s.gh) == []
+    assert s.gh.state_labels(ITEM) == ["harness:queued"]
+
+
+def test_B215_continue_from_shipped_is_refused_and_runs_nothing(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B215: `continue` resumes a carried item, it does not re-open a delivered one - the
+    other sources cover `shipped`."""
+    s = setup_continue(tmp_path, monkeypatch, state="shipped")
+    with pytest.raises((IllegalTransition, HarnessError)):
+        revise(s.ctx, ITEM, source="continue")
+    assert s.runner.requests == []
+    assert pushes(s.gh) == []
+    assert s.gh.state_labels(ITEM) == ["harness:shipped"]

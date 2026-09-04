@@ -551,6 +551,11 @@ D2_ENV: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "",
+    "RUN_WINDOW_END": "",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -569,6 +574,11 @@ D2_NEW_FIELDS_IN_ORDER = (
     "tracking_issue",
     "store_backend",
     "repo_root",
+    "weekly_usage_stop_pct",
+    "session_usage_stop_pct",
+    "overrun_pct",
+    "run_window_start",
+    "run_window_end",
 )
 FORK = "brightboost-harness/brightboost"
 
@@ -1172,3 +1182,484 @@ def test_a7_the_shipped_env_example_loads_without_error(tmp_path):
     assert "CLAUDE_CODE_OAUTH_TOKEN" in config_module.KNOWN_KEYS
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in config_module.SECRET_KEYS  # D1 B49 pins two
     assert not any(name.lower().endswith(("_token", "_key")) for name in config.__dataclass_fields__)
+
+
+# --------------------------------------------------------------------------
+# Delivery 3 — RUN-DECISIONS-D3 "Config": the five usage-governance keys, their ranges, the
+# .harness/config.json knob set, and the pure in_run_window helper.
+# Appended by the D3 spec-tester (T1); additions only.
+# --------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+
+# RUN-DECISIONS-D3 "Config" — the new keys with their .env.example values (inline, on purpose).
+D3_ENV: dict[str, str] = {
+    "WEEKLY_USAGE_STOP_PCT": "90",
+    "SESSION_USAGE_STOP_PCT": "70",
+    "OVERRUN_PCT": "10",
+    "RUN_WINDOW_START": "mon 08:00",
+    "RUN_WINDOW_END": "tue 20:00",
+}
+# Every one of the five is required in .env; the window pair may be empty, but only together.
+D3_REQUIRED_KEYS = tuple(D3_ENV)
+# Appended to Config in this order, after the Delivery 2 fields.
+D3_NEW_FIELDS_IN_ORDER = (
+    "weekly_usage_stop_pct",
+    "session_usage_stop_pct",
+    "overrun_pct",
+    "run_window_start",
+    "run_window_end",
+)
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+@pytest.fixture
+def write_d3_env(write_env):
+    """conftest's write_env plus the Delivery 2 and Delivery 3 keys; overrides win, None removes."""
+
+    def _write(path: Path, **overrides: object) -> Path:
+        values: dict[str, object] = {**D2_ENV, **D3_ENV}
+        values.update(overrides)
+        return write_env(path, **values)
+
+    return _write
+
+
+def utc(day: int, hour: int, minute: int = 0) -> datetime:
+    """A UTC instant in September 2026: the 7th is a Monday, the 5th a Saturday."""
+    return datetime(2026, 9, day, hour, minute, tzinfo=timezone.utc)
+
+
+# --------------------------------------------------------------------------
+# The five keys are read, required, and land on the Config in the frozen order
+# --------------------------------------------------------------------------
+
+
+def test_d3_every_new_key_lands_on_the_matching_config_field(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": the .env.example values map onto the five new fields —
+    percentages as floats, the window as the raw "day HH:MM" strings."""
+    path = write_d3_env(tmp_path / ".env")
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.weekly_usage_stop_pct == pytest.approx(90.0)
+    assert config.session_usage_stop_pct == pytest.approx(70.0)
+    assert config.overrun_pct == pytest.approx(10.0)
+    assert config.run_window_start == "mon 08:00"
+    assert config.run_window_end == "tue 20:00"
+
+
+def test_d3_the_new_fields_are_appended_last_in_the_frozen_order(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": Config fields appended in this order —
+    weekly_usage_stop_pct, session_usage_stop_pct, overrun_pct, run_window_start,
+    run_window_end."""
+    path = write_d3_env(tmp_path / ".env")
+    config = load_config(env_path=path, environ={})
+
+    names = [f.name for f in dataclasses.fields(config)]
+
+    assert tuple(names[-5:]) == D3_NEW_FIELDS_IN_ORDER
+    assert names.index("weekly_usage_stop_pct") > names.index("github_token_shape_ok")
+
+
+def test_d3_the_new_fields_are_frozen_too(tmp_path, write_d3_env):
+    """B6 (unchanged): Config stays frozen; the usage knobs cannot be reassigned at runtime."""
+    path = write_d3_env(tmp_path / ".env")
+    config = load_config(env_path=path, environ={})
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.weekly_usage_stop_pct = 10.0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.run_window_start = "sun 00:00"
+
+
+@pytest.mark.parametrize("missing", D3_REQUIRED_KEYS)
+def test_d3_a_missing_new_key_raises_config_error_naming_it(tmp_path, write_d3_env, missing):
+    """RUN-DECISIONS-D3 "Config": all five are required in .env — no defaults in code, and the
+    error names the key that is missing."""
+    path = write_d3_env(tmp_path / ".env", **{missing: None})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert missing in str(excinfo.value)
+
+
+def test_d3_environ_overrides_the_env_file_for_a_new_key(tmp_path, write_d3_env):
+    """B1 (D1 rule, unchanged) applied to the D3 keys: environ overrides .env key for key."""
+    path = write_d3_env(tmp_path / ".env")
+
+    config = load_config(
+        env_path=path, environ={"WEEKLY_USAGE_STOP_PCT": "80", "RUN_WINDOW_END": "wed 06:00"}
+    )
+
+    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
+    assert config.run_window_end == "wed 06:00"
+
+
+# --------------------------------------------------------------------------
+# Ranges: 0 < stop <= 100, 0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("WEEKLY_USAGE_STOP_PCT", "0"),
+        ("WEEKLY_USAGE_STOP_PCT", "0.0"),
+        ("WEEKLY_USAGE_STOP_PCT", "-1"),
+        ("WEEKLY_USAGE_STOP_PCT", "100.0001"),
+        ("WEEKLY_USAGE_STOP_PCT", "101"),
+        ("WEEKLY_USAGE_STOP_PCT", "ninety"),
+        ("WEEKLY_USAGE_STOP_PCT", ""),
+        ("SESSION_USAGE_STOP_PCT", "0"),
+        ("SESSION_USAGE_STOP_PCT", "-0.5"),
+        ("SESSION_USAGE_STOP_PCT", "100.0001"),
+        ("SESSION_USAGE_STOP_PCT", "seventy"),
+        ("SESSION_USAGE_STOP_PCT", ""),
+        ("OVERRUN_PCT", "-0.0001"),
+        ("OVERRUN_PCT", "-10"),
+        ("OVERRUN_PCT", "ten"),
+        ("OVERRUN_PCT", ""),
+    ],
+)
+def test_d3_an_out_of_range_or_malformed_usage_key_raises_config_error_naming_it(
+    tmp_path, write_d3_env, key, value
+):
+    """RUN-DECISIONS-D3 "Config": the stop percentages are 0 < x <= 100 and the leeway is
+    0 <= x < the weekly stop; anything else is a startup error naming the key, never a silently
+    different threshold."""
+    path = write_d3_env(tmp_path / ".env", **{key: value})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert key in str(excinfo.value)
+
+
+def test_d3_the_usage_boundary_values_are_accepted(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": the inclusive ends load — 100 % stops and a zero leeway."""
+    path = write_d3_env(
+        tmp_path / ".env",
+        WEEKLY_USAGE_STOP_PCT="100",
+        SESSION_USAGE_STOP_PCT="100",
+        OVERRUN_PCT="0",
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.weekly_usage_stop_pct == pytest.approx(100.0)
+    assert config.session_usage_stop_pct == pytest.approx(100.0)
+    assert config.overrun_pct == pytest.approx(0.0)
+
+
+def test_d3_the_smallest_admissible_stops_are_accepted(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": anything strictly above 0 is a legal stop."""
+    path = write_d3_env(
+        tmp_path / ".env",
+        WEEKLY_USAGE_STOP_PCT="0.5",
+        SESSION_USAGE_STOP_PCT="0.0001",
+        OVERRUN_PCT="0.25",
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.weekly_usage_stop_pct == pytest.approx(0.5)
+    assert config.session_usage_stop_pct == pytest.approx(0.0001)
+    assert config.overrun_pct == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("weekly", "overrun"),
+    [("90", "90"), ("90", "95"), ("90", "100"), ("20", "25"), ("10", "10")],
+)
+def test_d3_overrun_at_or_above_the_weekly_stop_is_rejected(
+    tmp_path, write_d3_env, weekly, overrun
+):
+    """RUN-DECISIONS-D3 "Config": OVERRUN_PCT is 0 <= x < WEEKLY_USAGE_STOP_PCT — a leeway that
+    reaches the weekly stop would let a carried item run past the very line the stop draws."""
+    path = write_d3_env(
+        tmp_path / ".env", WEEKLY_USAGE_STOP_PCT=weekly, OVERRUN_PCT=overrun
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "OVERRUN_PCT" in str(excinfo.value)
+
+
+def test_d3_an_overrun_just_below_the_weekly_stop_is_accepted(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": the bound is strict on one side only — 89.9999 < 90 loads."""
+    path = write_d3_env(
+        tmp_path / ".env", WEEKLY_USAGE_STOP_PCT="90", OVERRUN_PCT="89.9999"
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.overrun_pct == pytest.approx(89.9999)
+
+
+def test_d3_a_lowered_weekly_stop_narrows_the_leeway_range(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": the leeway is checked against the configured weekly stop, not
+    against the shipped 90 — with the stop at 20 a leeway of 15 loads and 25 does not."""
+    ok = write_d3_env(tmp_path / "ok" / ".env", WEEKLY_USAGE_STOP_PCT="20", OVERRUN_PCT="15")
+    assert load_config(env_path=ok, environ={}).overrun_pct == pytest.approx(15.0)
+
+    bad = write_d3_env(tmp_path / "bad" / ".env", WEEKLY_USAGE_STOP_PCT="20", OVERRUN_PCT="25")
+    with pytest.raises(ConfigError):
+        load_config(env_path=bad, environ={})
+
+
+# --------------------------------------------------------------------------
+# The run window: "^(mon|tue|wed|thu|fri|sat|sun) ([01]\\d|2[0-3]):[0-5]\\d$"
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("day", WEEKDAYS)
+def test_d3_every_weekday_name_is_accepted_in_the_window(tmp_path, write_d3_env, day):
+    """RUN-DECISIONS-D3 "Config": the seven lower-case three-letter names are the vocabulary."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=f"{day} 08:00",
+                        RUN_WINDOW_END="tue 20:00")
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.run_window_start == f"{day} 08:00"
+
+
+@pytest.mark.parametrize("value", ["mon 00:00", "sun 23:59", "sat 22:00", "wed 09:05",
+                                   "fri 19:30", "thu 23:00"])
+def test_d3_a_well_formed_window_time_is_accepted(tmp_path, write_d3_env, value):
+    """RUN-DECISIONS-D3 "Config": hours are 00-23 and minutes 00-59, both zero-padded."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=value)
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.run_window_start == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Mon 08:00", "MON 08:00", "monday 08:00", "mon 8:00", "mon 24:00", "mon 08:60",
+     "mon 08:0", "mon08:00", "mon 08.00", "08:00 mon", "mon", "mon 08:00:00",
+     "mon 08:00 UTC", "tomorrow 08:00"],
+)
+def test_d3_a_malformed_run_window_raises_config_error_naming_the_key(
+    tmp_path, write_d3_env, value
+):
+    """RUN-DECISIONS-D3 "Config": the window is matched against the frozen regex; anything else
+    is a startup error naming the key, never a window the operator did not mean."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=value)
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "RUN_WINDOW_START" in str(excinfo.value)
+
+
+def test_d3_a_malformed_window_end_is_named_too(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": both ends are validated, and the error names the one at fault."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_END="tue 25:00")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "RUN_WINDOW_END" in str(excinfo.value)
+
+
+def test_d3_both_window_ends_empty_is_accepted(tmp_path, write_d3_env):
+    """RUN-DECISIONS-D3 "Config": both empty = always open — the only way to switch the window
+    off, and the empty strings reach the Config unchanged."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START="", RUN_WINDOW_END="")
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.run_window_start == ""
+    assert config.run_window_end == ""
+
+
+@pytest.mark.parametrize("empty_key", ["RUN_WINDOW_START", "RUN_WINDOW_END"])
+def test_d3_only_one_empty_window_end_is_a_config_error(tmp_path, write_d3_env, empty_key):
+    """RUN-DECISIONS-D3 "Config": the exemption is for the pair — half a window is not a window,
+    and the error names the empty key."""
+    path = write_d3_env(tmp_path / ".env", **{empty_key: ""})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert empty_key in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# B112 - the five join the .harness/config.json knob set
+# --------------------------------------------------------------------------
+
+
+def test_b112_config_json_may_set_the_five_usage_knobs(tmp_path, write_d3_env):
+    """B112 / RUN-DECISIONS-D3 "Config": add the five to the allowed set — config.json overrides
+    .env for each of them."""
+    path = write_d3_env(tmp_path / ".env")
+    write_config_json(
+        tmp_path,
+        {
+            "WEEKLY_USAGE_STOP_PCT": 80,
+            "SESSION_USAGE_STOP_PCT": 55,
+            "OVERRUN_PCT": 5,
+            "RUN_WINDOW_START": "sat 22:00",
+            "RUN_WINDOW_END": "mon 08:00",
+        },
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
+    assert config.session_usage_stop_pct == pytest.approx(55.0)
+    assert config.overrun_pct == pytest.approx(5.0)
+    assert config.run_window_start == "sat 22:00"
+    assert config.run_window_end == "mon 08:00"
+
+
+def test_b112_an_out_of_range_usage_knob_in_config_json_raises_config_error_naming_it(
+    tmp_path, write_d3_env
+):
+    """B112 / RUN-DECISIONS-D3: the same range rules apply to a config.json override."""
+    path = write_d3_env(tmp_path / ".env")
+    write_config_json(tmp_path, {"SESSION_USAGE_STOP_PCT": 0})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "SESSION_USAGE_STOP_PCT" in str(excinfo.value)
+
+
+def test_b112_a_malformed_window_in_config_json_raises_config_error_naming_it(
+    tmp_path, write_d3_env
+):
+    """B112 / RUN-DECISIONS-D3: the window regex applies to config.json values too."""
+    path = write_d3_env(tmp_path / ".env")
+    write_config_json(tmp_path, {"RUN_WINDOW_START": "Monday 8am"})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "RUN_WINDOW_START" in str(excinfo.value)
+
+
+def test_b112_the_leeway_is_checked_against_the_merged_weekly_stop(tmp_path, write_d3_env):
+    """B112 / RUN-DECISIONS-D3: a knob override cannot sidestep the OVERRUN_PCT rule — lowering
+    the weekly stop in config.json below the .env leeway is a startup error."""
+    path = write_d3_env(tmp_path / ".env", WEEKLY_USAGE_STOP_PCT="90", OVERRUN_PCT="10")
+    write_config_json(tmp_path, {"WEEKLY_USAGE_STOP_PCT": 5})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "OVERRUN_PCT" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# in_run_window - pure, UTC, wrap-aware, empty window always True
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def window_config(tmp_path, write_d3_env):
+    """A factory for a Config with a given window (both ends, verbatim)."""
+
+    def _make(start: str, end: str, name: str = "w"):
+        path = write_d3_env(tmp_path / name / ".env", RUN_WINDOW_START=start,
+                            RUN_WINDOW_END=end)
+        return load_config(env_path=path, environ={})
+
+    return _make
+
+
+def test_d3_in_run_window_is_true_inside_the_configured_window(window_config):
+    """RUN-DECISIONS-D3 "Config": in_run_window(config, now) — UTC weekday and time. The window
+    mon 08:00 → tue 20:00 is open at its start, through Monday, and on Tuesday morning."""
+    from harness.config import in_run_window
+
+    config = window_config("mon 08:00", "tue 20:00")
+
+    assert in_run_window(config, utc(7, 8, 0)) is True      # Monday 08:00, the start
+    assert in_run_window(config, utc(7, 8, 1)) is True      # Monday 08:01
+    assert in_run_window(config, utc(7, 23, 59)) is True    # Monday night
+    assert in_run_window(config, utc(8, 0, 0)) is True      # Tuesday midnight
+    assert in_run_window(config, utc(8, 19, 59)) is True    # Tuesday 19:59
+
+
+def test_d3_in_run_window_is_false_outside_the_configured_window(window_config):
+    """RUN-DECISIONS-D3 "Config": before the start, after the end, and every day in between."""
+    from harness.config import in_run_window
+
+    config = window_config("mon 08:00", "tue 20:00")
+
+    assert in_run_window(config, utc(7, 7, 59)) is False    # Monday 07:59
+    assert in_run_window(config, utc(8, 20, 1)) is False    # Tuesday 20:01
+    assert in_run_window(config, utc(9, 12, 0)) is False     # Wednesday noon
+    assert in_run_window(config, utc(5, 12, 0)) is False     # Saturday noon
+    assert in_run_window(config, utc(6, 12, 0)) is False     # Sunday noon
+
+
+def test_d3_in_run_window_wraps_past_sunday(window_config):
+    """RUN-DECISIONS-D3 "Config": the window may wrap past Sunday — sat 22:00 → mon 08:00 is
+    open on Saturday night, all Sunday, and Monday before 08:00."""
+    from harness.config import in_run_window
+
+    config = window_config("sat 22:00", "mon 08:00", name="wrap")
+
+    assert in_run_window(config, utc(5, 22, 0)) is True      # Saturday 22:00, the start
+    assert in_run_window(config, utc(5, 23, 30)) is True     # Saturday night
+    assert in_run_window(config, utc(6, 0, 0)) is True       # Sunday midnight
+    assert in_run_window(config, utc(6, 12, 0)) is True      # Sunday noon
+    assert in_run_window(config, utc(7, 7, 59)) is True      # Monday 07:59
+    assert in_run_window(config, utc(5, 21, 59)) is False    # Saturday 21:59
+    assert in_run_window(config, utc(7, 9, 0)) is False      # Monday 09:00
+    assert in_run_window(config, utc(9, 12, 0)) is False     # Wednesday noon
+
+
+def test_d3_in_run_window_is_always_true_for_an_empty_window(window_config):
+    """RUN-DECISIONS-D3 "Config": both empty → True, every hour of every day."""
+    from harness.config import in_run_window
+
+    config = window_config("", "", name="always")
+
+    for day in range(1, 8):
+        for hour in (0, 6, 12, 18, 23):
+            assert in_run_window(config, utc(day, hour)) is True
+
+
+def test_d3_in_run_window_is_pure(window_config):
+    """RUN-DECISIONS-D3 "Config": pure — the same config and instant answer the same, twice, and
+    nothing about the config changes."""
+    from harness.config import in_run_window
+
+    config = window_config("mon 08:00", "tue 20:00")
+    before = repr(config)
+
+    first = in_run_window(config, utc(7, 9))
+    second = in_run_window(config, utc(7, 9))
+
+    assert first is second is True
+    assert repr(config) == before
+
+
+# --------------------------------------------------------------------------
+# A7 - the shipped .env.example carries the five keys and the raised USD cap
+# --------------------------------------------------------------------------
+
+
+def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
+    """RUN-DECISIONS-D3 "Config": .env.example ships the five keys with the documented values,
+    and WEEKLY_CAP_USD rises to 400.00 so the USD backstop cannot bind before the usage stop."""
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    target = tmp_path / ".env"
+    target.write_text(example.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+
+    config = load_config(env_path=target, environ={})
+
+    assert config.weekly_usage_stop_pct == pytest.approx(90.0)
+    assert config.session_usage_stop_pct == pytest.approx(70.0)
+    assert config.overrun_pct == pytest.approx(10.0)
+    assert config.run_window_start == "mon 08:00"
+    assert config.run_window_end == "tue 20:00"
+    assert config.weekly_cap_usd == pytest.approx(400.0)

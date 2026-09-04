@@ -1277,3 +1277,77 @@ def test_b219_propose_records_the_base_it_read(tmp_path):
         encoding="utf-8"
     )
     assert rig.clones.acquired[0].base_sha in decisions
+
+
+# --------------------------------------------------------------------------------------
+# B222 / B223 - a deletion is a change, and an empty change set is a failure (D42, D43)
+# --------------------------------------------------------------------------------------
+
+
+def test_b222_implement_asks_for_the_change_set_not_the_format_list():
+    """B222: the two lists differ by exactly the deletions, and implement needs the wider one."""
+    from harness import prettier
+    from harness.stages import implement as implement_mod
+
+    assert implement_mod.CHANGED_PATHS is prettier.all_changed_paths
+    assert implement_mod.CHANGED_PATHS is not prettier.changed_paths
+
+
+def test_b223_an_implement_call_that_changes_nothing_blocks_the_item(tmp_path, monkeypatch):
+    """B223: the run that found this committed nothing, packaged zero patches, printed
+    "implemented item 1" and exited 0."""
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+
+    def changed_paths(clone, base_sha, git_runner=None):
+        return []
+
+    stub_implement_side_effects(monkeypatch, rig.log, gate_runner=lambda *a, **k: list(GREEN))
+    monkeypatch.setattr(implement_mod, "CHANGED_PATHS", changed_paths)
+
+    with pytest.raises(HarnessError):
+        implement(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
+def test_b223_the_block_reason_names_the_paths_the_package_expected(tmp_path, monkeypatch):
+    """B223: "nothing changed" is only actionable next to what was supposed to change."""
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+
+    stub_implement_side_effects(monkeypatch, rig.log, gate_runner=lambda *a, **k: list(GREEN))
+    monkeypatch.setattr(implement_mod, "CHANGED_PATHS", lambda *a, **k: [])
+
+    with pytest.raises(HarnessError):
+        implement(rig.ctx, item_id)
+
+    decisions = (rig.config.runs_dir / f"item-{item_id}" / "DECISIONS.md").read_text(
+        encoding="utf-8"
+    )
+    assert "left the tree unchanged" in decisions
+    assert "src/" in decisions
+
+
+def test_b223_an_empty_change_set_never_reaches_the_post_change_gates(tmp_path, monkeypatch):
+    """B223: gates on an uncommitted tree were what made the empty run look green."""
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.log.clear()
+
+    def gate_runner(clone, *, baseline, runner=None):
+        rig.log.append(f"gates(baseline={baseline})")
+        return list(GREEN)
+
+    stub_implement_side_effects(monkeypatch, rig.log, gate_runner=gate_runner)
+    monkeypatch.setattr(implement_mod, "CHANGED_PATHS", lambda *a, **k: [])
+
+    with pytest.raises(HarnessError):
+        implement(rig.ctx, item_id)
+
+    assert rig.log.count("gates(baseline=False)") == 0
+    assert rig.log.count("gates(baseline=True)") == 1

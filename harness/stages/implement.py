@@ -101,7 +101,9 @@ def _commit(clone: Path, message: str) -> None:
 GATE_RUNNER = gates.run_sequence
 PREPARE = gates.prepare
 PRETTIER = prettier.write_and_check
-CHANGED_PATHS = prettier.changed_paths
+#: B222/D42: the change set, deletions included. prettier gets the surviving subset only
+#: (`_format_and_commit`), because formatting a path that no longer exists is an error.
+CHANGED_PATHS = prettier.all_changed_paths
 COMMIT = _commit
 
 
@@ -233,6 +235,19 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
         raise RunnerError(f"implement call failed for item {item_id}: {result.error or 'unknown'}")
 
     changed = _guarded_changed_paths(ctx, lease)
+    if not changed:
+        # B223/D43: an implement call that changed nothing has failed, and it must say so.
+        # Without this the run committed nothing, packaged zero patches, printed "implemented
+        # item N" and exited 0 -- a silent success, which is the one outcome a reviewer cannot
+        # catch by reading the exit code. Blocking keeps the clone for inspection.
+        reason = (
+            "the implementation call left the tree unchanged; the work package expected "
+            + ", ".join(pkg.touched_paths[:5])
+            if pkg.touched_paths
+            else "the implementation call left the tree unchanged"
+        )
+        _block(ctx, item_id, lease, reason)
+        raise RunnerError(f"implement produced no change for item {item_id}: {reason}")
     _reject_forbidden_diff(ctx, item_id, lease, changed)
 
     _format_and_commit(ctx, pkg, item, lease, changed, first=True)
@@ -474,9 +489,14 @@ def _format_and_commit(
 ) -> None:
     if not changed:
         return
-    ok, output = PRETTIER(lease.path, list(changed))
+    # B222: `changed` now carries deletions, and prettier cannot format a file that is gone.
+    formattable = [path for path in changed if (Path(lease.path) / path).exists()]
+    ok, output = PRETTIER(lease.path, formattable)
+    deleted = len(changed) - len(formattable)
     ctx.record_decision(
-        f"prettier over {len(changed)} changed path(s): "
+        f"prettier over {len(formattable)} of {len(changed)} changed path(s)"
+        + (f" ({deleted} deleted, nothing to format)" if deleted else "")
+        + ": "
         + ("clean" if ok else "reported differences")
         + (f" — {output.strip()[:300]}" if output and not ok else "")
     )

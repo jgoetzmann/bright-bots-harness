@@ -143,7 +143,9 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     discover = sub.add_parser("discover", help="find work")
-    discover.add_argument("--mode", required=True, choices=("triage", "directed", "audit"))
+    discover.add_argument(
+        "--mode", required=True, choices=("triage", "directed", "assigned", "audit")
+    )
     discover.add_argument("--target", default=None, metavar="N", help="issue number for directed")
     discover.add_argument("--lens", default=None, metavar="L", help="optional triage lens")
     discover.add_argument("--ignore-allowlist", action="store_true", dest="ignore_allowlist")

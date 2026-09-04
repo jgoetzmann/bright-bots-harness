@@ -13,11 +13,11 @@ on:
     # the product repository carries the `harness-ok` allowlist label yet.
     inputs:
       mode:
-        description: "triage (rank the queue) or directed (one named product issue)"
+        description: "triage (rank the queue), directed (one named issue), assigned (every issue assigned to the bot)"
         required: false
         default: triage
         type: choice
-        options: [triage, directed]
+        options: [triage, directed, assigned]
       target:
         description: "directed only: the PRODUCT repository issue number, e.g. 633"
         required: false

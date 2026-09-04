@@ -326,6 +326,11 @@ def build_pr_body(
                 f"[{links.issue_ref(self_repo, item_id)}]({links.issue_url(self_repo, item_id)})."
             ),
             "",
+            # B234: the review request is also made through the API, but that needs push access
+            # the machine account does not have on this repository. A mention notifies either
+            # way, and it survives the request being refused.
+            f"Review requested from {_trusted_handles(trusted)}.",
+            "",
             "## Steering it from here",
             "",
             "Put one of these on its own line in a comment on this pull request:",

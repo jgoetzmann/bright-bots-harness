@@ -222,6 +222,18 @@ class FakeGh:
                 return item
         return gh_issue(number)
 
+    def issues_assigned_to(self, login: str, *, state: str = "open") -> list[dict]:
+        self.calls.append(("issues_assigned_to", login, state))
+        handle = str(login or "").lstrip("@").lower()
+        out = []
+        for item in self._issues:
+            holders = [h for h in (item.get("assignees") or []) if h]
+            if item.get("assignee"):
+                holders.append(item["assignee"])
+            if any(str((h or {}).get("login") or "").lower() == handle for h in holders):
+                out.append(item)
+        return out
+
     def issues(self, *, state: str = "open", labels=()) -> list[dict]:
         self.calls.append(("issues", state, tuple(labels)))
         wanted = set(labels)
@@ -1592,3 +1604,113 @@ def test_b226_a_non_integer_id_does_not_escape_the_error(tmp_path):
 
     with pytest.raises(HarnessError):
         work_package_text(item, repo_root=tmp_path)
+
+
+# --------------------------------------------------------------------------------------
+# B233 - assigning the bot to an issue queues it (D53)
+# --------------------------------------------------------------------------------------
+
+
+def _assigned_issue(number: int, login: str, *, title: str = "a ticket", labels=()):
+    return gh_issue(number, title=title, labels=list(labels)) | {
+        "assignees": [{"login": login}],
+        "assignee": {"login": login},
+    }
+
+
+def test_b233_the_machine_account_is_the_fork_owner(tmp_path):
+    """B233: derived, not configured -- a fork the account does not own is not one it can push
+    to, so FORK_REPO already names the account and a second key could only disagree."""
+    from harness.stages.discover import machine_account
+
+    assert machine_account(SimpleNamespace(fork_repo="jgoetzmann-bot/brightboost")) == (
+        "jgoetzmann-bot"
+    )
+    assert machine_account(SimpleNamespace(fork_repo="")) == ""
+
+
+def test_b233_an_issue_assigned_to_us_is_not_excluded_and_needs_no_label(tmp_path):
+    """B233: assignment is the statement the allowlist label makes, made on the ticket itself.
+    Requiring both would mean a maintainer had to say the same thing twice."""
+    from harness.stages.discover import _rejection_reason
+
+    kwargs = dict(number=7, claimed=set(), allowlist_label="harness-ok", ignore_allowlist=False)
+
+    assert _rejection_reason(_assigned_issue(7, "JGoetzmann-Bot"), machine="jgoetzmann-bot", **kwargs) is None
+
+
+def test_b233_an_issue_assigned_to_somebody_else_is_still_excluded(tmp_path):
+    """B233: B55 is unchanged -- somebody else's assignment is somebody else's work."""
+    from harness.stages.discover import _rejection_reason
+
+    kwargs = dict(number=7, claimed=set(), allowlist_label="harness-ok", ignore_allowlist=False)
+
+    assert _rejection_reason(_assigned_issue(7, "someone"), machine="jgoetzmann-bot", **kwargs) == (
+        "assigned"
+    )
+
+
+def test_b233_an_unassigned_issue_still_needs_the_allowlist_label(tmp_path):
+    """B233: the label route is untouched for everything nobody assigned."""
+    from harness.stages.discover import _rejection_reason
+
+    reason = _rejection_reason(
+        gh_issue(7, labels=()), number=7, claimed=set(), allowlist_label="harness-ok",
+        ignore_allowlist=False, machine="jgoetzmann-bot",
+    )
+
+    assert reason == "missing allowlist label harness-ok"
+
+
+def test_b233_an_excluded_label_still_wins_over_assignment(tmp_path):
+    """B233: `intern-starter` is work reserved for a human learning the codebase. Assigning the
+    bot to one does not make it the bot's."""
+    from harness.stages.discover import _rejection_reason
+
+    issue = _assigned_issue(7, "jgoetzmann-bot", labels=["intern-starter"])
+    reason = _rejection_reason(
+        issue, number=7, claimed=set(), allowlist_label="harness-ok",
+        ignore_allowlist=False, machine="jgoetzmann-bot",
+    )
+
+    assert reason == "excluded label intern-starter"
+
+
+def test_b233_assigned_discover_queues_each_one_and_makes_no_model_call(tmp_path):
+    """B233: which issues are assigned is a fact, not a judgement, so no model is asked."""
+    gh = FakeGh(issues=(_assigned_issue(901, "jgoetzmann-bot", title="one"),
+                        _assigned_issue(902, "jgoetzmann-bot", title="two")))
+    rig = make_rig(tmp_path, run_id="assigned", gh=gh)
+    rig.ctx.config.__dict__["fork_repo"] = "jgoetzmann-bot/brightboost"
+
+    created = discover(rig.ctx, mode="assigned", target=None, lens=None)
+
+    assert len(created) == 2
+    assert rig.runner.calls == 0, "assigned discovery must not spend"
+    refs = {rig.store.get_work_item(i).external_ref for i in created}
+    assert refs == {"issue:901", "issue:902"}
+
+
+def test_b233_an_issue_already_queued_is_left_alone(tmp_path):
+    """B233: the sweep runs every three hours; it must be safe to run repeatedly."""
+    gh = FakeGh(issues=(_assigned_issue(901, "jgoetzmann-bot"),))
+    rig = make_rig(tmp_path, run_id="assigned", gh=gh)
+    rig.ctx.config.__dict__["fork_repo"] = "jgoetzmann-bot/brightboost"
+    first = discover(rig.ctx, mode="assigned", target=None, lens=None)
+
+    second = discover(rig.ctx, mode="assigned", target=None, lens=None)
+
+    assert len(first) == 1
+    assert second == []
+
+
+def test_b233_no_fork_configured_says_so_rather_than_queueing_nothing(tmp_path):
+    """B233: with no FORK_REPO there is no login to be assigned to, and silence would read as
+    "nothing is assigned"."""
+    rig = make_rig(tmp_path, run_id="assigned", gh=FakeGh())
+    rig.ctx.config.__dict__["fork_repo"] = ""
+
+    with pytest.raises(HarnessError) as excinfo:
+        discover(rig.ctx, mode="assigned", target=None, lens=None)
+
+    assert "FORK_REPO" in str(excinfo.value)

@@ -1477,3 +1477,53 @@ def test_b232_the_body_opens_with_what_closes_and_how_to_steer_it(tmp_path):
     assert body.index("Approve and run") < body.index("<details>")
     assert "noise line" not in body
     assert len(body) < 12000, f"the body is {len(body)} characters"
+
+
+def test_b234_the_body_names_the_reviewers_it_wants(tmp_path):
+    """B234: `request_reviewers` needs push access the machine account does not have on the
+    product repository, and a refusal is recorded and swallowed. A mention notifies either way."""
+    from harness.stages.deliver import build_pr_body
+
+    package = tmp_path / "package"
+    package.mkdir()
+    for name in ("README.md", "DIAGNOSIS.md", "EVIDENCE.md"):
+        (package / name).write_text("# x\n", encoding="utf-8")
+    (package / "BASE").write_text("abc123\n", encoding="utf-8")
+
+    body = build_pr_body(
+        package,
+        upstream_repo="own/prod",
+        fork_repo="bot/prod",
+        branch="harness/fix-4-x",
+        base_sha="abc123",
+        self_repo="me/harness",
+        item_id=4,
+        upstream_issue=633,
+        trusted=("jgoetzmann", "BrightBoost-Tech"),
+    )
+
+    assert "Review requested from @BrightBoost-Tech, @jgoetzmann." in body
+    assert body.index("Review requested") < body.index("<details>")
+
+
+def test_b234_an_empty_trust_file_does_not_produce_a_dangling_mention(tmp_path):
+    from harness.stages.deliver import build_pr_body
+
+    package = tmp_path / "package"
+    package.mkdir()
+    for name in ("README.md", "DIAGNOSIS.md", "EVIDENCE.md"):
+        (package / name).write_text("# x\n", encoding="utf-8")
+
+    body = build_pr_body(
+        package,
+        upstream_repo="own/prod",
+        fork_repo="bot/prod",
+        branch="b",
+        base_sha="abc123",
+        self_repo="me/harness",
+        item_id=4,
+        trusted=(),
+    )
+
+    assert "Review requested from nobody (the trust file is empty)." in body
+    assert "@." not in body

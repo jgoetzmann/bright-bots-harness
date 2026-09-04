@@ -16,11 +16,17 @@ __all__ = [
     "PIN_RELATIVE",
     "default_repo_root",
     "pinned_files",
+    "normalise",
     "compute",
     "read_pin",
     "check",
     "main",
 ]
+
+#: Line-ending bytes, named so no source line in this module needs an escape.
+CRLF = bytes((13, 10))
+CR = bytes((13,))
+LF = bytes((10,))
 
 #: The code files in the pinned set; every file under :data:`PROMPTS_DIR` joins them.
 PINNED: tuple[str, ...] = ("harness/gates.py", "harness/packager.py", "harness/redact.py")
@@ -49,8 +55,21 @@ def pinned_files(repo_root: Path) -> list[str]:
     return sorted(paths)
 
 
+def normalise(data: bytes) -> bytes:
+    """CRLF and CR collapsed to LF (B217).
+
+    The pin is a pin on *content*, not on bytes. Git rewrites line endings on checkout:
+    ``core.autocrlf`` defaults to true on Git for Windows and ``actions/checkout``
+    inherits it, so one commit lands as CRLF on a Windows runner and LF on a Linux one.
+    Hashing raw bytes made the pin fail closed on every Windows checkout -- a false alarm,
+    not the tamper the pin exists to catch. A line ending is not a semantic change to
+    Python source or to a prompt, so it is folded away here; everything else still counts.
+    """
+    return data.replace(CRLF, LF).replace(CR, LF)
+
+
 def compute(repo_root: Path) -> str:
-    """SHA-256 hex over ``path + "\0" + bytes`` for each pinned file in sorted path order."""
+    """SHA-256 hex over ``path + "\0" + normalised bytes``, in sorted path order (B217)."""
     root = Path(repo_root)
     digest = hashlib.sha256()
     for relative in pinned_files(root):
@@ -59,7 +78,7 @@ def compute(repo_root: Path) -> str:
             raise PinMismatch(f"pinned file missing: {relative}")
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(normalise(path.read_bytes()))
     return digest.hexdigest()
 
 

@@ -1516,7 +1516,7 @@ def make_clone_repo(tmp_path: Path, item_id: int) -> tuple[Path, str]:
     """A real, clean git clone at runs/item-N/clone with the work branch checked out."""
     clone = tmp_path / "runs" / f"item-{item_id}" / "clone"
     clone.mkdir(parents=True, exist_ok=True)
-    _git_here("init", "-q", cwd=clone)
+    _git_here("init", "-q", "-b", "main", cwd=clone)
     _git_here("symbolic-ref", "HEAD", "refs/heads/main", cwd=clone)
     (clone / "scripts").mkdir(exist_ok=True)
     (clone / "scripts" / "check-bundle-size.js").write_text(

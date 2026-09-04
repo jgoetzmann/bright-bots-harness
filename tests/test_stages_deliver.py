@@ -138,7 +138,7 @@ def _git(*args: str, cwd: Path) -> str:
 
 def _init_repo(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    _git("init", "-q", cwd=path)
+    _git("init", "-q", "-b", "main", cwd=path)
     _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=path)
     return path
 
@@ -156,7 +156,7 @@ def make_sync_repos(tmp_path: Path):
     work = _init_repo(tmp_path / "upstream-work")
     u0 = _commit(work, "README.md", "# brightboost\n", "chore: initial", email=DEV_EMAIL)
     upstream = tmp_path / "upstream.git"
-    _git("init", "-q", "--bare", str(upstream), cwd=tmp_path)
+    _git("init", "-q", "-b", "main", "--bare", str(upstream), cwd=tmp_path)
     _git("push", "-q", str(upstream), "main:refs/heads/main", cwd=work)
     fork = tmp_path / "fork-remote.git"
     _git("clone", "-q", "--bare", str(upstream), str(fork), cwd=tmp_path)
@@ -611,7 +611,7 @@ def make_work_repo(tmp_path: Path, runs_dir: Path, item_id: int, *, tip_email: s
                    "export const Dashboard = () => <h1>{user.name}</h1>;\n",
                    "chore: seed", email=DEV_EMAIL)
     fork = tmp_path / "fork-origin.git"
-    _git("init", "-q", "--bare", str(fork), cwd=tmp_path)
+    _git("init", "-q", "-b", "main", "--bare", str(fork), cwd=tmp_path)
     _git("remote", "add", "origin", str(fork), cwd=repo)
     _git("remote", "add", "upstream", str(fork), cwd=repo)
     _git("push", "-q", "origin", "main:refs/heads/main", cwd=repo)

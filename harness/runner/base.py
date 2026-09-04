@@ -35,6 +35,11 @@ class RunRequest:
     add_dirs: tuple[Path, ...] = ()
     #: ``claude --max-budget-usd``; omitted from argv when ``None`` (D2 §6.1, B119).
     max_budget_usd: float | None = None
+    #: Absolute paths the model must not read (B218/D36). Each becomes one ``permissions.deny``
+    #: rule passed through ``--settings``. ``Read`` is NOT confined to ``cwd`` by the CLI: with
+    #: ``--permission-mode acceptEdits`` it will read any absolute path it is given, including
+    #: the harness's own ``.env``. A directory is written with a trailing ``/**``.
+    deny_read: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ import pytest
 
 from harness.errors import ConfigError
 from harness.runner import RunRequest, RunResult, get_runner
+from harness.runner import cli as cli_mod
 from harness.runner.cli import ClaudeCliRunner
 from harness.runner.fake import FakeRunner
 
@@ -146,8 +147,6 @@ def test_b25_minimal_argv_matches_section_5_4_3(tmp_path):
         "acceptEdits",
         "--allowed-tools",
         "Read,Glob,Grep",
-        "--",
-        "do the thing",
     ]
 
 
@@ -179,8 +178,6 @@ def test_b25_full_argv_matches_section_5_4_3(tmp_path):
         str(extra_a),
         "--add-dir",
         str(extra_b),
-        "--",
-        "implement it",
     ]
 
 
@@ -216,15 +213,17 @@ def test_b25_empty_add_dirs_omits_the_flag(tmp_path):
     assert "--add-dir" not in spawn.argv
 
 
-def test_b25_the_prompt_is_the_last_argument_after_the_option_terminator(tmp_path):
-    """B25: a prompt that looks like a flag still reaches claude as the prompt."""
+def test_b216_a_flag_shaped_prompt_reaches_claude_on_stdin(tmp_path):
+    """B216/D35: a prompt that looks like a flag is stdin, so it can never be parsed as one."""
     spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
     runner = ClaudeCliRunner(spawn=spawn)
     request = dataclasses.replace(minimal_request(tmp_path), prompt="--not-a-flag please")
 
     runner.run(request)
 
-    assert spawn.argv[-2:] == ["--", "--not-a-flag please"]
+    assert "--not-a-flag please" not in spawn.argv
+    assert "--" not in spawn.argv
+    assert spawn.kwargs["input"] == "--not-a-flag please"
 
 
 def test_b25_every_argv_entry_is_a_string(tmp_path):
@@ -706,8 +705,6 @@ def test_b119_the_rest_of_argv_is_unchanged_by_the_budget_flag(tmp_path):
         "acceptEdits",
         "--allowed-tools",
         "Read,Glob,Grep",
-        "--",
-        "do the thing",
     ]
 
 
@@ -733,11 +730,15 @@ def test_b119_a_request_that_never_set_the_budget_omits_the_flag(tmp_path):
 
 
 def test_b119_run_request_gains_max_budget_usd_as_its_last_field_defaulting_to_none(tmp_path):
-    """RUN-DECISIONS-D2 §12: RunRequest.max_budget_usd is the last field, default None."""
-    last = dataclasses.fields(RunRequest)[-1]
+    """RUN-DECISIONS-D2 §12: RunRequest.max_budget_usd defaults to None and is the last field
+    Delivery 2 defines. B218 appends ``deny_read`` after it, exactly as Delivery 3 appended
+    ``usage`` after ``RunResult.reset_at``; what this pins is its position among the D2 fields
+    and its default."""
+    names = [f.name for f in dataclasses.fields(RunRequest)]
+    budget = dataclasses.fields(RunRequest)[names.index("max_budget_usd")]
 
-    assert last.name == "max_budget_usd"
-    assert last.default is None
+    assert names[-2:] == ["max_budget_usd", "deny_read"]
+    assert budget.default is None
     assert minimal_request(tmp_path).max_budget_usd is None
 
 
@@ -1155,8 +1156,6 @@ def test_b200_capture_usage_replaces_output_format_json_in_the_same_position(tmp
         "acceptEdits",
         "--allowed-tools",
         "Read,Glob,Grep",
-        "--",
-        "do the thing",
     ]
     assert "json" not in spawn.argv
     assert spawn.argv.count("--output-format") == 1
@@ -1183,8 +1182,6 @@ def test_b200_the_default_runner_argv_is_the_unchanged_b25_argv(tmp_path):
         "acceptEdits",
         "--allowed-tools",
         "Read,Glob,Grep",
-        "--",
-        "do the thing",
     ]
     assert "--verbose" not in spawn.argv
     assert "stream-json" not in spawn.argv
@@ -1237,8 +1234,6 @@ def test_b200_capture_usage_leaves_every_optional_flag_in_its_b25_order(tmp_path
         str(extra_a),
         "--add-dir",
         str(extra_b),
-        "--",
-        "implement it",
     ]
 
 
@@ -1604,3 +1599,122 @@ def test_b203_a_rate_limited_fixture_may_still_carry_usage(tmp_path):
     assert is_rate_limited(result) is True
     assert result.usage is not None
     assert result.usage["seven_day"]["utilization"] == pytest.approx(0.99)
+
+
+# --------------------------------------------------------------------------
+# B216 - the prompt travels on stdin, and argv has a ceiling (D35)
+# --------------------------------------------------------------------------
+
+
+def test_b216_the_prompt_is_passed_on_stdin_and_never_in_argv(tmp_path):
+    """B216: `claude --print` reads the prompt from stdin; argv ends at the last flag."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert spawn.kwargs["input"] == "do the thing"
+    assert "do the thing" not in spawn.argv
+    assert spawn.argv[-1] == "Read,Glob,Grep"
+
+
+def test_b216_a_prompt_far_past_the_platform_ceiling_still_runs(tmp_path):
+    """B216: the unbounded argument is the prompt, so size stops being a spawn concern."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+    huge = "x" * (cli_mod.ARGV_LIMIT_WINDOWS * 4)
+    request = dataclasses.replace(minimal_request(tmp_path), prompt=huge)
+
+    result = runner.run(request)
+
+    assert result.ok
+    assert spawn.kwargs["input"] == huge
+
+
+def test_b216_argv_over_the_ceiling_is_refused_before_the_spawn(tmp_path):
+    """B216: an oversized system prompt fails legibly and spends nothing."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+    request = dataclasses.replace(
+        minimal_request(tmp_path), system_prompt="s" * (cli_mod.argv_limit() + 1)
+    )
+
+    result = runner.run(request)
+
+    assert not result.ok
+    assert result.exit_code == cli_mod.EXIT_ARGV_TOO_LONG
+    assert "--system-prompt" in (result.error or "")
+    assert spawn.calls == [], "the ceiling must be checked before claude is started"
+
+
+def test_b216_argv_too_long_returns_none_under_the_ceiling():
+    """B216: the guard is a ceiling, not a budget; an ordinary argv passes untouched."""
+    assert cli_mod.argv_too_long(["claude", "--print", "--max-turns", "30"]) is None
+
+
+def test_b216_argv_too_long_counts_the_separators():
+    """B216: the OS pays for the spaces between arguments, so the check must too."""
+    limit = cli_mod.argv_limit()
+    exact = ["a" * (limit - 2), "b"]  # len 'a...' + 1 separator + len 'b' == limit
+    assert cli_mod.argv_too_long(exact) is None
+    assert cli_mod.argv_too_long([*exact, "c"]) is not None
+
+
+def test_b216_the_windows_ceiling_is_the_cmd_exe_one_not_createprocess():
+    """B216: `claude` is an npm .CMD shim on Windows, so cmd.exe's 8191 governs."""
+    assert cli_mod.ARGV_LIMIT_WINDOWS == 8191
+    assert cli_mod.ARGV_LIMIT_POSIX > cli_mod.ARGV_LIMIT_WINDOWS
+
+
+# --------------------------------------------------------------------------
+# B218 - Read is not confined to cwd, so the sensitive paths are denied (D36)
+# --------------------------------------------------------------------------
+
+
+def test_b218_deny_read_becomes_setting_sources_and_settings(tmp_path):
+    """B218: the deny list travels as --settings, with --setting-sources emptied first."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+    request = dataclasses.replace(
+        minimal_request(tmp_path), deny_read=("D:/repo/.env", "D:/repo/state/**")
+    )
+
+    runner.run(request)
+
+    argv = spawn.argv
+    assert argv[argv.index("--setting-sources") + 1] == ""
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings == {
+        "permissions": {"deny": ["Read(D:/repo/.env)", "Read(D:/repo/state/**)"]}
+    }
+
+
+def test_b218_no_deny_list_means_no_settings_flags(tmp_path):
+    """B218: nothing to deny, nothing added; the B25 argv is untouched."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert "--settings" not in spawn.argv
+    assert "--setting-sources" not in spawn.argv
+
+
+def test_b218_deny_rules_carry_no_double_slash_prefix(tmp_path):
+    """B218: `Read(//<path>)` is accepted by the CLI and matches nothing -- measured, not
+    assumed. The enforced form is the bare absolute path."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+    request = dataclasses.replace(minimal_request(tmp_path), deny_read=("/home/x/.ssh/**",))
+
+    runner.run(request)
+
+    rules = json.loads(spawn.argv[spawn.argv.index("--settings") + 1])["permissions"]["deny"]
+    assert rules == ["Read(/home/x/.ssh/**)"]
+    assert not any("//" in rule for rule in rules)
+
+
+def test_b218_deny_settings_skips_blank_entries():
+    """B218: an empty configured path must not become a rule that denies everything."""
+    assert cli_mod.deny_settings(["", "   "]) is None
+    assert cli_mod.deny_settings([]) is None

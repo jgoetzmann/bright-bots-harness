@@ -16,6 +16,7 @@ from harness.errors import (
     GitHubError,
     HarnessError,
     IllegalTransition,
+    PreflightFailed,
     RateCeilingReached,
     RunnerError,
 )
@@ -399,6 +400,42 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
     )
     max_turns = int(ctx.config.max_turns["implement"])
 
+    # B219/D37: propose reads the product repository, so it must have one. Its prompt says
+    # "Read the repository at the current working directory", requires citations with line
+    # numbers, and forbids listing a path it has not seen -- none of which an empty run
+    # directory can support. Without this the stage ran with `cwd` pointing at `runs/item-N`,
+    # where Read/Glob/Grep find nothing on a runner and, on a developer box, wander into
+    # whatever unrelated checkout happens to be on the disk (see B218).
+    blockers = ctx.clones.preflight()
+    if blockers:
+        raise PreflightFailed("; ".join(blockers))
+    lease = ctx.clones.acquire(item)
+    try:
+        return _propose_leased(
+            ctx, item_id, item, lease, body=body, notes=notes, upstream_issue=upstream_issue
+        )
+    finally:
+        # Read-only: implement acquires its own clone from the base the package pins.
+        ctx.clones.release(lease, keep=False)
+
+
+def _propose_leased(
+    ctx: Context,
+    item_id: int,
+    item: Any,
+    lease: Any,
+    *,
+    body: str,
+    notes: str,
+    upstream_issue: int | None,
+) -> Path:
+    """One model call against the checkout at `lease.path`, then validation and publication."""
+    entry_state = item.state
+    max_turns = int(ctx.config.max_turns["implement"])
+    ctx.record_decision(
+        f"propose acquired a read-only clone at {lease.path} on base {lease.base_sha}; "
+        "the work package cites that tree and touched_paths is validated against it"
+    )
     problems: list[str] = []
     text = ""
     for attempt in (1, 2):
@@ -411,7 +448,8 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
             allowed_tools=ALLOWED_TOOLS,
             disallowed_tools=DISALLOWED_TOOLS,
             timeout_s=TIMEOUT_S,
-            cwd=ctx.run_dir,
+            cwd=lease.path,
+            add_dirs=(lease.path,),
             entry_state=entry_state,
         )
         text = (result.text or "").strip()
@@ -431,7 +469,7 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
         )
         problems = problems + validate_proposal(
             front,
-            path_exists=_path_checker(ctx, item),
+            path_exists=_path_checker(ctx, item, base_sha=lease.base_sha),
             max_turns=max_turns,
             open_issue=_open_issue_checker(ctx, item_id),
         )
@@ -579,9 +617,13 @@ def _issue_body(ctx: Context, item: Any) -> tuple[str, int | None]:
     return body or "(the issue has an empty body)", upstream
 
 
-def _path_checker(ctx: Context, item: Any) -> Callable[[str], bool]:
-    """B104: does the path exist in the product repository at the pinned base commit?"""
-    ref = item.base_sha or "HEAD"
+def _path_checker(ctx: Context, item: Any, *, base_sha: str | None = None) -> Callable[[str], bool]:
+    """B104: does the path exist in the product repository at the pinned base commit?
+
+    B219: the commit is the one propose's own clone was taken at, so validation and the model
+    see the same tree. Falls back to the item's base, then to HEAD.
+    """
+    ref = base_sha or item.base_sha or "HEAD"
     repo = ctx.config.repo
 
     def path_exists(path: str) -> bool:

@@ -1047,6 +1047,9 @@ def test_B69_a_halt_file_appearing_mid_implement_releases_the_clone_and_resets_t
     propose(rig.ctx, item_id)
     approved_item(rig, item_id)
     rig.log.clear()
+    # B219: propose now takes and releases a read-only clone of its own; this test is about
+    # the one implement holds when the halt lands.
+    rig.clones.released.clear()
 
     def gate_runner(clone, *, baseline, runner=None):
         rig.log.append(f"gates(baseline={baseline})")
@@ -1161,3 +1164,116 @@ def test_B104_every_touched_path_is_checked_and_an_empty_list_is_rejected():
         front, path_exists=lambda p: True, max_turns=80, open_issue=lambda n: n == 1
     )
     assert any("touched_paths" in e for e in errors), errors
+
+
+# --------------------------------------------------------------------------------------
+# B218 - deny_read_paths names every credential store a stage could otherwise read (D36)
+# --------------------------------------------------------------------------------------
+
+
+def _deny(tmp_path: Path):
+    from harness.stages import deny_read_paths
+
+    return deny_read_paths(load_config(write_env(tmp_path), environ={})), tmp_path
+
+
+def test_b218_deny_read_paths_covers_the_env_the_ledger_and_the_pin(tmp_path):
+    """B218: `.env` holds the PAT and the OAuth token; state/ and .harness/ hold the rest."""
+    paths, root = _deny(tmp_path)
+    root = Path(root).resolve().as_posix()
+
+    assert f"{root}/.env" in paths
+    assert f"{root}/local/.env" in paths
+    assert f"{root}/.harness/**" in paths
+    assert f"{root}/state/**" in paths
+
+
+def test_b218_deny_read_paths_covers_the_operator_home_credential_stores(tmp_path):
+    """B218: an unconfined Read reaches ~/.ssh and ~/.claude as easily as the repository."""
+    paths, _ = _deny(tmp_path)
+    home = Path.home().resolve().as_posix()
+
+    for relative in (".claude/**", ".ssh/**", ".aws/**", ".config/gh/**"):
+        assert f"{home}/{relative}" in paths, relative
+
+
+def test_b218_deny_read_paths_are_absolute_posix_and_never_double_slashed(tmp_path):
+    """B218: the CLI enforces bare absolute paths only; a relative or // rule matches nothing."""
+    paths, _ = _deny(tmp_path)
+
+    assert paths, "an empty deny list would confine nothing"
+    for path in paths:
+        assert not path.startswith("//"), path
+        assert "\\" not in path, path
+        assert Path(path.replace("/**", "")).is_absolute(), path
+
+
+def test_b218_run_model_hands_the_deny_list_to_every_request(tmp_path):
+    """B218: the confinement is run_model's, so no stage can forget to ask for it."""
+    from harness import stages as stages_mod
+
+    rig = make_rig(tmp_path, run_id="deny", gh=FakeGh())
+    stages_mod.run_model(
+        rig.ctx,
+        stage="propose",
+        item_id=None,
+        prompt="p",
+        allowed_tools=("Read", "Glob", "Grep"),
+        disallowed_tools=(),
+        timeout_s=10,
+        cwd=rig.config.runs_dir,
+    )
+
+    request = rig.runner.requests[-1]
+    assert request.deny_read == stages_mod.deny_read_paths(rig.config)
+    assert request.deny_read, "an empty deny list would confine nothing"
+
+
+# --------------------------------------------------------------------------------------
+# B219 - propose reads the product repository, so it is given one (D37)
+# --------------------------------------------------------------------------------------
+
+
+def test_b219_propose_acquires_a_clone_and_runs_the_model_inside_it(tmp_path):
+    """B219: the prompt says "Read the repository at the current working directory" and
+    forbids listing a path it has not seen. An empty run directory supports neither."""
+    rig, item_id = proposable(tmp_path)
+
+    propose(rig.ctx, item_id)
+
+    assert len(rig.clones.acquired) == 1, "propose made no clone"
+    lease = rig.clones.acquired[0]
+    request = rig.runner.requests[-1]
+    assert Path(request.cwd) == Path(lease.path)
+    assert tuple(Path(d) for d in request.add_dirs) == (Path(lease.path),)
+
+
+def test_b219_propose_releases_the_clone_without_keeping_it(tmp_path):
+    """B219: read-only. implement acquires its own clone from the base the package pins."""
+    rig, item_id = proposable(tmp_path)
+
+    propose(rig.ctx, item_id)
+
+    assert rig.clones.released == [(rig.clones.acquired[0], False)]
+
+
+def test_b219_a_failed_propose_still_releases_the_clone(tmp_path):
+    """B219: MAX_CONCURRENT_CLONES is 1, so a leaked lease would wedge the next item."""
+    rig, item_id = proposable(tmp_path, propose_text="no proposal block here at all")
+
+    with pytest.raises(HarnessError):
+        propose(rig.ctx, item_id)
+
+    assert rig.clones.released == [(rig.clones.acquired[0], False)]
+
+
+def test_b219_propose_records_the_base_it_read(tmp_path):
+    """B219: the package cites one tree; DECISIONS names which, so a reviewer can check it."""
+    rig, item_id = proposable(tmp_path)
+
+    propose(rig.ctx, item_id)
+
+    decisions = (rig.config.runs_dir / f"item-{item_id}" / "DECISIONS.md").read_text(
+        encoding="utf-8"
+    )
+    assert rig.clones.acquired[0].base_sha in decisions

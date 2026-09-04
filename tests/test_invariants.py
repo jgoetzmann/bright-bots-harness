@@ -441,6 +441,8 @@ import json
 import sys
 import tomllib
 
+from harness import verify_pin as verify_pin_mod
+
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 SPENDING_WORKFLOWS = ("discover.yml", "implement.yml", "feedback.yml")
 ALL_WORKFLOWS = (
@@ -769,7 +771,7 @@ def _pin_repo(root: Path) -> Path:
 
 
 def _expected_pin(root: Path) -> str:
-    """RUN-DECISIONS-D2 §10: sha256 over (posix path + NUL + bytes) per pinned file, sorted."""
+    """RUN-DECISIONS-D2 §10 + B217: sha256 over (posix path + NUL + normalised bytes), sorted."""
     pinned = ["harness/gates.py", "harness/packager.py", "harness/redact.py"]
     pinned += sorted(
         f"prompts/{p.name}" for p in (root / "prompts").iterdir() if p.is_file()
@@ -778,7 +780,7 @@ def _expected_pin(root: Path) -> str:
     for rel in sorted(pinned):
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        digest.update((root / rel).read_bytes())
+        digest.update(verify_pin_mod.normalise((root / rel).read_bytes()))
     return digest.hexdigest()
 
 
@@ -2444,3 +2446,56 @@ def test_discover_yml_still_fails_the_run_on_a_real_error():
     assert 'exit "${status}"' in lines, "a non-budget discover failure must fail the step"
     assert "failed=1" in lines, "a non-budget propose failure must fail the step"
     assert 'exit "$failed"' in lines, "the step's exit code must carry the propose failures"
+
+
+# --------------------------------------------------------------------------------------
+# B217 — the pin survives a checkout that rewrites line endings
+# --------------------------------------------------------------------------------------
+
+
+def test_b217_a_crlf_checkout_computes_the_same_pin(tmp_path):
+    """B217: `core.autocrlf` is true by default on Git for Windows, and actions/checkout
+    inherits it. Hashing raw bytes failed the pin closed on every Windows checkout."""
+    from harness import verify_pin
+
+    lf = _pin_repo(tmp_path / "lf")
+    crlf = tmp_path / "crlf"
+    for rel in verify_pin.pinned_files(lf):
+        dst = crlf / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        body = verify_pin.normalise((lf / rel).read_bytes())
+        dst.write_bytes(body.replace(verify_pin.LF, verify_pin.CRLF))
+
+    assert verify_pin.compute(crlf) == verify_pin.compute(lf)
+
+
+def test_b217_normalise_folds_crlf_and_lone_cr_to_lf():
+    """B217: both rewrites a checkout can produce collapse to one form."""
+    from harness import verify_pin
+
+    assert verify_pin.normalise(b"a" + verify_pin.CRLF + b"b") == b"a" + verify_pin.LF + b"b"
+    assert verify_pin.normalise(b"a" + verify_pin.CR + b"b") == b"a" + verify_pin.LF + b"b"
+    assert verify_pin.normalise(b"a" + verify_pin.LF + b"b") == b"a" + verify_pin.LF + b"b"
+
+
+def test_b217_normalising_does_not_blunt_the_pin(tmp_path):
+    """B217: only line endings are folded; every other byte still moves the hash."""
+    from harness import verify_pin
+
+    root = _pin_repo(tmp_path / "repo")
+    before = verify_pin.compute(root)
+    target = root / "harness" / "gates.py"
+    target.write_bytes(target.read_bytes() + b"# one more comment\n")
+
+    assert verify_pin.compute(root) != before
+
+
+def test_b217_the_committed_pin_matches_this_working_tree():
+    """B217: whatever else changed, .harness/PIN describes the tree it ships with."""
+    from harness import verify_pin
+
+    root = verify_pin.default_repo_root()
+    if not (root / verify_pin.PIN_RELATIVE).is_file():
+        pytest.skip("no .harness/PIN in this tree")
+
+    verify_pin.check(root)

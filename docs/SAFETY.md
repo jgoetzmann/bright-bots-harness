@@ -116,7 +116,29 @@ the CLI's own `rate_limit_event` lines are visible to the governor (B200,
 the real `cli` backend (B202, `harness/runner/base.py`), so that pair is what a live run
 spawns. Neither is a permission flag.
 
+Delivery 3's acceptance runs added two more elements to that same template, both of them
+restrictions. The prompt no longer travels in argv at all — `claude --print` reads it from
+stdin (B216/D35), which removed the option terminator and the only unbounded argument. And
+every call now carries `--setting-sources ""` followed by a `--settings` document holding a
+`permissions.deny` list (B218/D36):
+
+```
+--setting-sources "" --settings {"permissions":{"deny":["Read(<root>/.env)", …]}}
+```
+
+That list is built by `harness.stages.deny_read_paths` from the repository root and the
+operator's home directory. It exists because `Read` is **not** confined to the working
+directory: a measured probe under exactly the propose flags read an absolute path outside
+`cwd`, including the harness's own `.env`. On an Actions runner that file sits two levels
+above every stage's `cwd`, so this is a production path, not a developer-box curiosity.
+Emptying `--setting-sources` stops the operator's `~/.claude` and this repository's
+`.claude/` from widening what a stage may touch. Read it as what it is — an enumerated deny
+list closing the credential path — and not as a sandbox: the CLI's rule syntax cannot express
+"nothing outside this directory", and a stage can still read an unrelated checkout elsewhere
+on the same disk.
+
 **Verify:** `grep -rn "dangerously-skip-permissions" harness/` returns nothing.
+`python -m pytest tests/test_runner_cli.py -k B218` pins the flags and the rule form.
 
 ### I-4 — `os.environ` is read only in `config.py`
 

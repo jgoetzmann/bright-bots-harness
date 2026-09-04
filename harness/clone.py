@@ -49,25 +49,66 @@ def branch_name_for(item: WorkItem) -> str:
 
 
 def _source_repo(config) -> str:
-    """The repository clones come from: the fork when configured (D2 §4.4), else the product."""
-    fork = getattr(config, "fork_repo", "") or ""
-    return fork.strip() or config.repo
+    """The repository clones come from: the fork at tier 2 (D2 §4.4), else the product repo.
+
+    B220/D40: the fork is only the right source while the harness can keep it current, and
+    that takes a write credential -- `sync_fork` fast-forwards it through `gh.push_ref`, which
+    tier 2 alone can call. Below tier 2 the fork is frozen wherever it was last left, so
+    cloning it pins every proposal, diff and gate run to a stale base and silently reports it
+    as the product repository. Measured: a tier-0 trial cloned a fork twelve commits behind
+    upstream. With no push there is no reason to prefer the fork at all.
+    """
+    fork = (getattr(config, "fork_repo", "") or "").strip()
+    if fork and int(getattr(config, "permission_tier", 0) or 0) >= 2:
+        return fork
+    return config.repo
+
+
+#: The Windows extended-length prefix and its UNC form, spelled without an escape so no
+#: line in this module carries a lone backslash that a later edit could silently break.
+SEP = chr(92)
+EXTENDED_PREFIX = SEP + SEP + "?" + SEP
+EXTENDED_UNC_PREFIX = EXTENDED_PREFIX + "UNC" + SEP
+
+
+def long_path(path: Path | str) -> str:
+    """The same path in the form Windows accepts past ``MAX_PATH`` (B224).
+
+    The extended-length prefix opts one call out of the 260-character limit. It needs a
+    fully qualified path with backslash separators, so everything goes through ``abspath``
+    first, and it is a no-op on every other platform.
+    """
+    text = os.path.abspath(str(path))
+    if os.name != "nt" or text.startswith(EXTENDED_PREFIX):
+        return text
+    if text.startswith(SEP + SEP):
+        return EXTENDED_UNC_PREFIX + text[2:]
+    return EXTENDED_PREFIX + text
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:
-    """Clear the read-only bit and retry.
+    """Clear the read-only bit, then retry past ``MAX_PATH``; re-raise if it still will not go.
 
     Git marks everything under .git/objects read-only on Windows, so a plain rmtree of a clone
     fails partway through and leaves a half-deleted directory behind.
+
+    B224/D44: both retries used to end in a bare ``return``, which made ``shutil.rmtree`` report
+    success over a partial delete. Measured: 1943 files survived a "successful" removal of a
+    clone that had had ``npm ci`` run in it -- the deepest was 324 characters, and a nested
+    ``node_modules`` chain is ~185 of those on its own -- and the next ``acquire`` died on
+    ``git clone``'s "destination path already exists and is not an empty directory". Swallowing
+    the error turned a removable problem into an unreadable one two steps later.
     """
     try:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        os.chmod(long_path(path), stat.S_IWRITE | stat.S_IREAD)
     except OSError:
-        return
+        pass
     try:
-        func(path)
-    except OSError:
+        func(long_path(path))
         return
+    except OSError:
+        pass
+    func(path)  # let the real error out of rmtree
 
 
 class CloneManager:
@@ -170,7 +211,20 @@ class CloneManager:
         clone_path = self._assert_under_runs_dir(run_dir / "clone")
 
         if clone_path.exists():
-            shutil.rmtree(clone_path, onexc=_on_rmtree_error)
+            shutil.rmtree(long_path(clone_path), onexc=_on_rmtree_error)
+        if clone_path.exists():
+            # B224: never hand a half-deleted directory to `git clone`, whose own message for
+            # it names neither the leftovers nor the reason. The count is best-effort on
+            # purpose: whatever defeated the removal can defeat the walk too, and a failure to
+            # count must not replace this message with a traceback.
+            try:
+                leftovers: object = sum(1 for _ in clone_path.rglob("*"))
+            except OSError:
+                leftovers = "an unknown number of"
+            raise CloneError(
+                f"could not clear the previous clone at {clone_path}: {leftovers} entries "
+                "remain. On Windows this is usually a file still open in another process."
+            )
         run_dir.mkdir(parents=True, exist_ok=True)
 
         code, _out, err = self._run_git(

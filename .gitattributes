@@ -1,0 +1,15 @@
+# The pin (.harness/PIN) hashes file content, and `normalise` in harness/verify_pin.py folds
+# CRLF to LF so a Windows checkout cannot trip it. This file is the other half: keep the working
+# tree itself identical on every platform, so a diff, a gate log and a review package all read
+# the same wherever they were produced.
+* text=auto eol=lf
+
+# Byte-exact by nature.
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.db binary
+
+# Fixtures are compared verbatim; never let git touch them.
+tests/fixtures/** -text

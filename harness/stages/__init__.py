@@ -21,6 +21,7 @@ __all__ = [
     "DEFAULT_ENTRY_STATE",
     "DEFAULT_RESET_DELAY",
     "PROMPTS_DIR",
+    "deny_read_paths",
     "STAGES",
     "StageFn",
     "data_block",
@@ -143,6 +144,53 @@ def stamp_usage(usage: Mapping[str, Any] | None, now: datetime) -> dict | None:
     return stamped
 
 
+#: Files and directories under the repository root that no model call may read (B218/D36).
+#: `.env` holds the machine-account PAT and the Claude OAuth token; `state/` and `.harness/`
+#: hold the ledger, the trust file and the pin.
+DENY_UNDER_ROOT: tuple[str, ...] = (".env", "local/.env", ".harness/**", "state/**")
+
+#: The same, under the operator's home directory: every credential store a stage could
+#: otherwise walk into. On an Actions runner most of these do not exist, which costs nothing.
+DENY_UNDER_HOME: tuple[str, ...] = (
+    ".claude/**",
+    ".ssh/**",
+    ".aws/**",
+    ".config/gh/**",
+    ".netrc",
+    ".git-credentials",
+    ".gitconfig",
+)
+
+
+def deny_read_paths(config: Any) -> tuple[str, ...]:
+    """Absolute paths handed to every :class:`RunRequest` as ``deny_read`` (B218/D36).
+
+    The `claude` CLI does not confine ``Read`` to the working directory: under
+    ``--permission-mode acceptEdits`` it reads any absolute path it is asked for. That was
+    measured, not assumed -- a propose call with `cwd` set to an empty run directory read the
+    harness's own `.env` and an unrelated product checkout elsewhere on the disk. Enumerating
+    the sensitive paths is what the CLI's rule syntax can actually express; it closes the
+    credential path, and it does not pretend to be a sandbox.
+    """
+    paths: list[str] = []
+    root = Path(getattr(config, "repo_root", ".")).resolve()
+    for relative in DENY_UNDER_ROOT:
+        paths.append(f"{root.as_posix()}/{relative}")
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):  # pragma: no cover - a home-less environment
+        home = None
+    if home is not None and home != root:
+        for relative in DENY_UNDER_HOME:
+            paths.append(f"{home.as_posix()}/{relative}")
+    trust = Path(getattr(config, "trust_file", "") or "")
+    if trust.is_absolute():
+        candidate = trust.resolve().as_posix()
+        if candidate not in paths:
+            paths.append(candidate)
+    return tuple(paths)
+
+
 def run_model(
     ctx: Context,
     *,
@@ -174,6 +222,7 @@ def run_model(
         timeout_s=timeout_s,
         add_dirs=add_dirs,
         max_budget_usd=auth.max_budget_usd,
+        deny_read=deny_read_paths(ctx.config),
     )
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)

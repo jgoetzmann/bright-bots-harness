@@ -137,7 +137,7 @@ def _git(*args: str, cwd: Path) -> str:
 
 def _init_repo(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    _git("init", "-q", cwd=path)
+    _git("init", "-q", "-b", "main", cwd=path)
     _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=path)
     return path
 
@@ -157,7 +157,7 @@ def make_work_repo(tmp_path: Path, runs_dir: Path, item_id: int, *, tip_email: s
                    "export const Dashboard = () => <h1>{user.name}</h1>;\n",
                    "chore: seed", email=DEV_EMAIL)
     fork = tmp_path / "fork-origin.git"
-    _git("init", "-q", "--bare", str(fork), cwd=tmp_path)
+    _git("init", "-q", "-b", "main", "--bare", str(fork), cwd=tmp_path)
     _git("remote", "add", "origin", str(fork), cwd=repo)
     _git("remote", "add", "upstream", str(fork), cwd=repo)
     _git("push", "-q", "origin", "main:refs/heads/main", cwd=repo)

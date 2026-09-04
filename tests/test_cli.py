@@ -625,6 +625,7 @@ def write_ledger(
     spent_usd: float = 0.0,
     rate_limited_until: str | None = None,
     calls: int = 0,
+    usage: dict | None = None,
 ) -> Path:
     """A handoff §6.2 ledger whose window started a minute ago, so it cannot roll."""
     payload = {
@@ -634,6 +635,7 @@ def write_ledger(
             "spent_usd": spent_usd,
             "calls": calls,
             "rate_limited_until": rate_limited_until,
+            "usage": usage,
         },
         "observations": {},
         "cursors": {
@@ -1516,7 +1518,7 @@ def make_clone_repo(tmp_path: Path, item_id: int) -> tuple[Path, str]:
     """A real, clean git clone at runs/item-N/clone with the work branch checked out."""
     clone = tmp_path / "runs" / f"item-{item_id}" / "clone"
     clone.mkdir(parents=True, exist_ok=True)
-    _git_here("init", "-q", cwd=clone)
+    _git_here("init", "-q", "-b", "main", cwd=clone)
     _git_here("symbolic-ref", "HEAD", "refs/heads/main", cwd=clone)
     (clone / "scripts").mkdir(exist_ok=True)
     (clone / "scripts" / "check-bundle-size.js").write_text(
@@ -2324,3 +2326,85 @@ def test_audit_bb_configure_explain_still_prints_a_span_for_every_key(capsys):
     assert "allowed 0.5..64" in out, out  # a float key's range
     assert "allowed true|false" in out, out  # the one bool key
     assert "int_or_null" not in out and "allowed text" not in out
+
+
+# --------------------------------------------------------------------------------------
+# B221 - `harness ledger` prints the measured usage and the distance to each stop (D41)
+# --------------------------------------------------------------------------------------
+
+USAGE_SAMPLE = {
+    "five_hour": {"utilization": 0.49, "resets_at": "2026-09-04T11:00:00Z"},
+    "seven_day": {"utilization": 0.58, "resets_at": "2026-09-08T20:00:00Z"},
+    "status": "allowed",
+    "observed_at": "2026-09-04T10:28:02Z",
+}
+
+
+def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monkeypatch, capsys):
+    """B221: the two D3 stops are computed from these numbers, so the ledger must show them."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    write_ledger(tmp_path, spent_usd=1.22, calls=1, usage=USAGE_SAMPLE)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger"]) == 0
+
+    out = capsys.readouterr().out
+    assert "49.0%" in out and "stop at 70%" in out
+    assert "58.0%" in out and "stop at 90%" in out
+    # One decimal, not zero: with 0.4 points left ":.0f" printed "0 to go", which reads as
+    # stopped when it is not.
+    assert "21.0 to go" in out and "32.0 to go" in out
+    assert "2026-09-08T20:00:00Z" in out
+
+
+def test_b221_ledger_says_so_plainly_when_usage_was_never_observed(tmp_path, monkeypatch, capsys):
+    """B221 + B114: no signal is a state to report, not a zero to print."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    write_ledger(tmp_path, spent_usd=1.22, calls=1)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger"]) == 0
+
+    out = capsys.readouterr().out
+    assert "never observed" in out
+    assert "%" not in out.split("usage:")[1].split("observations:")[0]
+
+
+def test_b221_a_utilization_past_the_stop_reads_as_stopped(tmp_path, monkeypatch, capsys):
+    """B221: past the threshold the line must not read as remaining room."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    usage = dict(USAGE_SAMPLE, five_hour={"utilization": 0.72, "resets_at": "z"})
+    write_ledger(tmp_path, spent_usd=1.22, calls=1, usage=usage)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger"]) == 0
+
+    out = capsys.readouterr().out
+    assert "STOPPED" in out
+    assert "72.0%" in out
+
+
+def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeypatch, capsys):
+    """B221: at 69.6% against a 70% stop there is still room, and the line must say so."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    usage = dict(USAGE_SAMPLE, five_hour={"utilization": 0.696, "resets_at": "z"})
+    write_ledger(tmp_path, spent_usd=1.0, calls=1, usage=usage)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger"]) == 0
+
+    out = capsys.readouterr().out
+    assert "0.4 to go" in out
+    assert "STOPPED" not in out

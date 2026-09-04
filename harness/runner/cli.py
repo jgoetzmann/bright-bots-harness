@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +25,15 @@ STDERR_TAIL_CHARS = 2000
 #: Synthetic exit codes for the cases where the process never reported one.
 EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
+EXIT_ARGV_TOO_LONG = 126
+
+#: The prompt travels on stdin, never in argv (D35). What is left is flags plus the system
+#: prompt, and that still has to fit: on Windows ``claude`` is an npm ``.CMD`` shim, so the
+#: whole command line passes through ``cmd.exe``, whose hard ceiling is 8191 characters --
+#: about a quarter of the 32767 ``CreateProcess`` allows. Over it, cmd.exe prints "The command
+#: line is too long." and exits non-zero, which reads like a model failure and is not one.
+ARGV_LIMIT_WINDOWS = 8191
+ARGV_LIMIT_POSIX = 131072
 
 _ISO_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
@@ -37,6 +47,50 @@ def _spawn_resolved(argv: list[str], **kwargs: object) -> subprocess.CompletedPr
     """Default spawn: resolve argv[0] on PATH first (Windows ``.CMD`` shims need PATHEXT)."""
     resolved = shutil.which(argv[0]) or argv[0]
     return subprocess.run([resolved, *argv[1:]], **kwargs)  # type: ignore[call-overload]
+
+
+def argv_limit() -> int:
+    """The platform ceiling on one command line (B216)."""
+    return ARGV_LIMIT_WINDOWS if os.name == "nt" else ARGV_LIMIT_POSIX
+
+
+def argv_too_long(argv: Sequence[str]) -> str | None:
+    """A legible refusal when `argv` cannot be spawned, else ``None`` (B216).
+
+    Names the offender, because the only argument that can realistically grow past the ceiling
+    is ``--system-prompt`` -- and ``prompts/system.md`` is pinned, so the fix is a prompt edit
+    and a re-pin, not a code change.
+    """
+    limit = argv_limit()
+    # One separator per gap, matching how the OS assembles the line.
+    length = sum(len(part) for part in argv) + max(0, len(argv) - 1)
+    if length <= limit:
+        return None
+    widest = max(range(len(argv)), key=lambda i: len(argv[i]), default=0)
+    culprit = argv[widest] if argv else ""
+    name = argv[widest - 1] if widest > 0 and argv[widest - 1].startswith("--") else "argv"
+    advice = {
+        "--system-prompt": "shorten prompts/system.md and re-pin",
+        "--settings": "shorten the deny list (stages.deny_read_paths) or the repository path",
+    }.get(name, "shorten it")
+    return (
+        f"command line is {length} characters; this platform allows {limit}. "
+        f"The longest argument is {name} ({len(culprit)} characters): {advice}. "
+        "The prompt itself already travels on stdin (D35) and is not the cause."
+    )
+
+
+def deny_settings(paths: Sequence[str]) -> str | None:
+    """``--settings`` JSON denying Read on `paths`, or ``None`` when there is nothing to deny.
+
+    B218/D36. The rule form that the CLI actually enforces is a bare absolute path -- a
+    ``//``-prefixed one is accepted and silently matches nothing, and a relative glob such as
+    ``**/.env`` matches nothing either. Both were measured, not assumed.
+    """
+    rules = [f"Read({path})" for path in paths if str(path).strip()]
+    if not rules:
+        return None
+    return json.dumps({"permissions": {"deny": rules}}, separators=(",", ":"))
 
 
 def parse_reset_at(text: str) -> str | None:
@@ -183,6 +237,11 @@ class ClaudeCliRunner:
 
         B200: with ``capture_usage`` the ``--output-format json`` pair becomes
         ``--output-format stream-json --verbose`` in that same position; nothing else moves.
+
+        B216/D35: the prompt is NOT here. ``claude --print`` reads it from stdin, and every
+        flag below is bounded while the prompt is not -- an implement prompt carries a diff and
+        a gate log. The option terminator went with it: nothing follows the flags, so a prompt
+        beginning with ``-`` can no longer be read as one.
         """
         output_format: list[str] = (
             ["--output-format", "stream-json", "--verbose"]
@@ -210,14 +269,20 @@ class ClaudeCliRunner:
         if request.disallowed_tools:
             argv.append("--disallowed-tools")
             argv.append(",".join(request.disallowed_tools))
+        settings = deny_settings(request.deny_read)
+        if settings is not None:
+            # B218: `--setting-sources` first, so the operator's own ~/.claude and the
+            # repository's .claude/ cannot widen what this call may touch; then the deny rules.
+            argv.append("--setting-sources")
+            argv.append("")
+            argv.append("--settings")
+            argv.append(settings)
         if request.system_prompt is not None:
             argv.append("--system-prompt")
             argv.append(request.system_prompt)
         for directory in request.add_dirs:
             argv.append("--add-dir")
             argv.append(str(directory))
-        argv.append("--")
-        argv.append(request.prompt)
         return argv
 
     def build_env(self) -> dict[str, str]:
@@ -229,12 +294,19 @@ class ClaudeCliRunner:
 
     def run(self, request: RunRequest) -> RunResult:
         argv = self.build_argv(request)
+        too_long = argv_too_long(argv)
+        if too_long is not None:
+            # B216: refused here, legibly, rather than as cmd.exe's bare "The command line is
+            # too long." on stderr -- which arrives as a non-zero exit and reads like a failed
+            # model call. Nothing is spent.
+            return self._failure(request, EXIT_ARGV_TOO_LONG, too_long)
         env = self.build_env()
         try:
             proc = self.spawn(
                 argv,
                 cwd=str(request.cwd),
                 env=env,
+                input=request.prompt,
                 timeout=request.timeout_s,
                 shell=False,
                 capture_output=True,

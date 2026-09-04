@@ -6,9 +6,12 @@ reaches the network. The default remote URL is asserted through a recording `git
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -340,3 +343,126 @@ def test_B48_release_keep_true_leaves_the_clone_and_records_the_path(
     kept = config.runs_dir / lease.run_id / "KEPT"
     assert kept.is_file()
     assert str(lease.path) in kept.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------
+# B220 - the fork is the clone source only while it can be kept current (D40)
+# --------------------------------------------------------------------------------------
+
+
+def test_b220_tier_2_clones_the_fork(tmp_path):
+    """B220: at tier 2 sync_fork can fast-forward the fork, so the fork is the right base."""
+    from harness.clone import _source_repo
+
+    config = SimpleNamespace(
+        fork_repo="bot/product", repo="owner/product", permission_tier=2
+    )
+
+    assert _source_repo(config) == "bot/product"
+
+
+def test_b220_tier_0_clones_the_product_repository_not_the_stale_fork(tmp_path):
+    """B220: below tier 2 there is no push, so sync_fork cannot run and the fork is frozen."""
+    from harness.clone import _source_repo
+
+    config = SimpleNamespace(
+        fork_repo="bot/product", repo="owner/product", permission_tier=0
+    )
+
+    assert _source_repo(config) == "owner/product"
+
+
+def test_b220_no_fork_configured_always_means_the_product_repository():
+    """B220: unchanged from Delivery 1 -- an empty FORK_REPO was never a clone source."""
+    from harness.clone import _source_repo
+
+    for tier in (0, 2):
+        config = SimpleNamespace(fork_repo="", repo="owner/product", permission_tier=tier)
+        assert _source_repo(config) == "owner/product"
+
+
+# --------------------------------------------------------------------------------------
+# B224 - a clone that will not delete must say so, not report success (D44)
+# --------------------------------------------------------------------------------------
+
+
+def test_b224_long_path_wraps_a_drive_path_in_the_extended_prefix():
+    """B224: the prefix is what lifts the 260-character limit for one call."""
+    from harness.clone import EXTENDED_PREFIX, long_path
+
+    result = long_path("C:/Users/x/y")
+
+    if os.name == "nt":
+        assert result.startswith(EXTENDED_PREFIX)
+        assert result.endswith("Users" + chr(92) + "x" + chr(92) + "y")
+    else:
+        assert not result.startswith(EXTENDED_PREFIX)
+
+
+def test_b224_long_path_is_idempotent():
+    """B224: rmtree's error handler calls it on paths it may already have wrapped."""
+    from harness.clone import long_path
+
+    once = long_path("C:/Users/x")
+
+    assert long_path(once) == once
+
+
+def test_b224_a_removal_that_cannot_succeed_raises_instead_of_returning(tmp_path):
+    """B224: both retries ended in a bare `return`, so shutil.rmtree reported success over a
+    partial delete and the failure surfaced two steps later as a git clone error."""
+    from harness.clone import _on_rmtree_error
+
+    target = tmp_path / "stubborn"
+    target.mkdir()
+    calls: list[str] = []
+
+    def always_fails(path):
+        calls.append(str(path))
+        raise OSError(5, "Access is denied")
+
+    with pytest.raises(OSError):
+        _on_rmtree_error(always_fails, str(target), OSError())
+
+    assert calls, "the handler never retried the removal"
+
+
+def test_b224_a_tree_deeper_than_max_path_is_removed(tmp_path):
+    """B224: measured on a real clone -- 1943 files survived a "successful" rmtree, the
+    deepest path 324 characters, because `npm ci` nests node_modules inside node_modules."""
+    from harness.clone import _on_rmtree_error, long_path
+
+    deep = tmp_path / "clone"
+    deep.mkdir()
+    current = deep
+    while len(str(current)) < 300:
+        current = current / "node_modules"
+        # The extended form is needed to *build* the tree too: os.mkdir refuses at MAX_PATH,
+        # which is why only a native installer like npm produces one of these in the first place.
+        os.mkdir(long_path(current))
+    leaf = current / "accessible-name-and-description.d.ts.map"
+    with open(long_path(leaf), "w", encoding="utf-8") as handle:
+        handle.write("{}")
+
+    shutil.rmtree(long_path(deep), onexc=_on_rmtree_error)
+
+    assert not deep.exists()
+
+
+def test_b224_acquire_refuses_a_clone_directory_it_could_not_clear(
+    config, clock, item, source_repo, monkeypatch
+):
+    """B224: git's own message for this names neither the leftovers nor the reason."""
+    from harness import clone as clone_mod
+
+    source_path, _head = source_repo
+    manager = local_manager(config, clock, source_path)
+    lease = manager.acquire(item)
+    (Path(lease.path) / "survivor.txt").write_text("still here", encoding="utf-8")
+    monkeypatch.setattr(clone_mod.shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(clone_mod.CloneError) as excinfo:
+        manager.acquire(item)
+
+    assert "could not clear the previous clone" in str(excinfo.value)
+    assert "entries remain" in str(excinfo.value)

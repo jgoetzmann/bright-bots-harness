@@ -6,7 +6,7 @@ import json
 import logging
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from harness import clone as clone_mod
 from harness import gates, redact
@@ -24,7 +24,6 @@ __all__ = [
     "HANDOFF_NAME",
     "MAX_BODY_CHARS",
     "MAX_COMMENT_CHARS",
-    "PUSH_BRANCH",
     "SYNC_FORK",
     "build_handoff_body",
     "build_pr_body",
@@ -67,11 +66,11 @@ GIT_IDENTITY = (
     "user.email=harness@brightboost-harness",
 )
 
-# Module-level injectables, as in ``implement.py``. Tests replace these; production uses the real
-# fork sync and, with ``PUSH_BRANCH`` None, ``ctx.gh.push_branch``. Every git command in this
-# module runs through ``gates.run_command`` inside the lease's clone.
+# The one module-level injectable, as in ``implement.py``: tests replace it so no test can
+# reach the network. The push has no injectable of its own — it goes through ``ctx.gh``, which
+# every test already fakes. Every git command in this module runs through ``gates.run_command``
+# inside the lease's clone.
 SYNC_FORK = clone_mod.sync_fork
-PUSH_BRANCH: Callable[..., None] | None = None
 
 
 # --------------------------------------------------------------------------------------------
@@ -292,8 +291,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         check_halt(ctx.config.halt_file)
 
         # 3. push the branch to the fork — never to upstream (§5.3).
-        push = PUSH_BRANCH if PUSH_BRANCH is not None else ctx.gh.push_branch
-        push(the_lease.path, the_lease.branch, remote_repo=fork)
+        ctx.gh.push_branch(the_lease.path, the_lease.branch, remote_repo=fork)
         ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
     record["pushed"] = True
 
@@ -643,10 +641,11 @@ def _gate_summary(run_dir: Path) -> tuple[str, list[str]]:
     return "", []
 
 
-def _decisions_tail(run_dir: Path, limit: int = DECISION_TAIL_LINES) -> list[str]:
-    """The tail of the run's DECISIONS.md, so the next run inherits the reasoning (B213)."""
+def _decisions_tail(run_dir: Path) -> list[str]:
+    """The last ``DECISION_TAIL_LINES`` of the run's DECISIONS.md, so the next run inherits
+    the reasoning (B213). The same constant labels the section in ``build_handoff_body``."""
     lines = [line.rstrip() for line in _read(run_dir / "DECISIONS.md").splitlines()]
-    return [line for line in lines if line.strip()][-limit:]
+    return [line for line in lines if line.strip()][-DECISION_TAIL_LINES:]
 
 
 def _acceptance(item: Any) -> list[str]:

@@ -91,12 +91,8 @@ def _is_allowed(path: Path) -> bool:
         target = Path(path).resolve()
     except OSError:
         target = Path(path).absolute()
-    for root in _WRITE_ROOTS:
-        if target == root:
-            return True
-        if target.is_relative_to(root):
-            return True
-    return False
+    # ``is_relative_to`` is True for the root itself, so containment is the whole I-8 rule.
+    return any(target.is_relative_to(root) for root in _WRITE_ROOTS)
 
 
 def guarded_write(path: Path, text: str) -> None:

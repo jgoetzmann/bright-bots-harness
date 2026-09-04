@@ -6,7 +6,7 @@ row in the root `DECISIONS.md` (D31, D34), so the frozen text stays comparable t
 
 | File | What it is |
 |---|---|
-| `HARNESS-SPEC.md` | Frozen spec. Delivery 1: store, governor, runner, stages, invariants I-1…I-10, behaviors B1–B99 |
+| `HARNESS-SPEC.md` | Frozen spec. Delivery 1: store, governor, runner, stages, invariants I-1…I-10, behaviors B1–B86 |
 | `HARNESS-REVIEW.md` | Runnable review protocol for Delivery 1. Run from the repository root |
 | `DELIVERY-2-HANDOFF.md` | Frozen spec. Delivery 2: GitHub mode, trust gate, workflows, local mode, B100–B150 |
 | `DELIVERY-2-REVIEW.md` | Runnable review protocol for Delivery 2. Run from the repository root |

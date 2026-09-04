@@ -93,14 +93,21 @@ jobs:
             const ledgerCli = read('runs/heartbeat/ledger.json').trim();
             const statusCli = read('runs/heartbeat/status.json').trim();
 
-            const trackingRaw = (process.env.TRACKING_ISSUE || '').trim()
-              || (cfg.TRACKING_ISSUE === null || cfg.TRACKING_ISSUE === undefined ? '' : String(cfg.TRACKING_ISSUE));
+            // Precedence, one rule for the whole repository (.harness/README.md): the committed
+            // .harness/config.json wins, and the repository variable fills the knob only where
+            // that file leaves it empty. discover.yml, implement.yml and feedback.yml apply it in
+            // their .env writer; this step reads the same two sources directly, so it orders them
+            // the same way — otherwise the comment could describe a different tracking issue and
+            // a different fork from the ones `harness ledger --json` above it just measured.
+            const cfgTracking = (cfg.TRACKING_ISSUE === null || cfg.TRACKING_ISSUE === undefined)
+              ? '' : String(cfg.TRACKING_ISSUE).trim();
+            const trackingRaw = cfgTracking || (process.env.TRACKING_ISSUE || '').trim();
             const tracking = parseInt(trackingRaw, 10);
             if (!Number.isFinite(tracking) || tracking <= 0) {
-              core.setFailed('TRACKING_ISSUE is not set (repository variable TRACKING_ISSUE or .harness/config.json): the heartbeat has nowhere to post (§16 item 12)');
+              core.setFailed('TRACKING_ISSUE is not set (.harness/config.json, or repository variable TRACKING_ISSUE where the file leaves it empty): the heartbeat has nowhere to post (§16 item 12)');
               return;
             }
-            const forkRepo = (process.env.FORK_REPO || '').trim() || (cfg.FORK_REPO || '');
+            const forkRepo = (cfg.FORK_REPO || '').trim() || (process.env.FORK_REPO || '').trim();
             const upstreamRepo = cfg.UPSTREAM_REPO || 'Bright-Bots-Initiative/brightboost';
 
             // queue depth per state label (open issues; PRs excluded)

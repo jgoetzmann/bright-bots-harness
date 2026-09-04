@@ -87,7 +87,18 @@ def save(cfg: dict) -> None:
 
 
 def coerce(key: str, raw) -> object:
-    default, typ, rng, _restart, _help = SCHEMA[key]
+    """One SCHEMA value, parsed and range-checked, or ValueError saying why not.
+
+    SCHEMA has exactly two shapes and this handles both: a bool with no range, and a number (int
+    or float) with an inclusive ``(min, max)``. It used to carry an ``int_or_null`` arm and two
+    ``str`` arms as well - a nullable cap and an enum-of-strings that no key ever used, so a third
+    of the function could not run and a reader had to work out which third. They are gone. The
+    ``else`` below is not their replacement: it is the guard that makes deleting them safe, since
+    without it a type this cannot check would fall through and be written unvalidated. Add the arm
+    the day SCHEMA gains the shape - local/preflight.py's ``check_configure_schema_shapes`` fails
+    first if it gains one without.
+    """
+    _default, typ, rng, _restart, _help = SCHEMA[key]
     if isinstance(raw, str):
         try:
             val = json.loads(raw)
@@ -95,16 +106,6 @@ def coerce(key: str, raw) -> object:
             val = raw
     else:
         val = raw
-    if typ == "int_or_null":
-        if val is None or val == "null":
-            return None
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or int(val) != val:
-            raise ValueError(f"{key} must be an integer or null")
-        val = int(val)
-        lo, hi = rng
-        if not lo <= val <= hi:
-            raise ValueError(f"{key} must be between {lo} and {hi}")
-        return val
     if typ is bool:
         if isinstance(val, bool):
             return val
@@ -123,16 +124,17 @@ def coerce(key: str, raw) -> object:
         val = float(val)
         if val == int(val):
             val = int(val)
-    elif typ is str:
-        val = str(val)
-    if isinstance(rng, tuple) and typ in (int, float):
+    else:
+        raise ValueError(
+            f"{key}: bb-configure.py has no rule for SCHEMA type {typ!r}, so it will not write a "
+            "value it cannot check - add the arm to coerce() first"
+        )
+    if isinstance(rng, tuple):
         lo, hi = rng
         if not lo <= val <= hi:
             raise ValueError(f"{key} must be between {lo} and {hi}")
-    if isinstance(rng, tuple) and typ is str and val not in rng:
-        raise ValueError(f"{key} must be one of {', '.join(rng)}")
-    if key == "watchdog.cpu_pause_low_percent" or key == "watchdog.cpu_pause_high_percent":
-        pass
+    # The cross-field rule the two cpu_pause knobs need (low < high) cannot be checked one key at
+    # a time, so it is not here: cmd_set applies it to the whole file once every pair is in.
     return val
 
 
@@ -157,13 +159,11 @@ def cmd_show(cfg: dict) -> None:
 
 
 def cmd_explain() -> None:
+    # The two shapes coerce() enforces: a number with a (min, max), a bool with no range. The
+    # map this used to index also held an "int_or_null" span and a str -> "text" entry, for types
+    # SCHEMA has never had, and an enum arm no key could reach.
     for key, (default, typ, rng, restart, help_) in SCHEMA.items():
-        if isinstance(rng, tuple) and typ in (int, float, "int_or_null"):
-            span = f"{rng[0]}..{rng[1]}"
-        elif isinstance(rng, tuple):
-            span = "|".join(rng)
-        else:
-            span = {bool: "true|false", str: "text"}.get(typ, "")
+        span = f"{rng[0]}..{rng[1]}" if isinstance(rng, tuple) else "true|false"
         print(f"{key}\n    {help_}\n    default {json.dumps(default)}   allowed {span}\n    {RESTART_HINT[restart]}")
 
 

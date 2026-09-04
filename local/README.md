@@ -43,7 +43,30 @@ Rebuild.
 | `run.ps1` | the `docker run` contract (§5.3): network, volume, `docker rm -f bb`, the credential filter, `/work/.env`, the flags |
 | `watchdog-bb.ps1` | host-side policing (§6.5) and the **only publisher**: pushes delivered branches every `push_minutes`, always under a `--force-with-lease` against the sha in `runs/<item>/PUSHED` |
 | `container_env.ps1` | the credential filter (P4/P5): drops `HARNESS_GITHUB_TOKEN`, prints `dropped N line(s)` |
-| `preflight.py` | host-side checks before the first start; stdlib only |
+| `preflight.py` | host-side checks before the first start; stdlib only. Also holds the six cross-file invariants no Python test can see (see below) |
+
+## `DELIVER.json`, the one manifest the watchdog parses
+
+The container's `deliver` stage holds no GitHub credential, so it leaves the branch in its clone
+and writes `runs/item-<id>/DELIVER.json`. That file is the whole contract between the two halves:
+`harness/stages/deliver.py`'s `_write_record` is the only producer, `watchdog-bb.ps1`'s
+`Push-Delivered` the only consumer, and they are in different languages, so no test sees both.
+The watchdog reads exactly two of its keys:
+
+| Key | Used for | If empty |
+| --- | --- | --- |
+| `branch` | what to push; must be under `harness/` or the watchdog refuses | the item is skipped |
+| `fork_repo` | where to push it | falls back to `FORK_REPO` in the host `.env` (the container's copy is blank when the fork is unset) |
+
+The clone is **not** in the record and is not guessed: it is always `<run dir>/clone`, the run dir
+being the one holding the manifest — the same path `clone.py`, `deliver.py` and `revise.py` build.
+A path from the record would be a container path (`/work/...`) and useless on the host anyway.
+
+The watchdog used to probe `branch_name`, `remote_repo`, `clone_path`, `clone` and `workdir` ahead
+of these, and `_write_record` has never written one of them: each read `$null` and fell through to
+the candidate below it, so the fallback chains read like tolerance for several manifest versions
+while exactly one shape was ever parsed. `preflight.py`'s `check_manifest_keys_agree` now asserts
+that every `$d.<key>` in the watchdog is a key the producer writes, so the two cannot drift again.
 
 ## The gate (`entrypoint.sh`), frozen order
 

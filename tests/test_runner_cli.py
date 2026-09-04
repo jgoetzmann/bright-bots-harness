@@ -1372,12 +1372,36 @@ def test_b201_parse_stream_of_empty_output_is_two_nones(tmp_path):
 
 
 def test_b201_parse_stream_is_pure_and_repeatable(tmp_path):
-    """B201: a pure helper in runner/cli.py — the same text parses to the same values twice."""
+    """B201: a pure helper in harness/runner/cli.py. It returns this exact pair; a second call
+    on the same text returns the same pair; the string it was handed is unchanged; and a caller
+    mutating the returned result does not change what the next call returns.
+
+    The value is pinned first and repeatability is checked against that value, because
+    `parse_stream(x) == parse_stream(x)` alone is a tautology — it holds for any deterministic
+    function, `lambda s: (None, None)` included."""
     from harness.runner.cli import parse_stream
 
     stdout = stream_stdout(rate_limit_event(), stream_result())
+    handed_in = stdout
+    expected = (
+        stream_result(),
+        {
+            "five_hour": {"utilization": 0.07, "resets_at": FIVE_HOUR_ISO},
+            "seven_day": {"utilization": 0.49, "resets_at": SEVEN_DAY_ISO},
+            "status": "allowed",
+        },
+    )
 
-    assert parse_stream(stdout) == parse_stream(stdout)
+    first = parse_stream(stdout)
+    second = parse_stream(stdout)
+
+    assert parse_stream.__module__ == "harness.runner.cli", parse_stream.__module__
+    assert first == expected, first
+    assert second == expected, second
+    assert stdout == handed_in, "parse_stream must not touch the text it is handed"
+
+    first[0]["result"] = "mutated by the caller"
+    assert parse_stream(stdout) == expected, "a caller's mutation must not reach the next parse"
 
 
 def test_b201_capture_usage_run_carries_the_usage_onto_the_run_result(tmp_path):

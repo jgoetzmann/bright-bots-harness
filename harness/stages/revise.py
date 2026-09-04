@@ -26,12 +26,12 @@ from harness.stages import data_block, load_prompt, run_model
 from harness.stages import deliver as deliver_mod
 from harness.stages import implement as implement_mod
 from harness.stages.propose import parse_work_package
+from harness.trust import is_authorised
 
 __all__ = [
     "CONTINUE",
     "FAILING_CONCLUSIONS",
     "HARNESS_AUTHOR_EMAILS",
-    "TRUSTED_ASSOCIATIONS",
     "gather_ci_feedback",
     "gather_review_feedback",
     "revise",
@@ -58,9 +58,6 @@ FAILING_CONCLUSIONS: tuple[str, ...] = (
 #: is what Delivery 1's ``implement.COMMIT`` writes and cannot be changed (do-not-touch).
 HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harness@localhost")
 
-#: B131: review feedback is fed to the model only from trusted handles with one of these.
-TRUSTED_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
-
 #: B215: the fourth source. Not a revision of a delivered branch at all - it resumes an item
 #: that a usage stop handed off mid-flight (``deliver.handoff``), from ``approved`` back into
 #: ``implementing``, and hands the run loop a ``packaged`` item when the gates are green.
@@ -73,10 +70,12 @@ CONTINUE = "continue"
 
 
 def _is_trusted(comment: Mapping[str, Any], trusted: frozenset[str]) -> bool:
+    """B131 over one review or review comment: ``trust.is_authorised`` is the only judge, so
+    narrowing ``trust.AUTHOR_ASSOCIATIONS`` narrows what reaches the model here too."""
     user = comment.get("user") or {}
-    login = str(user.get("login") or "").strip().lower() if isinstance(user, Mapping) else ""
+    login = str(user.get("login") or "").strip() if isinstance(user, Mapping) else ""
     association = str(comment.get("author_association") or "").strip().upper()
-    return bool(login) and login in trusted and association in TRUSTED_ASSOCIATIONS
+    return bool(login) and is_authorised(login, association, trusted)
 
 
 def gather_review_feedback(
@@ -582,8 +581,9 @@ def _ci_feedback(ctx: Context, upstream: str, pr: dict | None) -> tuple[str, lis
     except (GitHubError, RateCeilingReached) as exc:
         ctx.record_decision(f"could not read check runs for {sha[:12]}: {exc}")
         return "", []
-    runs = raw.get("check_runs") if isinstance(raw, Mapping) else raw
-    return gather_ci_feedback(list(runs or []))
+    # ``gh.check_runs`` unwraps the endpoint's ``{total_count, check_runs}`` envelope and
+    # paginates; what comes back here is the list of runs.
+    return gather_ci_feedback(list(raw or []))
 
 
 def _review_feedback(ctx: Context, upstream: str, pr: dict | None) -> str:

@@ -103,27 +103,24 @@ function Push-Delivered {
         if (-not (Test-Path $manifest)) { continue }
         $d = $null
         try { $d = Get-Content $manifest -Raw | ConvertFrom-Json } catch { Write-Host "$(Stamp) $($dir.Name): DELIVER.json unreadable"; continue }
-        $branch = [string]$d.branch_name
-        if (-not $branch) { $branch = [string]$d.branch }
+        # Only keys deliver._write_record actually writes. This once probed branch_name,
+        # remote_repo, clone_path, clone and workdir first - five names the producer has never
+        # written. Every one read $null and fell through to the value below it, so the chains
+        # looked like tolerance for several manifest versions while exactly one was ever parsed,
+        # and a reader tuning the producer could not tell which key the consumer wanted.
+        $branch = [string]$d.branch
         if (-not $branch) { continue }
         if ($branch -notlike "harness/*") { Write-Host "$(Stamp) $($dir.Name): refusing to push '$branch' (not under harness/)"; continue }
-        $remote = [string]$d.remote_repo
-        if (-not $remote) { $remote = [string]$d.fork_repo }
+        # fork_repo is "" when FORK_REPO is unset in the container's .env, so the host .env is the
+        # one real fallback here.
+        $remote = [string]$d.fork_repo
         if (-not $remote) { $remote = $fork }
         if (-not $remote) { Write-Host "$(Stamp) $($dir.Name): nowhere to push $branch (FORK_REPO empty)"; continue }
-        $clone = $null
-        foreach ($candidate in @([string]$d.clone_path, [string]$d.clone, [string]$d.workdir)) {
-            if (-not $candidate) { continue }
-            $hostPath = $candidate -replace '^/work(/|$)', ($Work + '/')
-            if (Test-Path (Join-Path $hostPath ".git")) { $clone = $hostPath; break }
-        }
-        if (-not $clone) {
-            foreach ($sub in @("clone", "repo", "worktree")) {
-                $p = Join-Path $dir.FullName $sub
-                if (Test-Path (Join-Path $p ".git")) { $clone = $p; break }
-            }
-        }
-        if (-not $clone) { Write-Host "$(Stamp) $($dir.Name): no clone found for $branch"; continue }
+        # The record carries no path: the clone is always <run dir>/clone (clone.py, deliver.py
+        # and revise.py all build it that way), and the run dir is the one holding this manifest.
+        # A container path would be useless here anyway - /work/... is $Work on the host.
+        $clone = Join-Path $dir.FullName "clone"
+        if (-not (Test-Path (Join-Path $clone ".git"))) { Write-Host "$(Stamp) $($dir.Name): no clone at $clone for $branch"; continue }
         # The call operator, NOT `cmd /c "git -C `"$clone`" ..."`: inside an interpolated
         # "$( ... )" the escaped quotes are eaten by the outer string, git is handed " <path>"
         # with a leading space and exits 128 - so every item failed "cannot read HEAD" and this

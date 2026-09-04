@@ -23,85 +23,11 @@ SCHEMA_VERSION = 1
 # ``PRAGMA user_version``: the Delivery 2 layout (twelve states, seven stages in the CHECKs).
 LAYOUT_VERSION = 2
 
-# Verbatim from docs/delivery/HARNESS-SPEC.md 5.2.1. Do not reformat.
-SCHEMA_SQL = """
-CREATE TABLE schema_version (version INTEGER NOT NULL);
-
-CREATE TABLE work_item (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind          TEXT    NOT NULL CHECK (kind IN ('issue','pr','audit_finding')),
-  external_ref  TEXT    NOT NULL,
-  title         TEXT    NOT NULL,
-  state         TEXT    NOT NULL CHECK (state IN
-                  ('discovered','proposed','approved','implementing',
-                   'packaged','shipped','blocked','abandoned')),
-  parent_id     INTEGER REFERENCES work_item(id),
-  depends_on    INTEGER REFERENCES work_item(id),
-  tier_required INTEGER NOT NULL DEFAULT 0,
-  spec_path     TEXT,
-  package_path  TEXT,
-  base_sha      TEXT,
-  branch_name   TEXT,
-  attempts      INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT    NOT NULL,
-  updated_at    TEXT    NOT NULL,
-  UNIQUE (external_ref)
-);
-
-CREATE TABLE stage_run (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  work_item_id    INTEGER NOT NULL REFERENCES work_item(id),
-  stage           TEXT    NOT NULL CHECK (stage IN ('discover','propose','implement','package')),
-  backend         TEXT    NOT NULL,
-  status          TEXT    NOT NULL CHECK (status IN
-                    ('running','ok','failed','halted','budget_exhausted','timeout')),
-  started_at      TEXT    NOT NULL,
-  ended_at        TEXT,
-  turns           INTEGER,
-  allowance_pct   REAL,
-  cost_usd        REAL,
-  exit_reason     TEXT,
-  transcript_path TEXT
-);
-
-CREATE TABLE budget_period (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit         TEXT NOT NULL CHECK (unit IN ('allowance_pct','usd')),
-  period_start TEXT NOT NULL,
-  period_end   TEXT NOT NULL,
-  allocated    REAL NOT NULL,
-  consumed     REAL NOT NULL DEFAULT 0,
-  UNIQUE (unit, period_start)
-);
-
-CREATE TABLE event (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  work_item_id INTEGER REFERENCES work_item(id),
-  ts           TEXT NOT NULL,
-  level        TEXT NOT NULL CHECK (level IN ('debug','info','warn','error')),
-  message      TEXT NOT NULL
-);
-
-CREATE TABLE http_cache (
-  url        TEXT PRIMARY KEY,
-  etag       TEXT,
-  body       TEXT NOT NULL,
-  fetched_at TEXT NOT NULL
-);
-
-CREATE TABLE api_call (
-  id     INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts     TEXT    NOT NULL,
-  url    TEXT    NOT NULL,
-  status INTEGER NOT NULL,
-  cached INTEGER NOT NULL
-);
-
-CREATE INDEX idx_work_item_state ON work_item(state);
-CREATE INDEX idx_stage_run_item  ON stage_run(work_item_id);
-CREATE INDEX idx_event_item      ON event(work_item_id);
-CREATE INDEX idx_api_call_ts     ON api_call(ts);
-"""
+# The Delivery 1 layout (HARNESS-SPEC 5.2.1) has no constant here and is never created:
+# ``migrate()`` builds every fresh database from ``SCHEMA_SQL_V2`` below, and a database
+# already on layout 1 is widened by ``WORK_ITEM_DDL_V2``/``STAGE_RUN_DDL_V2``. The spec's
+# own fence is the record of what layout 1 said, and the only one that cannot disagree
+# with the DDL in force.
 
 # Delivery 2 layout: the same tables with the widened CHECK constraints. ``{name}`` lets the
 # migration create the rebuilt table under a temporary name.
@@ -868,7 +794,6 @@ Store = SqliteStore
 
 
 __all__ = [
-    "SCHEMA_SQL",
     "SCHEMA_SQL_V2",
     "SCHEMA_VERSION",
     "LAYOUT_VERSION",

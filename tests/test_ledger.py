@@ -849,3 +849,86 @@ def test_B204_load_of_a_missing_file_has_no_usage_and_no_carry(tmp_path: Path):
     assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
     assert ledger.carry_issue() is None
+
+
+# ---------------------------------------------------------------------------
+# One usage shape, inbound and on disk (the _render_usage/_normalise_usage pair
+# collapsed into _normalise_usage; from_json now normalises too)
+# ---------------------------------------------------------------------------
+
+def test_B204_from_json_normalises_a_hand_edited_usage_block():
+    """A file is the one usage source that never went through ``observe_usage``: ``from_json``
+    normalises it, so the CLI's own ``resetsAt`` spelling and a string utilization are read as
+    the stored shape and written back as ``resets_at``."""
+    text = json.dumps(
+        {
+            "schema": 1,
+            "window": {
+                "period_start": PERIOD_START,
+                "spent_usd": 1.0,
+                "calls": 1,
+                "rate_limited_until": None,
+                "usage": {
+                    "seven_day": {"utilization": "0.91", "resetsAt": D3_SEVEN_DAY_RESET},
+                    "five_hour": {"utilization": 0.3, "resetsAt": D3_FIVE_HOUR_RESET},
+                    "status": "allowed",
+                    "observed_at": NOW_ISO,
+                },
+            },
+            "observations": {},
+            "cursors": {"notifications_last_seen": None, "seen_comment_ids": [],
+                        "keyword_denied": {}},
+            "history": [],
+        },
+        indent=2,
+    ) + "\n"
+
+    ledger = Ledger.from_json(text)
+    stored = ledger.window["usage"]
+    assert stored["seven_day"] == {"utilization": 0.91, "resets_at": D3_SEVEN_DAY_RESET}
+    assert stored["five_hour"] == {"utilization": 0.3, "resets_at": D3_FIVE_HOUR_RESET}
+    assert stored["status"] == "allowed"
+    assert stored["observed_at"] == NOW_ISO
+    assert ledger.weekly_utilization() == pytest.approx(0.91)
+
+    written = json.loads(ledger.to_json())["window"]["usage"]
+    assert written == stored
+    assert "resetsAt" not in json.dumps(written)
+
+
+def test_B204_usage_survives_a_to_json_from_json_round_trip_byte_for_byte():
+    """``to_json`` writes the stored shape and ``from_json`` normalises it back to the same
+    shape, so saving a loaded ledger is a fixed point — there is no second sanitising pass to
+    disagree with the first."""
+    ledger = fresh()
+    ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
+    once = ledger.to_json()
+    twice = Ledger.from_json(once).to_json()
+    assert twice == once
+    assert Ledger.from_json(twice).to_json() == once
+
+
+def test_B204_a_window_reads_usage_and_carry_as_none_before_either_exists():
+    """RUN-DECISIONS-D3 "Ledger": ``from_json`` accepts files without these keys (defaults
+    None). The window mapping guarantees it for *any* access pattern, subscript included, so
+    a reader that does not know to use ``.get()`` cannot turn a Delivery 2 file into a
+    KeyError."""
+    from harness.ledger import EPOCH
+
+    assert Ledger.empty(EPOCH).window["usage"] is None
+    assert Ledger.empty(EPOCH).window["carry"] is None
+    loaded = Ledger.from_json(D2_LEDGER_TEXT)
+    assert loaded.window["usage"] is None
+    assert loaded.window["carry"] is None
+    with pytest.raises(KeyError):
+        loaded.window["not_a_window_key"]
+
+
+def test_B200_the_ledger_and_the_runner_name_the_same_two_windows():
+    """``harness.ledger.USAGE_WINDOWS`` and ``harness.runner.cli.USAGE_WINDOWS`` are one fact
+    written in two modules (the runner imports no domain module by design). A third window
+    added to one and not the other would be dropped on the way to the ledger, silently."""
+    from harness.ledger import USAGE_WINDOWS as ledger_windows
+    from harness.runner.cli import USAGE_WINDOWS as runner_windows
+
+    assert ledger_windows == runner_windows == ("five_hour", "seven_day")

@@ -23,6 +23,8 @@ __all__ = [
     "environ_snapshot",
     "github_token",
     "TOKEN_KEY_NAME",
+    "FINE_GRAINED_TOKEN_SHAPE",
+    "CLASSIC_TOKEN_SHAPE",
     "CONFIG_JSON_KEYS",
     "CONFIG_JSON_RELATIVE",
     "RUN_WINDOW_PATTERN",
@@ -129,10 +131,16 @@ _STAGE_KEYS: tuple[str, ...] = ("discover", "propose", "implement", "package")
 _TRUE_WORDS: frozenset[str] = frozenset({"true", "1", "yes"})
 _FALSE_WORDS: frozenset[str] = frozenset({"false", "0", "no"})
 
-_TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^github_pat_[A-Za-z0-9_]{40,}$"),
-    re.compile(r"^ghp_[A-Za-z0-9]{30,}$"),
-)
+#: The two shapes a machine-account token may take (RUN-DECISIONS "Identity", B81). Defined
+#: here for the same reason as :data:`TOKEN_KEY_NAME`: ``identity.py`` binds its
+#: ``FINE_GRAINED_SHAPE``/``CLASSIC_SHAPE`` to these so the patterns live in one module. The
+#: two callers keep their own whitespace policies — :func:`token_shape_ok` strips first,
+#: ``Identity.validate_shape`` matches the raw string, where surrounding whitespace is a
+#: malformed value rather than noise.
+FINE_GRAINED_TOKEN_SHAPE: re.Pattern[str] = re.compile(r"^github_pat_[A-Za-z0-9_]{40,}$")
+CLASSIC_TOKEN_SHAPE: re.Pattern[str] = re.compile(r"^ghp_[A-Za-z0-9]{30,}$")
+
+_TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (FINE_GRAINED_TOKEN_SHAPE, CLASSIC_TOKEN_SHAPE)
 
 #: The run window's three-letter UTC weekday names, in ``datetime.weekday()`` order (D3).
 WINDOW_DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -140,9 +148,8 @@ WINDOW_DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 #: A run-window endpoint: a lowercase weekday and a 24-hour UTC time (D3 config table).
 RUN_WINDOW_PATTERN = re.compile(r"^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):[0-5]\d$")
 
-#: Minutes in one day and one week, for the wrap-aware window comparison.
+#: Minutes in one day, for the wrap-aware window comparison.
 _DAY_MINUTES = 24 * 60
-_WEEK_MINUTES = 7 * _DAY_MINUTES
 
 _ALLOWED_TIERS: tuple[int, ...] = (0, 2)
 _STORE_BACKENDS: tuple[str, ...] = ("sqlite", "github")
@@ -615,9 +622,9 @@ def in_run_window(config: Config, now: datetime) -> bool:
     if start is None or end is None:
         return True
     moment = as_utc(now)
-    current = (
-        moment.weekday() * _DAY_MINUTES + moment.hour * 60 + moment.minute
-    ) % _WEEK_MINUTES
+    # 0..10079: weekday() is 0..6, so this cannot reach a week. The wrap past Sunday is the
+    # ``start > end`` branch below, not arithmetic here.
+    current = moment.weekday() * _DAY_MINUTES + moment.hour * 60 + moment.minute
     if start <= end:
         return start <= current < end
     return current >= start or current < end

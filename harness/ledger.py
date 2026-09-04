@@ -54,7 +54,11 @@ _TRANSITION_COMMENT = re.compile(
 #: comparison of the window dict are unchanged by their arrival.
 OPTIONAL_WINDOW_KEYS: tuple[str, ...] = ("usage", "carry")
 
-#: The two unified windows the CLI reports (D3 "Why").
+#: The two unified windows the CLI reports, in the order they are stored (D3 "Why").
+#: One fact, stated in two places: ``harness.runner.cli.USAGE_WINDOWS`` is the producer's copy
+#: and must stay equal to this one (pinned by tests/test_ledger.py). The runner deliberately
+#: imports no domain module, so neither can import the other; the shared home is
+#: ``harness/runner/base.py``, next to the ``RunResult.usage`` field whose shape this describes.
 USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
 
 
@@ -89,8 +93,16 @@ def _fraction(value: object) -> float | None:
         return None
 
 
-def _normalise_usage(usage: dict, now_iso: str) -> dict:
-    """The stored shape: the two windows, whatever else came with them, then observed_at."""
+def _normalise_usage(usage: dict, now_iso: str = "") -> dict:
+    """The one usage shape, inbound and on disk: the two windows, whatever else came with
+    them, then ``observed_at``.
+
+    :meth:`Ledger.observe_usage` applies it to what a stage observed and :meth:`Ledger.from_json`
+    applies it to what a file carries, so :meth:`Ledger.to_json` can write what it holds rather
+    than sanitising a second time. ``resetsAt`` is accepted for ``resets_at`` because a
+    hand-edited or pre-D3 file may carry the CLI's own spelling; ``observed_at`` falls back to
+    ``now_iso`` and is omitted when neither is known.
+    """
     stored: dict = {}
     for name in USAGE_WINDOWS:
         window = usage.get(name)
@@ -104,32 +116,14 @@ def _normalise_usage(usage: dict, now_iso: str) -> dict:
         if key in USAGE_WINDOWS or key == "observed_at":
             continue
         stored[key] = value
-    stored["observed_at"] = str(usage.get("observed_at") or now_iso or "")
+    observed_at = str(usage.get("observed_at") or now_iso or "")
+    if observed_at:
+        stored["observed_at"] = observed_at
     return stored
 
 
 def _empty_cursors() -> dict:
     return {"notifications_last_seen": None, "seen_comment_ids": [], "keyword_denied": {}}
-
-
-def _render_usage(usage: dict) -> dict:
-    """The on-disk usage object: the two windows, anything else observed, then observed_at."""
-    out: dict = {}
-    for name in USAGE_WINDOWS:
-        window = usage.get(name)
-        if not isinstance(window, dict):
-            continue
-        out[name] = {
-            "utilization": _fraction(window.get("utilization")),
-            "resets_at": window.get("resets_at"),
-        }
-    for key, value in usage.items():
-        if key in USAGE_WINDOWS or key == "observed_at":
-            continue
-        out[key] = value
-    if usage.get("observed_at") is not None:
-        out["observed_at"] = str(usage.get("observed_at"))
-    return out
 
 
 def _usd(value: object) -> float:
@@ -349,7 +343,8 @@ class Ledger:
         # signal is byte-identical to the Delivery 2 file it was before.
         usage = self.window.get("usage")
         if isinstance(usage, dict) and usage:
-            window["usage"] = _render_usage(usage)
+            # Already normalised, by observe_usage or by from_json: write what is held.
+            window["usage"] = dict(usage)
         carry = self.window.get("carry")
         if isinstance(carry, dict) and carry:
             window["carry"] = {
@@ -403,6 +398,11 @@ class Ledger:
         # read as None through the window's own default.
         window = _empty_window(EPOCH)
         window.update(dict(raw.get("window") or {}))
+        # A file is the one usage source that never went through observe_usage, so it is
+        # normalised here — the only place a hand-edited or pre-D3 block needs sanitising.
+        loaded_usage = window.get("usage")
+        if isinstance(loaded_usage, dict) and loaded_usage:
+            window["usage"] = _normalise_usage(dict(loaded_usage))
         cursors = _empty_cursors()
         cursors.update(dict(raw.get("cursors") or {}))
         observations = {str(k): dict(v) for k, v in dict(raw.get("observations") or {}).items()}

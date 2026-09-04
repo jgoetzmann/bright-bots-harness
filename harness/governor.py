@@ -68,7 +68,6 @@ class Governor:
         self.config = config
         self.clock = clock
         self.ledger = ledger
-        self.run_url: str = ""
         self.session_allocated: float = float(config.session_budget_pct)
         self.session_consumed: float = 0.0
 
@@ -239,7 +238,11 @@ class Governor:
                 stage=auth.stage,
                 issue=int(auth.work_item_id),
                 usd=float(cost_usd or 0.0),
-                run=self.run_url,
+                # The Actions audit link has no producer: only config.py may read the
+                # environment (I-4) and no config key carries a run URL, so there is nothing
+                # here to fill it from. ``GitHubStore(run_url=...)`` is the frozen seam
+                # (RUN-DECISIONS-D2 section 3); wire both ends together or neither.
+                run="",
             )
         log.debug("recorded %.3f%% against %s (cost_usd=%s)", amount, auth.id, cost_usd)
 

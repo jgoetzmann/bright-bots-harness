@@ -1458,6 +1458,21 @@ def _stop_requested(work: Path) -> bool:
     return (work / "STOP").exists()
 
 
+def _was_handed_off(ledger_path: Path | None, item_id: int) -> bool:
+    """True when the run that just finished parked ``item_id`` across a usage stop (D3).
+
+    A usage stop is no longer an exception the caller can catch. ``cmd_run`` absorbs
+    ``BudgetExhausted``/``RateLimited`` itself (D3: "a usage stop is a normal outcome like
+    B120"), hands the item off and returns ``EXIT_OK`` - so the unit has to read the outcome
+    the stop left behind instead. That outcome is the ledger's carry slot: ``deliver.handoff``
+    sets it and a green ``revise --source continue`` clears it. It is re-read from disk because
+    ``cmd_run`` builds its own contexts, and the dispatch context's ledger is a stale snapshot.
+    """
+    if ledger_path is None:
+        return False
+    return _carry_issue(ledger_mod.load(Path(ledger_path))) == int(item_id)
+
+
 def _local_unit(args: argparse.Namespace, work: Path) -> None:
     """One unit: dispatch, then `run --item` (implement → package → deliver) per plan."""
     config = _load(args)
@@ -1483,12 +1498,17 @@ def _local_unit(args: argparse.Namespace, work: Path) -> None:
             cmd_run(run_args)
         except (Halted, RepoHalted):
             raise
-        except BudgetExhausted as exc:
-            print(f"budget exhausted: {exc}; unit ends")
-            return
         except HarnessError as exc:
             print(f"item {item_id} failed: {exc}", file=sys.stderr)
         _write_heartbeat(work)
+        # A usage stop is global, not per-item: the governor refuses the next item's first call
+        # exactly as it refused this one. Marching on would clone, be refused, write a HANDOFF.md
+        # and comment on the issue once per remaining item, and each handoff would overwrite the
+        # single carry slot - so the item that actually has work in progress would lose it, and
+        # `run` outside the window would then start the wrong one. The unit ends instead.
+        if _was_handed_off(ctx.ledger_path, item_id):
+            print(f"item {item_id} was handed off; unit ends")
+            return
 
 
 def cmd_local_loop(args: argparse.Namespace) -> int:

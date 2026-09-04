@@ -575,8 +575,8 @@ D2_REQUIRED_FILES = [
     "docs/delivery/DELIVERY-2-REVIEW.md",
 ]
 
-# RUN-DECISIONS-D2 §2 — the eleven .harness/config.json knob keys (B112).
-CONFIG_JSON_KEYS = (
+# RUN-DECISIONS-D2 §2 — the eleven .harness/config.json knob keys Delivery 2 froze (B112).
+D2_CONFIG_JSON_KEYS = (
     "WEEKLY_CAP_USD",
     "PER_CALL_CAP_USD",
     "RESERVE_PCT",
@@ -588,12 +588,19 @@ CONFIG_JSON_KEYS = (
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
+)
+# RUN-DECISIONS-D3 "Config" ("Knob keys in .harness/config.json: add the five to the allowed
+# set") — the five Delivery 3 adds, kept apart from the D2 eleven so `D3_CONFIG_JSON_KEYS`
+# below is a real union rather than a no-op over a constant that already held them.
+D3_NEW_CONFIG_JSON_KEYS = (
     "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
     "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
 )
+# The sixteen knob keys the shipped .harness/config.json must carry today.
+CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS
 
 # RUN-DECISIONS-D2 §2 — the D2 .env keys, .env.example values (inline; duplicated on purpose).
 D2_ENV_KEYS: dict[str, str] = {
@@ -1535,9 +1542,12 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_eleven_knob_keys():
-    """B112 / RUN-DECISIONS-D2 §2, §15 (handoff §5.5): .harness/config.json is an object whose
-    keys are exactly the eleven operational knobs — nothing that alters what the harness concludes."""
+def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
+    """B112 / RUN-DECISIONS-D2 §2, §15 (handoff §5.5) as extended by RUN-DECISIONS-D3 "Config":
+    .harness/config.json is an object whose keys are exactly the sixteen operational knobs —
+    Delivery 2's eleven plus Delivery 3's five — and nothing that alters what the harness
+    concludes. It was eleven until D3 added the two usage stops, the carry leeway and the two
+    run-window bounds; the count lives in `CONFIG_JSON_KEYS`, which this reads."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1775,16 +1785,44 @@ def test_b127_implement_yml_triggers_on_a_proposal_push_and_passes_the_claude_to
     assert "state/ledger.json" in text
 
 
+def _halt_step_block(text: str) -> str | None:
+    """The one `steps:` item that logs the repo halt, as its own text.
+
+    The exit code B149 demands belongs to *that* step. Searching the whole workflow for
+    `exit 0` finds, among others, the budget-stop comment in discover.yml's work step.
+    """
+    blocks = [b for b in _step_blocks(text) if "halted by .harness/HALT" in b]
+    return blocks[0] if len(blocks) == 1 else None
+
+
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatch(name):
     """B149 / B150 / A43 (handoff §11.4, D2-R6.16): the .harness/HALT check precedes doctor
-    and the dispatcher, logs why, and exits 0."""
+    and the dispatcher, logs why, and exits 0.
+
+    The exit-code half is scoped to the halt step's own block and to the lines after the log
+    line, and no other exit code may appear in that step: `re.search(..., re.S)` over the whole
+    file reduced to "the workflow contains `exit 0` somewhere", which a halt step that exited 1
+    would have satisfied."""
     text = _d2_workflow(name)
     halt = _first_line_index(text, r"\.harness/HALT")
     assert halt is not None, f"{name}: no .harness/HALT check (B149)"
     assert "halted by .harness/HALT" in text, f"{name}: the halt step must log why (B149)"
-    assert re.search(r"\.harness/HALT.*exit 0|exit 0.*\.harness/HALT", text, re.S), (
-        f"{name}: the halt step must exit 0 (B149)"
+    block = _halt_step_block(text)
+    assert block is not None, f"{name}: exactly one step must log 'halted by .harness/HALT' (B149)"
+    lines = block.splitlines()
+    logged_at = next(i for i, line in enumerate(lines) if "halted by .harness/HALT" in line)
+    assert any(re.match(r"^\s*exit 0\s*(#.*)?$", line) for line in lines[logged_at:]), (
+        f"{name}: the halt step must exit 0 after logging why (B149):\n{block}"
+    )
+    other_exits = [
+        line.strip()
+        for line in lines
+        if re.match(r"^\s*exit\b", line) and not re.match(r"^\s*exit 0\s*(#.*)?$", line)
+    ]
+    assert other_exits == [], (
+        f"{name}: a repo halt is a normal outcome; the halt step may only exit 0 "
+        f"(B149), got {other_exits}"
     )
     for later in (r"harness\s+doctor\b", r"harness\s+dispatch\b"):
         index = _first_line_index(text, later)
@@ -1916,11 +1954,10 @@ def test_b215_implement_yml_documents_the_dst_drift():
     assert "utc" in lowered
 
 
-# RUN-DECISIONS-D3 "Config": the knob set in .harness/config.json grows by exactly these five.
-D3_CONFIG_JSON_KEYS = tuple(sorted(set(CONFIG_JSON_KEYS) | {
-    "WEEKLY_USAGE_STOP_PCT", "SESSION_USAGE_STOP_PCT", "OVERRUN_PCT",
-    "RUN_WINDOW_START", "RUN_WINDOW_END",
-}))
+# RUN-DECISIONS-D3 "Config": the knob set in .harness/config.json is the D2 eleven grown by
+# exactly the five D3 adds. The union is over the D2 constant, so it says something: were the
+# five dropped from the shipped file, this set would still demand them.
+D3_CONFIG_JSON_KEYS = tuple(sorted(set(D2_CONFIG_JSON_KEYS) | set(D3_NEW_CONFIG_JSON_KEYS)))
 
 
 def test_b112_d3_harness_config_json_carries_the_five_new_knobs():

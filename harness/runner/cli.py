@@ -67,6 +67,9 @@ def _normalise_iso(raw: str) -> str:
 RATE_LIMIT_EVENT = "rate_limit_event"
 
 #: The two unified windows the CLI reports, in the order they are stored.
+#: One fact, stated in two places: ``harness.ledger.USAGE_WINDOWS`` is the consumer's copy and
+#: must stay equal to this one (pinned by tests/test_ledger.py). The runner imports no domain
+#: module by design, so the shared home is ``harness/runner/base.py``, beside ``RunResult.usage``.
 USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
 
 

@@ -8,9 +8,9 @@ from typing import Any, Sequence
 
 from harness.collision import claimed_issue_numbers
 from harness.context import Context
-from harness.errors import GitHubError, HarnessError, NotImplementedInDelivery1, RateCeilingReached
+from harness.errors import HarnessError, NotImplementedInDelivery1
 from harness.halt import check_halt
-from harness.stages import data_block, load_prompt, run_model
+from harness.stages import data_block, load_prompt, read_issue_body, run_model
 from harness.store.github import _label_names
 
 __all__ = ["discover", "EXCLUDED_LABELS"]
@@ -150,27 +150,10 @@ def _render_queue(ctx: Context, queued: Sequence[Any]) -> str:
     lines: list[str] = []
     for index, item in enumerate(queued):
         lines.append(f"#{item.id} — {item.title} [{item.external_ref}]")
-        body = _queue_body(ctx, item) if index < QUEUE_BODY_LIMIT else ""
+        body = read_issue_body(ctx, item) if index < QUEUE_BODY_LIMIT else ""
         if body:
             lines.append(f"    {' '.join(body.split())[:400]}")
     return "\n".join(lines)
-
-
-def _queue_body(ctx: Context, item: Any) -> str:
-    """The body behind a queued item, from wherever the reference points. Never fatal."""
-    ref = str(item.external_ref)
-    try:
-        if ref.startswith("issue:") and item.issue_number is not None:
-            data = ctx.gh.issue(item.issue_number)
-        else:
-            self_repo = str(getattr(ctx.config, "self_repo", "") or "")
-            number = item.issue_number if ref.startswith("self:") else item.id
-            if not self_repo or number is None:
-                return ""
-            data = ctx.gh.get(f"/repos/{self_repo}/issues/{int(number)}")
-    except (GitHubError, RateCeilingReached):
-        return ""
-    return str(data.get("body") or "") if isinstance(data, dict) else ""
 
 
 # --------------------------------------------------------------------------------------------

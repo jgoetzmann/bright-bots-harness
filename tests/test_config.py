@@ -923,38 +923,110 @@ def test_b112_config_json_overrides_reserve_pct_and_tracking_issue(tmp_path, wri
     assert config.tracking_issue == 816
 
 
-def test_b112_config_json_may_set_every_one_of_the_eleven_knobs(tmp_path, write_d2_env):
-    """B112 / RUN-DECISIONS-D2 §2: all eleven keys are accepted together and each takes effect."""
-    path = write_d2_env(tmp_path / ".env")
-    write_config_json(
-        tmp_path,
-        {
-            "WEEKLY_CAP_USD": 30.0,
-            "PER_CALL_CAP_USD": 2.5,
-            "RESERVE_PCT": 15,
-            "MAX_CONCURRENT_ITEMS": 1,
-            "MAX_REVISE_CYCLES": 1,
-            "NOTIFY_POLL_HOURS": 6,
-            "MAX_SUBISSUES": 5,
-            "TRACKING_ISSUE": 42,
-            "FORK_REPO": FORK,
-            "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
-            "TRUST_FILE": "trust/list.txt",
-        },
+# The Config field each knob key lands on (harness/config.py, load_config's tail).
+KNOB_KEY_TO_FIELD: dict[str, str] = {
+    "WEEKLY_CAP_USD": "weekly_cap_usd",
+    "PER_CALL_CAP_USD": "per_call_cap_usd",
+    "RESERVE_PCT": "reserve_pct",
+    "MAX_CONCURRENT_ITEMS": "max_concurrent_items",
+    "MAX_REVISE_CYCLES": "max_revise_cycles",
+    "NOTIFY_POLL_HOURS": "notify_poll_hours",
+    "MAX_SUBISSUES": "max_subissues",
+    "TRACKING_ISSUE": "tracking_issue",
+    "FORK_REPO": "fork_repo",
+    "UPSTREAM_REPO": "upstream_repo",
+    "TRUST_FILE": "trust_file",
+    "WEEKLY_USAGE_STOP_PCT": "weekly_usage_stop_pct",
+    "SESSION_USAGE_STOP_PCT": "session_usage_stop_pct",
+    "OVERRUN_PCT": "overrun_pct",
+    "RUN_WINDOW_START": "run_window_start",
+    "RUN_WINDOW_END": "run_window_end",
+}
+
+
+# B112 / RUN-DECISIONS-D2 §2 + RUN-DECISIONS-D3 "Config": one override per knob
+# `config.CONFIG_JSON_KEYS` admits. Every value here differs from the value the `.env`
+# carries for the same key (D2_ENV above, plus conftest's DEFAULT_ENV for RESERVE_PCT),
+# so an override that were silently dropped would leave the .env value behind and fail the
+# matching assertion. `test_b112_the_config_json_overrides_all_differ_from_the_env_values`
+# holds that property; without it an override could pass while doing nothing.
+ALL_KNOB_OVERRIDES: dict[str, object] = {
+    "WEEKLY_CAP_USD": 30.0,
+    "PER_CALL_CAP_USD": 2.5,
+    "RESERVE_PCT": 15,
+    "MAX_CONCURRENT_ITEMS": 2,
+    "MAX_REVISE_CYCLES": 1,
+    "NOTIFY_POLL_HOURS": 6,
+    "MAX_SUBISSUES": 5,
+    "TRACKING_ISSUE": 42,
+    "FORK_REPO": FORK,
+    "UPSTREAM_REPO": "Bright-Bots-Initiative/other-repo",
+    "TRUST_FILE": "trust/list.txt",
+    "WEEKLY_USAGE_STOP_PCT": 80,
+    "SESSION_USAGE_STOP_PCT": 60,
+    "OVERRUN_PCT": 5,
+    "RUN_WINDOW_START": "wed 09:30",
+    "RUN_WINDOW_END": "thu 21:45",
+}
+
+
+def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env):
+    """B112 / RUN-DECISIONS-D2 §2 + RUN-DECISIONS-D3 "Config": every key
+    `config.CONFIG_JSON_KEYS` admits is accepted together with the rest, and each one takes
+    effect. The knob set is read from the source of truth, so a knob added there without an
+    override and an assertion here fails this test rather than going untested.
+
+    MAX_CONCURRENT_ITEMS > 1 requires STORE_BACKEND=github (harness/config.py), and
+    STORE_BACKEND is not a knob, so it is set in the `.env` — which is the point: the
+    config.json override still has to beat a different `.env` value."""
+    path = write_d2_env(tmp_path / ".env", STORE_BACKEND="github")
+    assert set(ALL_KNOB_OVERRIDES) == set(config_module.CONFIG_JSON_KEYS), (
+        "every knob config.json admits must be exercised here: "
+        f"missing {sorted(set(config_module.CONFIG_JSON_KEYS) - set(ALL_KNOB_OVERRIDES))}, "
+        f"unknown {sorted(set(ALL_KNOB_OVERRIDES) - set(config_module.CONFIG_JSON_KEYS))}"
     )
+    write_config_json(tmp_path, ALL_KNOB_OVERRIDES)
 
     config = load_config(env_path=path, environ={})
 
     assert config.weekly_cap_usd == pytest.approx(30.0)
     assert config.per_call_cap_usd == pytest.approx(2.5)
     assert config.reserve_pct == pytest.approx(15.0)
-    assert config.max_concurrent_items == 1
+    assert config.max_concurrent_items == 2
     assert config.max_revise_cycles == 1
     assert config.notify_poll_hours == 6
     assert config.max_subissues == 5
     assert config.tracking_issue == 42
     assert config.fork_repo == FORK
+    assert config.upstream_repo == "Bright-Bots-Initiative/other-repo"
     assert Path(config.trust_file).resolve() == (tmp_path / "trust" / "list.txt").resolve()
+    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
+    assert config.session_usage_stop_pct == pytest.approx(60.0)
+    assert config.overrun_pct == pytest.approx(5.0)
+    assert config.run_window_start == "wed 09:30"
+    assert config.run_window_end == "thu 21:45"
+
+
+def test_b112_the_config_json_overrides_all_differ_from_the_env_values(tmp_path, write_d2_env):
+    """Every override above must be distinguishable from the `.env` value it beats, or the
+    assertion for that knob would pass whether the override was honoured or dropped. Loading
+    the same `.env` with no config.json at all must therefore disagree with the loaded-with-
+    overrides config on every one of the knobs."""
+    path = write_d2_env(tmp_path / ".env", STORE_BACKEND="github")
+    plain = load_config(env_path=path, environ={})
+    write_config_json(tmp_path, ALL_KNOB_OVERRIDES)
+    overridden = load_config(env_path=path, environ={})
+
+    same = [
+        key
+        for key, field in KNOB_KEY_TO_FIELD.items()
+        if getattr(plain, field) == getattr(overridden, field)
+    ]
+    assert same == [], (
+        f"these overrides are byte-identical to the .env value they must beat: {same}"
+    )
+
+
 
 
 def test_b112_config_json_is_read_from_repo_root_not_cwd(tmp_path, write_d2_env, monkeypatch):

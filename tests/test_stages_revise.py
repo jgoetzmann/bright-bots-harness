@@ -877,17 +877,41 @@ def test_review_source_feeds_trusted_feedback_only(tmp_path, monkeypatch, quiet_
     assert "mallory-drive-by" not in text
 
 
+#: The file types the run dir keeps text in — what the B133 scan below reads.
+SCANNED_SUFFIXES = (".md", ".json", ".jsonl", ".txt", ".log")
+#: A revise run must leave these behind, so the scan below has something to scan. The
+#: transcript is the one that matters: it is where the prompt, and so any leaked untrusted
+#: text, would land. Without this control the loop could walk an empty tree and pass.
+REQUIRED_RUN_ARTEFACTS = ("transcript/revise.jsonl", "DECISIONS.md", "spec/816.md")
+
+
 def test_untrusted_review_text_never_reaches_disk_unredacted(tmp_path, monkeypatch,
                                                               quiet_implement):
-    """B133: nothing written under the run dir quotes the untrusted reviewer's comment body."""
+    """B133: nothing written under the run dir quotes the untrusted reviewer's comment body.
+
+    A negative-space assertion needs a positive control, so the files revise must have written
+    are named first: a run that wrote nothing, or wrote only files this scan skips, would
+    otherwise pass having read nothing at all."""
     s = setup_revise(tmp_path, monkeypatch)
     revise(s.ctx, ITEM, source="review")
     run_dir = s.config.runs_dir / f"item-{ITEM}"
-    for path in run_dir.rglob("*"):
-        if path.is_file() and path.suffix in (".md", ".json", ".jsonl", ".txt", ".log"):
-            content = path.read_text(encoding="utf-8", errors="replace")
-            assert UNTRUSTED_REVIEW not in content, path
-            assert UNTRUSTED_COMMENT not in content, path
+
+    scanned = [
+        path
+        for path in sorted(run_dir.rglob("*"))
+        if path.is_file() and path.suffix in SCANNED_SUFFIXES
+    ]
+    written = {path.relative_to(run_dir).as_posix() for path in scanned}
+    missing = [name for name in REQUIRED_RUN_ARTEFACTS if name not in written]
+    assert missing == [], (
+        f"revise did not write {missing}; the scan below would be vacuous. Found: "
+        f"{sorted(written)}"
+    )
+
+    for path in scanned:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        assert UNTRUSTED_REVIEW not in content, path
+        assert UNTRUSTED_COMMENT not in content, path
 
 
 # --------------------------------------------------------------------------------------

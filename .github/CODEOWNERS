@@ -6,3 +6,16 @@
 /harness/gates.py   @jgoetzmann
 /harness/redact.py  @jgoetzmann
 /proposals/         @jgoetzmann
+# Beyond the handoff's frozen block (like /proposals/ above), for the reason line 2 gives:
+# packager.py, because the pinned set is `verify_pin.PINNED` — gates.py, packager.py,
+#   redact.py — plus every file under prompts/, and packager.py was the one member of it
+#   with no owner;
+# verify_pin.py, because that module is where PINNED and `.harness/PIN`'s path are defined:
+#   the file that decides what is pinned was itself editable without review;
+# trust.py and keywords.py, because they are the actor gate a keyword command passes
+#   through (B131), and .harness/README.md's "what may not go here" already lists both as
+#   code changes rather than knobs.
+/harness/packager.py    @jgoetzmann
+/harness/verify_pin.py  @jgoetzmann
+/harness/trust.py       @jgoetzmann
+/harness/keywords.py    @jgoetzmann

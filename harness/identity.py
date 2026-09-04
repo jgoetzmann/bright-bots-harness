@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from harness.config import TOKEN_KEY_NAME, Config
+from harness.config import CLASSIC_TOKEN_SHAPE, FINE_GRAINED_TOKEN_SHAPE, TOKEN_KEY_NAME, Config
 from harness.errors import ConfigError, GitHubError, RateCeilingReached, TierViolation
 from harness.gh import GitHubReadOnly
 from harness.redact import write_redacted
@@ -32,8 +32,10 @@ TRUST_PLACEHOLDER = "<NATHAN_HANDLE>"
 _PRESENT_FIELD = KEY_NAME.lower().removeprefix("harness_") + "_present"
 _SHAPE_FIELD = KEY_NAME.lower().removeprefix("harness_") + "_shape_ok"
 
-FINE_GRAINED_SHAPE: re.Pattern[str] = re.compile(r"^github_pat_[A-Za-z0-9_]{40,}$")
-CLASSIC_SHAPE: re.Pattern[str] = re.compile(r"^ghp_[A-Za-z0-9]{30,}$")
+# The patterns themselves live in config.py, as the key name does (R3.3, I-11); the raw-string
+# match in validate_shape is this module's own policy.
+FINE_GRAINED_SHAPE: re.Pattern[str] = FINE_GRAINED_TOKEN_SHAPE
+CLASSIC_SHAPE: re.Pattern[str] = CLASSIC_TOKEN_SHAPE
 
 TIER_NAMES: dict[int, str] = {
     0: "Tier 0 — read only, no credential",
@@ -124,7 +126,6 @@ NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
     "it is not, and must not become, a collaborator upstream.",
 )
 
-#: Kept for callers that import the Delivery 1 name.
 
 def permission_set_for(tier: int) -> tuple[tuple[str, str, str], ...]:
     """The permission rows for a target tier: §13.2 fine-grained below 2, §5.2 classic at 2."""

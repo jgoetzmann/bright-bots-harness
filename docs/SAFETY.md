@@ -109,6 +109,12 @@ prompting and edit-acceptance rules; it is never handed a blanket bypass.
 **Enforced by:** the runner builds argv from a frozen template that has no branch capable
 of adding `--dangerously-skip-permissions` or `--allow-dangerously-skip-permissions`. The
 only new argv element in Delivery 2 is `--max-budget-usd <PER_CALL_CAP_USD>`, a ceiling.
+Delivery 3 substitutes one pair in that same template and moves nothing else: when usage
+capture is on, `--output-format json` becomes `--output-format stream-json --verbose`, so
+the CLI's own `rate_limit_event` lines are visible to the governor (B200,
+`ClaudeCliRunner.build_argv` in `harness/runner/cli.py`). `get_runner` turns capture on for
+the real `cli` backend (B202, `harness/runner/base.py`), so that pair is what a live run
+spawns. Neither is a permission flag.
 
 **Verify:** `grep -rn "dangerously-skip-permissions" harness/` returns nothing.
 

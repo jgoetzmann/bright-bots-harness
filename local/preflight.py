@@ -10,15 +10,20 @@ container mounts and gates on; .env and its two credentials; .harness/PIN and th
 bb-config.json; the credential filter's output (A46); A44's filename rule; LF line endings on the
 baked-in entrypoint; the entrypoint's exec line (global flags before the subcommand); that every
 BB_* variable run.ps1 sets has a reader; that bb-config.json and bb-configure.py's SCHEMA hold the
-same keys; and that the two publishers still agree on --force-with-lease. Exit 1 on any FAIL.
-Standard library only (I-17).
+same keys; that every SCHEMA entry is a shape bb-configure.py's coerce() can check; that every
+DELIVER.json key watchdog-bb.ps1 reads is one deliver._write_record writes; and that the two
+publishers still agree on --force-with-lease. Exit 1 on any FAIL. Standard library only (I-17).
 
-Those last four are text assertions on purpose: PowerShell and the shell entrypoint have no Python
-test suite, so an invariant they share with harness/ can only be held here.
+Those last six are text assertions on purpose: PowerShell and the shell entrypoint have no Python
+test suite, so an invariant they share with harness/ can only be held here. Each one is a pair
+that has already drifted once - the exec line against argparse, run.ps1 against entrypoint.sh,
+bb-config.json against SCHEMA, SCHEMA against coerce(), the watchdog against deliver.py's record,
+and the watchdog against gh.push_branch.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import shutil
@@ -246,6 +251,116 @@ def check_config_schema_agrees() -> None:
           f"only in SCHEMA: {sorted(in_schema - in_file)}")
 
 
+def _schema_entries(source: str) -> list[tuple[str, str, object]]:
+    """``(key, type name, range node value)`` per SCHEMA entry, read from bb-configure.py's
+    literal with ``ast``. Parsed, never imported: importing would run the script."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        targets = getattr(node, "targets", None) or (
+            [node.target] if hasattr(node, "target") else []
+        )
+        names = [t.id for t in targets if isinstance(t, ast.Name)]
+        if "SCHEMA" not in names or not isinstance(getattr(node, "value", None), ast.Dict):
+            continue
+        out = []
+        for key_node, val_node in zip(node.value.keys, node.value.values):
+            if not (isinstance(key_node, ast.Constant) and isinstance(val_node, ast.Tuple)):
+                continue
+            if len(val_node.elts) < 3:
+                continue
+            typ, rng = val_node.elts[1], val_node.elts[2]
+            typ_name = typ.id if isinstance(typ, ast.Name) else ast.dump(typ)
+            if isinstance(rng, ast.Tuple):
+                rng_value: object = tuple(range(len(rng.elts)))
+            elif isinstance(rng, ast.Constant):
+                rng_value = rng.value
+            else:
+                rng_value = ast.dump(rng)
+            out.append((str(key_node.value), typ_name, rng_value))
+        return out
+    return []
+
+
+def check_configure_schema_shapes() -> None:
+    """bb-configure.py's `coerce` handles exactly two shapes - a number with a (min, max) range
+    and a bool with none - and refuses to write a value it cannot check. It used to carry an
+    `int_or_null` arm and two `str` arms besides, for types SCHEMA has never had: a third of the
+    function could not run, and `explain` printed spans from a map with the same dead entries. A
+    key added in a third shape must fail here, where the person adding it is looking, rather than
+    at the first `set` that touches it."""
+    conf_path = ROOT / "bb-configure.py"
+    if not conf_path.exists():
+        return
+    entries = _schema_entries(conf_path.read_text(encoding="utf-8", errors="replace"))
+    if not entries:
+        report("WARN", "SCHEMA shapes", "no SCHEMA literal found in bb-configure.py")
+        return
+    wrong = [
+        f"{key} ({typ}, {rng!r})"
+        for key, typ, rng in entries
+        if not (
+            (typ == "bool" and rng is None)
+            or (typ in ("int", "float") and isinstance(rng, tuple) and len(rng) == 2)
+        )
+    ]
+    check(not wrong, "SCHEMA shapes coerce() handles", f"{len(entries)} keys: number+range or bool",
+          f"coerce() has no arm for {wrong}; add it there and to cmd_explain's span")
+
+
+def _deliver_record_keys() -> set[str]:
+    """Every key ``deliver._write_record`` can put in DELIVER.json: the ``record`` dict literal
+    plus every ``record[...] = ...`` that follows it."""
+    src = ROOT / "harness" / "stages" / "deliver.py"
+    if not src.exists():
+        return set()
+    tree = ast.parse(src.read_text(encoding="utf-8", errors="replace"))
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        targets = getattr(node, "targets", None) or (
+            [node.target] if hasattr(node, "target") else []
+        )
+        value = getattr(node, "value", None)
+        is_record = any(isinstance(t, ast.Name) and t.id == "record" for t in targets)
+        if is_record and isinstance(value, ast.Dict):
+            keys |= {
+                k.value
+                for k in value.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+        for target in targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "record"
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)
+            ):
+                keys.add(target.slice.value)
+    return keys
+
+
+def check_manifest_keys_agree() -> None:
+    """runs/<item>/DELIVER.json has a Python producer (`deliver._write_record`) and a PowerShell
+    consumer (`watchdog-bb.ps1`), and no test can see both. The watchdog once probed `branch_name`,
+    `remote_repo`, `clone_path`, `clone` and `workdir` - five keys the producer has never written.
+    Each read `$null` and fell through to the next candidate, so the file looked like it tolerated
+    several manifest versions while it tolerated exactly one, and it worked only because the last
+    fallback in each chain happened to be right."""
+    wd = LOCAL / "watchdog-bb.ps1"
+    written = _deliver_record_keys()
+    if not (wd.exists() and written):
+        report("WARN", "DELIVER.json keys", "producer or consumer not found")
+        return
+    body = wd.read_text(encoding="utf-8", errors="replace")
+    code = "\n".join(ln for ln in body.splitlines() if not ln.strip().startswith("#"))
+    read = sorted(set(re.findall(r"\$d\.([A-Za-z_][A-Za-z0-9_]*)", code)))
+    unknown = [name for name in read if name not in written]
+    check(not unknown, "DELIVER.json keys the watchdog reads",
+          f"{', '.join(read) or 'none'} - all written by deliver._write_record",
+          f"the watchdog reads {unknown}, which deliver._write_record never writes; every one "
+          f"is $null at runtime. It writes: {sorted(written)}")
+
+
 # A force with no lease. Two shapes, because the two publishers build argv differently:
 #   ARG_FORCE   the flag as a quoted argument - "--force" / '-f' - which is how gh.py writes it,
 #               several lines away from the word "push".
@@ -337,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     check_entrypoint_invocation()
     check_bb_env_has_readers()
     check_config_schema_agrees()
+    check_configure_schema_shapes()
+    check_manifest_keys_agree()
     check_publishers_agree()
     if args.quick:
         report("SKIP", "docker", "--quick")

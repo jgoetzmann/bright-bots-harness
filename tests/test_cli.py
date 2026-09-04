@@ -409,8 +409,10 @@ def past_hhmm() -> str:
     """A local wall-clock time that has already passed.
 
     The CLI compares --until against the real local clock (RUN-DECISIONS), so
-    this is the one place the suite reads it. One minute back, except inside the
-    first minute of the day where that would wrap into the future.
+    this is one of the two places the suite reads it; `iso_now` (below) is the
+    other, and the two are the whole of the exception to conftest.py's "time is
+    always frozen". One minute back, except inside the first minute of the day
+    where that would wrap into the future.
     """
     now = datetime.now()
     if now.hour == 0 and now.minute == 0:
@@ -603,7 +605,15 @@ def engage_repo_halt(tmp_path: Path) -> Path:
 
 
 def iso_now(offset_seconds: int = 0) -> str:
-    """The real clock, because the CLI uses it (RUN-DECISIONS: `--until` compares against it)."""
+    """The real clock — the second documented exception to conftest.py's frozen time.
+
+    `past_hhmm` (above) is the first. This one exists because `cmd_run`/`cmd_dispatch` take no
+    clock: `build_context` (harness/context.py) constructs a `SystemClock` when none is injected,
+    so the harness under `cli.main(...)` reads real now and `write_ledger` has to express the
+    ledger window relative to it (real-now-minus-60s) or `roll_window` would roll it. The D3
+    run-window tests at the foot of this file do inject a clock, via `freeze_run_clock`, and pin
+    their ledger window to it with `align_ledger_window` instead of calling this.
+    """
     return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -940,9 +950,11 @@ def test_R6_7_dispatch_just_below_the_reserve_skips_an_unaffordable_item(
     assert plan["reason"].endswith("0 of max 1 slots")
 
 
-def test_B121_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatch, capsys):
+def test_B122_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatch, capsys):
     """B122 selection step 2 / RUN-DECISIONS-D2 §14: `halted = repo_halted(...) or
-    halted(config.halt_file)` — with the D1 HALT file the plan is empty (or the D1 exit 5)."""
+    halted(config.halt_file)`. The D1 HALT file is `config.halt_file`, not `.harness/HALT`,
+    so `check_repo_halt` does not fire and `cmd_dispatch` returns EXIT_OK with an empty plan
+    whose reason is "halted" — exit 5 belongs to the repo halt, which is a different test."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -954,12 +966,10 @@ def test_B121_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatc
     rc = cli.main(["dispatch"])
     out = capsys.readouterr().out
 
-    if rc == 0:
-        plan = json.loads(out)
-        assert plan["start"] == []
-        assert plan["reason"] == "halted"
-    else:
-        assert rc == 5
+    assert rc == 0, f"the D1 halt file plans nothing at exit 0; got {rc}: {out}"
+    plan = json.loads(out)
+    assert plan["start"] == []
+    assert plan["reason"] == "halted"
     assert stage_run_count(tmp_path) == 0
 
 
@@ -2001,3 +2011,316 @@ def test_B210_run_item_bypasses_the_run_window_but_still_reaches_the_stage(
     assert rc == 0, captured
     assert "outside run window" not in captured.out + captured.err, captured.out
     assert "implement" in stage_names(ran), f"--item must start the item: {ran} {captured}"
+
+
+# --------------------------------------------------------------------------
+# Appended; nothing above is edited. Audit cluster 4 - local mode and the
+# CLI's dead arms: `_local_unit`'s unreachable `except BudgetExhausted`,
+# bb-configure.py's unreachable coerce()/cmd_explain() branches, and the five
+# DELIVER.json keys watchdog-bb.ps1 read that deliver.py never writes.
+# --------------------------------------------------------------------------
+
+import argparse as _argparse
+import importlib.util as _importlib_util
+import sys
+import inspect as _inspect
+import re as _re
+
+from harness.dispatcher import Plan as _Plan
+
+REPO_TOP = Path(__file__).resolve().parent.parent
+BB_CONFIGURE = REPO_TOP / "bb-configure.py"
+PREFLIGHT = REPO_TOP / "local" / "preflight.py"
+WATCHDOG_PS1 = REPO_TOP / "local" / "watchdog-bb.ps1"
+
+
+def _load_script(path: Path, name: str):
+    """Import a top-level script by path. Neither bb-configure.py (a hyphen in the name) nor
+    local/preflight.py (no package) is importable by name, and both are pure definitions."""
+    spec = _importlib_util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, path
+    module = _importlib_util.module_from_spec(spec)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True  # no __pycache__/ under local/ or the repo root
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = was
+    return module
+
+
+def _watchdog_code() -> str:
+    """watchdog-bb.ps1 with its comment lines dropped - the file explains in prose what it no
+    longer does, and a naive grep would match the explanation."""
+    return "\n".join(
+        line for line in WATCHDOG_PS1.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    )
+
+
+def second_approved_item(tmp_path: Path, *, ref: str = "issue:817") -> int:
+    """A second approved item. `make_item`'s external_ref is UNIQUE in the schema, so a unit
+    with two items in its plan cannot be built by calling it twice."""
+    store = open_store(tmp_path)
+    store.migrate()
+    item_id = store.create_work_item(
+        kind="issue", external_ref=ref, title="second item in the same unit"
+    )
+    store.transition(item_id, "proposed", reason="test setup")
+    store.transition(item_id, "approved", reason="test setup")
+    store.close()
+    return item_id
+
+
+def lease_per_item(monkeypatch, tmp_path: Path, base_sha: str) -> None:
+    """Like `lease_on`, but each item gets its OWN runs/item-N/clone: `handoff` insists on one
+    per item, so a unit that stops on the first item cannot share a single clone."""
+
+    def fake_acquire(self, item, *args, **kwargs):
+        return clone_mod.Lease(
+            run_id=f"item-{item.id}",
+            path=tmp_path / "runs" / f"item-{item.id}" / "clone",
+            base_sha=base_sha,
+            branch=D3_BRANCH,
+        )
+
+    monkeypatch.setattr(clone_mod.CloneManager, "acquire", fake_acquire)
+
+
+def plan_of(monkeypatch, *item_ids: int) -> None:
+    """Force the unit's plan. The dispatcher caps a real plan at MAX_CONCURRENT_ITEMS, which is
+    1 in local mode (B123), so a two-item unit has to be stated rather than provoked."""
+    monkeypatch.setattr(
+        cli,
+        "_build_plan",
+        lambda ctx, config, args: _Plan(
+            start=tuple(int(i) for i in item_ids), reason="test plan", skipped={}
+        ),
+    )
+
+
+def two_item_unit(tmp_path: Path, monkeypatch) -> tuple[int, int, str]:
+    """A repo with two approved items, each with its own clone, ready for `_local_unit`."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    first = make_item(tmp_path, state="approved")
+    second = second_approved_item(tmp_path)
+    base = ""
+    for item_id in (first, second):
+        spec = write_spec(tmp_path, item_id)
+        _clone, base = make_clone_repo(tmp_path, item_id)
+        set_item_fields(
+            tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base, spec_path=str(spec)
+        )
+    write_carry_ledger(tmp_path)  # carry is None: nothing is being carried going in
+    return first, second, base
+
+
+def local_unit_args() -> _argparse.Namespace:
+    return _argparse.Namespace(config=None, verbose=False, json=False, dry_run=False)
+
+
+def test_audit_local_unit_ends_the_unit_when_the_run_hands_an_item_off(
+    tmp_path, monkeypatch, capsys
+):
+    """The unit stops after a usage stop, read from the outcome rather than from an exception.
+
+    `_local_unit` used to end the unit on `except BudgetExhausted`. Since D3 that arm cannot
+    fire: `cmd_run` catches `(BudgetExhausted, RateLimited)` around the per-item body, hands the
+    item off and returns EXIT_OK, so the stop never crosses the call boundary. With the arm dead
+    the unit marched on - and a usage stop is global, so item two would clone, be refused, write
+    its own HANDOFF.md, comment on its issue, and overwrite the single carry slot, losing the
+    carry of the item that actually has work in progress.
+
+    This drives the real `cmd_run`, so the whole chain is exercised: stop, handoff, carry, end.
+    """
+    from harness.errors import BudgetExhausted
+
+    first, second, base = two_item_unit(tmp_path, monkeypatch)
+    ran: list = []
+    record_stages(
+        monkeypatch,
+        ran,
+        implement_raises=BudgetExhausted(D3_STOP_REASON),
+        transition_first="implementing",
+    )
+    lease_per_item(monkeypatch, tmp_path, base)
+    plan_of(monkeypatch, first, second)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    cli._local_unit(local_unit_args(), tmp_path)
+
+    captured = capsys.readouterr()
+    implemented = [entry[1] for entry in ran if entry[0] == "implement"]
+    assert implemented == [first], (
+        f"the unit must end on the handoff, not start item {second}: {ran} {captured}"
+    )
+    assert f"item {first} was handed off; unit ends" in captured.out, captured.out
+    assert read_ledger(tmp_path)["window"]["carry"]["issue"] == first, (
+        "the carry must still name the item that was parked"
+    )
+
+
+def test_audit_local_unit_starts_every_planned_item_when_nothing_is_handed_off(
+    tmp_path, monkeypatch, capsys
+):
+    """The control for the test above: with no usage stop the unit runs its whole plan. Without
+    this, a `_local_unit` that returned after the first item every time would also pass."""
+    first, second, base = two_item_unit(tmp_path, monkeypatch)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    lease_per_item(monkeypatch, tmp_path, base)
+    plan_of(monkeypatch, first, second)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    cli._local_unit(local_unit_args(), tmp_path)
+
+    captured = capsys.readouterr()
+    implemented = [entry[1] for entry in ran if entry[0] == "implement"]
+    assert implemented == [first, second], f"both items must run: {ran} {captured}"
+    assert "unit ends" not in captured.out, captured.out
+    # `Ledger.to_json` writes the carry slot only once something has been carried, so an
+    # untouched window has no "carry" key at all rather than a null one.
+    assert read_ledger(tmp_path)["window"].get("carry") is None, "nothing was parked, so no carry"
+
+
+def test_audit_local_unit_reads_the_handoff_from_the_ledger_not_from_an_exception(
+    tmp_path, monkeypatch
+):
+    """`cmd_run` absorbs the stop and returns EXIT_OK, so `_local_unit` catching
+    `BudgetExhausted` would be catching something that can no longer arrive - it advertised a
+    control flow that had stopped happening. The unit's decision has to come from the outcome
+    the stop leaves behind. Pinned on the source so the dead arm cannot be reinstated in place
+    of the check, and behaviourally on the carry slot it now reads."""
+    source = _inspect.getsource(cli._local_unit)
+    assert "except BudgetExhausted" not in source, (
+        "cmd_run absorbs the stop and returns EXIT_OK, so this arm cannot fire - end the unit "
+        "on the outcome (the ledger's carry) instead"
+    )
+    assert "_was_handed_off" in source
+
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    ledger_path = write_carry_ledger(tmp_path, carry_issue=item_id)
+
+    assert cli._was_handed_off(ledger_path, item_id) is True
+    assert cli._was_handed_off(ledger_path, item_id + 1) is False
+    assert cli._was_handed_off(None, item_id) is False
+    assert cli._was_handed_off(tmp_path / "state" / "absent.json", item_id) is False
+
+
+# --- DELIVER.json: one producer in Python, one consumer in PowerShell ---------------------
+
+
+def test_audit_the_watchdog_reads_only_deliver_json_keys_deliver_writes():
+    """`Push-Delivered` probed `branch_name`, `remote_repo`, `clone_path`, `clone` and `workdir`
+    ahead of the keys `deliver._write_record` actually writes. Not one of the five is ever in
+    the record: each read `$null` and fell through to the candidate under it, so the fallback
+    chains read as tolerance for several manifest versions while exactly one shape was ever
+    parsed, and the file worked only because the last fallback in each chain happened to be
+    right."""
+    preflight = _load_script(PREFLIGHT, "bb_preflight")
+    written = preflight._deliver_record_keys()
+    assert {"branch", "fork_repo", "base_sha", "pushed", "pr_url"} <= written, written
+
+    code = _watchdog_code()
+    read = sorted(set(_re.findall(r"\$d\.([A-Za-z_][A-Za-z0-9_]*)", code)))
+    assert read, "the watchdog must still parse the manifest"
+    assert [name for name in read if name not in written] == [], (
+        f"the watchdog reads {read}; deliver._write_record writes {sorted(written)}"
+    )
+    for gone in ("branch_name", "remote_repo", "clone_path", "workdir"):
+        assert f"$d.{gone}" not in code, f"$d.{gone} is always $null"
+
+
+def test_audit_the_watchdog_finds_the_clone_where_every_producer_puts_it():
+    """The record carries no path, and a container path (`/work/...`) would be wrong on the host
+    anyway. `clone.py`, `deliver.py` and `revise.py` all build `<run dir>/clone`, and the run dir
+    is the one holding the manifest - so that is the single place to look, not a probe over
+    three directory names two of which nothing has ever created."""
+    code = _watchdog_code()
+    assert '$clone = Join-Path $dir.FullName "clone"' in code, code[:0]
+    assert "worktree" not in code, (
+        "nothing under harness/ has ever written a run dir named repo/ or worktree/"
+    )
+    for module in ("clone.py", "stages/deliver.py", "stages/revise.py"):
+        body = (REPO_TOP / "harness" / module).read_text(encoding="utf-8")
+        assert '/ "clone"' in body or 'f"item-{item.id}" / "clone"' in body, (
+            f"harness/{module} no longer builds the clone dir as <run dir>/clone"
+        )
+
+
+def test_audit_preflight_holds_the_manifest_and_the_schema_shapes_on_the_host():
+    """These are cross-language invariants, so preflight is the only place they can be held for
+    an operator who never runs pytest - the same reason `check_publishers_agree` lives there."""
+    body = PREFLIGHT.read_text(encoding="utf-8")
+    for name in ("check_manifest_keys_agree", "check_configure_schema_shapes"):
+        assert f"def {name}(" in body, f"local/preflight.py must define {name}"
+        assert f"    {name}()" in body, f"main() must call {name}"
+
+
+# --- bb-configure.py: the branches no SCHEMA entry could reach ----------------------------
+
+
+def test_audit_bb_configure_schema_holds_only_shapes_coerce_can_check():
+    """`coerce` carried an `int_or_null` arm and two `str` arms, and `cmd_explain` a matching
+    "int_or_null" span and a `str` -> "text" map entry, for types SCHEMA has never had: a third
+    of `coerce` could not run, so a reader had to work out which third did."""
+    bbc = _load_script(BB_CONFIGURE, "bb_configure")
+    for key, (_default, typ, rng, _restart, _help) in bbc.SCHEMA.items():
+        assert (typ is bool and rng is None) or (
+            typ in (int, float) and isinstance(rng, tuple) and len(rng) == 2
+        ), f"SCHEMA[{key!r}] is ({typ}, {rng!r}), a shape coerce() has no arm for"
+
+
+def test_audit_bb_configure_refuses_a_schema_type_it_cannot_check():
+    """The guard that makes deleting the dead arms safe. Without it a type `coerce` has no rule
+    for would fall through every branch and be written to bb-config.json unvalidated."""
+    bbc = _load_script(BB_CONFIGURE, "bb_configure")
+    bbc.SCHEMA["watcher.made_up"] = ("a", str, ("a", "b"), "watcher", "not a real key")
+
+    with pytest.raises(ValueError) as excinfo:
+        bbc.coerce("watcher.made_up", "a")
+
+    assert "no rule for SCHEMA type" in str(excinfo.value)
+
+
+def test_audit_bb_configure_still_coerces_and_range_checks_every_real_key():
+    """Removing the unreachable branches must not have moved the reachable ones."""
+    bbc = _load_script(BB_CONFIGURE, "bb_configure")
+    assert bbc.coerce("watchdog.poll_seconds", "30") == 30
+    assert bbc.coerce("container.cpus", "2.5") == 2.5
+    assert bbc.coerce("container.cpus", "4.0") == 4  # a whole float narrows to int
+    assert bbc.coerce("watchdog.battery_guard", "false") is False
+    assert bbc.coerce("watchdog.battery_guard", "on") is True
+    for key, raw, message in (
+        ("watchdog.poll_seconds", "1", "between 2 and 600"),
+        ("watchdog.poll_seconds", "notanumber", "must be an integer"),
+        ("watchdog.poll_seconds", "2.5", "must be an integer"),
+        ("container.cpus", "999", "between 0.5 and 64"),
+        ("watchdog.battery_guard", "maybe", "must be true or false"),
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            bbc.coerce(key, raw)
+        assert message in str(excinfo.value), (key, raw, str(excinfo.value))
+
+
+def test_audit_bb_configure_explain_still_prints_a_span_for_every_key(capsys):
+    """`cmd_explain`'s span map had the same dead entries. Both live shapes must still print."""
+    bbc = _load_script(BB_CONFIGURE, "bb_configure")
+    capsys.readouterr()
+
+    bbc.cmd_explain()
+
+    out = capsys.readouterr().out
+    for key in bbc.SCHEMA:
+        assert key in out, f"explain skipped {key}"
+    assert "allowed 2..600" in out, out  # an int key's range
+    assert "allowed 0.5..64" in out, out  # a float key's range
+    assert "allowed true|false" in out, out  # the one bool key
+    assert "int_or_null" not in out and "allowed text" not in out

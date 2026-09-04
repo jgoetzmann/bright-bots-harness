@@ -690,3 +690,43 @@ def test_b15_an_empty_body_is_stored_as_an_empty_string_not_a_miss(store):
     store.cache_put(URL, None, "")
 
     assert store.cache_get(URL) == (None, "")
+
+
+# --------------------------------------------------------------------------
+# One DDL, not two. The Delivery 1 constant was exported and never executed.
+# --------------------------------------------------------------------------
+
+
+def test_b7_the_module_carries_exactly_one_ddl_and_migrate_runs_it(tmp_path, frozen_clock):
+    """``migrate()`` creates every fresh database from ``SCHEMA_SQL_V2``; the Delivery 1 DDL is
+    not a constant here any more. Two DDL blocks that disagree about the legal state set, only
+    one of them reachable, is the hazard: a reader cannot tell which is in force, and the spec
+    fence in HARNESS-SPEC 5.2.1 is the record of the layout that is not."""
+    from harness.store import sqlite as sqlite_module
+
+    assert not hasattr(sqlite_module, "SCHEMA_SQL")
+    assert "SCHEMA_SQL" not in sqlite_module.__all__
+    assert "SCHEMA_SQL_V2" in sqlite_module.__all__
+
+    db = tmp_path / "one-ddl.db"
+    store = Store(db, frozen_clock)
+    store.migrate()
+    try:
+        conn = sqlite3.connect(db)
+        try:
+            names = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )}
+            assert EXPECTED_TABLES <= names
+            # The widened CHECK of layout 2 is what is actually in force.
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == \
+                sqlite_module.LAYOUT_VERSION
+            work_item_ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'work_item'"
+            ).fetchone()[0]
+            for state in ("proposing", "revising", "merged", "needs-human"):
+                assert state in work_item_ddl
+        finally:
+            conn.close()
+    finally:
+        store.close()

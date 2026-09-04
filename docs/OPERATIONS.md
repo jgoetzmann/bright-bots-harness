@@ -122,7 +122,11 @@ left mid-flight by a killed or timed-out job.
 
 **The harness fixes this itself.** Every `harness run` — scheduled or manual — begins with a
 reconciliation step that returns such items to their previous state label (B147, A48). The
-next `implement.yml` tick (every six hours, `23 */6 * * *`) will do it.
+tick that reaches it is `feedback.yml`'s: its last step before the ledger commit is a bare
+`harness run`, there for exactly this, on `41 */3 * * 1-5` — every three hours, Monday to
+Friday. `implement.yml` reconciles too, but only on a tick where the dispatcher gives it an
+item to start, and its three crons are Monday and Tuesday only (§13.3) — so on a Wednesday
+`feedback.yml` is the one that reaches it.
 
 To do it now:
 

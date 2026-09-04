@@ -1313,3 +1313,30 @@ def test_b208_without_a_ledger_authorize_is_the_delivery_1_path(store, d3_config
     governor = Governor(store, d3_config, frozen_clock)
 
     assert isinstance(governor.authorize(item_id, "implement"), Authorization)
+
+
+# --------------------------------------------------------------------------
+# B101 — the audit link the ledger entry carries. Governor.run_url was a field
+# nothing ever assigned; the entry it produced was always the empty string.
+# --------------------------------------------------------------------------
+
+
+def test_b101_the_ledger_entry_records_an_empty_run_url(usage_governor, d3_ledger, item_id):
+    """RUN-DECISIONS-D2 section 3 fixes the ``run:`` slot of the transition comment, and
+    ``ledger.record(run=...)`` fills the same slot in the history entry. Nothing in the harness
+    produces a run URL — only ``config.py`` may read the environment (I-4) and no config key
+    carries one — so what the governor books is the empty string, plainly and on purpose."""
+    auth = usage_governor.authorize(item_id, "implement")
+    usage_governor.record(auth, allowance_pct=1.0, cost_usd=2.5)
+
+    entry = d3_ledger.history[-1]
+    assert entry["run"] == ""
+    assert entry["stage"] == "implement"
+    assert entry["usd"] == pytest.approx(2.5)
+
+
+def test_b101_the_governor_carries_no_run_url_field_for_a_caller_to_fill(usage_governor):
+    """The mirror field is gone rather than left at "" for a reader to believe in: a URL that
+    is coming would have to be wired at ``GitHubStore(run_url=...)`` — the frozen seam — and
+    here, in the same change. Assigning this attribute alone would reach no comment."""
+    assert not hasattr(usage_governor, "run_url")

@@ -6,7 +6,31 @@ name: discover
 on:
   schedule:
     - cron: "17 7 * * 0"          # B124: non-zero, non-round minute
-  workflow_dispatch: {}
+  workflow_dispatch:
+    # B228/D48: steering, from the Actions tab. `triage` ranks whatever is already queued here
+    # and then, if that is empty, the product repo's allowlisted issues. `directed` aims the
+    # harness at ONE named product issue and is the route that works today, because nothing on
+    # the product repository carries the `harness-ok` allowlist label yet.
+    inputs:
+      mode:
+        description: "triage (rank the queue) or directed (one named product issue)"
+        required: false
+        default: triage
+        type: choice
+        options: [triage, directed]
+      target:
+        description: "directed only: the PRODUCT repository issue number, e.g. 633"
+        required: false
+        default: ""
+      lens:
+        description: "triage only: a focus for the ranking, e.g. 'flaky tests'"
+        required: false
+        default: ""
+      ignore_allowlist:
+        description: "triage only: consider product issues without the harness-ok label"
+        required: false
+        default: false
+        type: boolean
 
 # B118: every workflow that writes state/ledger.json shares one group and never cancels a run.
 concurrency:
@@ -186,6 +210,11 @@ jobs:
       - name: Discover and propose (harness discover, harness propose)
         if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true'
         shell: bash
+        env:
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_TARGET: ${{ github.event.inputs.target }}
+          INPUT_LENS: ${{ github.event.inputs.lens }}
+          INPUT_IGNORE_ALLOWLIST: ${{ github.event.inputs.ignore_allowlist }}
         run: |
           set -euo pipefail
           mkdir -p runs
@@ -198,7 +227,27 @@ jobs:
           # that can hit the governor exit 0 on it. harness/__main__.py maps BudgetExhausted to
           # this code; RateLimited already exits 0 there, and .harness/HALT exits 0 too.
           EXIT_BUDGET=4
-          if harness --json discover --mode triage | tee runs/discover.out; then
+          # B228: the dispatch inputs, defaulted for the scheduled run, where they are
+          # absent. Written as `if` rather than `[ ... ] && ...`: under `set -e` a false
+          # test in the second form is a non-zero command and would abort the job.
+          mode="${INPUT_MODE:-triage}"
+          args=(--mode "${mode}")
+          if [ "${mode}" = "directed" ]; then
+            if [ -z "${INPUT_TARGET// }" ]; then
+              echo "::error::mode=directed needs a target: the product repository issue number"
+              exit 2
+            fi
+            args+=(--target "${INPUT_TARGET}")
+          else
+            if [ -n "${INPUT_LENS// }" ]; then
+              args+=(--lens "${INPUT_LENS}")
+            fi
+            if [ "${INPUT_IGNORE_ALLOWLIST:-false}" = "true" ]; then
+              args+=(--ignore-allowlist)
+            fi
+          fi
+          echo "discover ${args[*]}"
+          if harness --json discover "${args[@]}" | tee runs/discover.out; then
             status=0
           else
             status=$?

@@ -468,3 +468,57 @@ def test_b224_acquire_refuses_a_clone_directory_it_could_not_clear(
 
     assert "could not clear the previous clone" in str(excinfo.value)
     assert "entries remain" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------
+# B229 - no git hook runs in a harness clone (D49)
+# --------------------------------------------------------------------------------------
+
+
+def test_b229_the_clone_has_hooks_turned_off(config, clock, item, source_repo):
+    """B229: `npm ci` installs the product repository's husky hooks, and a pre-push hook then
+    runs inside `git push` -- in an environment the product does not test, duplicating a gate
+    the harness has already run explicitly."""
+    from harness.clone import HOOKS_OFF
+
+    source_path, _head = source_repo
+    manager = local_manager(config, clock, source_path)
+
+    lease = manager.acquire(item)
+
+    configured = subprocess.run(
+        ["git", "config", "core.hooksPath"],
+        cwd=str(lease.path), capture_output=True, text=True,
+    ).stdout.strip()
+    assert configured == HOOKS_OFF
+
+
+def test_b229_a_refusing_pre_push_hook_does_not_stop_the_push(config, clock, item, source_repo):
+    """B229: measured on the real thing -- brightboost's pre-push calls a script that crashes
+    under Node 22, so the push was refused and the reviewer got vite output as the reason."""
+    source_path, _head = source_repo
+    manager = local_manager(config, clock, source_path)
+    lease = manager.acquire(item)
+    hooks = Path(lease.path) / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "pre-push"
+    hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    (Path(lease.path) / "new.txt").write_text("x", encoding="utf-8")
+    _git_in(lease.path, "add", "-A")
+    _git_in(lease.path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x")
+
+    pushed = subprocess.run(
+        ["git", "push", str(source_path), f"HEAD:refs/heads/{lease.branch}"],
+        cwd=str(lease.path), capture_output=True, text=True,
+    )
+
+    assert pushed.returncode == 0, pushed.stderr
+    assert "refused" not in pushed.stderr
+
+
+def _git_in(cwd, *args):
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr}")
+    return proc.stdout

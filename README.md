@@ -1,208 +1,168 @@
 # bright-bots-harness
 
-A Python service that takes work on
+An automated harness that takes work on
 [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost)
-from an issue through a diagnosis, an implementation checked by the product repository's own
-gates, and a review package pinned to an exact base commit — and, in Delivery 2, delivers it
-as a pull request that a human merges. Two human gates, both ordinary PRs, both usable from
-a phone. The model never merges anything.
+from discovery to a reviewable pull request, and then stops. It runs on GitHub Actions as the
+machine account `jgoetzmann-bot`, which owns the fork it pushes to; its own work queue is
+GitHub issues in this repository. A human decides twice — whether a piece of work should
+start, and whether the result should ship — and both decisions are ordinary pull requests you
+can act on from a phone. Python 3.13, standard library only.
 
-## Two ways to run it
+## The flow
 
-| | **Actions mode — the product** | **Local mode — proof of concept, debugger** |
+| Step | What happens | Where you see it |
 |---|---|---|
-| Queue | GitHub issues in this repository, one `harness:*` label each | `harness.db` (SQLite) on your disk |
-| Scheduler | `.github/workflows/`: discover weekly, implement three times inside the subscription's weekly window (Mon 08:00 – Tue 20:00 UTC), feedback every 3 h | you, at a terminal — or the `bb` container's loop |
-| Credentials | `HARNESS_GITHUB_TOKEN` (machine account, `public_repo` only) and `CLAUDE_CODE_OAUTH_TOKEN`, as repo secrets | the Claude token only; the GitHub token is filtered out of the container |
-| Publishes | pushes to a fork it owns, opens PRs upstream, comments here | nothing; the package stays on disk |
-| `.env` | `PERMISSION_TIER=2`, `STORE_BACKEND=github` | `PERMISSION_TIER=0`, `STORE_BACKEND=sqlite` — the defaults |
-| Read | [docs/OPERATIONS.md](docs/OPERATIONS.md) | [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) |
+| `discover` | Takes a product-repository issue — picked by triage, or named by number in directed mode — and opens a work item for it | An issue here, labelled `harness:queued` |
+| `propose` | Reads the code at a pinned commit and writes a work package: issue, diagnosis with file and line citations, approach, slices, behaviors, acceptance criteria, decisions, open questions, touched paths, risks | A PR here adding `proposals/<id>-<slug>.md`, from `harness/propose-<id>` |
+| **Gate 1 — you** | **Merging that PR is approval**: the push to `proposals/**` runs `harness approve`. Closing it without merging is rejection — nothing is implemented, because nothing reaches `approved` | The PR here |
+| `implement` | Branch on the fork, under `harness/`; the product's own gate sequence runs on the untouched tree as a baseline, then again after the change | Commits on `jgoetzmann-bot/brightboost` |
+| `package` | Assembles the review package — verbatim gate output with exit codes, patches, a git bundle, the base commit | `runs/item-N/package/`, uploaded as the run's artifact (14 days) |
+| `deliver` | Opens the pull request upstream, with the gate evidence in its body | A PR on the product repository from `jgoetzmann-bot:harness/…` |
+| **Gate 2 — a human** | Review and merge upstream. **The harness never merges anything** | The PR on the product repository |
 
-One codebase. No module above the store knows which mode it is in (invariant I-16); the only
-differences are which store is opened and who runs the dispatcher. Start in local mode: the
-five commands below work with no token, no network, and no spend.
+Everything between the gates is bounded: a per-call cap, a weekly cap with a reserve, two
+subscription-utilisation stops, a weekly run window, per-stage turn ceilings, a revise cap,
+and a pinned gate sequence.
 
-## The two human gates
+## What it will and will not do
 
-1. **Proposal.** `propose` opens a PR into `proposals/` here: a bounded front matter and a
-   diagnosis with file and line citations. **Merging it is approval.** Nothing implements
-   until you do. Reject proposals; if none are rejected, the gate is decorative.
-2. **Delivery.** `deliver` pushes a branch to the machine account's fork and opens a PR
-   upstream with the verbatim gate evidence in its body. Merging it is Nathan's or yours.
-   The code to merge, approve, or dismiss a review does not exist (I-12).
+- **It never merges.** No merge, approve, or dismiss endpoint exists in the code (I-12). Both
+  gates are load-bearing because the code that would bypass them is absent.
+- **One GitHub credential, scoped small.** A classic PAT with `public_repo` and nothing else,
+  on a machine account that owns the fork and is not a collaborator on the product repository.
+  No `workflow` scope, so GitHub itself rejects any push touching `.github/workflows/` (I-15).
+  The only other secret is the subscription token the `claude` CLI authenticates with.
+- **One door for that credential.** `harness/gh.py` is the only module that sends an
+  `Authorization` header and the only one that can read the token (I-9, I-11); the `gh` CLI is
+  banned outright (I-2′). Below `PERMISSION_TIER=2` no request carries a token at all — and 0
+  and 2 are the only tiers this build accepts.
+- **It stops on a committed file.** `.harness/HALT` on the default branch is the first step of
+  every spending workflow — before checkout, before `doctor`, before the dispatcher — and the
+  job exits 0 having spent nothing (B149/B150). `.harness/` is outside the harness's write
+  roots, so it cannot remove its own kill switch (I-8).
+- **Everything it says is redacted.** Every transcript, log line, package file, proposal file,
+  ledger write and byte sent to GitHub passes `redact.redact()` first (I-13).
+- **Gates are never widened.** The product's own sequence — `npx prisma generate`,
+  `npm run lint`, `npm run typecheck`, the backend typecheck,
+  `bash scripts/check-prisma-drift.sh`, `npm run test:unit`, `npm run build` — is the only
+  definition of "it works" the harness accepts. A red it cannot fix honestly is a blocked item,
+  not a loosened gate. `gates.py`, `packager.py`, `redact.py` and every file under `prompts/`
+  are hashed into `.harness/PIN`; `harness doctor` exits non-zero on a mismatch, so
+  `implement.yml` fails before spending and the container refuses to start.
+- **Commands come from a list you control.** A `/harness` command is honoured only from a
+  handle in `.harness/trust.txt` whose `author_association` is OWNER, MEMBER or COLLABORATOR —
+  both, never either alone. Anyone else's comment is silently ignored and its body is never
+  even parsed.
 
-Everything between the gates is bounded: a per-call cap (`PER_CALL_CAP_USD`), a weekly cap
-(`WEEKLY_CAP_USD`) with a reserve, two subscription-utilization stops
-(`WEEKLY_USAGE_STOP_PCT`, `SESSION_USAGE_STOP_PCT`), a weekly run window, a revise cap
-(`MAX_REVISE_CYCLES`), a pinned gate sequence, and a trust list for anyone who wants to
-steer it. See [docs/SAFETY.md](docs/SAFETY.md).
+It will not push to the product repository, file an issue there, edit `.github/**` anywhere,
+move the fork's default branch except to fast-forward it from upstream, write a file outside
+its own roots, or ask you for any access beyond `public_repo` on its own account.
+[docs/SAFETY.md](docs/SAFETY.md) states each guarantee with the command that checks it.
 
-## Requirements
+## The repositories
 
-- Python 3.13, `git` on `PATH`
-- `node`, `npm`, `npx` — used only inside the disposable clone, to run the product's gates
-- The `claude` CLI, only for `BACKEND=cli`. The `fake` backend needs nothing.
-- Docker Desktop, only for the `bb` container.
-
-No runtime Python dependencies. Standard library only, on purpose (I-17).
-
-On Windows, `claude`, `npm` and `npx` are `.CMD` shims; the harness resolves them through
-`PATHEXT` itself. This machine's global `core.autocrlf=true` dirties fresh clones of the
-product repo; the reconstruction commands in
-[docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) show the flag to pass.
-
-## Install
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-source .venv/bin/activate       # macOS / Linux
-pip install -e ".[dev]"
-```
-
-## First run
-
-```bash
-harness init      # creates harness.db, runs/, packages/, and .env from .env.example
-harness doctor    # probes git, claude, node, npm, npx, disk, the halt files, the pin, config
-harness setup     # assesses machine-account readiness and writes HUMAN.md
-```
-
-`harness init` never overwrites an existing `.env`. `harness doctor` exits 3 when anything is
-missing or degraded and names it — every Delivery 2 key included (A30). `harness setup`
-exits 6 while any human prerequisite is outstanding and lists them in `HUMAN.md`.
-
-Edit `.env` before doing anything real. `BACKEND=fake` is the default and spends nothing.
-
-## The five-command walkthrough
-
-Local mode, unchanged from Delivery 1, still the fastest way to see the whole state machine:
-
-```bash
-harness discover --mode directed --target 816
-harness propose 1
-harness approve 1
-harness run --item 1
-harness package 1
-```
-
-1. **discover** creates one work item for issue 816. No model call in directed mode.
-2. **propose** makes one model call and writes the work package — diagnosis, approach,
-   slices, behaviors, acceptance criteria, decisions, open questions, touched paths, risks —
-   now with the validated front matter, to `proposals/`. Read it. This is the cheapest place
-   to disagree.
-3. **approve** is you, deliberately. In Actions mode this step is merging the proposal PR.
-4. **run** clones into `runs/item-1/clone`, runs the gate sequence on the untouched tree as
-   a baseline, implements, prettiers only the changed files, commits under the product's
-   conventional-commit rules, and runs the gates again. Red gets bounded diagnose-and-fix
-   cycles; a repeated failure signature stops it; still red means `blocked`, never a widened
-   gate.
-5. **package** assembles `runs/item-1/package/`, described in
-   [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md).
-
-Then `harness archive 1 [--with-transcript]` promotes it into `packages/`.
-
-## The Delivery 2 commands
-
-```bash
-harness dispatch                  # JSON plan of what may start now; starts nothing
-harness deliver 1                 # push the branch to the fork, open the upstream PR
-harness revise 1 --source ci      # one bounded revision cycle: ci | conflict | review | continue
-harness decompose 42              # split issue 42 into sub-issues, here only
-harness sweep                     # poll notifications, parse trusted keywords, enqueue
-harness ledger [--json] [--rebuild]   # spend, medians, window, rate-limit state
-harness sync-fork                 # fast-forward the fork from upstream; exit 1 on divergence
-harness init --labels             # create the twelve harness:* labels, idempotently
-harness --dry-run <command>       # record every GitHub write in gh.sent, send none
-```
-
-Every one of them runs under `BACKEND=fake` with no network. In Actions mode the workflows
-run them in a fixed order: `.harness/HALT` check, `doctor`, `sync-fork`, `dispatch`, then
-`run`/`package`/`deliver` per item, then a `[skip ci]` commit of `state/ledger.json`.
-
-Steering, from a trusted handle only: `/harness revise|reject` on a proposal PR,
-`/harness fix|rebase|stop` on a delivery PR, `/harness split|queue` on an issue here.
-Comments on the product repository are polled, not pushed, so they take up to
-`NOTIFY_POLL_HOURS` — see OPERATIONS §9 before reporting that as a bug.
-
-## Budget
-
-Every stage asks the governor before it spends. The governor is backed by
-`state/ledger.json`: accumulated `total_cost_usd` per window against `WEEKLY_CAP_USD`,
-`RESERVE_PCT` held back, a median per stage once three observations exist, and
-`rate_limited_until` when the CLI reports a usage limit — which returns the item to its
-previous state and exits 0, not an incident.
-
-Delivery 3 adds the subscription's own numbers. Every `claude` call under
-`--output-format stream-json` reports a `rate_limit_event` carrying `five_hour` and
-`seven_day` utilization; the runner keeps the last one, the ledger stores it as
-`window.usage`, and the weekly heartbeat prints it. Four things read it:
-
-| Knob | Ships as | Effect |
+| Repository | What it is | What the harness does there |
 |---|---|---|
-| `WEEKLY_USAGE_STOP_PCT` | `90` | nothing new starts once seven-day utilization reaches it |
-| `SESSION_USAGE_STOP_PCT` | `70` | the same for the rolling five-hour window |
-| `RUN_WINDOW_START` / `RUN_WINDOW_END` | `mon 08:00` – `tue 20:00` UTC | outside it no new item starts |
-| `OVERRUN_PCT` | `10` | leeway for one **carried** item after a weekly reset |
+| `jgoetzmann/bright-bots-harness` | This one: the code, the docs, and the work queue | Opens and labels issues, opens proposal PRs into `proposals/`, commits the ledger to the `harness-state` branch |
+| `jgoetzmann-bot/brightboost` | The machine account's fork | Pushes every branch it creates, under `harness/`; fast-forwards the default branch from upstream and nothing else. At tier 2 it is also the clone source, synced first |
+| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, and opens one pull request into it from the fork. No branch, no issue, no other write |
 
-A stop is a normal outcome, never an incident: the half-finished item is handed off — branch
-committed and pushed to the fork, `runs/item-N/HANDOFF.md` written and posted, item back to
-`harness:approved`, exit 0 — and the next window resumes it first with
-`harness revise <id> --source continue`, even outside the run window.
+## Steering it
 
-The USD caps stay underneath and stay hard, because **no decision depends on the signal
-being present** (B114): with no `usage` observed, the dollar path governs exactly as it did
-in Delivery 2. `WEEKLY_CAP_USD` ships at `400.00` so the dollar backstop cannot bind before
-the usage stop when the signal is there. The whole procedure is
-[docs/OPERATIONS.md](docs/OPERATIONS.md) §13.
+From a comment on any harness issue or PR, `/harness <verb>` on its own line. These seven are
+the whole list:
 
-## The kill switch
+| Verb | Where | What it does |
+|---|---|---|
+| `revise` | Proposal PR | Returns the item to `proposing` and re-runs `propose` with your notes as guidance |
+| `reject` | Proposal PR | Closes the PR and abandons the item |
+| `fix` | Delivery PR | One revision cycle with source `review`, your notes as the feedback |
+| `rebase` | Delivery PR | One revision cycle with source `conflict` |
+| `stop` | Delivery PR | Closes the PR and abandons the item |
+| `split` | Issue here | Decomposes it into at most `MAX_SUBISSUES` sub-issues, in this repository only |
+| `queue` | Issue here | Returns the item to `discovered`; a no-op if it is already there |
 
-Actions mode: commit `.harness/HALT` to `main`; it is the first step of every spending job.
-Local: `harness halt` / `harness resume` (`HALT` at the root, exit 5). Container:
-`.\bb-stop.ps1`. All three in [docs/OPERATIONS.md](docs/OPERATIONS.md) §8.
+A command is acted on once; editing the comment does not re-trigger it. On this repository the
+comment events wake `feedback.yml` directly and latency is minutes. On the product repository
+the harness gets no events, so commands are found by `harness sweep` on `feedback.yml`'s
+schedule (`41 */3 * * 1-5`): up to `NOTIFY_POLL_HOURS` on a weekday, and until Monday for a
+comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions tab.
 
-## Safety, in brief
+From the Actions tab, `discover.yml` takes `mode` (`triage` or `directed`), `target` (a
+product-repository issue number), `lens` and `ignore_allowlist`. Directed mode queues one
+specific ticket and proposes it in the same run — which is how work actually starts today,
+because triage only considers product issues carrying the `harness-ok` label
+(`ALLOWLIST_LABEL`) and none carry it yet. `implement.yml` takes an `issue` number to run now,
+bypassing the run window. Both refuse to start while `.harness/HALT` exists on the default
+branch.
 
-- **Tier 2, scoped.** A classic PAT with `public_repo` only, on a machine account that owns
-  nothing but the fork and is not a collaborator upstream. No `workflow` scope, so GitHub
-  itself refuses any push touching `.github/workflows/` (I-15).
-- **One authenticated module.** `harness/gh.py` is the only file that sends an
-  `Authorization` header, and the only one that can read the token (I-11). The `gh` CLI
-  stays banned (I-2′).
-- **Never merges.** No merge, approve, or dismiss endpoint exists (I-12).
-- **Trust gate.** A `/harness` command is honoured only from a handle in
-  `.harness/trust.txt` with `author_association` OWNER/MEMBER/COLLABORATOR; anything else
-  is silently ignored and its body never reaches a prompt (B131–B133).
-- **Everything redacted** before disk and before GitHub (I-13).
-- **Gates pinned.** `gates.py`, `packager.py`, `redact.py` and `prompts/` are hashed into
-  `.harness/PIN`; a mismatch stops both modes before they spend (B142).
-- **Tier 0 still holds.** With `PERMISSION_TIER=0` no request carries a token, exactly as
-  in Delivery 1 — and that is what the container runs at.
+## What is in here
 
-The full list, each with a verify-it-yourself command, is in [docs/SAFETY.md](docs/SAFETY.md).
-
-## Layout
-
-| Path | What it is |
+| Path | What it holds |
 |---|---|
-| `harness/` | The package. `store/` (sqlite + github behind one protocol), `dispatcher.py`, `ledger.py`, `trust.py`, `keywords.py`, `gh.py`, `stages/` |
-| `prompts/` | Prompts as data, one file per stage, pinned |
-| `.github/workflows/` | discover, implement, feedback, ops, heartbeat, selftest |
-| `.harness/` | Operator-only: `trust.txt`, `config.json`, `PIN`, `HALT`. Not writable by the harness |
-| `proposals/` | Merged proposals — the approved queue |
-| `state/ledger.json` | The one persistent state file |
-| `local/`, `bb-*.ps1`, `bb-config.json` | The container control plane — [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) |
-| `docs/` | `SAFETY.md`, `OPERATIONS.md`, `PACKAGE-FORMAT.md`, `LOCAL-MODE.md` |
-| `docs/delivery/` | The two frozen specs and their runnable review protocols — [docs/delivery/README.md](docs/delivery/README.md) |
-| `tests/` | pytest; every specified behavior — B1–B86 (spec), B100–B150 (handoff), B200–B215 (D31–D33) — is cited by at least one test |
-| `HUMAN.md` | Generated by `harness setup`: the sixteen things only a human can do |
-| `DECISIONS.md` | Every ruling D1–D34, the amendment log for the frozen specs |
+| `harness/` | The package. Standard library only; `harness --help` lists the subcommands |
+| `tests/` | The suite. Every behavior B1–B86, B100–B150 and B200–B229 is cited by a test that names it |
+| `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
+| `.github/workflows/` | `discover`, `implement`, `feedback`, `heartbeat`, `ops`, `selftest` |
+| `proposals/` | Merged work packages. A merge into here is gate 1 |
+| `.harness/` | `HALT` (the kill switch), `PIN`, `trust.txt`, `config.json`. Outside the harness's write roots |
+| `docs/` | Everything below, plus `delivery/` — the frozen specifications each build was graded against |
 
-## What this does not do
+## Where to go next
 
-No merge, no review approval, no auto-merge on green. No push to the product repository —
-only to the fork. No issue on the product repository. No edit to `.github/**` anywhere. No
-second fork, no stacked branches. No web UI; GitHub is the UI. No concurrency above one in
-local mode. No self-hosted runners. It reads the subscription's reported utilization,
-but nothing it does depends on that number being there.
+Everything below runs locally under `BACKEND=fake`, which replays fixtures and spends nothing;
+`harness init` then `harness doctor` is the entry point, and `harness --help` lists the
+subcommands.
+
+| Document | When to read it |
+|---|---|
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day to day and when something is wrong: reading the state (§1), a failed run, a stuck item, a diverged fork, a leaked secret, everyday actions (§11). §8 is how to stop everything |
+| [docs/SAFETY.md](docs/SAFETY.md) | The tiers and the invariants, each with a command that proves it. Read before raising the tier |
+| [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) | What a work package and a review package contain, and how to reconstruct a run from one |
+| [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) | Running the same harness in the `bb` container, off the schedule |
+| [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D46, the amendment log for the frozen specs |
+| [docs/delivery/](docs/delivery/README.md) | The frozen specs and their runnable review protocols. For reviewing, not operating |
+
+## Current status
+
+**Live.** Actions mode at `PERMISSION_TIER=2`, queue in GitHub issues, ledger on the
+`harness-state` branch. Directed discovery and `propose` have run for real. Gate 1 has been
+exercised once: the proposal for harness issue #4 (product issue #633) was merged, and
+`proposals/4-chore-activities-delete-orphaned-sequenc.md` is the file it added. `implement`
+has run on an Actions runner far enough to take a clone and pass all seven baseline gates
+before failing on a defect (D46) that is now fixed. The kill switch is currently off —
+`.harness/HALT` is parked as `HALT.suspended` — so the schedules will fire.
+
+The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
+(tue 20:00) UTC, and `implement.yml`'s crons follow that window. Two things start outside it:
+`harness run --item N`, which is what a `workflow_dispatch` with an explicit issue number
+invokes, and an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway
+instead. Neither bypasses the usage stops. `discover.yml` is deliberately not window-gated —
+one triage call is cheap — and stops only on a halt, a rate limit, the reserve, or a usage
+stop.
+
+**Exercised once, end to end, and it did not finish.** On 4 September 2026 item 4 (product
+issue #633) went from directed discovery through a proposal pull request, gate 1, implement and
+package on an Actions runner — all seven gates green on Linux — and then failed at the push to
+the fork. The cause was not the change: `npm ci` installs the product repository's husky hooks,
+and its `pre-push` runs `scripts/check-bundle-size.js`, which crashes under Node 22 because it
+uses `require` in a `"type": "module"` package. D49 turns hooks off in a harness clone. **No
+pull request has yet been opened on `Bright-Bots-Initiative/brightboost`, so gate 2 has never
+happened.**
+
+**Known gaps, recorded and not fixed.** Five more places assume `runs/` survives between
+Actions runs: `revise`'s baseline-red lookup, `item.package_path`, `HANDOFF.md`, `sweep`'s
+shared run directory, and `heartbeat.yml`'s ledger fetch. Each is described in `DECISIONS.md`
+under the Delivery 3 acceptance section, with the reason it needs its own durable source
+chosen deliberately rather than a fix in the same change. `HUMAN.md` is a generated gap report
+and is stale relative to what has since been done — regenerate it with `harness setup` before
+trusting its outstanding list. The 1,423 passing tests recorded at that acceptance were a
+Windows-local fact: `selftest.yml` had always specified both `ubuntu-latest` and
+`windows-latest`, but it triggers only on `pull_request` and `workflow_dispatch` and neither
+had happened. The first time it actually ran, it failed on both — D38 fixed the pin's line-ending
+sensitivity, D39 the tests that assumed the ambient `init.defaultBranch`.
+
+**Cost, measured once.** `harness propose 1` spent $2.37 against a `PER_CALL_CAP_USD` of $3.00
+and took 22 minutes, most of it the model searching for a repository that was not there and
+then reading one that should not have been reachable. D36 and D37 changed that path; the
+figure should be re-measured on the next live run, not assumed.

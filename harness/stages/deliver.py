@@ -6,10 +6,10 @@ import json
 import logging
 import urllib.parse
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from harness import clone as clone_mod
-from harness import gates, redact
+from harness import gates, links, redact
 from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
@@ -123,6 +123,27 @@ def build_pr_title(spec_title: str, fallback: str, upstream_issue: int | None) -
     return title[:MAX_TITLE_CHARS]
 
 
+def _reference_lines(
+    *, self_repo: str, upstream_repo: str, item_id: int, upstream_issue: int | None
+) -> str:
+    """The closing keyword and the back-reference, as GitHub understands them (B227).
+
+    ``Closes`` only where merging really does resolve the thing named: this pull request is
+    against the product repository, so merging it closes the product issue. The harness work
+    item lives in another repository and is referenced, not closed -- it closes when the item
+    itself reaches its terminal state, not when this merges.
+    """
+    lines = []
+    closing = links.closes(upstream_repo, upstream_issue, same_repo=True)
+    if closing:
+        lines.append(closing)
+    lines.append(
+        f"Harness work item: [{links.issue_ref(self_repo, item_id)}]"
+        f"({links.issue_url(self_repo, item_id)})"
+    )
+    return "\n".join(lines)
+
+
 def build_pr_body(
     package_dir: Path,
     *,
@@ -132,6 +153,9 @@ def build_pr_body(
     base_sha: str,
     self_repo: str,
     item_id: int,
+    upstream_issue: int | None = None,
+    config: Any = None,
+    trusted: Iterable[str] | None = None,
 ) -> str:
     """B108: README + DIAGNOSIS + EVIDENCE from the package, verbatim, plus the reconstruction
     commands of ``docs/PACKAGE-FORMAT.md`` §3 — redacted, and capped at GitHub's limit."""
@@ -145,7 +169,16 @@ def build_pr_body(
         "<!-- opened by the Bright Bots Harness; generated from the review package (B108) -->",
         (
             f"_Automated pull request from `{fork_owner}`. Nothing here merges itself: a trusted "
-            f"human reviews and merges, or closes. Harness work item: `{self_repo}#{item_id}`._"
+            f"human reviews and merges, or closes._"
+        ),
+        "",
+        # B227: the references GitHub resolves, so this pull request, the product issue it
+        # fixes and the work item that produced it all appear in one another's timelines.
+        _reference_lines(
+            self_repo=self_repo,
+            upstream_repo=upstream_repo,
+            item_id=item_id,
+            upstream_issue=upstream_issue,
         ),
         "",
         readme or "# Review package\n\n_README.md was missing from the package._",
@@ -191,6 +224,7 @@ def build_pr_body(
         "```",
         "",
     ]
+    parts.append(links.signature(config, trusted=trusted))
     body = redact.redact("\n".join(parts))
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + TRUNCATION_NOTE
@@ -241,6 +275,9 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         base_sha=the_lease.base_sha,
         self_repo=self_repo,
         item_id=item_id,
+        upstream_issue=upstream_issue,
+        config=ctx.config,
+        trusted=ctx.trusted,
     )
     head = f"{fork_owner}:{the_lease.branch}"
     record: dict[str, Any] = {

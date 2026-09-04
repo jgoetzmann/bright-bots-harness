@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+from harness import trust
 from typing import Any, Protocol
 
 from harness.errors import StoreError
@@ -34,6 +36,7 @@ class StoreProtocol(Protocol):
         title: str,
         tier_required: int = 0,
         body: str = "",
+        upstream_body: str = "",
     ) -> int: ...
 
     def get_work_item(self, item_id: int) -> WorkItem | None: ...
@@ -111,6 +114,8 @@ def open_store(config: Any, clock: Any, gh: Any = None) -> StoreProtocol:
         self_repo=str(getattr(config, "self_repo", "")),
         scratch=scratch,
         clock=clock,
+        config=config,
+        trusted=trust.load_trust(Path(config.trust_file)) if getattr(config, "trust_file", "") else (),
     )
 
 

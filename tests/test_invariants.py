@@ -60,6 +60,8 @@ SPEC_PACKAGE_FILES = [
     "harness/stages/decompose.py",
     "harness/stages/revise.py",
     "harness/stages/deliver.py",
+    # B227: the presentation layer for everything the harness opens on GitHub.
+    "harness/links.py",
 ]
 
 # §4.3 — every test module the delivery is required to ship.
@@ -526,6 +528,8 @@ D2_PACKAGE_FILES = [
     "harness/stages/decompose.py",
     "harness/stages/revise.py",
     "harness/stages/deliver.py",
+    # B227: the presentation layer for everything the harness opens on GitHub.
+    "harness/links.py",
 ]
 
 # Handoff §3 — test modules and fixtures marked NEW.

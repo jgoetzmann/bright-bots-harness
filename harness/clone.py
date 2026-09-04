@@ -86,6 +86,11 @@ def long_path(path: Path | str) -> str:
     return EXTENDED_PREFIX + text
 
 
+#: `core.hooksPath` for a harness clone: a path that holds no hooks, so none can fire (B229).
+#: A directory that does not exist is what git itself documents for turning hooks off.
+HOOKS_OFF = "no-hooks"
+
+
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:
     """Clear the read-only bit, then retry past ``MAX_PATH``; re-raise if it still will not go.
 
@@ -232,6 +237,19 @@ class CloneManager:
         )
         if code != 0:
             raise CloneError(f"git clone failed ({code}): {err.strip()[-2000:]}")
+
+        # B229/D49: no git hook runs in a harness clone. `npm ci` installs the product
+        # repository's husky hooks, and a pre-push hook then runs inside `git push` -- in an
+        # environment the product does not test, duplicating a gate the harness has already run
+        # explicitly and recorded verbatim. Measured: brightboost's pre-push calls
+        # `scripts/check-bundle-size.js`, which crashes under Node 22 because it uses `require`
+        # in a `"type": "module"` package, so the push was refused and the reviewer got two
+        # thousand characters of vite output in place of a reason. The seven pinned gates are
+        # the harness's definition of "it works"; a developer convenience installed as a side
+        # effect of an install is not one of them, and this widens nothing.
+        code, _out, err = self._run_git(["config", "core.hooksPath", str(HOOKS_OFF)], clone_path)
+        if code != 0:
+            raise CloneError(f"git config core.hooksPath failed ({code}): {err.strip()[-2000:]}")
 
         code, out, err = self._run_git(["rev-parse", "HEAD"], clone_path)
         if code != 0:

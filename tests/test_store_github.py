@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from harness import links
 from harness.clock import FrozenClock, iso
 from harness.errors import (
     DuplicateWorkItem,
@@ -26,7 +27,7 @@ from harness.errors import (
     TierViolation,
 )
 from harness.store import LABELS, STATES
-from harness.store.github import GitHubStore
+from harness.store.github import GitHubStore, _origin_ref
 from harness.store.sqlite import SqliteStore
 
 SELF_REPO = "jgoetzmann/bright-bots-harness"
@@ -440,7 +441,12 @@ def test_B100_create_work_item_files_one_queued_issue_in_self_repo(gh, store):
     assert isinstance(n, int)
     issue = gh.repos[SELF_REPO][n]
     assert issue["title"] == "Dashboard crashes on first render"
-    assert issue["body"] == "issue:816"
+    # B227: the body is prose now, not the bare reference. What B100 pins is that the reference
+    # is still there and still machine-findable -- `_origin_ref` is what makes duplicate
+    # detection work, and it now reads the marker line rather than the first line.
+    assert links.REF_MARKER in issue["body"]
+    assert "issue:816" in issue["body"]
+    assert _origin_ref(issue) == "issue:816"
     assert gh.state_labels(n) == ["harness:queued"]
     assert gh.repos[UPSTREAM] == {}, "an issue was filed outside self_repo (I-14)"
     item = store.get_work_item(n)

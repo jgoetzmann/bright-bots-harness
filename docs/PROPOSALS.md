@@ -11,15 +11,42 @@ Commands run from a checkout with the venv active. The same commands work in loc
 issue here, and `propose` writes the proposal file straight into `proposals/` instead of opening a
 pull request — so gate 1 is `harness approve <id>` rather than a merge.
 
-## The three modes
+## The four modes
 
-`harness discover --mode <mode>` is one stage with three branches (`harness/stages/discover.py`).
+`harness discover --mode <mode>` is one stage with four branches (`harness/stages/discover.py`).
 
 | Mode | What it does | Model calls | What it reads |
 |---|---|---|---|
+| `assigned` | every open product issue assigned to the machine account becomes a work item | none | the assigned issues |
 | `directed` | one named product issue becomes one work item | none | that one issue |
 | `triage` | ranks the queue already here; only when that queue is empty does it look at the product repository | one | the queue, or the product repo's open issues, pull requests and branches |
 | `audit` | refused | none | nothing |
+
+### assigned
+
+**This is the route work normally arrives by.** Assign `@jgoetzmann-bot` to an issue on
+`Bright-Bots-Initiative/brightboost` and it is queued here — no label, no Actions tab, no command.
+`feedback.yml` runs `harness discover --mode assigned` every three hours on a weekday, so it happens
+on its own; running it by hand from the Actions tab only makes it happen sooner.
+
+It makes no model call: which issues are assigned is a fact, not a judgement. The sweep is
+idempotent — an issue that already has a work item is skipped and named in the run's decisions, so
+running it every three hours queues nothing twice.
+
+**It applies no filters at all.** `_assigned` queues every open issue the assignee query returns; the
+allowlist, the excluded labels, the in-flight-branch check and the assignee check all live in
+`_rejection_reason`, which only triage calls. So an issue labelled `intern-starter` and assigned to
+the bot is *excluded* if triage considers it and *queued* if the sweep finds it first. The
+assignment is the decision — there is no second gate behind it on this path.
+
+The account it looks for is derived from
+`FORK_REPO`'s owner rather than configured separately, because a fork the machine account does not
+own is not one it can push to, so a second key could only ever disagree. With `FORK_REPO` empty the
+mode fails loudly and tells you to set it or use `--mode directed` instead.
+
+Assignment is a statement by a maintainer on the ticket itself, in the place they already work, and
+it is visible to everyone looking at the issue rather than buried in a label list. That is why it
+replaced the allowlist label as the way in (D53).
 
 ### directed
 
@@ -52,7 +79,9 @@ order.
 Only with an empty queue does triage read the product repository. It fetches open issues, open pull
 requests and branches, then drops each issue that fails any of, in order:
 
-1. it is assigned to somebody (B55);
+1. it is assigned to **somebody other than the machine account** (B55) — an issue assigned to
+   `@jgoetzmann-bot` survives here and needs no allowlist label, which is how D53's route reaches
+   triage as well as its own mode;
 2. its number is claimed by an in-flight branch name or pull request title (B56);
 3. it carries one of `EXCLUDED_LABELS` — `intern-starter`, `large`, `architecture` (B57);
 4. it does not carry `ALLOWLIST_LABEL`, which is `harness-ok` (B58), unless `--ignore-allowlist`.
@@ -71,21 +100,23 @@ that call returns no usable number either, the survivors are queued in GitHub's 
 read and before any model call (B59); only the halt check precedes it. There is no audit
 implementation to switch on. The mode exists so that asking for it fails in one obvious place.
 
-### Why directed is the working route right now
+### Why the allowlist label is not the way in
 
 Triage against the product repository needs `harness-ok` on the issue. **No issue on
-`Bright-Bots-Initiative/brightboost` carries that label today**, so a triage run with an empty queue
-filters everything out, makes no model call, and returns nothing. That is the system working as
-designed: the allowlist is a human saying "this one is fair game", and nobody has said it yet.
+`Bright-Bots-Initiative/brightboost` carries that label, and none is expected to.** A triage run with
+an empty queue therefore filters everything out, makes no model call, and returns nothing — the
+filter working as designed, not a fault.
 
-`--ignore-allowlist` removes that filter and keeps the other three, so it will surface unassigned,
-unclaimed, non-excluded issues. It is not a substitute for labelling, because what it discards is the
-only signal that a person agreed. Note that the global `--dry-run` is not a preview of it: it makes
-`harness/gh.py` record writes instead of sending them, and the ranking call still runs and still
-spends.
+The label was the only way in for a while, and it went unused, which is the problem D53 solved:
+asking a maintainer to add a label the harness invented is a worse ask than letting them use the verb
+GitHub already gives them for "this one is yours". Assignment says the same thing the label says.
+Prefer it.
 
-Until the label is in use, the sequence that actually produces work is: point directed discovery at
-one ticket, or queue several and let triage rank the queue.
+`--ignore-allowlist` removes that one filter and keeps the other three, so it will surface
+unassigned, unclaimed, non-excluded issues. It is not a substitute for a person agreeing — what it
+discards is the only signal that anyone did. Note that the global `--dry-run` is not a preview of it:
+it makes `harness/gh.py` record writes instead of sending them, and the ranking call still runs and
+still spends.
 
 ## Aiming it at a ticket
 
@@ -93,7 +124,7 @@ one ticket, or queue several and let triage rank the queue.
 
 `discover.yml` → **Run workflow**, with:
 
-- `mode` — choice, `triage` (default) or `directed`
+- `mode` — choice, `triage` (default), `directed` or `assigned`
 - `target` — the **product repository's** issue number; the step fails with
   `mode=directed needs a target` when it is blank
 - `lens` — free text, triage only, currently inert (see above)
@@ -378,19 +409,23 @@ are not a minimum size for a good ticket; small is better. F3 and F4 are the one
 this harness's work. If the package that comes back lists open questions, that is your cue to answer
 them and `/harness revise`, not to merge.
 
-### So what to label `harness-ok`
+### So what to hand it
 
-Label it when the ticket is a defect or a cleanup whose cause lives in files that already exist,
+The same judgement whether you assign the bot, name a target, or label `harness-ok` — assignment is
+just the cheapest way to say it.
+
+Hand it a ticket when it is a defect or a cleanup whose cause lives in files that already exist,
 whose correct behaviour can be settled from the repository alone, whose fix is a handful of files,
-which nobody is assigned to, and which no open branch is already chasing. Deletions of dead code, a
-misreported number in a script, a test that asserts the wrong thing, a docs correction — these are
-the shape that works.
+and which no open branch is already chasing. Deletions of dead code, a misreported number in a
+script, a test that asserts the wrong thing, a docs correction — these are the shape that works.
 
-Keep the label off anything that needs a product decision, needs a deployed environment or a
+Keep it away from anything that needs a product decision, needs a deployed environment or a
 credential to verify, touches `prisma/`, `migrations/`, `backend/scripts/predeploy*` or
-`.github/workflows/`, bumps a dependency, consists entirely of new files, or is already labelled
-`intern-starter`, `large` or `architecture`. And keep it off anything you would not merge if a
-stranger opened the same pull request, because that is exactly what you will be looking at.
+`.github/workflows/`, bumps a dependency, or consists entirely of new files. `intern-starter`,
+`large` and `architecture` are excluded automatically **in triage only** — assigning the bot to one
+queues it anyway, so that judgement is yours at the moment you assign. And keep it away from anything
+you would not merge if a stranger opened the same pull request, because that is exactly what you will
+be looking at.
 
 ## What it costs
 

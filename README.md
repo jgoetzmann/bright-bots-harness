@@ -12,7 +12,7 @@ can act on from a phone. Python 3.13, standard library only.
 
 | Step | What happens | Where you see it |
 |---|---|---|
-| `discover` | Takes a product-repository issue — picked by triage, or named by number in directed mode — and opens a work item for it | An issue here, labelled `harness:queued` |
+| `discover` | Takes a product-repository issue — assigned to the machine account, picked by triage, or named by number in directed mode — and opens a work item for it | An issue here, labelled `harness:queued` |
 | `propose` | Reads the code at a pinned commit and writes a work package: issue, diagnosis with file and line citations, approach, slices, behaviors, acceptance criteria, decisions, open questions, touched paths, risks | A PR here adding `proposals/<id>-<slug>.md`, from `harness/propose-<id>` |
 | **Gate 1 — you** | **Merging that PR is approval**: the push to `proposals/**` runs `harness approve`. Closing it without merging is rejection — nothing is implemented, because nothing reaches `approved` | The PR here |
 | `implement` | Branch on the fork, under `harness/`; the product's own gate sequence runs on the untouched tree as a baseline, then again after the change | Commits on `jgoetzmann-bot/brightboost` |
@@ -88,13 +88,31 @@ the harness gets no events, so commands are found by `harness sweep` on `feedbac
 schedule (`41 */3 * * 1-5`): up to `NOTIFY_POLL_HOURS` on a weekday, and until Monday for a
 comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions tab.
 
-From the Actions tab, `discover.yml` takes `mode` (`triage` or `directed`), `target` (a
-product-repository issue number), `lens` and `ignore_allowlist`. Directed mode queues one
-specific ticket and proposes it in the same run — which is how work actually starts today,
-because triage only considers product issues carrying the `harness-ok` label
-(`ALLOWLIST_LABEL`) and none carry it yet. `implement.yml` takes an `issue` number to run now,
-bypassing the run window. Both refuse to start while `.harness/HALT` exists on the default
-branch.
+## Giving it work
+
+**Assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
+(D53): `feedback.yml` sweeps for assigned issues every three hours on a weekday, opens a work
+item for each one, and leaves alone any it has already queued. No label to invent, no Actions
+tab, no model call — which issues are assigned is a fact, not a judgement.
+
+Note the asymmetry: `--mode assigned` queues **every** open issue assigned to the account and
+applies no label filter. The `intern-starter` / `large` / `architecture` exclusion lives in
+`_rejection_reason`, which only triage calls — so in triage an assigned issue survives the
+allowlist but is still excluded by those three labels, while the sweep would queue it. Do not
+assign the bot to an issue you would not hand it.
+
+The other two routes are for when you want a specific thing now, from the Actions tab.
+`discover.yml` takes `mode` (`assigned`, `directed` or `triage`), `target` (a
+product-repository issue number, required by `directed`), `lens` and `ignore_allowlist`.
+Directed mode queues one named ticket and proposes it in the same run, skipping every triage
+filter — naming a target is you asserting the judgement those filters exist to make. Triage
+ranks whatever is already queued here, and only reaches for the product repository when that
+queue is empty; there it still requires the `harness-ok` label (`ALLOWLIST_LABEL`), which
+nothing carries, so triage on an empty queue finds nothing. That is the filter working, not a
+fault — assignment is the route that replaced it.
+
+`implement.yml` takes an `issue` number to run now, bypassing the run window. Every spending
+workflow refuses to start while `.harness/HALT` exists on the default branch.
 
 ## What is in here
 
@@ -116,22 +134,27 @@ subcommands.
 
 | Document | When to read it |
 |---|---|
+| [docs/USING.md](docs/USING.md) | **Start here to operate it.** What arrives, where, and what you do about it — all of it from a browser or a phone |
+| [docs/PROPOSALS.md](docs/PROPOSALS.md) | How work is found and aimed: the discovery modes, what a proposal contains, and how to change its mind |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day to day and when something is wrong: reading the state (§1), a failed run, a stuck item, a diverged fork, a leaked secret, everyday actions (§11). §8 is how to stop everything |
 | [docs/SAFETY.md](docs/SAFETY.md) | The tiers and the invariants, each with a command that proves it. Read before raising the tier |
 | [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) | What a work package and a review package contain, and how to reconstruct a run from one |
 | [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) | Running the same harness in the `bb` container, off the schedule |
-| [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D46, the amendment log for the frozen specs |
+| [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D54, the amendment log for the frozen specs |
 | [docs/delivery/](docs/delivery/README.md) | The frozen specs and their runnable review protocols. For reviewing, not operating |
 
 ## Current status
 
-**Live.** Actions mode at `PERMISSION_TIER=2`, queue in GitHub issues, ledger on the
-`harness-state` branch. Directed discovery and `propose` have run for real. Gate 1 has been
-exercised once: the proposal for harness issue #4 (product issue #633) was merged, and
-`proposals/4-chore-activities-delete-orphaned-sequenc.md` is the file it added. `implement`
-has run on an Actions runner far enough to take a clone and pass all seven baseline gates
-before failing on a defect (D46) that is now fixed. The kill switch is currently off —
-`.harness/HALT` is parked as `HALT.suspended` — so the schedules will fire.
+**Live, and it has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
+queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product issue #633) went
+from directed discovery through a proposal pull request, gate 1, implement, package and
+delivery, and opened **[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**
+— the first pull request the harness has ever put on the product repository. All seven gates
+were green on the runner. `proposals/4-chore-activities-delete-orphaned-sequenc.md` is the
+file gate 1 merged.
+
+Gate 2 is now the only thing standing between that branch and `main`, which is the whole
+point. Nothing about it is automatic and nothing about it will be.
 
 The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
 (tue 20:00) UTC, and `implement.yml`'s crons follow that window. Two things start outside it:
@@ -141,22 +164,40 @@ instead. Neither bypasses the usage stops. `discover.yml` is deliberately not wi
 one triage call is cheap — and stops only on a halt, a rate limit, the reserve, or a usage
 stop.
 
-**Exercised once, end to end, and it did not finish.** On 4 September 2026 item 4 (product
-issue #633) went from directed discovery through a proposal pull request, gate 1, implement and
-package on an Actions runner — all seven gates green on Linux — and then failed at the push to
-the fork. The cause was not the change: `npm ci` installs the product repository's husky hooks,
-and its `pre-push` runs `scripts/check-bundle-size.js`, which crashes under Node 22 because it
-uses `require` in a `"type": "module"` package. D49 turns hooks off in a harness clone. **No
-pull request has yet been opened on `Bright-Bots-Initiative/brightboost`, so gate 2 has never
-happened.**
+**It took four attempts, and each one found a real defect.** None of them were in the change
+being delivered; every one was in the harness, and each is a decision with its evidence in
+`DECISIONS.md`:
+
+| Attempt | Died at | Cause | Fix |
+|---|---|---|---|
+| 1 | `harness run --item 4` | `propose` recorded an absolute `runs/` path, and `runs/` does not survive between Actions runners — so the designed flow could never have completed on Actions | D46: read the work package from the committed `proposals/<id>-*.md`, which is the very thing gate 1 merges |
+| 2 | `git push` to the fork | `npm ci` runs brightboost's `prepare`, which is husky, which reinstalls `.husky/pre-push`; it calls `scripts/check-bundle-size.js`, which crashes under Node 22 (`require` in a `"type": "module"` package) | D49: `core.hooksPath` set at `acquire` **and** repeated on the push command line, where `prepare` cannot put it back |
+| 3 | the call after the PR opened | The self-imposed request ceiling still defaulted to 50 — right for Delivery 1's absent credential, wrong at tier 2, where the token raises GitHub's own limit to 5000. The PR opened and the next call, a label write, was refused by our own ceiling, leaving the item's label disagreeing with reality | D51: the ceiling follows the tier |
+| 4 | nothing — it landed | | |
+
+Two more defects were only visible once a human looked at #868. The work item had been
+answering `self:4` instead of `issue:633`, so the delivery PR went out **without
+`Closes #633`** and its package README described the work as `self:4` (D50). And the body was
+52 KB, 40 KB of which was the verbatim stdout of seven gates that all passed — a wall nobody
+scrolls, in the one place a reviewer has to read, and close to GitHub's 65 KB limit. It now
+opens at the closing keyword, how to steer it by comment, and brightboost's own
+`CONTRIBUTING.md` checklist with the three boxes the harness actually measured already ticked;
+the evidence is a table of gate, phase and exit code, with any *failing* gate still printed
+whole (D52). 40,542 characters of evidence render as 1,157.
 
 **Known gaps, recorded and not fixed.** Five more places assume `runs/` survives between
 Actions runs: `revise`'s baseline-red lookup, `item.package_path`, `HANDOFF.md`, `sweep`'s
 shared run directory, and `heartbeat.yml`'s ledger fetch. Each is described in `DECISIONS.md`
 under the Delivery 3 acceptance section, with the reason it needs its own durable source
-chosen deliberately rather than a fix in the same change. `HUMAN.md` is a generated gap report
-and is stale relative to what has since been done — regenerate it with `harness setup` before
-trusting its outstanding list. The 1,423 passing tests recorded at that acceptance were a
+chosen deliberately rather than a fix in the same change. `HUMAN.md` **overstates what is
+left, and regenerating it does not help** — `harness setup --tier 2` reproduces the committed
+file byte for byte. Several of its prerequisites are hardcoded unsatisfied because nothing the
+harness can reach proves them: whether Actions is enabled on the fork, whether a repository
+secret exists, whether Nathan has been told. Run from a checkout it also reads the local
+`.env`, where `PERMISSION_TIER` is 0, so it reports the tier-0 → tier-2 gap rather than the
+tier 2 the Actions runtime actually runs at. Items 6, 7 and 17 on that list are demonstrably
+done — a live run opened #868 with both secrets in scope. Read `HUMAN.md` as the original
+setup checklist, not as current state. The 1,423 passing tests recorded at that acceptance were a
 Windows-local fact: `selftest.yml` had always specified both `ubuntu-latest` and
 `windows-latest`, but it triggers only on `pull_request` and `workflow_dispatch` and neither
 had happened. The first time it actually ran, it failed on both — D38 fixed the pin's line-ending

@@ -28,6 +28,8 @@ Five kinds of thing arrive. Four of them want something from you.
 
 Every item is one issue in this repo carrying exactly one `harness:*` label — a transition removes the previous one — and its thread is the event log: each transition posts a comment naming the stage, the new state, the cost of the last recorded call, and the reason.
 
+**To give it work, assign `@jgoetzmann-bot` to an issue on brightboost.** Nothing else is required: the sweep picks it up within three hours on a weekday and the first row above is what you will see. Everything else on this page is what to do once it has.
+
 | Label | Means | Who moves it on |
 |---|---|---|
 | `harness:queued` | eligible for a proposal | `discover.yml` |
@@ -225,9 +227,23 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 | `selftest` | every pull request here | none | Checks `.harness/PIN` when present, then the whole pytest suite under `BACKEND=fake`, on Linux and Windows. No secrets |
 | `ops` | on a failed `discover`/`implement`/`feedback` run | — | Opens or updates `ops: <workflow> failed` labelled `harness:ops`, with the redacted log tail, and re-runs failed jobs once on transient network causes only. **Cannot be dispatched by hand** |
 
-### Directed discovery — how you actually queue work today
+### Assigning the bot — how you queue work
+
+**Assign `@jgoetzmann-bot` to an issue on brightboost.** That is the whole gesture. `feedback.yml` sweeps for assigned issues every three hours on a weekday and opens a work item for each, so you do not have to touch this repository at all; it is idempotent, so an issue already queued is left alone. No model call — which issues are assigned is a fact, not a judgement.
+
+**The sweep applies no label filter.** `--mode assigned` queues every open issue assigned to the account, `intern-starter` and friends included. The exclusion for `intern-starter`, `large` and `architecture` lives in triage's candidate filter, which this mode does not call — so in triage an assigned issue survives the allowlist but those three labels still exclude it, while the sweep would queue it anyway. Treat the assignment itself as the decision: do not assign the bot to an issue you would not hand it.
+
+To make it happen now rather than within three hours, run `feedback` from the Actions tab, or `discover` with `mode: assigned`:
+
+```bash
+gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=assigned
+```
+
+### Directed discovery — when you want one specific ticket now
 
 `mode: directed` with `target: <product issue number>` creates one work item for that issue and proposes it in the same run. The discovery half makes no model call and is idempotent: re-running it on an issue already known returns the existing item rather than a duplicate. `target` is required in this mode and refused as an error when blank; `lens` and `ignore_allowlist` are ignored here.
+
+Directed skips **every** triage filter — the allowlist, the excluded labels, the assignee check and the in-flight-branch check. Naming a target is you asserting the judgement those filters exist to make.
 
 ```bash
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
@@ -241,9 +257,9 @@ That yields an issue here labelled `harness:queued`, then a proposal PR against 
 `mode: triage` (the default) has two halves, and the order matters:
 
 - If **anything** here is already `harness:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first.
-- Only when the local queue is empty does it look at brightboost. There it drops issues that are assigned, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture` — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`).
+- Only when the local queue is empty does it look at brightboost. There it drops issues assigned to **someone other than the machine account**, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture` — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`). An issue assigned to `@jgoetzmann-bot` survives and needs no allowlist label.
 
-Today no brightboost issue carries `harness-ok`, so plain triage on an empty queue finds nothing and makes no model call. That is the filter working, not a fault. `ignore_allowlist: true` drops that one filter for a run; the other three still apply.
+No brightboost issue carries `harness-ok` and none is expected to, so plain triage on an empty queue finds nothing and makes no model call. That is the filter working, not a fault — assignment is the route that replaced the label. `ignore_allowlist: true` drops that one filter for a run; the other three still apply.
 
 ```bash
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \

@@ -13,6 +13,8 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
+from types import SimpleNamespace
+
 import pytest
 
 from harness.clock import FrozenClock, iso
@@ -437,3 +439,59 @@ def test_b229_a_push_failure_with_no_git_prefix_still_says_something():
 
     assert _push_reason("something odd happened") == "something odd happened"
     assert _push_reason("") == "(no output)"
+
+
+# --------------------------------------------------------------------------------------
+# B231 - the request ceiling follows the tier (D51)
+# --------------------------------------------------------------------------------------
+
+
+def test_b231_tier_0_keeps_the_unauthenticated_ceiling():
+    """B231: no token means GitHub's own limit is 60 an hour, and 50 is the margin under it."""
+    from harness.gh import ceiling_for
+
+    config = SimpleNamespace(github_api_ceiling_per_hour=50, permission_tier=0)
+
+    assert ceiling_for(config) == 50
+
+
+def test_b231_tier_2_gets_the_authenticated_ceiling():
+    """B231: measured -- the first delivery opened its pull request upstream and then failed on
+    the very next call, a label write, because it was held to the unauthenticated figure."""
+    from harness.gh import AUTHENTICATED_CEILING_PER_HOUR, ceiling_for
+
+    config = SimpleNamespace(github_api_ceiling_per_hour=50, permission_tier=2)
+
+    assert ceiling_for(config) == AUTHENTICATED_CEILING_PER_HOUR
+
+
+def test_b231_a_configured_ceiling_above_the_default_still_wins():
+    """B231: the raise is a floor, not an override; an operator who set it higher meant it."""
+    from harness.gh import ceiling_for
+
+    config = SimpleNamespace(github_api_ceiling_per_hour=9000, permission_tier=2)
+
+    assert ceiling_for(config) == 9000
+
+
+def test_b231_build_client_uses_the_tier_aware_ceiling(tmp_path, monkeypatch):
+    """B231: the raise has to reach the client, not just exist as a function."""
+    from datetime import datetime, timezone
+
+    from harness import gh as gh_mod
+    from harness.store import Store
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    config = SimpleNamespace(
+        repo="o/r",
+        github_api_ceiling_per_hour=50,
+        permission_tier=2,
+        self_repo="me/self",
+    )
+    monkeypatch.setattr("harness.config.github_token", lambda: "")
+
+    client = gh_mod.build_client(config, store, clock)
+
+    assert client.ceiling_per_hour == gh_mod.AUTHENTICATED_CEILING_PER_HOUR

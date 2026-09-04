@@ -669,6 +669,26 @@ class GitHubClient(GitHubReadOnly):
         return data
 
 
+#: GitHub's own limits: 60 requests an hour unauthenticated, 5000 authenticated. The `.env`
+#: key is the unauthenticated figure with a margin, because Delivery 1 held no credential.
+AUTHENTICATED_CEILING_PER_HOUR = 5000
+
+
+def ceiling_for(config: Any) -> int:
+    """The self-imposed request ceiling for this tier (B231/D51).
+
+    `GITHUB_API_CEILING_PER_HOUR` defaults to 50, a margin under the unauthenticated 60. At
+    tier 2 the machine account's token raises GitHub's own limit to 5000, and holding the
+    harness to the unauthenticated figure is not caution -- it stops a run in the middle.
+    Measured: the first delivery opened its pull request upstream and then failed on the very
+    next call, a label write, having spent everything it was going to spend.
+    """
+    configured = int(getattr(config, "github_api_ceiling_per_hour", 0) or 0)
+    if int(getattr(config, "permission_tier", 0) or 0) >= 2:
+        return max(configured, AUTHENTICATED_CEILING_PER_HOUR)
+    return configured
+
+
 def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:
     """Construct the client from a loaded ``Config``; the token door (I-11) opens here only."""
     from harness.config import github_token
@@ -677,7 +697,7 @@ def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:
         config.repo,
         store,
         clock,
-        config.github_api_ceiling_per_hour,
+        ceiling_for(config),
         token=github_token(),
         self_repo=getattr(config, "self_repo", "") or "",
     )

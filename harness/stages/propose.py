@@ -406,13 +406,26 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
     # directory can support. Without this the stage ran with `cwd` pointing at `runs/item-N`,
     # where Read/Glob/Grep find nothing on a runner and, on a developer box, wander into
     # whatever unrelated checkout happens to be on the disk (see B218).
-    blockers = ctx.clones.preflight()
-    if blockers:
-        raise PreflightFailed("; ".join(blockers))
-    lease = ctx.clones.acquire(item)
+    try:
+        blockers = ctx.clones.preflight()
+        if blockers:
+            raise PreflightFailed("; ".join(blockers))
+        lease = ctx.clones.acquire(item)
+    except HarnessError as exc:
+        # The item is already `proposing` by now; without this it would sit there with no
+        # clone and no way back, and the next run would find it mid-flight.
+        _revert(ctx, item_id, entry_state, f"propose could not acquire a clone ({exc})")
+        raise
     try:
         return _propose_leased(
-            ctx, item_id, item, lease, body=body, notes=notes, upstream_issue=upstream_issue
+            ctx,
+            item_id,
+            item,
+            lease,
+            body=body,
+            notes=notes,
+            upstream_issue=upstream_issue,
+            entry_state=entry_state,
         )
     finally:
         # Read-only: implement acquires its own clone from the base the package pins.
@@ -428,9 +441,14 @@ def _propose_leased(
     body: str,
     notes: str,
     upstream_issue: int | None,
+    entry_state: str,
 ) -> Path:
-    """One model call against the checkout at `lease.path`, then validation and publication."""
-    entry_state = item.state
+    """One model call against the checkout at `lease.path`, then validation and publication.
+
+    ``entry_state`` is ``_enter``'s answer, not ``item.state``: for an item that was already
+    ``proposing`` at entry those two differ, and only the first one is a state the item can be
+    returned to.
+    """
     max_turns = int(ctx.config.max_turns["implement"])
     ctx.record_decision(
         f"propose acquired a read-only clone at {lease.path} on base {lease.base_sha}; "

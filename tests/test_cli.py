@@ -2354,7 +2354,9 @@ def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monke
     out = capsys.readouterr().out
     assert "49.0%" in out and "stop at 70%" in out
     assert "58.0%" in out and "stop at 90%" in out
-    assert "21 to go" in out and "32 to go" in out
+    # One decimal, not zero: with 0.4 points left ":.0f" printed "0 to go", which reads as
+    # stopped when it is not.
+    assert "21.0 to go" in out and "32.0 to go" in out
     assert "2026-09-08T20:00:00Z" in out
 
 
@@ -2389,3 +2391,20 @@ def test_b221_a_utilization_past_the_stop_reads_as_stopped(tmp_path, monkeypatch
     out = capsys.readouterr().out
     assert "STOPPED" in out
     assert "72.0%" in out
+
+
+def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeypatch, capsys):
+    """B221: at 69.6% against a 70% stop there is still room, and the line must say so."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    usage = dict(USAGE_SAMPLE, five_hour={"utilization": 0.696, "resets_at": "z"})
+    write_ledger(tmp_path, spent_usd=1.0, calls=1, usage=usage)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger"]) == 0
+
+    out = capsys.readouterr().out
+    assert "0.4 to go" in out
+    assert "STOPPED" not in out

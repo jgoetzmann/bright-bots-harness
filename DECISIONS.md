@@ -116,6 +116,27 @@ searching for a repository that was not there (D37) and then reading one that sh
 been reachable (D36). Both fixes cut the search; the cost of a proposal should be re-measured
 on the next live run rather than assumed.
 
+**Review of this branch (2026-09-04).** Reviewing the fixes above found three more defects in
+them, all in `propose`'s new lease (D37) and all introduced by moving the stage body into a
+helper:
+
+- `_propose_leased` recomputed `entry_state` from `item.state` instead of taking `_enter`'s
+  answer. Those two differ for exactly the case `_enter` has a comment about: an item found
+  already `proposing` must be returned to `discovered`, because `proposing` is not a state it
+  can be returned to. The revert on a failed model call would have been a silent no-op.
+- `preflight()` and `acquire()` run *after* `_enter` has moved the item to `proposing`, and
+  neither was covered by the revert. A clone failure — a network blip — would have stranded the
+  item mid-flight with nothing to resume from.
+- `acquire`'s new "could not clear the previous clone" message counted the leftovers with
+  `rglob`, which whatever defeated the removal can defeat too; a failure to count would have
+  replaced the legible error with a traceback. The count is best-effort now.
+
+Three tests pin them. Also in the review: the "N to go" figure in `harness ledger` gained a
+decimal (at 69.6% against a 70% stop, `:.0f` printed "0 to go", which reads as stopped when it
+is not), the argv-ceiling message now names which argument to shorten rather than always
+blaming the system prompt, and `tests/test_gh.py` — the one file in the tree committed with
+CRLF — was normalised so the new `.gitattributes` has nothing left to convert.
+
 **One thing deliberately not changed.** `prettier.py` now demonstrably defines *what counts as
 a change*, which makes it as result-defining as the three modules in `verify_pin.PINNED`
 (`gates.py`, `packager.py`, `redact.py`). Adding it to the pinned set is a one-line change, but

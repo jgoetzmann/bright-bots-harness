@@ -1387,7 +1387,7 @@ def _usage_lines(led, config) -> list[str]:
             lines.append(f"  {label}       (not reported)")
             continue
         pct = float(raw) * 100.0
-        verdict = "STOPPED" if pct >= stop else f"{stop - pct:.0f} to go"
+        verdict = "STOPPED" if pct >= stop else f"{stop - pct:.1f} to go"
         lines.append(
             f"  {label}{pct:5.1f}%  stop at {stop:.0f}%  ({verdict})"
             f"  resets {window.get('resets_at') or 'unknown'}"

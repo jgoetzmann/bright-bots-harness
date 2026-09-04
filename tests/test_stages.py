@@ -1351,3 +1351,62 @@ def test_b223_an_empty_change_set_never_reaches_the_post_change_gates(tmp_path, 
 
     assert rig.log.count("gates(baseline=False)") == 0
     assert rig.log.count("gates(baseline=True)") == 1
+
+
+# --------------------------------------------------------------------------------------
+# B219 - the clone propose acquires must not cost it its way back (review findings)
+# --------------------------------------------------------------------------------------
+
+
+def test_b219_a_clone_that_cannot_be_acquired_returns_the_item_to_discovered(
+    tmp_path, monkeypatch
+):
+    """B219: `_enter` moves the item to `proposing` before the clone is asked for. A clone
+    failure after that would strand it there, mid-flight, with nothing to resume from."""
+    from harness.errors import CloneError
+
+    rig, item_id = proposable(tmp_path)
+
+    def refuse(item, **kwargs):
+        raise CloneError("git clone failed (128): network unreachable")
+
+    monkeypatch.setattr(rig.clones, "acquire", refuse)
+
+    with pytest.raises(CloneError):
+        propose(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "discovered"
+    assert rig.runner.calls == 0, "nothing should have been spent"
+
+
+def test_b219_a_failed_preflight_also_returns_the_item(tmp_path, monkeypatch):
+    """B219: same reasoning one step earlier -- preflight runs after the transition too."""
+    from harness.errors import PreflightFailed
+
+    rig, item_id = proposable(tmp_path)
+    monkeypatch.setattr(rig.clones, "preflight", lambda: ["free disk 1.0 GB below MIN 5.0"])
+
+    with pytest.raises(PreflightFailed):
+        propose(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "discovered"
+
+
+def test_b219_an_item_already_proposing_returns_to_discovered_not_to_proposing(
+    tmp_path, monkeypatch
+):
+    """B219: `_enter` deliberately answers "discovered" for an item found mid-flight, because
+    `proposing` is not a state it can be returned to. Recomputing that answer from
+    `item.state` inside the leased body silently got it wrong for exactly this case."""
+    from harness.errors import CloneError
+
+    rig, item_id = proposable(tmp_path)
+    rig.store.transition(item_id, "proposing", reason="a previous run died here")
+    monkeypatch.setattr(
+        rig.clones, "acquire", lambda item, **kw: (_ for _ in ()).throw(CloneError("boom"))
+    )
+
+    with pytest.raises(CloneError):
+        propose(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "discovered"

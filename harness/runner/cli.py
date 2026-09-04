@@ -69,10 +69,14 @@ def argv_too_long(argv: Sequence[str]) -> str | None:
     widest = max(range(len(argv)), key=lambda i: len(argv[i]), default=0)
     culprit = argv[widest] if argv else ""
     name = argv[widest - 1] if widest > 0 and argv[widest - 1].startswith("--") else "argv"
+    advice = {
+        "--system-prompt": "shorten prompts/system.md and re-pin",
+        "--settings": "shorten the deny list (stages.deny_read_paths) or the repository path",
+    }.get(name, "shorten it")
     return (
         f"command line is {length} characters; this platform allows {limit}. "
-        f"The longest argument is {name} ({len(culprit)} characters). "
-        "The prompt already travels on stdin (D35); shorten the system prompt and re-pin."
+        f"The longest argument is {name} ({len(culprit)} characters): {advice}. "
+        "The prompt itself already travels on stdin (D35) and is not the cause."
     )
 
 

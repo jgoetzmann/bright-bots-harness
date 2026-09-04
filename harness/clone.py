@@ -67,8 +67,8 @@ def _source_repo(config) -> str:
 #: The Windows extended-length prefix and its UNC form, spelled without an escape so no
 #: line in this module carries a lone backslash that a later edit could silently break.
 SEP = chr(92)
-EXTENDED_PREFIX = SEP + SEP + '?' + SEP
-EXTENDED_UNC_PREFIX = EXTENDED_PREFIX + 'UNC' + SEP
+EXTENDED_PREFIX = SEP + SEP + "?" + SEP
+EXTENDED_UNC_PREFIX = EXTENDED_PREFIX + "UNC" + SEP
 
 
 def long_path(path: Path | str) -> str:
@@ -79,7 +79,7 @@ def long_path(path: Path | str) -> str:
     first, and it is a no-op on every other platform.
     """
     text = os.path.abspath(str(path))
-    if os.name != 'nt' or text.startswith(EXTENDED_PREFIX):
+    if os.name != "nt" or text.startswith(EXTENDED_PREFIX):
         return text
     if text.startswith(SEP + SEP):
         return EXTENDED_UNC_PREFIX + text[2:]
@@ -214,8 +214,13 @@ class CloneManager:
             shutil.rmtree(long_path(clone_path), onexc=_on_rmtree_error)
         if clone_path.exists():
             # B224: never hand a half-deleted directory to `git clone`, whose own message for
-            # it names neither the leftovers nor the reason.
-            leftovers = sum(1 for _ in clone_path.rglob("*"))
+            # it names neither the leftovers nor the reason. The count is best-effort on
+            # purpose: whatever defeated the removal can defeat the walk too, and a failure to
+            # count must not replace this message with a traceback.
+            try:
+                leftovers: object = sum(1 for _ in clone_path.rglob("*"))
+            except OSError:
+                leftovers = "an unknown number of"
             raise CloneError(
                 f"could not clear the previous clone at {clone_path}: {leftovers} entries "
                 "remain. On Windows this is usually a file still open in another process."

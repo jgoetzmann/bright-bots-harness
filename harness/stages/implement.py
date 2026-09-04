@@ -240,12 +240,9 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
         # Without this the run committed nothing, packaged zero patches, printed "implemented
         # item N" and exited 0 -- a silent success, which is the one outcome a reviewer cannot
         # catch by reading the exit code. Blocking keeps the clone for inspection.
-        reason = (
-            "the implementation call left the tree unchanged; the work package expected "
-            + ", ".join(pkg.touched_paths[:5])
-            if pkg.touched_paths
-            else "the implementation call left the tree unchanged"
-        )
+        reason = "the implementation call left the tree unchanged"
+        if pkg.touched_paths:
+            reason += "; the work package expected " + ", ".join(pkg.touched_paths[:5])
         _block(ctx, item_id, lease, reason)
         raise RunnerError(f"implement produced no change for item {item_id}: {reason}")
     _reject_forbidden_diff(ctx, item_id, lease, changed)

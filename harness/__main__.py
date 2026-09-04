@@ -87,6 +87,10 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("OVERRUN_PCT", "overrun_pct"),
     ("RUN_WINDOW_START", "run_window_start"),
     ("RUN_WINDOW_END", "run_window_end"),
+    # B225: what the model calls actually run as. doctor reports it because a run whose model
+    # or effort quietly changed produces different work for the same money.
+    ("MODEL", "model"),
+    ("EFFORT", "effort"),
 )
 
 # B147: an item left in a running state longer than this with no live run is reset.

@@ -248,13 +248,19 @@ class ClaudeCliRunner:
             if self.capture_usage
             else ["--output-format", "json"]
         )
-        argv: list[str] = [
-            self.claude_bin,
-            "--print",
-            *output_format,
-            "--max-turns",
-            str(request.max_turns),
-        ]
+        argv: list[str] = [self.claude_bin, "--print", *output_format]
+        # B225: what the session *is* (format, model, effort) precedes what it may spend
+        # (turns, budget), what it may do (permission mode, tools) and what it may read
+        # (settings, system prompt, add-dir). Both are omitted when unset, so the Delivery 2
+        # argv shape is what a request without them still produces.
+        if request.model:
+            argv.append("--model")
+            argv.append(str(request.model))
+        if request.effort:
+            argv.append("--effort")
+            argv.append(str(request.effort))
+        argv.append("--max-turns")
+        argv.append(str(request.max_turns))
         if request.max_budget_usd is not None:
             argv.append("--max-budget-usd")
             argv.append(str(request.max_budget_usd))

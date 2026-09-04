@@ -556,6 +556,8 @@ D2_ENV: dict[str, str] = {
     "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "",
     "RUN_WINDOW_END": "",
+    "MODEL": "opus",
+    "EFFORT": "xhigh",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -792,7 +794,9 @@ def test_a30_the_new_fields_follow_github_token_shape_ok_in_the_frozen_order(
 
     assert "github_token_shape_ok" in names
     after = names[names.index("github_token_shape_ok") + 1 :]
-    assert tuple(after) == D2_NEW_FIELDS_IN_ORDER
+    # Each delivery appends its own block after this one, in its own frozen order: D3 added
+    # five, B225 added model and effort. What D2 pins is that its five come first and in order.
+    assert tuple(after[: len(D2_NEW_FIELDS_IN_ORDER)]) == D2_NEW_FIELDS_IN_ORDER
 
 
 def test_b6_the_new_fields_are_frozen_too(tmp_path, write_d2_env):
@@ -1330,7 +1334,9 @@ def test_d3_the_new_fields_are_appended_last_in_the_frozen_order(tmp_path, write
 
     names = [f.name for f in dataclasses.fields(config)]
 
-    assert tuple(names[-5:]) == D3_NEW_FIELDS_IN_ORDER
+    # B225 appends model and effort after the D3 block, exactly as D3 appended after D2.
+    assert tuple(names[-7:-2]) == D3_NEW_FIELDS_IN_ORDER
+    assert tuple(names[-2:]) == ("model", "effort")
     assert names.index("weekly_usage_stop_pct") > names.index("github_token_shape_ok")
 
 
@@ -1735,3 +1741,60 @@ def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
     assert config.run_window_start == "mon 08:00"
     assert config.run_window_end == "tue 20:00"
     assert config.weekly_cap_usd == pytest.approx(400.0)
+
+
+# --------------------------------------------------------------------------------------
+# B225 - MODEL and EFFORT are required .env keys, like every other knob
+# --------------------------------------------------------------------------------------
+
+
+def test_b225_model_and_effort_are_read_from_the_env(tmp_path, write_d3_env):
+    """B225: pinned in `.env` rather than left to the CLI's default, so a change to that
+    default cannot silently change what a work package or a diff is worth."""
+    path = write_d3_env(tmp_path / ".env", MODEL="claude-opus-5", EFFORT="max")
+    config = load_config(env_path=path, environ={})
+
+    assert config.model == "claude-opus-5"
+    assert config.effort == "max"
+
+
+@pytest.mark.parametrize("bad", ["ultra", "", "1", "none", "very high"])
+def test_b225_an_effort_outside_the_documented_levels_is_a_config_error(
+    tmp_path, write_d3_env, bad
+):
+    """B225: the levels are the CLI's own; anything else is a startup error, not a silently
+    different amount of thinking. (Case and surrounding space are normalised, not rejected --
+    see the next test.)"""
+    path = write_d3_env(tmp_path / ".env", EFFORT=bad)
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "EFFORT" in str(excinfo.value)
+
+
+def test_b225_effort_is_case_and_space_insensitive(tmp_path, write_d3_env):
+    """B225: `XHIGH ` in a hand-edited .env is the level the operator meant."""
+    path = write_d3_env(tmp_path / ".env", EFFORT=" XHigh ")
+
+    assert load_config(env_path=path, environ={}).effort == "xhigh"
+
+
+def test_b225_an_empty_model_is_a_config_error(tmp_path, write_d3_env):
+    """B225: an empty MODEL would hand the choice back to the CLI without saying so."""
+    path = write_d3_env(tmp_path / ".env", MODEL="   ")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "MODEL" in str(excinfo.value)
+
+
+def test_b225_both_keys_are_in_the_example_file():
+    """B225: `.env.example` is the only place defaults live (no defaults in code)."""
+    import re
+
+    text = (Path(__file__).resolve().parent.parent / ".env.example").read_text(encoding="utf-8")
+
+    assert re.search(r"^MODEL=\S+", text, re.MULTILINE)
+    assert re.search(r"^EFFORT=(low|medium|high|xhigh|max)\s*$", text, re.MULTILINE)

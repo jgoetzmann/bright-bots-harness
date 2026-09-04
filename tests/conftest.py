@@ -70,6 +70,8 @@ DEFAULT_ENV: dict[str, str] = {
     "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "",
     "RUN_WINDOW_END": "",
+    "MODEL": "opus",
+    "EFFORT": "xhigh",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }

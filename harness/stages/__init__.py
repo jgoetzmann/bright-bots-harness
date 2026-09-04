@@ -223,6 +223,8 @@ def run_model(
         add_dirs=add_dirs,
         max_budget_usd=auth.max_budget_usd,
         deny_read=deny_read_paths(ctx.config),
+        model=getattr(ctx.config, "model", None),
+        effort=getattr(ctx.config, "effort", None),
     )
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)

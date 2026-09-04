@@ -737,7 +737,7 @@ def test_b119_run_request_gains_max_budget_usd_as_its_last_field_defaulting_to_n
     names = [f.name for f in dataclasses.fields(RunRequest)]
     budget = dataclasses.fields(RunRequest)[names.index("max_budget_usd")]
 
-    assert names[-2:] == ["max_budget_usd", "deny_read"]
+    assert names[-4:] == ["max_budget_usd", "deny_read", "model", "effort"]
     assert budget.default is None
     assert minimal_request(tmp_path).max_budget_usd is None
 
@@ -1718,3 +1718,60 @@ def test_b218_deny_settings_skips_blank_entries():
     """B218: an empty configured path must not become a rule that denies everything."""
     assert cli_mod.deny_settings(["", "   "]) is None
     assert cli_mod.deny_settings([]) is None
+
+
+# --------------------------------------------------------------------------
+# B225 - the model and the reasoning effort are pinned, not left to the CLI
+# --------------------------------------------------------------------------
+
+
+def test_b225_model_and_effort_precede_the_spending_flags(tmp_path):
+    """B225: what the session *is* comes before what it may spend, so the pair sits between
+    the output format and --max-turns."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+    request = dataclasses.replace(minimal_request(tmp_path), model="opus", effort="xhigh")
+
+    runner.run(request)
+
+    assert spawn.argv[:9] == [
+        "claude",
+        "--print",
+        "--output-format",
+        "json",
+        "--model",
+        "opus",
+        "--effort",
+        "xhigh",
+        "--max-turns",
+    ]
+
+
+def test_b225_an_unset_model_and_effort_leave_the_argv_untouched(tmp_path):
+    """B225: both are omitted when unset, so the Delivery 2 argv shape is what a request
+    without them still produces."""
+    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    runner.run(minimal_request(tmp_path))
+
+    assert "--model" not in spawn.argv
+    assert "--effort" not in spawn.argv
+
+
+def test_b225_each_flag_is_independent(tmp_path):
+    """B225: a model with no effort, and an effort with no model, are both legal."""
+    for field, flag, value in (("model", "--model", "opus"), ("effort", "--effort", "max")):
+        spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
+        runner = ClaudeCliRunner(spawn=spawn)
+        runner.run(dataclasses.replace(minimal_request(tmp_path), **{field: value}))
+        assert spawn.argv[spawn.argv.index(flag) + 1] == value
+        other = "--effort" if flag == "--model" else "--model"
+        assert other not in spawn.argv
+
+
+def test_b225_the_effort_levels_are_the_ones_the_cli_accepts():
+    """B225: measured against `claude --help`: low, medium, high, xhigh, max."""
+    from harness.config import EFFORT_LEVELS
+
+    assert EFFORT_LEVELS == ("low", "medium", "high", "xhigh", "max")

@@ -1,6 +1,7 @@
-# The docker run contract (platform section 5.3) for the bb container - DELIVERY-2-HANDOFF.md
-# section 10.1. Hand-written; never machine-generated. Called by bb-start.ps1 with the settings
-# from bb-config.json; the defaults below are the handoff's values.
+# The docker run contract (platform section 5.3) for the bb container -
+# docs/delivery/DELIVERY-2-HANDOFF.md section 10.1. Hand-written; never machine-generated.
+# Called by bb-start.ps1 with the settings from bb-config.json; the defaults below are the
+# handoff's values.
 #   -v <repo>:/harness:ro     the package (P1) - never COPYed into the image
 #   -v <bb-work>:/work        the durable record, run state, HEARTBEAT, STOP, and the loop's .env
 #   -v bb-data:/data          named volume for harness.db (SQLite locking on a bind mount is unreliable)

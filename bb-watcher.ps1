@@ -1,4 +1,5 @@
-# Live, read-only view of local mode (DELIVERY-2-HANDOFF.md section 10; platform section 6.3, P11).
+# Live, read-only view of local mode (docs/delivery/DELIVERY-2-HANDOFF.md section 10;
+# platform section 6.3, P11).
 # The view reads bb-work\, bb-config.json and docker inspect/logs; it never writes and never
 # signals. Ctrl+C here stops only the view (the window then offers to restart it), never the run.
 #   .\bb-watcher.ps1              open a dedicated window that refreshes every watcher.refresh_seconds

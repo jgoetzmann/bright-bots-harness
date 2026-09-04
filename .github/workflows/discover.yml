@@ -154,8 +154,14 @@ jobs:
         shell: bash
         run: harness sync-fork
 
-        # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate
-        # (rate limited / halted / reserve → propose nothing this run).
+        # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate.
+        # The stop set is every reason harness/dispatcher.py can return that means "capacity is
+        # gone": rate limited / halted / reserve (D2) and the D3 usage stops — "weekly usage
+        # N% >= M%", "session usage N% >= M%", "carry leeway N% reached". Proceeding through one
+        # of those would reach Governor.authorize, raise BudgetExhausted, exit 4 and page an
+        # operator for the scheduler working as designed (D33). "outside run window (...)" is
+        # deliberately NOT in the set: the window bounds implement.yml, whose own crons keep it,
+        # and discovery is one cheap triage call that is not window-gated (D32).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
@@ -167,9 +173,12 @@ jobs:
           reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           case "$reason" in
-            "rate limited"*|halted|reserve)
+            "rate limited"*|halted|reserve|"weekly usage "*|"session usage "*|"carry leeway "*)
               echo "dispatcher says: ${reason}; discover will not spend this run"
               echo "proceed=false" >> "$GITHUB_OUTPUT" ;;
+            "outside run window"*)
+              echo "dispatcher says: ${reason}; discover is not window-gated and proceeds"
+              echo "proceed=true" >> "$GITHUB_OUTPUT" ;;
             *)
               echo "proceed=true" >> "$GITHUB_OUTPUT" ;;
           esac
@@ -180,53 +189,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p runs
-          harness discover --mode triage | tee runs/discover.out
-          cat > runs/pick_ids.py <<'PY'
-          import json, pathlib, subprocess
-          ids = []
-          def add(n):
-              try:
-                  n = int(n)
-              except (TypeError, ValueError):
-                  return
-              if n not in ids:
-                  ids.append(n)
-          def from_json(text):
-              try:
-                  return json.loads(text)
-              except ValueError:
-                  return None
-          def take(node):
-              for k in ("id", "item_id", "issue", "number"):
-                  if k in node:
-                      add(node[k])
-                      return
-          def walk(node):
-              if isinstance(node, dict):
-                  if node.get("state") == "discovered":
-                      take(node)
-                  for v in node.values():
-                      walk(v)
-              elif isinstance(node, list):
-                  for v in node:
-                      walk(v)
-          data = from_json(pathlib.Path("runs/discover.out").read_text(encoding="utf-8", errors="replace"))
-          if isinstance(data, list):
-              for it in data:
-                  if isinstance(it, int):
-                      add(it)
-                  elif isinstance(it, dict):
-                      take(it)
-          elif data is not None:
-              walk(data)
-          if not ids:
-              status = subprocess.run(["harness", "status", "--json"], capture_output=True, text=True)
-              data = from_json(status.stdout)
-              if data is not None:
-                  walk(data)
-          print(" ".join(str(i) for i in ids))
-          PY
-          ids="$(python runs/pick_ids.py)"
+          # One contract, both halves: the global --json flag must precede the subcommand,
+          # and `harness --json discover` prints exactly {"created": [<id>, ...]} (cmd_discover,
+          # harness/__main__.py). Without --json it prints one bare id per line, which is not
+          # JSON at all — the reader below must never be asked to parse that.
+          harness --json discover --mode triage | tee runs/discover.out
+          ids="$(jq -r '[.created[]?] | map(tostring) | join(" ")' runs/discover.out)"
           if [ -z "${ids// }" ]; then
             echo "no discovered items to propose"
             exit 0

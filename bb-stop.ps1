@@ -1,4 +1,4 @@
-# Stop local mode (DELIVERY-2-HANDOFF.md section 10; platform section 6.2).
+# Stop local mode (docs/delivery/DELIVERY-2-HANDOFF.md section 10; platform section 6.2).
 #   .\bb-stop.ps1          graceful: drop the STOP killfile, wait for the unit boundary, stop the watchdog
 #   .\bb-stop.ps1 -Force   docker stop now (at most the unit in flight is lost; state replays on restart)
 # Either way, whatever the container committed but the watchdog had not pushed yet is pushed last.

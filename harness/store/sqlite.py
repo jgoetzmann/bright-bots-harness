@@ -23,7 +23,7 @@ SCHEMA_VERSION = 1
 # ``PRAGMA user_version``: the Delivery 2 layout (twelve states, seven stages in the CHECKs).
 LAYOUT_VERSION = 2
 
-# Verbatim from HARNESS-SPEC.md 5.2.1. Do not reformat.
+# Verbatim from docs/delivery/HARNESS-SPEC.md 5.2.1. Do not reformat.
 SCHEMA_SQL = """
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 

@@ -103,7 +103,8 @@ import pathlib, re
 cited = set()
 for p in pathlib.Path("tests").rglob("*.py"):
     cited |= set(re.findall(r"\bB1[0-5][0-9]\b", p.read_text(encoding="utf-8", errors="replace")))
-spec = set(re.findall(r"\*\*B(1[0-5][0-9])\*\*", pathlib.Path("DELIVERY-2-HANDOFF.md").read_text(encoding="utf-8")))
+handoff = pathlib.Path("docs/delivery/DELIVERY-2-HANDOFF.md").read_text(encoding="utf-8")
+spec = set(re.findall(r"\*\*B(1[0-5][0-9])\*\*", handoff))
 spec = {f"B{n}" for n in spec}
 missing = sorted(spec - cited, key=lambda s: int(s[1:]))
 print(f"defined={len(spec)} cited={len(spec & cited)} uncited={len(missing)}")

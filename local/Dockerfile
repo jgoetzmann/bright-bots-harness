@@ -1,8 +1,8 @@
-# bb-harness image - Bright Bots Harness local mode (DELIVERY-2-HANDOFF.md section 10.1; platform
-# P1/P3). The package is NEVER copied in: local/run.ps1 bind-mounts the repository read-only at
-# /harness so the loop cannot edit what judges it. Only the gate (entrypoint.sh) and pinned tools
-# are baked in. The build context is the local/ directory itself, so a COPY of the package is
-# impossible by construction, not by discipline.
+# bb-harness image - Bright Bots Harness local mode (docs/delivery/DELIVERY-2-HANDOFF.md
+# section 10.1; platform P1/P3). The package is NEVER copied in: local/run.ps1 bind-mounts the
+# repository read-only at /harness so the loop cannot edit what judges it. Only the gate
+# (entrypoint.sh) and pinned tools are baked in. The build context is the local/ directory
+# itself, so a COPY of the package is impossible by construction, not by discipline.
 #
 # Rebuild-vs-restart: editing harness/ needs only .\bb-start.ps1; editing THIS file or
 # entrypoint.sh needs .\bb-start.ps1 -Build. Nothing warns you otherwise (local/README.md).

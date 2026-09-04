@@ -1,7 +1,8 @@
 #!/bin/sh
-# Container entrypoint - the gate, in the FROZEN order of DELIVERY-2-HANDOFF.md section 10.3
-# (platform section 5.2). Baked into the image (P3); the package it gates is mounted read-only at
-# /harness (P1). Hand-written; never machine-generated.
+# Container entrypoint - the gate, in the FROZEN order of
+# docs/delivery/DELIVERY-2-HANDOFF.md section 10.3 (platform section 5.2). Baked into the image
+# (P3); the package it gates is mounted read-only at /harness (P1). Hand-written; never
+# machine-generated.
 #   1. HEARTBEAT immediately          4. /work, /data, /work/.env, .harness/config.json exist and parse
 #   2. /harness must be read-only     5. the fast test subset: tests/test_invariants.py, under ~10 s
 #   3. pinned hash check (B142)       6. exec the loop
@@ -11,6 +12,10 @@ set -eu
 HARNESS="${BB_HARNESS_DIR:-/harness}"
 WORK="${BB_WORK_DIR:-/work}"
 DATA="${BB_DATA_DIR:-/data}"
+# The one BB_* setting the loop obeys: local/run.ps1 puts it in the container environment from
+# bb-config.json's run.loop_seconds, and step 6 below hands it to the CLI as --loop-seconds. It is
+# read HERE, not in Python: I-4 confines os.environ to config.py, which knows no BB_ key.
+LOOP_SECONDS="${BB_LOOP_SECONDS:-300}"
 
 # 1. Heartbeat first. The gate below can outlast the watchdog's staleness window, and the file left
 #    on disk by the previous run predates this start; the host must never mistake gate time for a
@@ -41,7 +46,10 @@ echo "gate 3/5: pin verified"
 [ -f "$HARNESS/.harness/config.json" ] || { echo "FATAL: $HARNESS/.harness/config.json missing" >&2; exit 1; }
 python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$HARNESS/.harness/config.json" \
   || { echo "FATAL: $HARNESS/.harness/config.json does not parse" >&2; exit 1; }
-echo "gate 4/5: $WORK, $DATA, $WORK/.env and .harness/config.json present"
+case "$LOOP_SECONDS" in
+  ''|*[!0-9]*) echo "FATAL: BB_LOOP_SECONDS='$LOOP_SECONDS' is not a whole number of seconds" >&2; exit 1 ;;
+esac
+echo "gate 4/5: $WORK, $DATA, $WORK/.env and .harness/config.json present (loop=${LOOP_SECONDS}s)"
 
 # The loop commits (never pushes) inside clones under /work, which the host user owns: git needs an
 # identity and must trust the mounted directories. The author is the harness identity, which is
@@ -67,4 +75,8 @@ echo "gate 5/5: invariants green in ${elapsed}s"
 
 # 6. exec: the loop is PID 1 and receives signals directly. STOP is polled at each unit boundary
 #    (P8); a clean exit 0 stays down under --restart on-failure:5.
-exec python -m harness local-loop --work "$WORK" --config "$WORK/.env" "$@"
+#    --config is a GLOBAL flag on the top-level parser, so it MUST come before the subcommand:
+#    argparse rejects it after `local-loop` ("unrecognized arguments") and the container would die
+#    at exec with exit 2, burning all five restarts. --loop-seconds is the subcommand's own flag.
+#    "$@" comes last so an argument appended to `docker run ... bb-harness:latest` still wins.
+exec python -m harness --config "$WORK/.env" local-loop --work "$WORK" --loop-seconds "$LOOP_SECONDS" "$@"

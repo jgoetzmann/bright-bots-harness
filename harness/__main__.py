@@ -63,7 +63,9 @@ REQUIRED_BINARIES = ("git", "claude", "node", "npm", "npx")
 MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "json", ""]
 
 # Handoff §6.5 (A30) plus the §2 additions: every key doctor must name, with the Config field
-# that carries it once the config has loaded.
+# that carries it once the config has loaded. The five Delivery 3 knobs close the block:
+# OPERATIONS §13.5 sends the operator to `harness doctor` to confirm exactly those
+# values after a change, so every key of ``config.CONFIG_JSON_KEYS`` appears here.
 CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("WEEKLY_CAP_USD", "weekly_cap_usd"),
     ("PER_CALL_CAP_USD", "per_call_cap_usd"),
@@ -78,6 +80,13 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("SELF_REPO", "self_repo"),
     ("TRACKING_ISSUE", "tracking_issue"),
     ("STORE_BACKEND", "store_backend"),
+    # Delivery 3 (RUN-DECISIONS-D3, the Config section): the two usage stops, the overrun
+    # allowance and the run window.
+    ("WEEKLY_USAGE_STOP_PCT", "weekly_usage_stop_pct"),
+    ("SESSION_USAGE_STOP_PCT", "session_usage_stop_pct"),
+    ("OVERRUN_PCT", "overrun_pct"),
+    ("RUN_WINDOW_START", "run_window_start"),
+    ("RUN_WINDOW_END", "run_window_end"),
 )
 
 # B147: an item left in a running state longer than this with no live run is reset.
@@ -680,7 +689,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for key, _attr in CONFIG_KEYS:
         value = config_keys.get(key)
         shown = "MISSING" if value is None else (value if value != "" else "(empty)")
-        lines.append(f"    {key:<21} {shown}")
+        lines.append(f"    {key:<22} {shown}")
     lines.append(f"  .harness/PIN: {pin_state}")
     lines.append(f"  trust file: {len(trusted)} handle(s) ({trust_path})")
     if problems:

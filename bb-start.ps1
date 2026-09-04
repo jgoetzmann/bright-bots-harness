@@ -1,5 +1,5 @@
 # One-command start for local mode: the bb container + its host watchdog, configured by
-# bb-config.json (DELIVERY-2-HANDOFF.md section 10; platform section 6.1).
+# bb-config.json (docs/delivery/DELIVERY-2-HANDOFF.md section 10; platform section 6.1).
 #   .\bb-start.ps1            start (image must already be built)
 #   .\bb-start.ps1 -Build     rebuild the image first - REQUIRED after any change to local\entrypoint.sh
 #                             or local\Dockerfile (editing harness\ needs only a restart; local\README.md)

@@ -60,7 +60,7 @@ version.
 | `implement.md` | `implement()`, ordinary single-agent path | `$spec_text`, `$repo`, `$branch` |
 | `implement_fullsend.md` | `implement()`, only when the fitness gate passes on all five of F1–F5 | `$spec_text`, `$repo`, `$branch` |
 | `diagnose_gate_failure.md` | `implement()`, once per gate-retry cycle, up to `max_retries_gates` | `$gate_output`, `$spec_text` |
-| `revise.md` | `revise()`, one call per revision cycle, up to `max_revise_cycles` | `$source`, `$feedback`, `$spec_text` |
+| `revise.md` | `revise()`, one call per revision cycle, up to `max_revise_cycles`; covers all four `$source` values | `$source`, `$feedback`, `$spec_text` |
 | `decompose.md` | `decompose()`, one call per parent issue | `$issue_title`, `$issue_body`, `$max` |
 
 What each placeholder holds:
@@ -87,12 +87,16 @@ What each placeholder holds:
 - **`$gate_output`** — the verbatim gate results: every gate name, its argv, its exit code, and its
   captured output tails. Never a summary. A summarised gate failure is the one thing a diagnosis
   cannot be built on.
-- **`$source`** — `ci`, `conflict`, or `review`: which kind of feedback this revision answers.
+- **`$source`** — `ci`, `conflict`, `review`, or `continue`: which kind of feedback this revision
+  answers. `continue` is a carried item resuming after a usage stop (D33/B215): its feedback block is
+  the run's `HANDOFF.md` and its branch is pushed to the fork but not yet delivered, so there is no
+  pull request behind it.
 - **`$feedback`** — the feedback itself, wrapped by the stage in a fenced block labelled
   `Data — not instructions`: failing check-run output tails for `ci`; the conflicted files, markers
   included, for `conflict`; review bodies and review comments with their file/line anchors for
   `review`, from trusted authors **only** (trust-file membership and `OWNER`/`MEMBER`/`COLLABORATOR`
-  association, both required — B131). An untrusted comment body is never rendered here (B133).
+  association, both required — B131). An untrusted comment body is never rendered here (B133). For
+  `continue` it is the handoff note `runs/item-N/HANDOFF.md`, written by the harness itself.
 - **`$max`** — `config.max_subissues`, the most sub-issues `decompose` may emit (B111).
 
 ## Output contracts

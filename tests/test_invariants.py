@@ -430,8 +430,8 @@ def test_a1_every_test_file_in_section_4_3_exists():
 
 
 # ======================================================================================
-# Delivery 2 additions — DELIVERY-2-HANDOFF.md §3 (file map, D2-R1), §7 (workflow hygiene),
-# §10.4 (B142, B143), §12 (I-2′, I-11 … I-17), plus RUN-DECISIONS-D2 §10/§15/§17.
+# Delivery 2 additions — docs/delivery/DELIVERY-2-HANDOFF.md §3 (file map, D2-R1), §7 (workflow
+# hygiene), §10.4 (B142, B143), §12 (I-2′, I-11 … I-17), plus RUN-DECISIONS-D2 §10/§15/§17.
 # Appended by the D2 spec-tester (T3). Additions only — D2-R12.3. Nothing above was edited
 # except the SPEC_PACKAGE_FILES data constant, which gained the D2 file-map entries.
 # ======================================================================================
@@ -572,7 +572,7 @@ D2_REQUIRED_FILES = [
     "bb-watcher.ps1",
     "bb-configure.py",
     "bb-config.json",
-    "DELIVERY-2-REVIEW.md",
+    "docs/delivery/DELIVERY-2-REVIEW.md",
 ]
 
 # RUN-DECISIONS-D2 §2 — the eleven .harness/config.json knob keys (B112).

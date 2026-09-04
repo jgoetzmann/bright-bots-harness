@@ -15,7 +15,7 @@ nothing lands without a human merging it.
 Below is every guarantee, what it means, how it is enforced, and how you can check it
 yourself without trusting me. Where Delivery 2 amended a Delivery 1 guarantee, the amendment
 is shown as one, with its reason, rather than silently replacing the old text. The exact
-commands are the ones `DELIVERY-2-REVIEW.md` §D2-R3 grades by.
+commands are the ones `delivery/DELIVERY-2-REVIEW.md` §D2-R3 grades by.
 
 ---
 

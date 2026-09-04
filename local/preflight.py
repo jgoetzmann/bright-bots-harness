@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Host-side preflight for local mode (DELIVERY-2-HANDOFF.md section 10). Run BEFORE bb-start.ps1.
+"""Host-side preflight for local mode (docs/delivery/DELIVERY-2-HANDOFF.md section 10).
+Run BEFORE bb-start.ps1.
 
     python local/preflight.py            every check
     python local/preflight.py --quick    skip the docker daemon checks (paths, .env, pin, filter only)

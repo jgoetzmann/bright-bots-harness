@@ -2,20 +2,20 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-07T00:00:00Z",
-    "spent_usd": 2.8903,
-    "calls": 3,
+    "spent_usd": 4.1164,
+    "calls": 4,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.2,
-        "resets_at": "2026-09-04T21:40:00Z"
+        "utilization": 0.01,
+        "resets_at": "2026-09-05T01:00:00Z"
       },
       "seven_day": {
-        "utilization": 0.62,
+        "utilization": 0.0,
         "resets_at": "2026-09-08T20:00:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-04T19:34:27Z"
+      "observed_at": "2026-09-04T20:43:32Z"
     }
   },
   "observations": {
@@ -28,8 +28,8 @@
       "median_usd": 0.2257
     },
     "implement": {
-      "n": 1,
-      "median_usd": 2.5907
+      "n": 2,
+      "median_usd": 1.9084
     }
   },
   "cursors": {
@@ -57,6 +57,13 @@
       "stage": "implement",
       "issue": 4,
       "usd": 2.5907,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-04T20:43:32Z",
+      "stage": "implement",
+      "issue": 4,
+      "usd": 1.2261,
       "run": ""
     }
   ]

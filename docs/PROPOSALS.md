@@ -39,6 +39,10 @@ allowlist, the excluded labels, the in-flight-branch check and the assignee chec
 the bot is *excluded* if triage considers it and *queued* if the sweep finds it first. The
 assignment is the decision — there is no second gate behind it on this path.
 
+It also only queues. The proposal comes from the next `discover` run, which ranks the queue and
+proposes every item in it, so an assigned issue becomes a proposal on the Sunday cron unless you
+dispatch `discover` yourself.
+
 The account it looks for is derived from
 `FORK_REPO`'s owner rather than configured separately, because a fork the machine account does not
 own is not one it can push to, so a second key could only ever disagree. With `FORK_REPO` empty the

@@ -233,7 +233,9 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 
 **The sweep applies no label filter.** `--mode assigned` queues every open issue assigned to the account, `intern-starter` and friends included. The exclusion for `intern-starter`, `large` and `architecture` lives in triage's candidate filter, which this mode does not call — so in triage an assigned issue survives the allowlist but those three labels still exclude it, while the sweep would queue it anyway. Treat the assignment itself as the decision: do not assign the bot to an issue you would not hand it.
 
-To make it happen now rather than within three hours, run `feedback` from the Actions tab, or `discover` with `mode: assigned`:
+**It only queues.** The proposal comes from the next `discover` run, which ranks the queue and proposes every item in it — so an assigned issue becomes a proposal on the Sunday cron unless you dispatch `discover` by hand.
+
+To make either happen now rather than on the schedule, run `feedback` from the Actions tab, or `discover` with `mode: assigned`:
 
 ```bash
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=assigned

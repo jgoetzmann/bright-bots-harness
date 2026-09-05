@@ -95,6 +95,10 @@ comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions 
 item for each one, and leaves alone any it has already queued. No label to invent, no Actions
 tab, no model call — which issues are assigned is a fact, not a judgement.
 
+The sweep only queues. The proposal comes from the next `discover` run, which ranks the queue
+and proposes every item in it — so an assigned issue becomes a proposal on the Sunday cron
+unless you dispatch `discover` by hand.
+
 Note the asymmetry: `--mode assigned` queues **every** open issue assigned to the account and
 applies no label filter. The `intern-starter` / `large` / `architecture` exclusion lives in
 `_rejection_reason`, which only triage calls — so in triage an assigned issue survives the
@@ -119,7 +123,7 @@ workflow refuses to start while `.harness/HALT` exists on the default branch.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. Standard library only; `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B86, B100–B150 and B200–B229 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B86, B100–B150, B200–B234, B269–B271, B273 and B279 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

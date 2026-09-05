@@ -139,7 +139,28 @@ STATES: tuple[str, ...] = (
     "abandoned",
 )
 
+#: B264/D56 - `stage:` says where a work item is and, for two of them, whose move it is.
+#: The state machine is unchanged; only the label strings moved. `harness:proposed` and
+#: `harness:shipped` both meant "somebody must act" and neither said who.
 LABELS: dict[str, str] = {
+    "discovered": "stage:queued",
+    "proposing": "stage:planning",
+    "proposed": "stage:needs-approval",
+    "approved": "stage:ready",
+    "implementing": "stage:building",
+    "packaged": "stage:packaged",
+    "shipped": "stage:needs-review",
+    "revising": "stage:revising",
+    "merged": "stage:done",
+    "blocked": "stage:blocked",
+    "needs-human": "stage:needs-human",
+    "abandoned": "stage:dropped",
+}
+
+#: What the labels were before B264. Still read, never written, so an issue opened before the
+#: rename keeps resolving until `harness relabel` has been run -- and after, since a human may
+#: re-apply an old one by hand.
+LEGACY_LABELS: dict[str, str] = {
     "discovered": "harness:queued",
     "proposing": "harness:proposing",
     "proposed": "harness:proposed",
@@ -152,6 +173,46 @@ LABELS: dict[str, str] = {
     "blocked": "harness:blocked",
     "needs-human": "harness:needs-human",
     "abandoned": "harness:abandoned",
+}
+
+#: B264/D56 - `kind:` says what the thing is. There is no `kind:harness`: I-18 (D61) means the
+#: harness never works on its own repository, so that kind of work does not exist.
+KIND_LABELS: dict[str, str] = {
+    "product": "kind:product",
+    "audit": "kind:audit",
+    "ops": "kind:ops",
+}
+
+#: B264/D56 - `via:` says how it got here.
+VIA_LABELS: dict[str, str] = {
+    "assigned": "via:assigned",
+    "requested": "via:requested",
+    "suggested": "via:suggested",
+    "audit": "via:audit",
+}
+
+#: Colour and one-line description for every label the harness creates (B268). Three families,
+#: three hues; the two stages that are somebody's move are the loud ones.
+LABEL_SPECS: dict[str, tuple[str, str]] = {
+    "stage:queued": ("c5def5", "found; nothing spent yet"),
+    "stage:planning": ("bfd4f2", "a proposal is being written"),
+    "stage:needs-approval": ("d93f0b", "YOUR MOVE - gate 1: merge the proposal to approve it"),
+    "stage:ready": ("bfd4f2", "approved; waiting for a runner"),
+    "stage:building": ("bfd4f2", "implementing now"),
+    "stage:packaged": ("bfd4f2", "review package built; delivery pending"),
+    "stage:needs-review": ("d93f0b", "A HUMAN'S MOVE - gate 2: the upstream pull request"),
+    "stage:revising": ("bfd4f2", "reworking after feedback"),
+    "stage:done": ("0e8a16", "merged upstream"),
+    "stage:blocked": ("b60205", "stopped; needs a decision"),
+    "stage:needs-human": ("b60205", "retries spent; the harness will not try again"),
+    "stage:dropped": ("cfd3d7", "closed without shipping"),
+    "kind:product": ("1d76db", "work on the product repository"),
+    "kind:audit": ("5319e7", "a findings report, not a unit of work"),
+    "kind:ops": ("e11d21", "a failed run"),
+    "via:assigned": ("ededed", "the machine account was assigned to the product issue"),
+    "via:requested": ("ededed", "a trusted human asked for it"),
+    "via:suggested": ("ededed", "the harness found it unprompted"),
+    "via:audit": ("ededed", "promoted from an audit's findings"),
 }
 
 # The one transition table, shared by both stores: RUN-DECISIONS-D2 section 3 minus the three
@@ -415,6 +476,8 @@ class SqliteStore:
         tier_required: int = 0,
         body: str = "",
         upstream_body: str = "",
+        kind_label: str = "product",
+        via: str = "requested",
     ) -> int:
         """Insert a new item in state ``discovered``. B9: duplicate ref -> DuplicateWorkItem.
 

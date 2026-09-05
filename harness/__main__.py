@@ -40,7 +40,14 @@ from harness.packager import build as build_package
 from harness.redact import allowed_roots, guarded_write, set_write_roots
 from harness.stages import STAGES
 from harness.stages import deliver as deliver_stage
-from harness.store import LABELS, STATES
+from harness.store import (
+    KIND_LABELS,
+    LABELS,
+    LABEL_SPECS,
+    LEGACY_LABELS,
+    STATES,
+    VIA_LABELS,
+)
 from harness import trust as trust_mod
 from harness.trust import load_trust
 
@@ -198,6 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     decompose.add_argument("issue", type=int, metavar="issue")
 
     sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
+
+    sub.add_parser(
+        "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
+    )
 
     ledger = sub.add_parser("ledger", help="print spend, medians, window state")
     ledger.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -430,21 +441,19 @@ def _ensure_labels(ctx, config) -> dict:
         }
     listing = ctx.gh.get(f"/repos/{config.self_repo}/labels?per_page=100")
     existing = {str(row.get("name", "")) for row in listing if isinstance(row, dict)}
+    # B268: all three families, each with the colour and description that make the GitHub
+    # issue list readable without opening anything.
     created: list[str] = []
-    for state in STATES:
-        name = LABELS[state]
+    for name, (colour, description) in LABEL_SPECS.items():
         if name in existing:
             continue
         ctx.gh.create_label(
-            config.self_repo,
-            name=name,
-            color="ededed",
-            description=f"harness state: {state}",
+            config.self_repo, name=name, color=colour, description=description
         )
         created.append(name)
     return {
         "created": created,
-        "existing": sorted(existing & set(LABELS.values())),
+        "existing": sorted(existing & set(LABEL_SPECS)),
         "skipped": None,
     }
 
@@ -1426,6 +1435,69 @@ def _usage_lines(led, config) -> list[str]:
     return lines
 
 
+#: B267: relabelling while a job is mid-flight would race the job's own label write.
+RELABEL_BUSY_STATES: tuple[str, ...] = ("proposing", "implementing", "revising")
+
+
+def cmd_relabel(args: argparse.Namespace) -> int:
+    """B266/B267: move every open issue from the `harness:*` family to `stage:*`.
+
+    Idempotent, and it changes no state: an issue keeps the stage it was in and gains the
+    `kind:` and `via:` labels its history implies. Refuses while a job is in flight, because
+    the job will write its own state label when it finishes and the two writes would race.
+    """
+    config = _load(args)
+    ctx = _context(config, args, run_id="relabel")
+
+    if not ctx.gh.can_write:
+        _emit({"relabelled": [], "skipped": "no write credential"},
+              "no write credential; nothing relabelled", args)
+        return EXIT_OK
+
+    busy = [
+        item.id
+        for state in RELABEL_BUSY_STATES
+        for item in ctx.store.list_work_items(state=state)
+    ]
+    if busy:
+        raise HarnessError(
+            f"items {sorted(busy)} are mid-flight ({', '.join(RELABEL_BUSY_STATES)}); "
+            "relabel would race the job's own label write. Wait for them, or halt first."
+        )
+
+    legacy_of = {label: state for state, label in LEGACY_LABELS.items()}
+    relabelled: list[dict] = []
+    for state in STATES:
+        for item in ctx.store.list_work_items(state=state):
+            number = int(item.id)
+            # gh.issue() reads the PRODUCT repo; the work items live here.
+            issue = ctx.gh.get(f"/repos/{config.self_repo}/issues/{number}") or {}
+            names = [str((row or {}).get("name") or "") for row in (issue.get("labels") or [])]
+            kept = [n for n in names if n not in legacy_of and n != LABELS[state]]
+            wanted = [LABELS[state]]
+            if not any(n.startswith("kind:") for n in kept):
+                # Everything that is a work item is product work: I-18 means there is no other
+                # kind, and an audit issue is not a work item.
+                wanted.append(KIND_LABELS["product"])
+            if not any(n.startswith("via:") for n in kept):
+                # Nothing recorded how it arrived, because nothing used to. `requested` is the
+                # honest reading of an item that predates the distinction: a human caused it.
+                wanted.append(VIA_LABELS["requested"])
+            final = sorted(set(kept + wanted))
+            if sorted(set(names)) == final:
+                continue
+            ctx.gh.set_labels(config.self_repo, number, final)
+            relabelled.append({"item": number, "state": state, "labels": final})
+
+    _emit(
+        {"relabelled": relabelled, "skipped": None},
+        f"relabelled {len(relabelled)} issue(s)"
+        + (": " + ", ".join(f"#{r['item']}" for r in relabelled) if relabelled else ""),
+        args,
+    )
+    return EXIT_OK
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="ledger")
@@ -1618,6 +1690,7 @@ COMMANDS = {
     "decompose": cmd_decompose,
     "sweep": cmd_sweep,
     "ledger": cmd_ledger,
+    "relabel": cmd_relabel,
     "sync-fork": cmd_sync_fork,
     "local-loop": cmd_local_loop,
 }

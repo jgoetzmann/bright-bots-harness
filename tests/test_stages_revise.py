@@ -281,7 +281,13 @@ class FakeGh:
         return [lab["name"] for lab in self._issue(repo or self.self_repo, number)["labels"]]
 
     def state_labels(self, number, *, repo=None) -> list[str]:
-        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("harness:"))
+        # B264: the stage family, and the one it replaced -- an issue labelled before the
+        # rename still resolves, so this must see both.
+        return sorted(
+            n
+            for n in self.labels(number, repo=repo)
+            if n.startswith("stage:") or n.startswith("harness:")
+        )
 
     def comments_of(self, number, *, repo=None) -> list[dict]:
         return list(self.comments.get((repo or self.self_repo, number), []))
@@ -736,11 +742,11 @@ def pushes(gh) -> list[dict]:
 # --------------------------------------------------------------------------------------
 def test_B136_red_gates_after_the_revision_block_the_item_and_push_nothing(tmp_path, monkeypatch,
                                                                             quiet_implement):
-    """B136: gates red after the edit -> harness:blocked, no push_branch, no push_ref."""
+    """B136: gates red after the edit -> stage:blocked, no push_branch, no push_ref."""
     s = setup_revise(tmp_path, monkeypatch, red_after_edit=True)
     revise(s.ctx, ITEM, source="ci")
     assert s.store.get_work_item(ITEM).state == "blocked"
-    assert s.gh.state_labels(ITEM) == ["harness:blocked"]
+    assert s.gh.state_labels(ITEM) == ["stage:blocked"]
     assert pushes(s.gh) == []
     assert not any(e["method"] == "git push" for e in s.gh.sent)
     assert False in s.gates.calls, "the gate sequence never ran on the revised tree"
@@ -751,7 +757,7 @@ def test_B136_conflict_resolved_into_a_red_tree_is_blocked_never_pushed(tmp_path
     """B136: source=conflict with red gates after the edit -> blocked, nothing pushed."""
     s = setup_revise(tmp_path, monkeypatch, red_after_edit=True)
     revise(s.ctx, ITEM, source="conflict")
-    assert s.gh.state_labels(ITEM) == ["harness:blocked"]
+    assert s.gh.state_labels(ITEM) == ["stage:blocked"]
     assert pushes(s.gh) == []
 
 
@@ -774,11 +780,11 @@ def test_B136_green_revision_runs_the_full_sequence_before_any_push(tmp_path, mo
 # --------------------------------------------------------------------------------------
 def test_B137_at_the_cap_the_item_needs_a_human_and_nothing_runs(tmp_path, monkeypatch,
                                                                  quiet_implement):
-    """B137: MAX_REVISE_CYCLES prior cycles -> harness:needs-human, no model call, no push."""
+    """B137: MAX_REVISE_CYCLES prior cycles -> stage:needs-human, no model call, no push."""
     s = setup_revise(tmp_path, monkeypatch, prior_revise_runs=3, MAX_REVISE_CYCLES="3")
     comments_before = len(s.gh.comments_of(ITEM))
     revise(s.ctx, ITEM, source="review")
-    assert s.gh.state_labels(ITEM) == ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
     assert s.store.get_work_item(ITEM).state == "needs-human"
     assert s.runner.requests == []
     assert pushes(s.gh) == []
@@ -790,14 +796,14 @@ def test_B137_below_the_cap_the_cycle_proceeds(tmp_path, monkeypatch, quiet_impl
     s = setup_revise(tmp_path, monkeypatch, prior_revise_runs=2, MAX_REVISE_CYCLES="3")
     revise(s.ctx, ITEM, source="review")
     assert len(s.runner.requests) >= 1
-    assert s.gh.state_labels(ITEM) != ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) != ["stage:needs-human"]
 
 
 def test_B137_a_cap_of_zero_parks_the_item_immediately(tmp_path, monkeypatch, quiet_implement):
     """B137: MAX_REVISE_CYCLES=0 means no automatic revision at all."""
     s = setup_revise(tmp_path, monkeypatch, prior_revise_runs=0, MAX_REVISE_CYCLES="0")
     revise(s.ctx, ITEM, source="ci")
-    assert s.gh.state_labels(ITEM) == ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
     assert s.runner.requests == []
     assert pushes(s.gh) == []
 
@@ -815,7 +821,7 @@ def test_B138_repeated_signature_stops_before_the_retry_cap(tmp_path, monkeypatc
     assert len(s.runner.requests) <= 2
     post_edit_gate_runs = [b for b in s.gates.calls if b is False]
     assert 1 <= len(post_edit_gate_runs) <= 2
-    assert s.gh.state_labels(ITEM) == ["harness:blocked"]
+    assert s.gh.state_labels(ITEM) == ["stage:blocked"]
     assert pushes(s.gh) == []
 
 
@@ -823,11 +829,11 @@ def test_B138_repeated_signature_stops_before_the_retry_cap(tmp_path, monkeypatc
 # B139 - force-push only to a branch whose tip the harness authored
 # --------------------------------------------------------------------------------------
 def test_B139_human_authored_tip_is_never_force_pushed(tmp_path, monkeypatch, quiet_implement):
-    """B139: tip author email is a human's -> harness:needs-human, no push of any kind."""
+    """B139: tip author email is a human's -> stage:needs-human, no push of any kind."""
     s = setup_revise(tmp_path, monkeypatch, tip_email=HUMAN_EMAIL)
     assert _git("log", "-1", "--format=%ae", cwd=s.repo) == HUMAN_EMAIL
     revise(s.ctx, ITEM, source="ci")
-    assert s.gh.state_labels(ITEM) == ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
     assert pushes(s.gh) == []
     assert not any(e["method"] == "git push" for e in s.gh.sent)
 
@@ -844,7 +850,7 @@ def test_B139_harness_authored_tip_is_force_pushed_exactly_once(tmp_path, monkey
     assert pb[0]["branch"] == BRANCH
     assert pb[0]["remote_repo"] == FORK
     assert Path(pb[0]["clone"]).resolve() == s.repo.resolve()
-    assert s.gh.state_labels(ITEM) == ["harness:shipped"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
 
 
 def test_B139_force_push_targets_only_the_fork_and_only_a_harness_branch(tmp_path, monkeypatch,
@@ -935,7 +941,7 @@ def test_B120_rate_limited_revise_restores_the_entry_state_and_records_the_reset
         revise(s.ctx, ITEM, source="ci")
     assert excinfo.value.reset_at == RESET_AT
     assert s.store.get_work_item(ITEM).state == "shipped"
-    assert s.gh.state_labels(ITEM) == ["harness:shipped"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
     assert s.ctx.ledger.window["rate_limited_until"] == RESET_AT
     assert s.ctx.ledger.rate_limited(iso(T0)) is True
     assert pushes(s.gh) == []
@@ -959,7 +965,7 @@ def test_B120_rate_limited_revise_from_needs_human_returns_to_needs_human(tmp_pa
     s = setup_revise(tmp_path, monkeypatch, state="needs-human", rate_limited=True)
     with pytest.raises(RateLimited):
         revise(s.ctx, ITEM, source="review", notes="/harness fix from jgoetzmann")
-    assert s.gh.state_labels(ITEM) == ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
     assert pushes(s.gh) == []
 
 
@@ -974,7 +980,7 @@ def test_revise_from_a_wrong_entry_state_raises_and_runs_nothing(tmp_path, monke
         revise(s.ctx, ITEM, source="ci")
     assert s.runner.requests == []
     assert pushes(s.gh) == []
-    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.gh.state_labels(ITEM) == ["stage:ready"]
 
 
 def test_revise_from_needs_human_without_notes_is_refused(tmp_path, monkeypatch,
@@ -985,7 +991,7 @@ def test_revise_from_needs_human_without_notes_is_refused(tmp_path, monkeypatch,
         revise(s.ctx, ITEM, source="review")
     assert s.runner.requests == []
     assert pushes(s.gh) == []
-    assert s.gh.state_labels(ITEM) == ["harness:needs-human"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
 
 
 def test_revise_from_needs_human_with_notes_proceeds(tmp_path, monkeypatch, quiet_implement):
@@ -994,7 +1000,7 @@ def test_revise_from_needs_human_with_notes_proceeds(tmp_path, monkeypatch, quie
     revise(s.ctx, ITEM, source="review", notes="/harness fix - please address the review")
     assert len(s.runner.requests) >= 1
     assert s.gh.calls_named("push_branch") and s.gh.calls_named("push_branch")[0]["force"] is True
-    assert s.gh.state_labels(ITEM) == ["harness:shipped"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
 
 
 def test_revise_reacquires_the_existing_branch_from_the_fork(tmp_path, monkeypatch,
@@ -1091,13 +1097,13 @@ def test_B215_continue_from_approved_moves_the_item_to_implementing_at_entry(
     tmp_path, monkeypatch, quiet_implement
 ):
     """B215: entry state `approved` with a branch recorded -> the item is `implementing` (label
-    harness:running) before the model is asked anything."""
+    stage:building) before the model is asked anything."""
     s = setup_continue(tmp_path, monkeypatch)
     states = watch_states(s)
     revise(s.ctx, ITEM, source="continue")
     assert states, "continue made no model call"
     assert states[0] == "implementing", f"state at the first model call was {states[0]!r}"
-    assert "harness:running" in labels_applied(s)
+    assert "stage:building" in labels_applied(s)
 
 
 def test_B215_continue_acquires_the_recorded_branch_from_the_fork_when_no_clone_is_left(
@@ -1174,7 +1180,7 @@ def test_B215_green_continue_packages_the_item_and_clears_the_carry(
     assert s.ctx.ledger.carry_issue() == ITEM
     result = revise(s.ctx, ITEM, source="continue")
     assert s.store.get_work_item(ITEM).state == "packaged"
-    assert s.gh.state_labels(ITEM) == ["harness:packaged"]
+    assert s.gh.state_labels(ITEM) == ["stage:packaged"]
     assert s.ctx.ledger.carry_issue() is None
     assert s.ctx.ledger.window["carry"] is None
     assert result is not None, "continue must return the Lease it worked in"
@@ -1185,11 +1191,11 @@ def test_B215_green_continue_packages_the_item_and_clears_the_carry(
 def test_B215_red_continue_blocks_the_item_and_pushes_nothing(
     tmp_path, monkeypatch, quiet_implement
 ):
-    """B215 / B136: gates red after the revision -> harness:blocked and not one push."""
+    """B215 / B136: gates red after the revision -> stage:blocked and not one push."""
     s = setup_continue(tmp_path, monkeypatch, carry=True, red_after_edit=True)
     revise(s.ctx, ITEM, source="continue")
     assert s.store.get_work_item(ITEM).state == "blocked"
-    assert s.gh.state_labels(ITEM) == ["harness:blocked"]
+    assert s.gh.state_labels(ITEM) == ["stage:blocked"]
     assert pushes(s.gh) == []
     assert not any(e["method"] == "git push" for e in s.gh.sent)
 
@@ -1204,7 +1210,7 @@ def test_B215_continue_from_discovered_is_refused_and_runs_nothing(
         revise(s.ctx, ITEM, source="continue")
     assert s.runner.requests == []
     assert pushes(s.gh) == []
-    assert s.gh.state_labels(ITEM) == ["harness:queued"]
+    assert s.gh.state_labels(ITEM) == ["stage:queued"]
 
 
 def test_B215_continue_from_shipped_is_refused_and_runs_nothing(
@@ -1217,4 +1223,4 @@ def test_B215_continue_from_shipped_is_refused_and_runs_nothing(
         revise(s.ctx, ITEM, source="continue")
     assert s.runner.requests == []
     assert pushes(s.gh) == []
-    assert s.gh.state_labels(ITEM) == ["harness:shipped"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]

@@ -11,9 +11,13 @@ from typing import Any, Protocol
 from harness.errors import StoreError
 from harness.store.github import GitHubStore
 from harness.store.sqlite import (
+    KIND_LABELS,
     LABELS,
+    LABEL_SPECS,
+    LEGACY_LABELS,
     STATES,
     TRANSITIONS,
+    VIA_LABELS,
     SqliteStore,
     StageRun,
     WorkItem,
@@ -37,6 +41,8 @@ class StoreProtocol(Protocol):
         tier_required: int = 0,
         body: str = "",
         upstream_body: str = "",
+        kind_label: str = "product",
+        via: str = "requested",
     ) -> int: ...
 
     def get_work_item(self, item_id: int) -> WorkItem | None: ...
@@ -121,7 +127,11 @@ def open_store(config: Any, clock: Any, gh: Any = None) -> StoreProtocol:
 
 __all__ = [
     "GitHubStore",
+    "KIND_LABELS",
     "LABELS",
+    "LABEL_SPECS",
+    "LEGACY_LABELS",
+    "VIA_LABELS",
     "STATES",
     "SqliteStore",
     "StageRun",

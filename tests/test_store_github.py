@@ -167,7 +167,19 @@ class FakeGh:
         return [lab["name"] for lab in self._issue(repo or self.self_repo, number)["labels"]]
 
     def state_labels(self, number, *, repo=None) -> list[str]:
-        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("harness:"))
+        # B264: the stage family, and the one it replaced -- an issue labelled before the
+        # rename still resolves, so the helper that asks "what stage is this" must see both.
+        return sorted(
+            n
+            for n in self.labels(number, repo=repo)
+            if n.startswith("stage:") or n.startswith("harness:")
+        )
+
+    def kind_labels(self, number, *, repo=None) -> list[str]:
+        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("kind:"))
+
+    def via_labels(self, number, *, repo=None) -> list[str]:
+        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("via:"))
 
     def comments_of(self, number, *, repo=None) -> list[dict]:
         return list(self.comments.get((repo or self.self_repo, number), []))
@@ -447,7 +459,7 @@ def test_B100_create_work_item_files_one_queued_issue_in_self_repo(gh, store):
     assert links.REF_MARKER in issue["body"]
     assert "issue:816" in issue["body"]
     assert _origin_ref(issue) == "issue:816"
-    assert gh.state_labels(n) == ["harness:queued"]
+    assert gh.state_labels(n) == ["stage:queued"]
     assert gh.repos[UPSTREAM] == {}, "an issue was filed outside self_repo (I-14)"
     item = store.get_work_item(n)
     assert item is not None
@@ -469,7 +481,7 @@ def test_B100_transition_is_one_label_call_that_swaps_the_state_label_only(gh, s
     puts_before = _label_puts(gh)
     store.transition(n, "proposing", reason="propose starting")
     assert _label_puts(gh) - puts_before == 1
-    assert gh.state_labels(n) == ["harness:proposing"]
+    assert gh.state_labels(n) == ["stage:planning"]
     assert "bug" in gh.labels(n)
     assert store.get_work_item(n).state == "proposing"
 
@@ -489,25 +501,25 @@ def test_B100_every_transition_in_a_full_lifecycle_leaves_exactly_one_state_labe
 
 def test_B100_two_state_labels_make_get_work_item_raise_store_error(gh, store):
     """B100: an item with two harness:* state labels raises StoreError instead of guessing."""
-    gh.add_issue(7, "ambiguous", labels=["harness:approved", "harness:running"])
+    gh.add_issue(7, "ambiguous", labels=["stage:ready", "stage:building"])
     with pytest.raises(StoreError):
         store.get_work_item(7)
 
 
 def test_B100_two_state_labels_make_transition_raise_and_change_nothing(gh, store):
     """B100: transition on a two-label item raises StoreError; labels and writes untouched."""
-    gh.add_issue(7, "ambiguous", labels=["harness:approved", "harness:running"])
+    gh.add_issue(7, "ambiguous", labels=["stage:ready", "stage:building"])
     sent_before = len(gh.sent)
     with pytest.raises(StoreError):
         store.transition(7, "implementing", reason="run")
-    assert gh.labels(7) == ["harness:approved", "harness:running"]
+    assert gh.labels(7) == ["stage:ready", "stage:building"]
     assert len(gh.sent) == sent_before
 
 
 def test_B100_two_state_labels_are_not_listed_as_a_state(gh, store):
     """B100: list_work_items(state=...) never reports a two-label item as being in either state."""
-    gh.add_issue(7, "ambiguous", labels=["harness:approved", "harness:running"])
-    gh.add_issue(8, "clean", labels=["harness:approved"])
+    gh.add_issue(7, "ambiguous", labels=["stage:ready", "stage:building"])
+    gh.add_issue(8, "clean", labels=["stage:ready"])
     for state in ("approved", "implementing"):
         try:
             ids = [i.id for i in store.list_work_items(state=state)]
@@ -519,7 +531,7 @@ def test_B100_two_state_labels_are_not_listed_as_a_state(gh, store):
 def test_B100_issue_without_a_state_label_is_invisible(gh, store):
     """B100: zero harness:* labels means not a work item: get returns None, list omits it."""
     gh.add_issue(8, "plain issue", labels=["bug"])
-    gh.add_issue(9, "queued", labels=["harness:queued"])
+    gh.add_issue(9, "queued", labels=["stage:queued"])
     assert store.get_work_item(8) is None
     assert [i.id for i in store.list_work_items()] == [9]
 
@@ -598,7 +610,7 @@ def test_B102_human_requeue_is_reflected_by_get_and_list(gh, store):
     store.transition(n, "proposing", reason="x")
     store.transition(n, "blocked", reason="gates red")
     assert store.get_work_item(n).state == "blocked"
-    gh.set_issue_labels(n, ["harness:queued"])
+    gh.set_issue_labels(n, ["stage:queued"])
     assert store.get_work_item(n).state == "discovered"
     assert n in [i.id for i in store.list_work_items(state="discovered")]
     assert n not in [i.id for i in store.list_work_items(state="blocked")]
@@ -609,11 +621,11 @@ def test_B102_transition_from_a_human_set_state_is_validated_against_that_state(
     n = _create(store)
     store.transition(n, "proposing", reason="x")
     store.transition(n, "proposed", reason="x")
-    gh.set_issue_labels(n, ["harness:queued"])
+    gh.set_issue_labels(n, ["stage:queued"])
     puts_before = _label_puts(gh)
     with pytest.raises(IllegalTransition):
         store.transition(n, "approved", reason="proposal merged")
-    assert gh.state_labels(n) == ["harness:queued"]
+    assert gh.state_labels(n) == ["stage:queued"]
     assert _label_puts(gh) == puts_before
 
 
@@ -622,20 +634,20 @@ def test_B102_transition_from_a_human_set_state_succeeds_when_legal(gh, store):
     n = _create(store)
     store.transition(n, "proposing", reason="x")
     store.transition(n, "proposed", reason="x")
-    gh.set_issue_labels(n, ["harness:queued"])
+    gh.set_issue_labels(n, ["stage:queued"])
     store.transition(n, "proposing", reason="re-run propose")
-    assert gh.state_labels(n) == ["harness:proposing"]
+    assert gh.state_labels(n) == ["stage:planning"]
     assert store.get_work_item(n).state == "proposing"
 
 
 def test_B102_human_abandon_is_terminal_for_the_harness(gh, store):
-    """B102: a human setting harness:abandoned wins; the harness cannot move it anywhere."""
+    """B102: a human setting stage:dropped wins; the harness cannot move it anywhere."""
     n = _create(store)
-    gh.set_issue_labels(n, ["harness:abandoned"])
+    gh.set_issue_labels(n, ["stage:dropped"])
     for target in ("proposing", "discovered", "approved"):
         with pytest.raises(IllegalTransition):
             store.transition(n, target, reason="x")
-    assert gh.state_labels(n) == ["harness:abandoned"]
+    assert gh.state_labels(n) == ["stage:dropped"]
 
 
 # --------------------------------------------------------------------------------------
@@ -656,7 +668,7 @@ def test_create_work_item_after_the_original_is_closed_files_a_new_issue(gh, sto
     gh.repos[SELF_REPO][n]["state"] = "closed"
     m = _create(store)
     assert m != n
-    assert gh.state_labels(m) == ["harness:queued"]
+    assert gh.state_labels(m) == ["stage:queued"]
 
 
 # --------------------------------------------------------------------------------------
@@ -702,7 +714,7 @@ def test_update_work_item_latest_meta_wins(gh, store):
 
 def test_update_work_item_on_a_two_label_item_raises(gh, store):
     """B100: even a metadata update refuses to operate on an ambiguous two-label item."""
-    gh.add_issue(7, "ambiguous", labels=["harness:approved", "harness:running"])
+    gh.add_issue(7, "ambiguous", labels=["stage:ready", "stage:building"])
     with pytest.raises(StoreError):
         store.update_work_item(7, base_sha=SHA_A)
 
@@ -712,9 +724,9 @@ def test_update_work_item_on_a_two_label_item_raises(gh, store):
 # --------------------------------------------------------------------------------------
 def test_list_work_items_filters_by_state_label(gh, store):
     """Section 3: list_work_items(state=) selects by label; no filter lists every work item."""
-    gh.add_issue(11, "a", labels=["harness:approved"])
-    gh.add_issue(12, "b", labels=["harness:approved", "bug"])
-    gh.add_issue(13, "c", labels=["harness:shipped"])
+    gh.add_issue(11, "a", labels=["stage:ready"])
+    gh.add_issue(12, "b", labels=["stage:ready", "bug"])
+    gh.add_issue(13, "c", labels=["stage:needs-review"])
     gh.add_issue(14, "d", labels=["bug"])
     assert sorted(i.id for i in store.list_work_items(state="approved")) == [11, 12]
     assert [i.id for i in store.list_work_items(state="shipped")] == [13]
@@ -723,17 +735,17 @@ def test_list_work_items_filters_by_state_label(gh, store):
 
 
 def test_merged_issues_returns_numbers_labelled_merged(gh, store):
-    """Section 3: merged_issues() is the set of issue numbers labelled harness:merged."""
-    gh.add_issue(21, "a", labels=["harness:merged"])
-    gh.add_issue(22, "b", labels=["harness:merged", "bug"])
-    gh.add_issue(23, "c", labels=["harness:shipped"])
+    """Section 3: merged_issues() is the set of issue numbers labelled stage:done."""
+    gh.add_issue(21, "a", labels=["stage:done"])
+    gh.add_issue(22, "b", labels=["stage:done", "bug"])
+    gh.add_issue(23, "c", labels=["stage:needs-review"])
     gh.add_issue(24, "d", labels=["bug"])
     assert store.merged_issues() == {21, 22}
 
 
 def test_merged_issues_is_empty_when_nothing_is_merged(gh, store):
-    """Section 3: no harness:merged label anywhere -> empty set, not None."""
-    gh.add_issue(23, "c", labels=["harness:shipped"])
+    """Section 3: no stage:done label anywhere -> empty set, not None."""
+    gh.add_issue(23, "c", labels=["stage:needs-review"])
     assert store.merged_issues() == set()
 
 
@@ -759,7 +771,7 @@ def test_publish_proposal_creates_branch_file_and_pr_then_marks_proposed(gh, sto
     assert cp[0]["head"] == f"harness/propose-{n}"
     assert cp[0]["base"] == "main"
     assert url in {p["html_url"] for p in gh.prs[SELF_REPO].values()}
-    assert gh.state_labels(n) == ["harness:proposed"]
+    assert gh.state_labels(n) == ["stage:needs-approval"]
     assert store.get_work_item(n).state == "proposed"
 
 
@@ -776,10 +788,10 @@ def test_publish_proposal_never_touches_the_product_repo(gh, store):
 def test_publish_proposal_from_a_wrong_state_raises_and_keeps_the_label(gh, store):
     """Section 3: publish transitions proposing -> proposed; from approved that is illegal."""
     n = _create(store)
-    gh.set_issue_labels(n, ["harness:approved"])
+    gh.set_issue_labels(n, ["stage:ready"])
     with pytest.raises(IllegalTransition):
         store.publish_proposal(n, f"{n}-x.md", PROPOSAL_TEXT)
-    assert gh.state_labels(n) == ["harness:approved"]
+    assert gh.state_labels(n) == ["stage:ready"]
 
 
 # --------------------------------------------------------------------------------------
@@ -788,43 +800,43 @@ def test_publish_proposal_from_a_wrong_state_raises_and_keeps_the_label(gh, stor
 def test_B147_reconcile_resets_stale_implementing_and_leaves_fresh_alone(gh, store, clock):
     """B147: an `implementing` item older than the cutoff goes back to approved; a fresh one stays."""
     a = _create(store, ref="issue:816", title="stale")
-    gh.set_issue_labels(a, ["harness:approved"])
+    gh.set_issue_labels(a, ["stage:ready"])
     store.transition(a, "implementing", reason="run start")          # at 12:00
     b = _create(store, ref="issue:823", title="fresh")
-    gh.set_issue_labels(b, ["harness:approved"])
+    gh.set_issue_labels(b, ["stage:ready"])
     clock.advance(3.5 * 3600)                                          # 15:30
     store.transition(b, "implementing", reason="run start")
     clock.advance(0.5 * 3600)                                          # 16:00
     cutoff = iso(clock.now() - timedelta(hours=3))                     # 13:00
     reset = store.reconcile_stale_running(cutoff)
     assert reset == [a]
-    assert gh.state_labels(a) == ["harness:approved"]
+    assert gh.state_labels(a) == ["stage:ready"]
     assert store.get_work_item(a).state == "approved"
-    assert gh.state_labels(b) == ["harness:running"]
+    assert gh.state_labels(b) == ["stage:building"]
     assert store.get_work_item(b).state == "implementing"
 
 
 def test_B147_reconcile_resets_stale_revising_to_its_previous_state(gh, store, clock):
     """B147: a `revising` item stranded by a dead run returns to `shipped`."""
     n = _create(store)
-    gh.set_issue_labels(n, ["harness:shipped"])
+    gh.set_issue_labels(n, ["stage:needs-review"])
     store.transition(n, "revising", reason="revise start")
     clock.advance(4 * 3600)
     reset = store.reconcile_stale_running(iso(clock.now() - timedelta(hours=3)))
     assert reset == [n]
-    assert gh.state_labels(n) == ["harness:shipped"]
+    assert gh.state_labels(n) == ["stage:needs-review"]
 
 
 def test_B147_reconcile_with_nothing_stale_returns_empty_and_writes_nothing(gh, store, clock):
     """B147: fresh in-flight items and settled items are untouched; the call is a read."""
     n = _create(store)
-    gh.set_issue_labels(n, ["harness:approved"])
+    gh.set_issue_labels(n, ["stage:ready"])
     store.transition(n, "implementing", reason="run start")
     clock.advance(600)
     sent_before = len(gh.sent)
     assert store.reconcile_stale_running(iso(clock.now() - timedelta(hours=3))) == []
     assert len(gh.sent) == sent_before
-    assert gh.state_labels(n) == ["harness:running"]
+    assert gh.state_labels(n) == ["stage:building"]
 
 
 def test_B147_reconcile_ignores_old_items_that_are_not_in_flight(gh, store, clock):
@@ -838,8 +850,8 @@ def test_B147_reconcile_ignores_old_items_that_are_not_in_flight(gh, store, cloc
     store.transition(m, "blocked", reason="hold")
     clock.advance(24 * 3600)
     assert store.reconcile_stale_running(iso(clock.now() - timedelta(hours=3))) == []
-    assert gh.state_labels(n) == ["harness:approved"]
-    assert gh.state_labels(m) == ["harness:blocked"]
+    assert gh.state_labels(n) == ["stage:ready"]
+    assert gh.state_labels(m) == ["stage:blocked"]
 
 
 # --------------------------------------------------------------------------------------
@@ -853,7 +865,7 @@ def test_illegal_transition_from_discovered_raises_and_changes_no_label(gh, stor
     puts_before = _label_puts(gh)
     with pytest.raises(IllegalTransition):
         store.transition(n, target, reason="skip ahead")
-    assert gh.state_labels(n) == ["harness:queued"]
+    assert gh.state_labels(n) == ["stage:queued"]
     assert _label_puts(gh) == puts_before
 
 
@@ -872,7 +884,7 @@ def test_transition_to_an_unknown_state_raises(gh, store):
     n = _create(store)
     with pytest.raises(HarnessError):
         store.transition(n, "flying", reason="x")
-    assert gh.state_labels(n) == ["harness:queued"]
+    assert gh.state_labels(n) == ["stage:queued"]
 
 
 # --------------------------------------------------------------------------------------
@@ -943,3 +955,77 @@ def test_b230_an_issue_with_no_recoverable_reference_falls_back_to_itself(gh, st
         comment["body"] = "not meta"
 
     assert store.get_work_item(n).external_ref == f"self:{n}"
+
+
+# --------------------------------------------------------------------------------------
+# B264 - B268: three axes, three questions (D56)
+# --------------------------------------------------------------------------------------
+
+
+def test_b264_a_new_item_carries_one_label_from_each_family(gh, store):
+    """B264: `stage:` says where it is, `kind:` what it is, `via:` how it got here. One flat
+    family could not answer three different questions."""
+    n = _create(store)
+
+    assert gh.state_labels(n) == ["stage:queued"]
+    assert gh.kind_labels(n) == ["kind:product"]
+    assert gh.via_labels(n) == ["via:requested"]
+
+
+def test_b264_the_via_and_kind_are_the_callers_to_choose(gh, store):
+    n = store.create_work_item(
+        kind="issue", external_ref="issue:901", title="t", kind_label="audit", via="suggested"
+    )
+
+    assert gh.kind_labels(n) == ["kind:audit"]
+    assert gh.via_labels(n) == ["via:suggested"]
+
+
+def test_b265_a_transition_swaps_the_stage_and_leaves_the_rest(gh, store):
+    """B265: one label call, and the two axes that are not the stage are untouched."""
+    n = _create(store)
+    before = gh.calls_named("set_labels")
+
+    store.transition(n, "proposing", reason="x")
+
+    assert gh.state_labels(n) == ["stage:planning"]
+    assert gh.kind_labels(n) == ["kind:product"]
+    assert gh.via_labels(n) == ["via:requested"]
+    assert len(gh.calls_named("set_labels")) == len(before) + 1
+
+
+def test_b264_the_two_stages_that_are_somebody_s_move_say_so():
+    """B264: `harness:proposed` and `harness:shipped` both meant "somebody must act" and
+    neither said who. That is the rename that earns its keep."""
+    from harness.store import LABELS
+
+    assert LABELS["proposed"] == "stage:needs-approval"
+    assert LABELS["shipped"] == "stage:needs-review"
+
+
+def test_b264_an_issue_labelled_before_the_rename_still_resolves():
+    """B264: `relabel` migrates them, but the harness must read what is there in the meantime,
+    and after -- a human may re-apply an old label by hand."""
+    from harness.store.github import STATE_OF_LABEL
+
+    assert STATE_OF_LABEL["harness:queued"] == "discovered"
+    assert STATE_OF_LABEL["stage:queued"] == "discovered"
+
+
+def test_b264_there_is_no_kind_harness():
+    """B264/I-18: the harness never works on its own repository, so that kind of work does not
+    exist and must not be nameable."""
+    from harness.store import KIND_LABELS
+
+    assert "harness" not in KIND_LABELS
+    assert not any(name.endswith(":harness") for name in KIND_LABELS.values())
+
+
+def test_b268_every_label_the_harness_creates_has_a_colour_and_a_description():
+    """B268: the GitHub issue list has to be readable without opening anything."""
+    from harness.store import KIND_LABELS, LABELS, LABEL_SPECS, VIA_LABELS
+
+    for name in list(LABELS.values()) + list(KIND_LABELS.values()) + list(VIA_LABELS.values()):
+        colour, description = LABEL_SPECS[name]
+        assert len(colour) == 6 and all(c in "0123456789abcdef" for c in colour), name
+        assert description.strip(), name

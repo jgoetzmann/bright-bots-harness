@@ -2417,3 +2417,35 @@ def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "0.4 to go" in out
     assert "STOPPED" not in out
+
+
+# --------------------------------------------------------------------------------------
+# B266 / B267 - `harness relabel` (D56)
+# --------------------------------------------------------------------------------------
+
+
+def test_b266_relabel_needs_a_write_credential(tmp_path, monkeypatch, capsys):
+    """B266: at tier 0 there is nothing to relabel with, and that is not an error."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["relabel"]) == 0
+
+    assert "no write credential" in capsys.readouterr().out
+
+
+def test_b266_relabel_is_a_registered_command():
+    """B266: the migration has to be runnable, and `--help` is where an operator looks."""
+    import harness.__main__ as main_mod
+
+    assert "relabel" in main_mod.COMMANDS
+
+
+def test_b267_relabel_refuses_while_a_job_is_in_flight():
+    """B267: the job writes its own state label when it finishes; two writes would race."""
+    import harness.__main__ as main_mod
+
+    assert main_mod.RELABEL_BUSY_STATES == ("proposing", "implementing", "revising")

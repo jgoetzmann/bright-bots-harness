@@ -215,7 +215,13 @@ class FakeGh:
         return [lab["name"] for lab in self._issue(repo or self.self_repo, number)["labels"]]
 
     def state_labels(self, number, *, repo=None) -> list[str]:
-        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("harness:"))
+        # B264: the stage family, and the one it replaced -- an issue labelled before the
+        # rename still resolves, so this must see both.
+        return sorted(
+            n
+            for n in self.labels(number, repo=repo)
+            if n.startswith("stage:") or n.startswith("harness:")
+        )
 
     def comments_of(self, number, *, repo=None) -> list[dict]:
         return list(self.comments.get((repo or self.self_repo, number), []))
@@ -498,7 +504,7 @@ def write_fixtures(dir_: Path, *, decompose_text: str | None = DECOMPOSE_TEXT) -
 
 
 def setup_decompose(tmp_path: Path, *, parent_body: str = PARENT_BODY,
-                    parent_labels=("harness:queued",), decompose_text=DECOMPOSE_TEXT,
+                    parent_labels=("stage:queued",), decompose_text=DECOMPOSE_TEXT,
                     **env_overrides):
     config = make_config(tmp_path, **env_overrides)
     clock = FrozenClock(T0)
@@ -528,7 +534,7 @@ def created_numbers(gh, before: set[int]) -> list[int]:
 # B110 - N sub-issues here, each queued and linked; parent blocked and commented
 # --------------------------------------------------------------------------------------
 def test_B110_decompose_creates_queued_sub_issues_linked_to_the_parent(tmp_path):
-    """B110: N sub-issues in self_repo, each harness:queued, each body carries Parent: #<parent>."""
+    """B110: N sub-issues in self_repo, each stage:queued, each body carries Parent: #<parent>."""
     s = setup_decompose(tmp_path)
     before = set(s.gh.repos[SELF_REPO])
     children = decompose(s.ctx, PARENT)
@@ -537,17 +543,17 @@ def test_B110_decompose_creates_queued_sub_issues_linked_to_the_parent(tmp_path)
     assert sorted(children) == new
     for n in new:
         issue = s.gh.repos[SELF_REPO][n]
-        assert s.gh.state_labels(n) == ["harness:queued"]
+        assert s.gh.state_labels(n) == ["stage:queued"]
         assert f"Parent: #{PARENT}" in issue["body"]
         assert s.store.get_work_item(n).state == "discovered"
 
 
 def test_B110_parent_is_blocked_with_a_comment_listing_the_children(tmp_path):
-    """B110: the parent ends harness:blocked and its thread lists every child number."""
+    """B110: the parent ends stage:blocked and its thread lists every child number."""
     s = setup_decompose(tmp_path)
     comments_before = len(s.gh.comments_of(PARENT))
     children = decompose(s.ctx, PARENT)
-    assert s.gh.state_labels(PARENT) == ["harness:blocked"]
+    assert s.gh.state_labels(PARENT) == ["stage:blocked"]
     assert s.store.get_work_item(PARENT).state == "blocked"
     new_comments = s.gh.comments_of(PARENT)[comments_before:]
     assert new_comments
@@ -577,7 +583,12 @@ def test_B110_create_issue_is_called_with_title_body_labels_and_never_a_repo(tmp
     assert len(calls) == 3
     for c in calls:
         assert set(c) == {"name", "title", "body", "labels"}
-        assert c["labels"] == ["harness:queued"]
+        # B264: one label from each family, always. The stage is what B110 pins; the
+        # kind and the via are what a reader needs to know what they are looking at.
+        assert "stage:queued" in c["labels"]
+        assert "kind:product" in c["labels"]
+        assert "via:requested" in c["labels"]
+        assert len([n for n in c["labels"] if n.startswith("stage:")]) == 1
         assert f"Parent: #{PARENT}" in c["body"]
     for entry in s.gh.sent:
         if entry["method"] == "POST" and entry["url"].endswith("/issues"):
@@ -618,7 +629,7 @@ def test_B111_at_most_max_subissues_are_created(tmp_path):
     assert len(new) == 2
     assert sorted(children) == new
     assert len(s.gh.calls_named("create_issue")) == 2
-    assert s.gh.state_labels(PARENT) == ["harness:blocked"]
+    assert s.gh.state_labels(PARENT) == ["stage:blocked"]
 
 
 def test_B111_a_sub_issue_is_refused_without_a_model_call_or_any_issue(tmp_path):
@@ -630,7 +641,7 @@ def test_B111_a_sub_issue_is_refused_without_a_model_call_or_any_issue(tmp_path)
     assert s.runner.requests == []
     assert s.gh.calls_named("create_issue") == []
     assert created_numbers(s.gh, before) == []
-    assert s.gh.state_labels(PARENT) == ["harness:queued"]
+    assert s.gh.state_labels(PARENT) == ["stage:queued"]
     assert s.gh.sent == []
 
 
@@ -646,7 +657,7 @@ def test_B111_depth_is_one_end_to_end(tmp_path):
         decompose(s.ctx, child)
     assert len(s.gh.repos[SELF_REPO]) == count_before
     assert len(s.runner.requests) == runs_before
-    assert s.gh.state_labels(child) == ["harness:queued"]
+    assert s.gh.state_labels(child) == ["stage:queued"]
 
 
 def test_B111_a_failed_model_call_files_nothing(tmp_path):

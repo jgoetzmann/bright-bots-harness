@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -18,7 +18,7 @@ from harness.governor import Governor
 from harness.ledger import Ledger
 from harness.runner import Runner, get_runner
 from harness.store import Store, open_store
-from harness.trust import load_trust
+from harness.trust import Trust, load_trust, parse_trust
 
 __all__ = ["Context", "build_context", "repo_root", "ledger_path_for"]
 
@@ -50,7 +50,8 @@ class Context:
     run_id: str
     ledger: Ledger | None = None
     ledger_path: Path | None = None
-    trusted: frozenset[str] = frozenset()
+    #: B269: the trust file with its levels. Still behaves as the set of handles it was.
+    trusted: Trust = field(default_factory=Trust)
 
     @property
     def run_dir(self) -> Path:
@@ -111,8 +112,15 @@ def build_context(
 
     ledger_path = ledger_path_for(config)
     the_ledger: Ledger = ledger if ledger is not None else ledger_module.load(ledger_path)
-    the_trusted: frozenset[str] = (
-        frozenset(handle.lower() for handle in trusted)
+    # B269/D60: the levels have to survive. An explicit `trusted` that is already a Trust is
+    # kept whole; a bare iterable of handles becomes level-1 entries, which is the least the
+    # file could have meant.
+    the_trusted: Trust = (
+        (
+            trusted
+            if isinstance(trusted, Trust)
+            else parse_trust(chr(10).join(str(h) for h in trusted))
+        )
         if trusted is not None
         else load_trust(config.trust_file)
     )

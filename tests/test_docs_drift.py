@@ -25,8 +25,20 @@ NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
     "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
     "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-    "nineteen": 19, "twenty": 20,
+    "nineteen": 19, "twenty": 20, "thirty": 30,
 }
+
+
+def _spelled(word: str) -> int | None:
+    """A number word, including a hyphenated compound like ``twenty-three`` (Delivery 4)."""
+    parts = word.split("-")
+    if len(parts) == 1:
+        return NUMBER_WORDS.get(parts[0])
+    if len(parts) == 2:
+        tens, units = NUMBER_WORDS.get(parts[0]), NUMBER_WORDS.get(parts[1])
+        if tens is not None and units is not None and tens % 10 == 0 and 1 <= units <= 9:
+            return tens + units
+    return None
 
 
 def _read(relative: str) -> str:
@@ -76,9 +88,10 @@ def test_a_spelled_config_key_count_matches_len_config_json_keys(doc):
     expected = len(CONFIG_JSON_KEYS)
     for match in re.finditer(r"CONFIG_JSON_KEYS", text):
         window = text[max(0, match.start() - 200):match.end() + 200].lower()
-        for word in re.findall(r"[a-z]+", window):
-            value = NUMBER_WORDS.get(word)
-            if value is not None and 10 <= value <= 20:
+        # Compounds first, so `twenty-three` is not read as `twenty` and then `three`.
+        for word in re.findall(r"[a-z]+(?:-[a-z]+)?", window):
+            value = _spelled(word)
+            if value is not None and 10 <= value <= 40:
                 assert value == expected, (
                     f"{doc} says {word!r} near CONFIG_JSON_KEYS; len(CONFIG_JSON_KEYS) is "
                     f"{expected}"

@@ -558,6 +558,13 @@ D2_ENV: dict[str, str] = {
     "RUN_WINDOW_END": "",
     "MODEL": "opus",
     "EFFORT": "xhigh",
+    "INBOX_ISSUE": "0",
+    "AUDIT_CAP_USD": "20.00",
+    "SUGGEST_MAX_PER_RUN": "5",
+    "COMMENT_UPSTREAM": "true",
+    "ASK_CAP_USD": "0.50",
+    "ASK_MAX_PER_DAY": "20",
+    "SUGGEST_MIN_HEADROOM_PCT": "50",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -971,6 +978,14 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "OVERRUN_PCT": 5,
     "RUN_WINDOW_START": "wed 09:30",
     "RUN_WINDOW_END": "thu 21:45",
+    # Delivery 4 (DELIVERY-4-HANDOFF section 7).
+    "INBOX_ISSUE": 7,
+    "AUDIT_CAP_USD": 12.5,
+    "SUGGEST_MAX_PER_RUN": 3,
+    "COMMENT_UPSTREAM": False,
+    "ASK_CAP_USD": 0.25,
+    "ASK_MAX_PER_DAY": 9,
+    "SUGGEST_MIN_HEADROOM_PCT": 40,
 }
 
 
@@ -1334,9 +1349,12 @@ def test_d3_the_new_fields_are_appended_last_in_the_frozen_order(tmp_path, write
 
     names = [f.name for f in dataclasses.fields(config)]
 
-    # B225 appends model and effort after the D3 block, exactly as D3 appended after D2.
-    assert tuple(names[-7:-2]) == D3_NEW_FIELDS_IN_ORDER
-    assert tuple(names[-2:]) == ("model", "effort")
+    # Each delivery appends its own block: B225 added model and effort after the D3 five, and
+    # Delivery 4 added seven more after those. What D3 pins is that its five come together and
+    # in order, after github_token_shape_ok.
+    start = names.index(D3_NEW_FIELDS_IN_ORDER[0])
+    assert tuple(names[start : start + 5]) == D3_NEW_FIELDS_IN_ORDER
+    assert tuple(names[start + 5 : start + 7]) == ("model", "effort")
     assert names.index("weekly_usage_stop_pct") > names.index("github_token_shape_ok")
 
 
@@ -1798,3 +1816,46 @@ def test_b225_both_keys_are_in_the_example_file():
 
     assert re.search(r"^MODEL=\S+", text, re.MULTILINE)
     assert re.search(r"^EFFORT=(low|medium|high|xhigh|max)\s*$", text, re.MULTILINE)
+
+
+# --------------------------------------------------------------------------------------
+# B279 - I-18: the harness never works on its own repository (D61)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["UPSTREAM_REPO", "REPO"])
+def test_b279_pointing_the_harness_at_itself_is_refused(tmp_path, write_d3_env, key):
+    """B279/I-18: a system that can rewrite the rules it is governed by has no rules. A change
+    to gh.py or prompts/implement.md could propose its way out of the kill switch, the
+    credential door and the pin, and the reviewer's only defence would be noticing."""
+    path = write_d3_env(tmp_path / ".env", SELF_REPO="me/harness", **{key: "me/harness"})
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "I-18" in message
+
+
+def test_b279_a_different_product_repository_is_fine(tmp_path, write_d3_env):
+    """B279: the check is equality with SELF_REPO, not a ban on configuring a product repo."""
+    path = write_d3_env(
+        tmp_path / ".env",
+        SELF_REPO="me/harness",
+        REPO="them/product",
+        UPSTREAM_REPO="them/product",
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.self_repo == "me/harness"
+    assert config.upstream_repo == "them/product"
+
+
+def test_b279_the_comparison_ignores_case(tmp_path, write_d3_env):
+    """B279: GitHub repository names are case-insensitive; the refusal must be too."""
+    path = write_d3_env(tmp_path / ".env", SELF_REPO="Me/Harness", UPSTREAM_REPO="me/harness")
+
+    with pytest.raises(ConfigError):
+        load_config(env_path=path, environ={})

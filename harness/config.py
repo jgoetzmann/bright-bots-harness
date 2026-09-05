@@ -92,6 +92,14 @@ FIELD_KEYS: tuple[str, ...] = (
     "RUN_WINDOW_END",
     "MODEL",
     "EFFORT",
+    # Delivery 4 (DELIVERY-4-HANDOFF section 7): asking for work, and bounding what answers.
+    "INBOX_ISSUE",
+    "AUDIT_CAP_USD",
+    "SUGGEST_MAX_PER_RUN",
+    "COMMENT_UPSTREAM",
+    "ASK_CAP_USD",
+    "ASK_MAX_PER_DAY",
+    "SUGGEST_MIN_HEADROOM_PCT",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
@@ -117,6 +125,13 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
+    "INBOX_ISSUE",
+    "AUDIT_CAP_USD",
+    "SUGGEST_MAX_PER_RUN",
+    "COMMENT_UPSTREAM",
+    "ASK_CAP_USD",
+    "ASK_MAX_PER_DAY",
+    "SUGGEST_MIN_HEADROOM_PCT",
 )
 
 #: Where the override file lives, relative to the directory holding `.env`.
@@ -211,6 +226,14 @@ class Config:
     #: change what a work package or a diff is worth.
     model: str
     effort: Literal["low", "medium", "high", "xhigh", "max"]
+    #: Delivery 4. The inbox issue in SELF_REPO; 0 disables it.
+    inbox_issue: int
+    audit_cap_usd: float
+    suggest_max_per_run: int
+    comment_upstream: bool
+    ask_cap_usd: float
+    ask_max_per_day: int
+    suggest_min_headroom_pct: float
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -577,6 +600,51 @@ def load_config(
         if not fork_repo:
             raise ConfigError("PERMISSION_TIER=2 requires a non-empty FORK_REPO (owner/name)")
 
+    # Delivery 4 (DELIVERY-4-HANDOFF section 7).
+    inbox_issue = _require_int(values, "INBOX_ISSUE")
+    if inbox_issue < 0:
+        raise ConfigError(f"INBOX_ISSUE must be 0 or an issue number; got {inbox_issue}")
+
+    audit_cap_usd = _require_float(values, "AUDIT_CAP_USD")
+    if audit_cap_usd <= 0:
+        raise ConfigError(f"AUDIT_CAP_USD must be greater than 0; got {audit_cap_usd}")
+
+    suggest_max_per_run = _require_int(values, "SUGGEST_MAX_PER_RUN")
+    if suggest_max_per_run < 0:
+        raise ConfigError(
+            f"SUGGEST_MAX_PER_RUN must be 0 or more; got {suggest_max_per_run}"
+        )
+
+    comment_upstream = _require_bool(values, "COMMENT_UPSTREAM")
+
+    ask_cap_usd = _require_float(values, "ASK_CAP_USD")
+    if ask_cap_usd <= 0:
+        raise ConfigError(f"ASK_CAP_USD must be greater than 0; got {ask_cap_usd}")
+
+    ask_max_per_day = _require_int(values, "ASK_MAX_PER_DAY")
+    if ask_max_per_day < 0:
+        raise ConfigError(f"ASK_MAX_PER_DAY must be 0 or more; got {ask_max_per_day}")
+
+    suggest_min_headroom_pct = _require_float(values, "SUGGEST_MIN_HEADROOM_PCT")
+    if not 0 <= suggest_min_headroom_pct <= 100:
+        raise ConfigError(
+            "SUGGEST_MIN_HEADROOM_PCT must be in [0, 100]; got "
+            f"{suggest_min_headroom_pct}"
+        )
+
+    # I-18 (D61): the harness never works on its own repository. A system that can rewrite the
+    # rules it is governed by has no rules -- a change to gh.py or prompts/implement.md could
+    # propose its way out of the kill switch, the credential door and the pin, and the
+    # reviewer's only defence would be noticing. Refused here, before anything is built, so
+    # every later check is a second line rather than the only one.
+    if self_repo:
+        for key, value in (("UPSTREAM_REPO", upstream_repo), ("REPO", repo)):
+            if value and value.strip().lower() == self_repo.strip().lower():
+                raise ConfigError(
+                    f"{key} must not be SELF_REPO ({self_repo}): the harness does not work on "
+                    "its own repository (I-18). Changes to the harness are made by a person."
+                )
+
     config = Config(
         backend="cli" if backend == "cli" else "fake",
         repo=repo,
@@ -618,6 +686,13 @@ def load_config(
         run_window_end=run_window_end,
         model=model,
         effort=effort,
+        inbox_issue=inbox_issue,
+        audit_cap_usd=audit_cap_usd,
+        suggest_max_per_run=suggest_max_per_run,
+        comment_upstream=comment_upstream,
+        ask_cap_usd=ask_cap_usd,
+        ask_max_per_day=ask_max_per_day,
+        suggest_min_headroom_pct=suggest_min_headroom_pct,
     )
     _LAST_CONFIG = config
     return config

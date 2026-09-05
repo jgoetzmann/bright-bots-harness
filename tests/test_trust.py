@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from harness import trust
 from harness.trust import AUTHOR_ASSOCIATIONS, is_authorised, load_trust
 
 SHIPPED_TRUST_FILE = (
@@ -154,10 +155,14 @@ def test_B131_load_trust_ignores_the_nathan_handle_placeholder(tmp_path):
 
 
 def test_B131_load_trust_missing_file_is_empty_and_denies(tmp_path):
-    """B131: a missing trust file yields an empty frozenset — nobody is trusted, nothing raises."""
+    """B131: a missing trust file trusts nobody and raises nothing.
+
+    B269 changed the return type from a frozenset to a Trust carrying levels. What B131
+    pins is unchanged, and is what is asserted here."""
     trusted = load_trust(tmp_path / "does-not-exist" / "trust.txt")
     assert trusted == frozenset()
-    assert isinstance(trusted, frozenset)
+    assert not trusted
+    assert trusted.level_of("jgoetzmann") == 0
     assert is_authorised("jgoetzmann", "OWNER", trusted) is False
 
 
@@ -182,10 +187,15 @@ def test_B131_load_trust_strips_surrounding_whitespace(tmp_path):
     assert is_authorised("jgoetzmann", "OWNER", trusted) is True
 
 
-def test_B131_load_trust_returns_a_frozenset(tmp_path):
-    """B131: the trusted set is immutable — a frozenset, never a list or a mutable set."""
-    trusted = load_trust(trust_file(tmp_path, "jgoetzmann\n"))
-    assert isinstance(trusted, frozenset)
+def test_B131_load_trust_returns_something_immutable(tmp_path):
+    """B131: the trusted set is immutable - never a list or a mutable set. B269 made it
+    a frozen Trust rather than a frozenset; immutability is what mattered."""
+    import dataclasses
+
+    trusted = load_trust(trust_file(tmp_path, "jgoetzmann" + chr(10)))
+    assert "jgoetzmann" in trusted
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        trusted.levels = {}
     with pytest.raises(AttributeError):
         trusted.add("mallory")  # type: ignore[attr-defined]
 
@@ -223,3 +233,91 @@ def test_B131_the_shipped_trust_file_parses_to_real_handles_with_no_placeholder_
         assert handle, "the empty string is not a handle"
         assert handle == handle.strip().lower(), f"not a normalised handle: {handle!r}"
         assert all(c.isalnum() or c == "-" for c in handle), f"not a GitHub handle: {handle!r}"
+
+
+# --------------------------------------------------------------------------------------
+# B269 / B271 / B273 - access levels (D60)
+# --------------------------------------------------------------------------------------
+
+
+def test_b269_a_level_is_read_from_the_line(tmp_path):
+    """B269: `<level> <handle>`; the file says how much, not merely who."""
+    trusted = load_trust(trust_file(tmp_path, "3 jgoetzmann\n2 BrightBoost-Tech\n"))
+
+    assert trusted.level_of("jgoetzmann") == 3
+    assert trusted.level_of("brightboost-tech") == 2
+    assert trusted.implicit == ()
+
+
+def test_b269_a_bare_handle_is_the_least_level_and_is_named(tmp_path):
+    """B269: least privilege on ambiguity, loudly. A typo must never silently grant power, and
+    must never silently take it away without saying so either."""
+    trusted = load_trust(trust_file(tmp_path, "someone\n3 jgoetzmann\n"))
+
+    assert trusted.level_of("someone") == trust.DEFAULT_LEVEL == 1
+    assert trusted.implicit == ("someone",), "doctor has to be able to name it"
+
+
+def test_b269_a_level_outside_the_range_is_not_a_level(tmp_path):
+    """B269: guessing which end of the range the operator meant is worse than the default."""
+    trusted = load_trust(trust_file(tmp_path, "9 someone\n0 nobody\n"))
+
+    assert trusted.level_of("9") == 0, "the level must not be read as a handle"
+    assert trusted.level_of("someone") == 0, "a two-token line with a bad level is not a grant"
+
+
+def test_b269_a_handle_listed_twice_keeps_the_higher_level(tmp_path):
+    trusted = load_trust(trust_file(tmp_path, "1 jgoetzmann\n3 jgoetzmann\n"))
+
+    assert trusted.level_of("jgoetzmann") == 3
+
+
+def test_b273_a_handle_absent_from_the_file_is_level_zero(tmp_path):
+    trusted = load_trust(trust_file(tmp_path, "3 jgoetzmann\n"))
+
+    assert trusted.level_of("stranger") == 0
+    assert "stranger" not in trusted
+
+
+@pytest.mark.parametrize("association", ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", ""])
+def test_b271_the_association_half_is_unchanged_by_levels(tmp_path, association):
+    """B271: level 3 in the file with a non-member association is still refused. Neither half
+    of the gate suffices alone, and adding levels did not make the file sufficient."""
+    trusted = load_trust(trust_file(tmp_path, "3 jgoetzmann\n"))
+
+    assert is_authorised("jgoetzmann", association, trusted, min_level=1) is False
+
+
+def test_b270_a_level_below_the_requirement_is_refused(tmp_path):
+    """B270: the level has to reach what the verb asks for."""
+    trusted = load_trust(trust_file(tmp_path, "2 nathan\n"))
+
+    assert is_authorised("nathan", "MEMBER", trusted, min_level=2) is True
+    assert is_authorised("nathan", "MEMBER", trusted, min_level=3) is False
+
+
+def test_b269_a_plain_set_of_handles_grants_only_the_least(tmp_path):
+    """B269: a caller that has not been taught about levels cannot accidentally grant more."""
+    assert is_authorised("x", "OWNER", {"x"}, min_level=1) is True
+    assert is_authorised("x", "OWNER", {"x"}, min_level=2) is False
+
+
+def test_b269_the_shipped_trust_file_names_its_levels():
+    """B269: the file this repository ships must not rely on the default."""
+    from pathlib import Path
+
+    trusted = load_trust(Path(__file__).resolve().parent.parent / ".harness" / "trust.txt")
+
+    assert trusted.implicit == (), f"level-less handles in the shipped file: {trusted.implicit}"
+    assert trusted.level_of("jgoetzmann") == 3
+
+
+def test_b269_a_malformed_level_line_is_refused_and_recorded(tmp_path):
+    """B269: `9 someone` grants nothing. Neither clamping to a level nor reading `9` as a
+    handle is an improvement on saying the line was refused."""
+    trusted = load_trust(trust_file(tmp_path, "9 someone\n0 nobody\n3 jgoetzmann\n"))
+
+    assert trusted.level_of("someone") == 0
+    assert trusted.level_of("9") == 0
+    assert trusted.malformed == ("9 someone", "0 nobody")
+    assert trusted.level_of("jgoetzmann") == 3, "one bad line does not poison the file"

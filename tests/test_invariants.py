@@ -1564,13 +1564,14 @@ def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
 def test_d2_trust_file_lists_the_operator_and_codeowners_protects_the_governance_paths():
     """Handoff §5.5 (D2-R4.8): .harness/trust.txt names jgoetzmann; CODEOWNERS assigns
     /.harness/, /prompts/, /.github/, /harness/gates.py, /harness/redact.py and /proposals/."""
-    trust = (REPO_ROOT / ".harness" / "trust.txt").read_text(encoding="utf-8")
-    handles = [
-        ln.strip().lower()
-        for ln in trust.splitlines()
-        if ln.strip() and not ln.strip().startswith("#")
-    ]
-    assert "jgoetzmann" in handles
+    # B269: the file carries `<level> <handle>` now, so it is read with the parser rather than
+    # split by hand. What D2-R4.8 pins is that the operator is in it; D60 adds that the
+    # operator is level 3, which is the level that may end work.
+    from harness import trust as trust_mod
+
+    trusted = trust_mod.load_trust(REPO_ROOT / ".harness" / "trust.txt")
+    assert "jgoetzmann" in trusted
+    assert trusted.level_of("jgoetzmann") == trust_mod.MAX_LEVEL
 
     codeowners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     for pattern in (

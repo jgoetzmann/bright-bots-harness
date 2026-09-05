@@ -1,5 +1,18 @@
-# .harness/trust.txt — GitHub handles whose keyword commands are honoured.
-# One handle per line. '#' starts a comment. Case-insensitive.
+# .harness/trust.txt — who may command the harness, and how much (B269/D60).
+#
+# Format: `<level> <handle>`, one per line. '#' starts a comment. Case-insensitive.
+# A handle with no level is read as level 1 and `harness doctor` names it — least privilege
+# on ambiguity, loudly, because a typo here must never silently grant power.
+#
+#   3  operator    everything, including `reject`, the one verb that ends a work item
+#   2  maintainer  create and steer: work, queue, audit, promote, go, revise, fix, rebase,
+#                  split, stop
+#   1  asker       `ask` only; changes no state
+#   0  everyone else — the absence of a line. The comment is read, denied, and ignored.
+#
+# The level is only half the gate: GitHub must also report the commenter as OWNER, MEMBER or
+# COLLABORATOR on the repository the comment is on (B131). Neither half suffices alone.
+#
 # Changing this file requires a reviewed PR (see .github/CODEOWNERS).
-jgoetzmann
-BrightBoost-Tech
+3 jgoetzmann
+2 BrightBoost-Tech

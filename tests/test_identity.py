@@ -67,6 +67,13 @@ ENV = {
     "RUN_WINDOW_END": "",
     "MODEL": "opus",
     "EFFORT": "xhigh",
+    "INBOX_ISSUE": "0",
+    "AUDIT_CAP_USD": "20.00",
+    "SUGGEST_MAX_PER_RUN": "5",
+    "COMMENT_UPSTREAM": "true",
+    "ASK_CAP_USD": "0.50",
+    "ASK_MAX_PER_DAY": "20",
+    "SUGGEST_MIN_HEADROOM_PCT": "50",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }

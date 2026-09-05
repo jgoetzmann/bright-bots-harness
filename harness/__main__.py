@@ -41,6 +41,7 @@ from harness.redact import allowed_roots, guarded_write, set_write_roots
 from harness.stages import STAGES
 from harness.stages import deliver as deliver_stage
 from harness.store import LABELS, STATES
+from harness import trust as trust_mod
 from harness.trust import load_trust
 
 LOG = logging.getLogger("harness")
@@ -91,6 +92,14 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     # or effort quietly changed produces different work for the same money.
     ("MODEL", "model"),
     ("EFFORT", "effort"),
+    # Delivery 4: what may ask for work, and what bounds the answers.
+    ("INBOX_ISSUE", "inbox_issue"),
+    ("AUDIT_CAP_USD", "audit_cap_usd"),
+    ("SUGGEST_MAX_PER_RUN", "suggest_max_per_run"),
+    ("COMMENT_UPSTREAM", "comment_upstream"),
+    ("ASK_CAP_USD", "ask_cap_usd"),
+    ("ASK_MAX_PER_DAY", "ask_max_per_day"),
+    ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
 )
 
 # B147: an item left in a running state longer than this with no live run is reset.
@@ -697,7 +706,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         shown = "MISSING" if value is None else (value if value != "" else "(empty)")
         lines.append(f"    {key:<22} {shown}")
     lines.append(f"  .harness/PIN: {pin_state}")
+    by_level = ", ".join(
+        f"{trust_mod.LEVEL_NAMES.get(lvl, lvl)} {sorted(h for h, l in trusted.levels.items() if l == lvl)}"
+        for lvl in sorted({l for l in trusted.levels.values()}, reverse=True)
+    )
     lines.append(f"  trust file: {len(trusted)} handle(s) ({trust_path})")
+    if by_level:
+        lines.append(f"    {by_level}")
+    for bad in getattr(trusted, "malformed", ()):
+        # B269: a line that looks like a level and is not one grants nothing, and says so.
+        problems.append(f"trust file line is not a level and was refused: {bad!r}")
+    if getattr(trusted, "implicit", ()):  # B269: a level-less handle is level 1, never silently
+        named = ", ".join(f"@{h}" for h in trusted.implicit)
+        lines.append(
+            f"    no level given for {named}; read as level {trust_mod.DEFAULT_LEVEL} "
+            f"({trust_mod.LEVEL_NAMES[trust_mod.DEFAULT_LEVEL]})"
+        )
     if problems:
         lines.append("degraded:")
         lines.extend(f"  - {p}" for p in problems)

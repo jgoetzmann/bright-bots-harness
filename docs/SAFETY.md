@@ -146,7 +146,7 @@ on the same disk.
 enters the program, so there is exactly one place to audit. Delivery 2 adds a second
 configuration source, `.harness/config.json`, and it is read by the same function
 (`load_config`) and accepts exactly the closed list of named keys in
-`config.CONFIG_JSON_KEYS` — sixteen of them since Delivery 3 added the five
+`config.CONFIG_JSON_KEYS` — twenty-three of them since Delivery 4 added seven to the five
 usage-governance knobs (D31/D32); any other key is a startup error.
 
 **Verify:** `grep -rn "os.environ" harness/` names only `harness/config.py`.

@@ -166,6 +166,8 @@ def _assigned(ctx: Context) -> list[int]:
             title=title,
             tier_required=0,
             upstream_body=str(issue.get("body") or ""),
+            # B264/D56: assignment is its own way in, and the priority queue reads it.
+            via="assigned",
         )
         ctx.store.append_event(item_id, "info", f"queued {ref}: assigned to @{account}")
         created.append(item_id)
@@ -550,7 +552,9 @@ def request(
     pointer = _resolve_pointer(ctx, body)
     if pointer is not None:
         ids = _directed(ctx, str(pointer), via=via)
-        return ids[0], f"work item #{ids[0]} tracks issue:{pointer}"
+        upstream = str(getattr(ctx.config, "upstream_repo", "") or "")
+        tracked = f"[{links.issue_ref(upstream, pointer)}]({links.issue_url(upstream, pointer)})"
+        return ids[0], f"{_item_link(ctx, ids[0])} now tracks {tracked}."
 
     title = body.splitlines()[0].strip()
     if len(title) > TITLE_LIMIT:
@@ -560,7 +564,7 @@ def request(
     ref = f"request:{_request_slug(ctx, actor, body)}"
     existing = ctx.store.find_by_ref(ref)
     if existing is not None:
-        return int(existing.id), f"work item #{existing.id} already covers that request"
+        return int(existing.id), f"{_item_link(ctx, int(existing.id))} already covers that."
 
     item_id = ctx.store.create_work_item(
         kind="issue",
@@ -573,12 +577,23 @@ def request(
         via=via,
     )
     who = f" at the request of @{actor}" if actor else ""
+    where = _item_link(ctx, item_id)
     ctx.store.append_event(item_id, "info", f"requested{who}: {title}")
     ctx.record_decision(
         f"request created work item {item_id} ({title}) from free text{who}; no model call "
         f"was made, because what to work on was stated rather than inferred"
     )
-    return item_id, f"work item #{item_id} created"
+    # B236: a link, not a number. The reply is read in a thread on the web, where "#12" is
+    # ambiguous between two repositories and a link is not.
+    return item_id, f"{where} is open and queued."
+
+
+def _item_link(ctx: Context, item_id: int) -> str:
+    """A work item as a link a person can follow from wherever they are reading."""
+    self_repo = str(getattr(ctx.config, "self_repo", "") or "")
+    if not self_repo:
+        return f"work item #{item_id}"
+    return f"[work item #{item_id}]({links.issue_url(self_repo, item_id)})"
 
 
 def _resolve_pointer(ctx: Context, body: str) -> int | None:

@@ -70,7 +70,10 @@ def test_B238_a_link_resolves_to_the_directed_route(tmp_path):
     )
 
     assert rig.store.get_work_item(item_id).external_ref == "issue:633"
-    assert "issue:633" in message
+    # B236: a link, not a number. The reply is read in a thread on the web, where "#633" is
+    # ambiguous between two repositories and a link is not.
+    assert "brightboost/issues/633" in message
+    assert f"issues/{item_id})" in message
 
 
 def test_B238_a_link_does_not_duplicate_an_existing_item(tmp_path):
@@ -736,3 +739,42 @@ def test_the_signature_never_puts_a_command_at_the_start_of_a_line(tmp_path):
 
     assert "/harness" in text
     assert parse(text) is None
+
+
+def test_a_sub_issue_inherits_how_its_parent_arrived(tmp_path):
+    """B264/D63: without this, splitting one suggestion nobody asked for produces eight
+    `via:requested` items that jump the priority queue — the whole gate defeated by a verb
+    that is meant to be a bookkeeping convenience."""
+    import json
+
+    from harness.stages.decompose import decompose
+
+    rig = request_rig(tmp_path)
+    fixtures = rig.config.runs_dir.parent / "runner-fixtures"
+    (fixtures / "decompose.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "text": "1. First slice — do the first part.\n2. Second slice — then this.\n",
+                "turns": 2,
+                "cost_usd": 0.01,
+                "allowance_pct": 1.0,
+                "duration_ms": 10,
+                "session_id": "s",
+                "exit_code": 0,
+                "transcript": [],
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    parent = rig.store.create_work_item(
+        kind="issue", external_ref="issue:700", title="a big suggestion", via="suggested"
+    )
+
+    children = list(decompose(rig.ctx, parent))
+
+    assert children
+    for child in children:
+        assert priority.via_of(rig.store.get_work_item(child)) == "suggested"

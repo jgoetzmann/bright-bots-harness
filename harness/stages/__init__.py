@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from harness import errors
+from harness import errors, priority
 from harness.clock import iso
 from harness.context import Context
-from harness.errors import HarnessError
+from harness.errors import BudgetExhausted, HarnessError
 from harness.halt import check_halt
 from harness.runner import RunRequest, RunResult
 from harness.runner import base as runner_base
@@ -204,8 +204,23 @@ def run_model(
     add_dirs: tuple[Path, ...] = (),
     entry_state: str | None = None,
 ) -> RunResult:
-    """One model call with its bookkeeping, including the rate-limit outcome (B120)."""
+    """One model call with its bookkeeping, including the rate-limit outcome (B120).
+
+    B288: every model call the harness makes passes through here, so this is where admission
+    lives. Priority first, then the governor -- and in that order because the two answer
+    different questions. Priority says whether this *class* of call should be happening at all
+    right now; the governor says whether there is allowance for it. Priority never overrules
+    the governor (B291): a class-0 `ask` past a usage stop still does not run.
+    """
     check_halt(ctx.config.halt_file)
+    refused = priority.admit(
+        _class_of_call(ctx, stage, item_id),
+        store=ctx.store,
+        ledger=ctx.ledger,
+        config=ctx.config,
+    )
+    if refused is not None:
+        raise BudgetExhausted(refused)
     auth = ctx.governor.authorize(item_id or 0, stage)
     ctx.run_dir.mkdir(parents=True, exist_ok=True)
     run_id = None
@@ -263,6 +278,19 @@ def run_model(
     return result
 
 
+def _class_of_call(ctx: Context, stage: str, item_id: int | None) -> str:
+    """Which of the five queues this call belongs to (D63)."""
+    via = ""
+    if item_id:
+        try:
+            item = ctx.store.get_work_item(int(item_id))
+        except Exception:  # pragma: no cover - a store that cannot answer is not the class
+            item = None
+        ref = str(getattr(item, "external_ref", "") or "")
+        via = "suggested" if ref.startswith("suggest:") else "requested"
+    return priority.class_of(stage, via=via)
+
+
 def _rate_limited(
     ctx: Context, *, stage: str, item_id: int | None, reset_iso: str, entry_state: str | None
 ) -> None:
@@ -302,6 +330,8 @@ def _rate_limited(
 # back out of this partially-initialised package. Imported as modules, not functions, so that
 # ``harness.stages.implement`` stays the module whose injectables the tests monkeypatch.
 from harness.stages import (  # noqa: E402
+    ask as ask_stage,
+    audit as audit_stage,
     decompose,
     deliver,
     discover,
@@ -319,4 +349,10 @@ STAGES: dict[str, StageFn] = {
     "deliver": deliver.deliver,
     "revise": revise.revise,
     "decompose": decompose.decompose,
+    # Not stages a work item passes through: the routes by which one comes into being, and the
+    # two that create no work item at all (B247/B274).
+    "request": discover.request,
+    "ask": ask_stage.ask,
+    "audit": audit_stage.audit,
+    "promote": audit_stage.promote,
 }

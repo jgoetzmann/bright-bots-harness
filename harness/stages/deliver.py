@@ -416,6 +416,17 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     fork = str(ctx.config.fork_repo or "")
     fork_owner = fork.split("/")[0] if fork else ""
     self_repo = str(ctx.config.self_repo)
+    # B282/I-18: refused here, before the push and before the pull request. A delivery targets
+    # the product repository; a pull request that targeted the harness would be the harness
+    # proposing a change to itself with only a reviewer's attention between it and the rules it
+    # is governed by. `load_config` refuses this configuration outright -- this is the check for
+    # every other way `upstream` could have been set.
+    if self_repo and upstream.strip().lower() == self_repo.strip().lower():
+        raise HarnessError(
+            f"refusing to deliver into {upstream}: it is the harness's own repository, and the "
+            "harness does not work on itself (I-18). Changes to the harness are made by a "
+            "person."
+        )
     reviewers = sorted(str(handle) for handle in ctx.trusted)
 
     # B226: same fallback as implement and the packager -- the PR body must not lose the work

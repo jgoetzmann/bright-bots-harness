@@ -298,6 +298,10 @@ class WorkItem:
     attempts: int
     created_at: str
     updated_at: str
+    #: B264/D56: how the item arrived, from its `via:` label. Not a column -- the label is the
+    #: record on the backend that has labels, and the sqlite backend has no outward surface for
+    #: one to have come from. `requested` is the honest default: a person caused it.
+    via: str = "requested"
 
     @property
     def issue_number(self) -> int | None:

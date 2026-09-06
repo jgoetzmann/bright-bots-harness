@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from harness.trust import MAX_LEVEL, Trust
+
 __all__ = [
     "REF_MARKER",
     "VERB_HELP",
@@ -38,6 +40,11 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("stop", "park this item now, leaving the branch and the evidence in place"),
     ("split", "break this item into sub-issues and queue them separately"),
     ("queue", "put this item back in the queue after it was parked or blocked"),
+    ("work <what, or a link>", "open a work item for this and put it in the queue"),
+    ("go", "green-light a suggestion the harness made, so it may be proposed"),
+    ("ask <question>", "answer a question about the code; changes nothing"),
+    ("audit <what to look for>", "read the product repository and open one issue of findings"),
+    ("promote <n>", "turn finding n of an audit into a work item of its own"),
 )
 
 #: Where a reader goes next. Relative to the harness repository's default branch.
@@ -150,10 +157,15 @@ def signature(
     if steerable:
         lines.append("**Steering it.** Put one of these on its own line in a comment here:")
         lines.append("")
-        lines.append("| command | what happens |")
-        lines.append("|---|---|")
+        lines.append("| command | what happens | who may |")
+        lines.append("|---|---|---|")
         for verb, meaning in VERB_HELP:
-            lines.append(f"| `/harness {verb}` | {meaning} |")
+            lines.append(f"| `/harness {verb}` | {meaning} | {_who(verb, trusted)} |")
+        lines.append("")
+        lines.append(
+            "Add `--force` to run now instead of waiting for the next window; only the "
+            "operator may. Nothing bypasses the kill switch, the usage stops or the two gates."
+        )
         lines.append("")
         where_trust = (
             f" ([`.harness/trust.txt`]({repo_url(self_repo)}/blob/main/.harness/trust.txt))"
@@ -183,6 +195,23 @@ def signature(
     if parts:
         lines.append("**Repositories.** " + " · ".join(parts))
     return "\n".join(lines)
+
+
+def _who(entry: str, trusted: Iterable[str] | None) -> str:
+    """The handles that may give this command, or the level it needs when none are known.
+
+    Naming people rather than a number is the point: a reader of a public issue can see at a
+    glance whether their own comment would be honoured, without first learning what a level is.
+    """
+    from harness.keywords import VERB_LEVEL  # imported here: `keywords` imports nothing of ours
+
+    needed = VERB_LEVEL.get(entry.split()[0], MAX_LEVEL)
+    if isinstance(trusted, Trust):
+        handles = trusted.at_least(needed)
+        if handles:
+            return " · ".join(f"@{h}" for h in handles)
+        return f"nobody listed at level {needed}"
+    return f"level {needed}+"
 
 
 def work_item_body(

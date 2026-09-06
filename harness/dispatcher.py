@@ -29,6 +29,12 @@ class Candidate:
     depends_on: tuple[int, ...] = ()
     stage: str = "implement"
     created_at: str = ""
+    #: B285/D62: the operator said start this now rather than on Monday. Exactly like the B209
+    #: carry, and for the same reason -- the window governs when the harness chooses work on
+    #: its own, not whether work may happen when a person has asked for it.
+    forced: bool = False
+    #: B287/D63: which of the five priority classes this belongs to.
+    cls: str = "directed"
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,14 @@ def _usage_suffix(ledger: Ledger) -> str:
     return f"; weekly {weekly * 100:.0f}%, session {session * 100:.0f}%"
 
 
+def rank(cls: str) -> int:
+    """The priority class's position, lowest first (D63). Imported lazily so `dispatcher` stays
+    the pure function it is: `priority` reads a store, this does not."""
+    from harness.priority import rank as _rank
+
+    return _rank(cls)
+
+
 def _window_reason(config: Config) -> str:
     """The exact B210 reason naming the configured window."""
     return f"outside run window ({config.run_window_start}-{config.run_window_end} UTC)"
@@ -137,11 +151,19 @@ def plan(
         max_slots = 1
 
     merged_ids = {int(number) for number in merged}
-    ordered = sorted(candidates, key=lambda c: (c.created_at, int(c.issue)))
+    # B289/B287: class first, then forced to the front of *its own class*, then oldest first.
+    # A forced proposal is still not more urgent than somebody's unanswered question, so
+    # `forced` breaks ties inside a class and never promotes across one.
+    ordered = sorted(
+        candidates,
+        key=lambda c: (rank(c.cls), 0 if c.forced else 1, c.created_at, int(c.issue)),
+    )
 
-    # B210: outside the window only the carry item may run; when nothing does, the plan says so.
+    # B210/B285: outside the window only the carry item and forced items may run. When nothing
+    # can, the plan says so.
     window_open = in_run_window(config, now)
-    if not window_open and not carry_ok:
+    forced_ids = {int(c.issue) for c in candidates if c.forced}
+    if not window_open and not carry_ok and not forced_ids:
         return Plan(start=(), reason=_window_reason(config), skipped={})
 
     start: list[int] = []
@@ -152,7 +174,7 @@ def plan(
         key = str(candidate.issue)
         if carry_ok and int(candidate.issue) == carry_id:
             continue
-        if not window_open:
+        if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
             continue
         unmet = [int(dep) for dep in candidate.depends_on if int(dep) not in merged_ids]

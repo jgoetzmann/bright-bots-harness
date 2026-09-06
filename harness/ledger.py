@@ -315,6 +315,30 @@ class Ledger:
         except (TypeError, ValueError):
             return None
 
+    # -- force (B283/D62) --------------------------------------------------------------------
+
+    def force(self, item_id: int) -> None:
+        """Mark an item window-exempt. Kept here, beside the carry, and not on the item itself.
+
+        `--force` is a scheduling exemption, not a property of the work: the same item forced on
+        Thursday and left alone on Friday is the same piece of work. B209's carry is the exact
+        precedent and lives in the same place, which also means neither store backend needs a
+        column for it.
+        """
+        forced = self.cursors.setdefault("forced", [])
+        if int(item_id) not in forced:
+            forced.append(int(item_id))
+
+    def forced(self) -> tuple[int, ...]:
+        rows = self.cursors.get("forced")
+        return tuple(int(n) for n in rows) if isinstance(rows, list) else ()
+
+    def unforce(self, item_id: int) -> None:
+        """Spend the exemption. It starts the item once; it does not make it permanent."""
+        rows = self.cursors.get("forced")
+        if isinstance(rows, list) and int(item_id) in rows:
+            rows.remove(int(item_id))
+
     # -- cursors ---------------------------------------------------------------------------
 
     def seen(self, comment_id: str) -> bool:
@@ -369,6 +393,20 @@ class Ledger:
                 str(k): int(v) for k, v in dict(self.cursors.get("keyword_denied", {})).items()
             },
         }
+        # D4 adds two, written only once they hold something -- a ledger that has never forced
+        # an item or answered a question stays byte-identical to the D3 file it was. They are
+        # rendered explicitly rather than by copying `self.cursors` wholesale, because this
+        # function is the schema: a key that is not named here does not survive a save, and
+        # finding that out from a lost cursor is expensive.
+        forced = self.forced()
+        if forced:
+            cursors["forced"] = [int(n) for n in forced]
+        asks = self.cursors.get("ask_calls")
+        if isinstance(asks, dict) and asks:
+            cursors["ask_calls"] = {
+                "date": str(asks.get("date", "")),
+                "count": int(asks.get("count", 0) or 0),
+            }
         history = [
             {
                 "ts": entry.get("ts", ""),

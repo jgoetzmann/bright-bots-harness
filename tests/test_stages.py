@@ -569,17 +569,19 @@ def test_B58_ignore_allowlist_admits_an_issue_without_the_allowlist_label(tmp_pa
 
 
 # --------------------------------------------------------------------------
-# B59 - audit mode
+# B59/B256 - audit mode
 # --------------------------------------------------------------------------
 
 
-def test_B59_audit_mode_raises_not_implemented_and_makes_no_model_call(tmp_path):
+def test_B256_audit_mode_without_a_lens_is_refused_before_any_model_call(tmp_path):
+    """B256 (superseding B59): the mode exists now, but "audit everything" does not. A lens is
+    what bounds the surface area, and the budget cannot bound it on its own."""
     rig = triage_rig(tmp_path, issues=(gh_issue(101),))
 
-    with pytest.raises(NotImplementedInDelivery1) as excinfo:
+    with pytest.raises(HarnessError) as excinfo:
         discover(rig.ctx, mode="audit", target=None, lens=None)
 
-    assert "not implemented in delivery 1" in str(excinfo.value)
+    assert "needs a lens" in str(excinfo.value)
     assert rig.runner.calls == 0
     assert rig.store.list_work_items() == []
 

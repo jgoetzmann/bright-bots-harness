@@ -388,6 +388,19 @@ class GitHubClient(GitHubReadOnly):
         )
         return data if isinstance(data, dict) else {}
 
+    def update_issue_body(self, repo: str, number: int, body: str) -> dict:
+        """Rewrite an issue's body in place (B252): ticking a finding off an audit."""
+        self._require_write("update_issue_body")
+        n = int(number)
+        payload = redact.redact_json({"body": str(body)})
+        data = self._write(
+            "PATCH",
+            f"/repos/{repo}/issues/{n}",
+            payload,
+            {"number": n, "body": payload["body"]},
+        )
+        return data if isinstance(data, dict) else {}
+
     def set_labels(self, repo: str, number: int, labels: Sequence[str]) -> list[dict]:
         self._require_write("set_labels")
         n = int(number)

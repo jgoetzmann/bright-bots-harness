@@ -15,7 +15,7 @@ import time
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from harness import __version__, keywords, verify_pin
+from harness import __version__, keywords, links, verify_pin
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
@@ -35,6 +35,7 @@ from harness.errors import (
 )
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
+from harness import priority
 from harness.packager import archive as archive_package
 from harness.packager import build as build_package
 from harness.redact import allowed_roots, guarded_write, set_write_roots
@@ -1167,12 +1168,15 @@ def _depends_on(config, item) -> tuple[int, ...]:
 
 def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
     items = ctx.store.list_work_items(state="approved")
+    forced = set(ctx.ledger.forced())
     candidates = [
         Candidate(
             issue=int(item.id),
             depends_on=_depends_on(config, item),
             stage="implement",
             created_at=str(getattr(item, "created_at", "") or ""),
+            forced=int(item.id) in forced,
+            cls=priority.class_of("", via=priority.via_of(item)),
         )
         for item in items
     ]
@@ -1190,7 +1194,29 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
-    print(_build_plan(ctx, config, args).to_json())
+    plan = _build_plan(ctx, config, args)
+    # B292: the plan says what starts; the queue says what is waiting behind it and why. The two
+    # questions an operator actually asks -- "why has my question not been answered" and "why is
+    # it proposing things nobody asked for" -- are answered by the second, not the first.
+    #
+    # Added *inside* the plan document, not printed after it: stdout here is parsed by
+    # `dispatch.yml`, and a second document appended to the first is not JSON any more.
+    payload = json.loads(plan.to_json())
+    payload["queue"] = [
+        {
+            "class": row.cls,
+            "rank": priority.rank(row.cls),
+            "item": row.item_id,
+            "label": row.label,
+            "state": row.note,
+            "forced": row.forced,
+        }
+        for row in priority.queue(store=ctx.store, ledger=ctx.ledger)
+    ]
+    payload["suggested"] = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=config
+    )
+    print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 
 
@@ -1271,7 +1297,19 @@ def cmd_decompose(args: argparse.Namespace) -> int:
 
 
 def _item_for_command(ctx, config, cmd) -> int | None:
-    """Map a keyword command's thread (issue, proposal PR, delivery PR) to a work item id."""
+    """Map a keyword command's thread to a work item id.
+
+    B243: a `product_issue` resolves through the store, never through the number. The harness
+    repository and the product repository number independently, so harness work item 4 and
+    product issue 4 are different things that happen to share a digit.
+    """
+    if cmd.surface == "inbox":
+        # B241: the inbox is a conversation. It is never a work item, so no verb that steers one
+        # can ever be pointed at it by accident.
+        return None
+    if cmd.surface == "product_issue":
+        item = ctx.store.find_by_ref(f"issue:{int(cmd.number)}")
+        return int(item.id) if item is not None else None
     if cmd.surface == "issue":
         return int(cmd.number)
     repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
@@ -1289,28 +1327,131 @@ def _item_for_command(ctx, config, cmd) -> int | None:
     return None
 
 
+#: How the item arrived, for the `via:` label (B264). The surface is the honest answer: a
+#: comment on the product issue is someone pointing at that issue; the inbox is a request.
+_VIA_BY_SURFACE = {"product_issue": "assigned", "inbox": "requested"}
+
+
+def _via_for(cmd) -> str:
+    return _VIA_BY_SURFACE.get(cmd.surface, "requested")
+
+
+def _forced(ctx, cmd, item_id: int | None) -> str:
+    """Record `--force` on the item and say so in the reply (B283/D62).
+
+    Said out loud on purpose: a flag named `force` invites the assumption that it lifts more
+    than it does, so the reply names the one thing it lifts and the things it does not.
+    """
+    if not getattr(cmd, "force", False) or item_id is None:
+        return ""
+    ctx.ledger.force(int(item_id))
+    ctx.store.append_event(
+        int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"
+    )
+    return (
+        f" — forced by @{cmd.actor}, so it starts on the next sweep rather than waiting for "
+        "the run window. The kill switch, both usage stops, every cap and both human gates "
+        "are unchanged."
+    )
+
+
+def _reply(ctx, config, cmd, message: str) -> None:
+    """Answer in the thread the command came from (B236/B263).
+
+    Without this the harness is a program you talk to and that never talks back: the operator
+    comments, something happens or does not, and the only way to find out which is to go
+    looking. `COMMENT_UPSTREAM=false` silences the product repository and nothing else -- the
+    harness still delivers, it just stops speaking where other people are working.
+    """
+    if not message or not ctx.gh.can_write:
+        return
+    outward = cmd.surface in ("product_issue", "delivery_pr")
+    if outward and not config.comment_upstream:
+        return
+    repo = config.upstream_repo if outward else config.self_repo
+    body = message.strip() + "\n\n" + links.signature(config, trusted=ctx.trusted)
+    try:
+        ctx.gh.comment(repo, int(cmd.number), body)
+    except HarnessError as exc:
+        # A reply that cannot be posted must not undo work that already happened.
+        logging.getLogger("harness").warning(
+            "could not reply on %s#%s: %s", repo, cmd.number, exc)
+
+
 def _act_on_command(ctx, config, cmd) -> str:
     """Apply one authorised keyword command (§8.3 table). Returns a one-line result."""
     reason = f"/harness {cmd.verb} by {cmd.actor}"
     if cmd.args:
         reason = f"{reason}: {cmd.args}"
 
-    if cmd.verb == "queue":
-        item = ctx.store.get_work_item(int(cmd.number))
-        if item is None:
-            return f"no work item {cmd.number}"
-        if item.state == "discovered":
-            return "already queued"
-        ctx.store.transition(int(cmd.number), "discovered", reason=reason)
-        return "discovered"
+    if cmd.verb == "__denied__":
+        # B270: the refusal is the whole action. It is recorded and answered, never silent.
+        return cmd.args
 
-    if cmd.verb == "split":
-        created = list(STAGES["decompose"](ctx, int(cmd.number)))
-        return f"decomposed into {created}"
+    if cmd.verb == "work":
+        # B235/B244: the one route that creates rather than steers.
+        existing = _item_for_command(ctx, config, cmd)
+        if existing is not None:
+            return f"work item #{existing} already tracks this"
+        text = cmd.args
+        if not text and cmd.surface == "product_issue":
+            # `/harness work` on the issue itself means "this one" (A3).
+            text = str(int(cmd.number))
+        item_id, message = STAGES["request"](ctx, text=text, actor=cmd.actor, via=_via_for(cmd))
+        return message + _forced(ctx, cmd, item_id)
+
+    if cmd.verb == "ask":
+        # B274: an answer, and nothing else. No item is resolved because none is involved.
+        return STAGES["ask"](ctx, question=cmd.args, actor=cmd.actor)
+
+    if cmd.verb == "audit":
+        number = STAGES["audit"](ctx, lens=cmd.args, actor=cmd.actor)
+        return f"audit opened as #{number}"
+
+    if cmd.verb == "promote":
+        # B252: only ever on the audit issue the findings live in, which is the thread it came
+        # from. Promoting finding 3 of some other audit is not a thing you can typo into.
+        if cmd.surface != "issue":
+            return "promote only works on an audit issue in this repository"
+        created = STAGES["promote"](
+            ctx, issue_number=int(cmd.number), which=cmd.args, actor=cmd.actor
+        )
+        if not created:
+            return "already promoted; no new work items"
+        return "created work item(s) " + ", ".join(f"#{n}" for n in created)
 
     item_id = _item_for_command(ctx, config, cmd)
+
+    if cmd.verb == "queue":
+        if item_id is None:
+            return f"no work item for {cmd.surface} {cmd.number}"
+        item = ctx.store.get_work_item(item_id)
+        if item is None:
+            return f"no work item {item_id}"
+        if item.state == "discovered":
+            return "already queued"
+        ctx.store.transition(item_id, "discovered", reason=reason)
+        return "discovered" + _forced(ctx, cmd, item_id)
+
+    if cmd.verb == "split":
+        if item_id is None:
+            return f"no work item for {cmd.surface} {cmd.number}"
+        created = list(STAGES["decompose"](ctx, item_id))
+        return f"decomposed into {created}"
+
     if item_id is None:
         return "no work item for this thread"
+
+    if cmd.verb == "go":
+        # B262: the green light on a suggestion. Only this moves a suggested item forward, and
+        # it is still only the first of the two human gates -- the proposal must still be merged.
+        item = ctx.store.get_work_item(item_id)
+        if item is None:
+            return f"no work item {item_id}"
+        if item.state == "approved":
+            return "already approved"
+        ctx.store.transition(item_id, "approved", reason=reason)
+        return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
 
     if cmd.verb in ("stop", "reject"):
         repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
@@ -1351,6 +1492,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             now_iso=iso(ctx.clock.now()),
             self_repo=config.self_repo,
             upstream_repo=config.upstream_repo,
+            inbox_issue=config.inbox_issue,
         )
         for cmd in commands:
             record = {
@@ -1364,6 +1506,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             }
             try:
                 record["result"] = _act_on_command(ctx, config, cmd)
+                _reply(ctx, config, cmd, record["result"])
             except Halted:
                 raise
             except RateLimited as exc:

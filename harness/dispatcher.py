@@ -20,6 +20,10 @@ STATIC_USD: dict[str, float] = {
     "revise": 1.00,
     "decompose": 0.30,
     "package": 0.05,
+    # D4. An `ask` is one read and a paragraph; an audit reads a whole repository, which is why
+    # it has a ceiling of its own rather than borrowing the per-call cap.
+    "ask": 0.05,
+    "audit": 3.00,
 }
 
 

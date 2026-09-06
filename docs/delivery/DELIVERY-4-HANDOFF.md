@@ -1,7 +1,21 @@
 # Delivery 4 — asking for work, and knowing what you are looking at
 
-> Frozen 2026-09-04. Behaviors **B235–B268**. Decisions continue from **D54**.
-> Supersedes nothing. Every invariant I-1…I-17 and every earlier behavior stays in force.
+> Frozen 2026-09-04. Behaviors **B235–B292**. Decisions **D55–D63**.
+> Supersedes nothing. Every invariant I-1…I-17 and every earlier behavior stays in force,
+> and **I-18** joins them: the harness never works on its own repository.
+
+## Status — 2026-09-05
+
+Implemented and covered by the suite: the tag families and `relabel` (B264–B268); access levels
+and the D4 configuration keys (B269–B273, B279); the request route, the inbox, the
+`product_issue` and `inbox` surfaces, `ask`, `audit`, `promote`, `go`, `--force` and the priority
+queue (B235–B263, B274–B292).
+
+What the suite **cannot** show, and what the acceptance list in §9 is therefore for: every one of
+these was tested against a fake runner, a fake GitHub and a fake checkout. Delivery 3 found four
+separate defects live — the argv limit, the pre-push hook, the `MAX_PATH` rmtree and the recovered
+`external_ref` — and not one was visible to 1,423 passing tests, because each lived at a boundary
+the fakes replace. Treat green here as evidence the logic is right, not that the flow works.
 
 ## 1. Why
 

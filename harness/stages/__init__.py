@@ -286,8 +286,8 @@ def _class_of_call(ctx: Context, stage: str, item_id: int | None) -> str:
             item = ctx.store.get_work_item(int(item_id))
         except Exception:  # pragma: no cover - a store that cannot answer is not the class
             item = None
-        ref = str(getattr(item, "external_ref", "") or "")
-        via = "suggested" if ref.startswith("suggest:") else "requested"
+        if item is not None:
+            via = priority.via_of(item)
     return priority.class_of(stage, via=via)
 
 

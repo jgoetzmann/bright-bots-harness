@@ -80,8 +80,26 @@ product repository not at all. It makes one model call with the queued items and
 that went in, best first. If the ranking comes back with no usable number it falls back to store
 order.
 
-Only with an empty queue does triage read the product repository. It fetches open issues, open pull
-requests and branches, then drops each issue that fails any of, in order:
+Only with an empty queue does triage read the product repository — and, since Delivery 4, only when
+two further conditions hold. Reading the product repository for work is *suggesting*, and a
+suggestion is what the harness does when it has run out of things anybody asked for:
+
+1. **Nothing outstanding.** No work item is in `discovered`, `approved`, `proposing`, `proposed`,
+   `implementing`, `implemented`, `packaged`, `revising` or `shipped`. The last two matter as much
+   as the first: both mean a pull request is open awaiting a human, which is precisely the state in
+   which the harness should not be inventing more work. Suggestions already in the queue do not
+   count, or the first suggestion ever made would wedge the route that made it.
+2. **Headroom.** Weekly subscription usage is below `SUGGEST_MIN_HEADROOM_PCT` (50). The back half
+   of the week's allowance is reserved for work somebody asked for. Usage that has never been
+   *observed* is not treated as "no headroom" — the signal arrives on the headers of a real model
+   call, so a fresh ledger and every tier-0 run have none, and refusing there would silently
+   disable this route. The two usage stops are what guard the allowance.
+
+Both are checked before the GitHub reads, not only before the model call, and the reason is
+recorded. At most `SUGGEST_MAX_PER_RUN` (5) items are queued per run, labelled `via:suggested`.
+
+It fetches open issues, open pull requests and branches, then drops each issue that fails any of,
+in order:
 
 1. it is assigned to **somebody other than the machine account** (B55) — an issue assigned to
    `@jgoetzmann-bot` survives here and needs no allowlist label, which is how D53's route reaches
@@ -100,9 +118,36 @@ that call returns no usable number either, the survivors are queued in GitHub's 
 
 ### audit
 
-`--mode audit` raises `NotImplementedInDelivery1("not implemented in delivery 1")` before any GitHub
-read and before any model call (B59); only the halt check precedes it. There is no audit
-implementation to switch on. The mode exists so that asking for it fails in one obvious place.
+`--mode audit --lens <what to look for>` reads the product repository through one lens and opens
+**one** issue: a ranked findings report labelled `kind:audit`, with no stage label at all. Without a
+stage label the store cannot see it, so an audit issue can never enter the queue and can never be
+transitioned — that is structural rather than a rule somewhere that remembers to skip it.
+
+An audit creates **no work items**. You turn findings into work by replying to the issue:
+
+```
+/harness promote 3
+/harness promote 1,4,7
+/harness promote all
+```
+
+Each promoted finding becomes an ordinary work item labelled `via:audit`, referenced
+`audit:<issue>:<n>`, which then goes through the ordinary proposal gate like anything else.
+Promoting the same finding twice creates one item, not two; `all` is bounded by
+`SUGGEST_MAX_PER_RUN`. Promoted findings are ticked off in the audit issue's body, so the issue
+stays open as the record of what remains.
+
+The split is the point: one sentence from you must not become eight proposals and eight implement
+runs unsupervised. A finding names a *problem*, not a plan — writing the plan is what a proposal is
+for, with the full machinery that already has.
+
+**Budget.** The audit call is charged against `AUDIT_CAP_USD` (20.00), not `PER_CALL_CAP_USD`, which
+it would fail every time. Every other cap and both usage stops still apply. An audit stopped by its
+cap still opens the issue with what it found, marked incomplete and listing under `## Not reached`
+what it never opened, so the next one continues rather than starting over.
+
+**A lens is required.** `--mode audit` with no lens is refused before any GitHub read and before any
+model call. "Audit everything" is the one scope the budget cannot bound.
 
 ### Why the allowlist label is not the way in
 

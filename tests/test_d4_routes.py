@@ -687,3 +687,52 @@ def test_B247_the_audit_body_says_it_is_a_list_and_not_a_plan(tmp_path):
     assert "list, not a plan" in body
     assert "/harness promote" in body
     assert "b" * 12 in body
+
+
+# ------------------------------------------------------------------------------------------
+# The harness does not take orders from itself
+# ------------------------------------------------------------------------------------------
+
+
+def test_the_harness_never_acts_on_its_own_comment():
+    """The machine account is in `trust.txt` — it has to be, so a person can steer the harness
+    from it. From Delivery 4 the harness also replies in the threads it sweeps, so without this
+    it could command itself, and the failure mode is a loop that spends the allowance."""
+    from harness.keywords import command_from
+    from harness.trust import parse_trust
+
+    ledger = Ledger.empty("2026-09-01T00:00:00Z")
+    comment = {
+        "id": 1,
+        "node_id": "IC_self",
+        "body": "/harness audit everything",
+        "user": {"login": "BrightBoost-Tech"},
+        "author_association": "MEMBER",
+    }
+    trusted = parse_trust("3 jgoetzmann\n2 BrightBoost-Tech")
+
+    assert command_from(
+        comment, surface="issue", number=1, trusted=trusted, ledger=ledger,
+        machine="brightboost-tech",
+    ) is None
+    # The same comment from a person is a command, so the refusal is about the author and not
+    # about the body.
+    assert command_from(
+        dict(comment, user={"login": "jgoetzmann"}, node_id="IC_person"),
+        surface="issue", number=1, trusted=trusted, ledger=ledger, machine="brightboost-tech",
+    ) is not None
+
+
+def test_the_signature_never_puts_a_command_at_the_start_of_a_line(tmp_path):
+    """The other half of the same problem: every verb appears in the footer of everything the
+    harness writes, and `parse` reads the first `/harness` at a line start. The table cells are
+    pipe-prefixed, which is what keeps that safe — asserted, because it is easy to lose."""
+    from harness import links
+    from harness.keywords import parse
+
+    rig = request_rig(tmp_path)
+
+    text = links.signature(rig.config, trusted=rig.ctx.trusted)
+
+    assert "/harness" in text
+    assert parse(text) is None

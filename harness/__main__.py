@@ -41,6 +41,7 @@ from harness.packager import build as build_package
 from harness.redact import allowed_roots, guarded_write, set_write_roots
 from harness.stages import STAGES
 from harness.stages import deliver as deliver_stage
+from harness.stages import discover as discover_stage
 from harness.store import (
     KIND_LABELS,
     LABELS,
@@ -1369,7 +1370,11 @@ def _reply(ctx, config, cmd, message: str) -> None:
     if outward and not config.comment_upstream:
         return
     repo = config.upstream_repo if outward else config.self_repo
-    body = message.strip() + "\n\n" + links.signature(config, trusted=ctx.trusted)
+    # `steerable=False` drops the command table: the person reading this reply just gave a
+    # command, so listing the twelve of them back at them is noise on somebody else's thread.
+    body = message.strip() + "\n\n" + links.signature(
+        config, trusted=ctx.trusted, steerable=False
+    )
     try:
         ctx.gh.comment(repo, int(cmd.number), body)
     except HarnessError as exc:
@@ -1493,6 +1498,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             self_repo=config.self_repo,
             upstream_repo=config.upstream_repo,
             inbox_issue=config.inbox_issue,
+            machine=discover_stage.machine_account(config),
         )
         for cmd in commands:
             record = {

@@ -109,10 +109,22 @@ def command_from(
     number: int,
     trusted: frozenset[str],
     ledger: Ledger,
+    machine: str = "",
 ) -> Command | None:
-    """Replay check -> actor gate -> parse -> mark seen -> Command. Order frozen (B133, B135)."""
+    """Replay check -> not itself -> actor gate -> parse -> mark seen -> Command (B133, B135).
+
+    The machine account is in `trust.txt` -- it has to be, so a person can steer the harness
+    from it -- which means that from Delivery 4, when the harness started replying in the very
+    threads it sweeps, it could in principle command itself. Nothing it writes today puts
+    `/harness` at the start of a line, but "today" is not a guarantee, and the failure mode is a
+    loop that spends the allowance. Refused structurally instead: the harness does not take
+    orders from itself, whatever it happens to say.
+    """
     cid = comment_id(comment)
     if ledger.seen(cid):
+        return None
+    author = str(((comment.get("user") or {}).get("login")) or "").lstrip("@").lower()
+    if machine and author == str(machine).lstrip("@").lower():
         return None
     if not authorise(comment, trusted, ledger):
         return None
@@ -208,6 +220,7 @@ def sweep(
     self_repo: str,
     upstream_repo: str,
     inbox_issue: int = 0,
+    machine: str = "",
 ) -> list[Command]:
     """B140/B141: notifications since the cursor -> comments of each thread -> commands.
 
@@ -231,7 +244,12 @@ def sweep(
             comments.extend(gh.pull_review_comments(repo, number))
         for comment in comments:
             command = command_from(
-                comment, surface=surface, number=number, trusted=trusted, ledger=ledger
+                comment,
+                surface=surface,
+                number=number,
+                trusted=trusted,
+                ledger=ledger,
+                machine=machine,
             )
             if command is not None:
                 commands.append(command)

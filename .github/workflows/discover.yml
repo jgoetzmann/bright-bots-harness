@@ -13,17 +13,17 @@ on:
     # the product repository carries the `harness-ok` allowlist label yet.
     inputs:
       mode:
-        description: "triage (rank the queue), directed (one named issue), assigned (every issue assigned to the bot)"
+        description: "triage (rank the queue), directed (one named issue), assigned (every issue assigned to the bot), audit (one findings issue, no work items)"
         required: false
         default: triage
         type: choice
-        options: [triage, directed, assigned]
+        options: [triage, directed, assigned, audit]
       target:
         description: "directed only: the PRODUCT repository issue number, e.g. 633"
         required: false
         default: ""
       lens:
-        description: "triage only: a focus for the ranking, e.g. 'flaky tests'"
+        description: "audit: REQUIRED, what to look for, e.g. 'accessibility in src/components'. triage: a focus for the ranking"
         required: false
         default: ""
       ignore_allowlist:
@@ -238,6 +238,15 @@ jobs:
               exit 2
             fi
             args+=(--target "${INPUT_TARGET}")
+          elif [ "${mode}" = "audit" ]; then
+            # B256: refused in the stage too, before any GitHub read and any model call. Named
+            # here as well so the operator learns it from the Actions tab rather than from a
+            # failed run: "audit everything" is the one scope the budget cannot bound.
+            if [ -z "${INPUT_LENS// }" ]; then
+              echo "::error::mode=audit needs a lens: what should it look for?"
+              exit 2
+            fi
+            args+=(--lens "${INPUT_LENS}")
           else
             if [ -n "${INPUT_LENS// }" ]; then
               args+=(--lens "${INPUT_LENS}")

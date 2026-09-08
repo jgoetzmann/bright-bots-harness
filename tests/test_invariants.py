@@ -62,6 +62,10 @@ SPEC_PACKAGE_FILES = [
     "harness/stages/deliver.py",
     # B227: the presentation layer for everything the harness opens on GitHub.
     "harness/links.py",
+    # Delivery 4 — the two routes that create no work item, and the order every call runs in.
+    "harness/priority.py",
+    "harness/stages/ask.py",
+    "harness/stages/audit.py",
 ]
 
 # §4.3 — every test module the delivery is required to ship.
@@ -530,6 +534,10 @@ D2_PACKAGE_FILES = [
     "harness/stages/deliver.py",
     # B227: the presentation layer for everything the harness opens on GitHub.
     "harness/links.py",
+    # Delivery 4 — the two routes that create no work item, and the order every call runs in.
+    "harness/priority.py",
+    "harness/stages/ask.py",
+    "harness/stages/audit.py",
 ]
 
 # Handoff §3 — test modules and fixtures marked NEW.

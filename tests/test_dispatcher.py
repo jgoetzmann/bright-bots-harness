@@ -303,9 +303,12 @@ def test_B122_median_estimate_replaces_static_after_three_observations(tmp_path)
 
 
 def test_B122_static_table_values(tmp_path):
-    """B122/§6.4: the static estimates are the frozen table."""
+    """B122/§6.4: the static estimates are the frozen table.
+
+    Delivery 4 added two. `ask` is one read and a paragraph; `audit` reads a whole repository,
+    which is why it has a ceiling of its own (`AUDIT_CAP_USD`) rather than the per-call cap."""
     assert STATIC_USD == {"discover": 0.20, "propose": 0.50, "implement": 2.50, "revise": 1.00,
-                          "decompose": 0.30, "package": 0.05}
+                          "decompose": 0.30, "package": 0.05, "ask": 0.05, "audit": 3.00}
 
 
 def test_B122_cheaper_stage_fits_where_implement_does_not(tmp_path):

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import Any, Sequence
 
+from harness import links, priority
 from harness.collision import claimed_issue_numbers
 from harness.context import Context
 from harness.errors import HarnessError, NotImplementedInDelivery1
@@ -13,7 +15,7 @@ from harness.halt import check_halt
 from harness.stages import data_block, load_prompt, read_issue_body, run_model
 from harness.store.github import _label_names
 
-__all__ = ["discover", "EXCLUDED_LABELS", "machine_account"]
+__all__ = ["discover", "request", "EXCLUDED_LABELS", "machine_account"]
 
 log = logging.getLogger("harness")
 
@@ -42,8 +44,12 @@ def discover(
     check_halt(ctx.config.halt_file)
 
     if mode == "audit":
-        # B59: refused before any GitHub read and before any model call.
-        raise NotImplementedInDelivery1("not implemented in delivery 1")
+        # B247: an audit produces one findings issue and no work items, so it returns no ids.
+        # Imported here rather than at the top: `harness.stages.audit` imports this package.
+        from harness.stages.audit import audit
+
+        audit(ctx, lens=lens or "")
+        return []
     if mode == "directed":
         return _directed(ctx, target)
     if mode == "assigned":
@@ -58,7 +64,7 @@ def discover(
 # --------------------------------------------------------------------------------------------
 
 
-def _directed(ctx: Context, target: str | None) -> list[int]:
+def _directed(ctx: Context, target: str | None, *, via: str = "requested") -> list[int]:
     """B53/B54: exactly one work item, no model call, no duplicate on a re-run."""
     number = _parse_target(target)
     ref = f"issue:{number}"
@@ -86,6 +92,7 @@ def _directed(ctx: Context, target: str | None) -> list[int]:
         # B227: the issue the harness opens quotes the one it is tracking, so a reader on the
         # web can judge the work without leaving the page.
         upstream_body=str(issue.get("body") or ""),
+        via=via,
     )
     ctx.store.append_event(item_id, "info", f"discovered {ref} by directed target")
     ctx.record_decision(
@@ -159,6 +166,8 @@ def _assigned(ctx: Context) -> list[int]:
             title=title,
             tier_required=0,
             upstream_body=str(issue.get("body") or ""),
+            # B264/D56: assignment is its own way in, and the priority queue reads it.
+            via="assigned",
         )
         ctx.store.append_event(item_id, "info", f"queued {ref}: assigned to @{account}")
         created.append(item_id)
@@ -236,6 +245,18 @@ def _render_queue(ctx: Context, queued: Sequence[Any]) -> str:
 
 
 def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]:
+    # B257/B290: looking at the product repository for work is *suggesting*, and a suggestion
+    # runs only when nothing anybody asked for is outstanding and the week has headroom left.
+    # Checked before the GitHub reads as well as before the model call, because the refusal is
+    # the same either way and the reads are not free.
+    refused = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config
+    )
+    if refused is not None:
+        ctx.record_decision(f"triage suggested nothing: {refused}")
+        log.info("triage suggested nothing: %s", refused)
+        return []
+
     issues = ctx.gh.issues(state="open")
     pulls = ctx.gh.pulls()
     branches = ctx.gh.branches()
@@ -303,13 +324,26 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
 
     by_number = {_issue_number(i): i for i in survivors}
     item_ids: list[int] = []
+    # B258: at most this many per run. Five proposals a person has to read is a week's worth of
+    # goodwill; fifty is a reason to turn the harness off.
+    cap = int(getattr(ctx.config, "suggest_max_per_run", 0) or 0)
     for number in ranked:
         issue = by_number.get(number)
         if issue is None:
             continue
-        item_ids.append(_ensure_item(ctx, number, str(issue.get("title") or f"issue {number}")))
+        if cap and len(item_ids) >= cap:
+            ctx.record_decision(
+                f"triage stopped at SUGGEST_MAX_PER_RUN={cap}; #{number} and the rest of the "
+                f"ranking were not queued and will be reconsidered next run"
+            )
+            break
+        item_ids.append(
+            _ensure_item(
+                ctx, number, str(issue.get("title") or f"issue {number}"), via="suggested"
+            )
+        )
 
-    ctx.record_decision(f"triage produced work items {item_ids} for issues {ranked}")
+    ctx.record_decision(f"triage produced work items {item_ids} for issues {ranked[:len(item_ids)]}")
     return item_ids
 
 
@@ -396,13 +430,204 @@ def _parse_ranking(text: str) -> list[int]:
     return ordered
 
 
-def _ensure_item(ctx: Context, number: int, title: str) -> int:
+def _ensure_item(ctx: Context, number: int, title: str, *, via: str = "requested") -> int:
     ref = f"issue:{number}"
     existing = ctx.store.find_by_ref(ref)
     if existing is not None:
         return existing.id
     item_id = ctx.store.create_work_item(
-        kind="issue", external_ref=ref, title=title.strip() or f"issue {number}", tier_required=0
+        kind="issue",
+        external_ref=ref,
+        title=title.strip() or f"issue {number}",
+        tier_required=0,
+        via=via,
     )
     ctx.store.append_event(item_id, "info", f"discovered {ref} by triage ranking")
     return item_id
+
+
+# --------------------------------------------------------------------------------------------
+# the green light — B259-B263
+# --------------------------------------------------------------------------------------------
+
+#: The phrase that makes the comment findable again. `sweep` must never treat its own comment as
+#: a new request, and a person must be able to see at a glance that the harness already asked.
+GREEN_LIGHT_MARKER = "<!-- bright-bots-harness: green-light-request -->"
+
+
+def ask_for_green_light(
+    ctx: Context, *, item_id: int, issue_number: int, proposal_url: str
+) -> bool:
+    """Comment on the product issue asking to be let start. True when one was posted (B259).
+
+    This is the one outward write the harness makes without being asked, and it is what makes it
+    discoverable to the people who own the work. It is also the thing that has to be honest: a
+    proposal is not a change, and an offer is not a claim.
+    """
+    if not getattr(ctx.config, "comment_upstream", True):
+        # B263: the switch silences the product repository and changes nothing else -- the item
+        # is still queued, the proposal still exists, delivery still works.
+        ctx.record_decision(
+            f"no green-light comment on #{issue_number}: COMMENT_UPSTREAM is false"
+        )
+        return False
+    if not ctx.gh.can_write:
+        return False
+
+    issue = ctx.gh.issue(int(issue_number))
+    if _is_assigned(issue):
+        # B261: somebody is already on it. Offering to do their work is not discoverability.
+        ctx.record_decision(
+            f"no green-light comment on #{issue_number}: it has an assignee"
+        )
+        return False
+    for comment in ctx.gh.issue_comments(ctx.config.upstream_repo, int(issue_number)):
+        if GREEN_LIGHT_MARKER in str(comment.get("body") or ""):
+            # B260: once per issue, ever. A weekly job that re-asks every week is a weekly job
+            # that gets muted, and then nothing it says is read.
+            ctx.record_decision(
+                f"no green-light comment on #{issue_number}: one was already posted"
+            )
+            return False
+
+    opening = "I have worked out how I would implement this"
+    opening += f" — the plan is at {proposal_url}." if proposal_url else "."
+    body = "\n".join(
+        [
+            GREEN_LIGHT_MARKER,
+            opening,
+            "",
+            "**I have not started, and I will not without a green light.** Assign me, or reply "
+            "`/harness go` on this issue.",
+            "",
+            "Nobody asked for this one — I picked it up while the queue was empty, so ignoring "
+            "this comment is a complete and expected answer.",
+            "",
+            links.signature(ctx.config, trusted=ctx.trusted),
+        ]
+    )
+    ctx.gh.comment(ctx.config.upstream_repo, int(issue_number), body)
+    ctx.store.append_event(
+        item_id, "info", f"asked for a green light on {ctx.config.upstream_repo}#{issue_number}"
+    )
+    return True
+
+
+# --------------------------------------------------------------------------------------------
+# request — `/harness work <text or link>` (B235, B238, B239, B244)
+# --------------------------------------------------------------------------------------------
+
+#: A GitHub issue link, in any of the forms a person actually pastes.
+_ISSUE_URL_RE = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)")
+
+#: A bare number, or `#633`. Only when it is the whole of the text: `fix 3 of the cards` is a
+#: sentence, not a pointer, and reading it as issue 3 would be a confident wrong answer.
+_BARE_NUMBER_RE = re.compile(r"^#?(\d+)$")
+
+#: The title of a free-text request is its first line, cut here so the issue list stays readable.
+TITLE_LIMIT = 72
+
+
+def request(
+    ctx: Context, *, text: str, actor: str = "", via: str = "requested"
+) -> tuple[int | None, str]:
+    """One work item from a `/harness work` command. Returns ``(item_id, message)``.
+
+    The same route serves all three ways of asking: a comment on the inbox issue (B235), a
+    comment on a product issue (B244), and a link pasted into either (B238). They differ only
+    in where the text came from, so they share the creation path rather than each growing one.
+
+    ``item_id`` is None when nothing was created; the message then says what was missing, and
+    is meant to be read by the person who asked.
+    """
+    body = str(text or "").strip()
+    if not body:
+        # B239: an empty `/harness work` is a person who meant something. Guessing which issue
+        # they meant is worse than asking.
+        return None, (
+            "say what to work on: `/harness work <what you want done>`, or paste a link to an "
+            "issue on the product repository."
+        )
+
+    pointer = _resolve_pointer(ctx, body)
+    if pointer is not None:
+        ids = _directed(ctx, str(pointer), via=via)
+        upstream = str(getattr(ctx.config, "upstream_repo", "") or "")
+        tracked = f"[{links.issue_ref(upstream, pointer)}]({links.issue_url(upstream, pointer)})"
+        return ids[0], f"{_item_link(ctx, ids[0])} now tracks {tracked}."
+
+    title = body.splitlines()[0].strip()
+    if len(title) > TITLE_LIMIT:
+        title = title[: TITLE_LIMIT - 1].rstrip() + "\u2026"
+    # The reference is the request itself. There is no upstream issue to point at, and inventing
+    # one would make the item look like it tracks something it does not.
+    ref = f"request:{_request_slug(ctx, actor, body)}"
+    existing = ctx.store.find_by_ref(ref)
+    if existing is not None:
+        return int(existing.id), f"{_item_link(ctx, int(existing.id))} already covers that."
+
+    item_id = ctx.store.create_work_item(
+        kind="issue",
+        external_ref=ref,
+        title=title,
+        tier_required=0,
+        # Quoted as data, not as instructions: the requester is trusted to ask for work, which
+        # is not the same as being trusted to write the harness's own prompts (B277).
+        upstream_body=body,
+        via=via,
+    )
+    who = f" at the request of @{actor}" if actor else ""
+    where = _item_link(ctx, item_id)
+    ctx.store.append_event(item_id, "info", f"requested{who}: {title}")
+    ctx.record_decision(
+        f"request created work item {item_id} ({title}) from free text{who}; no model call "
+        f"was made, because what to work on was stated rather than inferred"
+    )
+    # B236: a link, not a number. The reply is read in a thread on the web, where "#12" is
+    # ambiguous between two repositories and a link is not.
+    return item_id, f"{where} is open and queued."
+
+
+def _item_link(ctx: Context, item_id: int) -> str:
+    """A work item as a link a person can follow from wherever they are reading."""
+    self_repo = str(getattr(ctx.config, "self_repo", "") or "")
+    if not self_repo:
+        return f"work item #{item_id}"
+    return f"[work item #{item_id}]({links.issue_url(self_repo, item_id)})"
+
+
+def _resolve_pointer(ctx: Context, body: str) -> int | None:
+    """The product-repository issue number `body` names, or None if it names no issue.
+
+    Refuses a link to the harness's own repository (I-18/B280) rather than tracking it, and
+    refuses a link to a third repository rather than silently reading the number out of it and
+    applying it to the product repo -- which would be the number trap with an extra step.
+    """
+    match = _ISSUE_URL_RE.search(body)
+    if match is not None:
+        repo, number = match.group(1), int(match.group(2))
+        self_repo = str(getattr(ctx.config, "self_repo", "") or "")
+        upstream = str(getattr(ctx.config, "upstream_repo", "") or "")
+        if self_repo and repo.lower() == self_repo.lower():
+            raise HarnessError(
+                f"{repo}#{number} is in the harness's own repository. The harness does not "
+                "work on itself (I-18) -- changes to the harness are made by a person."
+            )
+        if upstream and repo.lower() != upstream.lower():
+            raise HarnessError(
+                f"{repo}#{number} is not in {upstream}. The harness only works on the product "
+                "repository it is configured for."
+            )
+        return number
+    bare = _BARE_NUMBER_RE.match(body)
+    return int(bare.group(1)) if bare else None
+
+
+def _request_slug(ctx: Context, actor: str, body: str) -> str:
+    """A short stable reference for a free-text request.
+
+    Content-derived, so the same request asked twice is the same item rather than two, and so
+    it survives the item being reopened. Short because it is read by people in an issue body.
+    """
+    digest = hashlib.sha256(f"{actor.lower()}\n{body}".encode("utf-8")).hexdigest()
+    return digest[:12]

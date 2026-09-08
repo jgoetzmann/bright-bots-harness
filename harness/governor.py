@@ -33,6 +33,17 @@ STATIC_ESTIMATES: dict[str, float] = {
     "propose": 2.0,
     "implement": 8.0,
     "package": 0.5,
+    "ask": 0.2,
+    "audit": 4.0,
+}
+
+#: Stages whose per-call ceiling is their own key rather than `PER_CALL_CAP_USD` (B248/B275).
+#: The map lives here, not at the call sites, so a new stage cannot quietly inherit the wrong
+#: ceiling by forgetting to pass one. An `ask` is one question and must stay cheap; an `audit`
+#: reads a whole repository and would fail every time under the per-call cap.
+STAGE_CAP_KEY: dict[str, str] = {
+    "ask": "ask_cap_usd",
+    "audit": "audit_cap_usd",
 }
 
 MIN_OBSERVATIONS = 3
@@ -42,6 +53,9 @@ _TURNS_FALLBACK: dict[str, str] = {
     "revise": "implement",
     "decompose": "propose",
     "deliver": "package",
+    # An answer is one read and one paragraph; an audit reads a repository and writes a list.
+    "ask": "package",
+    "audit": "propose",
 }
 
 
@@ -210,10 +224,19 @@ class Governor:
             stage=stage,
             granted_pct=needed,
             max_turns=int(max_turns),
-            max_budget_usd=float(self.config.per_call_cap_usd),
+            max_budget_usd=self._cap_usd(stage),
         )
         log.debug("authorized %s for %.3f%% (%d turns)", auth.id, needed, auth.max_turns)
         return auth
+
+    def _cap_usd(self, stage: str) -> float:
+        """The USD ceiling for one call of `stage` (B248/B275)."""
+        key = STAGE_CAP_KEY.get(stage)
+        if key is not None:
+            value = getattr(self.config, key, None)
+            if value is not None:
+                return float(value)
+        return float(self.config.per_call_cap_usd)
 
     def record(
         self,

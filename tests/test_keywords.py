@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import pytest
 
 from harness.clock import FrozenClock, iso
+from harness.trust import parse_trust
 from harness.keywords import VERBS, Command, authorise, command_from, parse, sweep
 from harness.ledger import Ledger
 
@@ -21,7 +22,10 @@ NOW_ISO = iso(NOW)
 CURSOR = "2026-09-01T00:00:00Z"
 SELF_REPO = "jgoetzmann/bright-bots-harness"
 UPSTREAM = "Bright-Bots-Initiative/brightboost"
-TRUSTED = frozenset({"jgoetzmann"})
+# B269/D60: the trust file carries levels now, and jgoetzmann is the operator. A bare set
+# still works everywhere it did, but it grants only the least level, so a fixture that
+# exercises level-2 and level-3 verbs has to say which level it means.
+TRUSTED = parse_trust("3 jgoetzmann")
 CANARY = "CANARY-7f3a-untrusted-body-must-never-appear"
 WRITE_PREFIXES = ("create", "set_", "comment", "push", "close", "request")
 
@@ -349,7 +353,10 @@ def test_B135_replay_key_falls_back_to_str_of_numeric_id():
 
 def test_B133_parse_each_verb():
     """B133/§8.3: every verb in VERBS parses from a line-start '/harness <verb> <args>'."""
-    assert VERBS == ("revise", "reject", "fix", "rebase", "stop", "split", "queue")
+    # Delivery 4 added five that ask for work rather than steer work that exists. What B133
+    # pins is that each parses; the seven it was written for are still the first seven.
+    assert VERBS[:7] == ("revise", "reject", "fix", "rebase", "stop", "split", "queue")
+    assert set(VERBS) - set(VERBS[:7]) == {"work", "audit", "promote", "go", "ask"}
     assert parse("/harness revise tighten the diagnosis") == ("revise", "tighten the diagnosis")
     assert parse("/harness reject not worth it") == ("reject", "not worth it")
     assert parse("/harness fix") == ("fix", "")
@@ -432,8 +439,10 @@ def test_B131_command_from_trusted_owner_returns_the_full_command():
     c = comment(login="jgoetzmann", association="OWNER", body="/harness fix", id=42,
                 node_id="IC_abc")
     cmd = command_from(c, surface="delivery_pr", number=42, trusted=TRUSTED, ledger=ledger)
+    # B283/B270 appended `force` and `level`. The level is the actor's, recorded so a refusal
+    # can say what it would have needed; jgoetzmann is the operator.
     assert cmd == Command(verb="fix", args="", surface="delivery_pr", number=42,
-                          comment_id="IC_abc", actor="jgoetzmann")
+                          comment_id="IC_abc", actor="jgoetzmann", force=False, level=3)
     assert ledger.cursors["keyword_denied"] == {}
 
 
@@ -484,8 +493,9 @@ def test_B135_command_from_already_seen_comment_is_none_before_anything_else():
 # ---------------------------------------------------------------------------
 
 def sweep_fixture() -> tuple[FakeGh, dict]:
-    """Two live threads (self-repo issue; upstream PR with a review comment) plus one upstream
-    issue thread that must be ignored. Every comment is from a trusted OWNER."""
+    """Three live threads: a self-repo issue, an upstream PR with a review comment, and an
+    upstream issue. Every comment is from a trusted OWNER. The upstream issue used to be
+    dropped; since B242 it is the `product_issue` surface."""
     self_issue = comment(login="jgoetzmann", association="OWNER", body="/harness queue", id=1,
                          node_id="IC_self12")
     upstream_review = comment(login="jgoetzmann", association="OWNER", body="/harness fix",
@@ -510,9 +520,10 @@ def test_B140_sweep_reads_notifications_since_the_cursor_and_returns_commands_in
     gh, _ = sweep_fixture()
     cmds = run_sweep(gh, ledger)
     assert [(c.verb, c.surface, c.number) for c in cmds] == [
-        ("queue", "issue", 12), ("fix", "delivery_pr", 77)]
+        ("queue", "issue", 12), ("fix", "delivery_pr", 77), ("queue", "product_issue", 900)]
     assert cmds[0].comment_id == "IC_self12" and cmds[0].actor == "jgoetzmann"
     assert cmds[1].comment_id == "PRRC_up77" and cmds[1].actor == "jgoetzmann"
+    assert cmds[2].comment_id == "IC_up900" and cmds[2].actor == "jgoetzmann"
     assert gh.since_args() == [CURSOR]
 
 
@@ -524,19 +535,19 @@ def test_B140_sweep_advances_the_cursor_to_now():
     assert ledger.cursors["notifications_last_seen"] == NOW_ISO
 
 
-def test_B140_sweep_ignores_an_upstream_issue_thread():
-    """B140/§8.3: issue verbs apply to 'any issue here' — an upstream issue thread yields no
-    Command even with a trusted '/harness queue' on it."""
-    ledger = fresh_ledger(CURSOR)
-    gh, _ = sweep_fixture()
-    cmds = run_sweep(gh, ledger)
-    assert all(c.number != 900 for c in cmds)
-    assert all(c.comment_id != "IC_up900" for c in cmds)
+def test_B242_an_upstream_issue_thread_is_a_surface_of_its_own():
+    """B242/D59: it used to yield nothing at all -- a `/harness` comment on a product issue was
+    never seen, not ignored. It is now `product_issue`, which is deliberately NOT `issue`: the
+    two repositories number independently, and `_item_for_command` maps `issue` straight to the
+    number, so calling this one `issue` would act on the harness item of the same number."""
     only_upstream_issue = FakeGh(
         threads=[thread(UPSTREAM, 900, "Issue", "t3")],
         comments={(UPSTREAM, 900): [comment(login="jgoetzmann", association="OWNER",
                                             body="/harness split", id=5, node_id="IC_up900b")]})
-    assert run_sweep(only_upstream_issue, fresh_ledger(CURSOR)) == []
+
+    cmds = run_sweep(only_upstream_issue, fresh_ledger(CURSOR))
+
+    assert [(c.verb, c.surface, c.number) for c in cmds] == [("split", "product_issue", 900)]
 
 
 def test_B141_sweep_calls_no_write_method():
@@ -545,7 +556,7 @@ def test_B141_sweep_calls_no_write_method():
     ledger = fresh_ledger(CURSOR)
     gh, _ = sweep_fixture()
     cmds = run_sweep(gh, ledger)
-    assert len(cmds) == 2
+    assert len(cmds) == 3
     assert gh.write_calls() == []
     assert gh.sent == []
     assert {name for name, _, _ in gh.calls} <= {

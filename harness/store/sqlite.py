@@ -51,6 +51,10 @@ CREATE TABLE {name} (
   attempts      INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT    NOT NULL,
   updated_at    TEXT    NOT NULL,
+  -- B264/D56: how the item arrived. The github backend reads this off the `via:` label; here
+  -- it is a column, because the priority queue has to be able to tell a suggestion from a
+  -- request on every backend, not only the one with labels.
+  via           TEXT    NOT NULL DEFAULT 'requested',
   UNIQUE (external_ref)
 );
 """
@@ -298,6 +302,10 @@ class WorkItem:
     attempts: int
     created_at: str
     updated_at: str
+    #: B264/D56: how the item arrived, from its `via:` label. Not a column -- the label is the
+    #: record on the backend that has labels, and the sqlite backend has no outward surface for
+    #: one to have come from. `requested` is the honest default: a person caused it.
+    via: str = "requested"
 
     @property
     def issue_number(self) -> int | None:
@@ -339,7 +347,16 @@ def _work_item(row: sqlite3.Row) -> WorkItem:
         attempts=row["attempts"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        via=_via_column(row),
     )
+
+
+def _via_column(row: sqlite3.Row) -> str:
+    """`via` from the row, tolerating a database written before the column existed."""
+    try:
+        return str(row["via"] or "requested")
+    except (IndexError, KeyError):
+        return "requested"
 
 
 def _stage_run(row: sqlite3.Row) -> StageRun:
@@ -423,6 +440,15 @@ class SqliteStore:
                 raise StoreError(f"migration failed: {exc}") from exc
             conn.execute("PRAGMA foreign_keys=ON")
             return
+        # D4: `via` arrives as an ADD COLUMN rather than a rebuild -- it is additive, has a
+        # default, and every existing row's honest value is that default.
+        if "via " not in self._table_sql("work_item"):
+            try:
+                conn.execute(
+                    "ALTER TABLE work_item ADD COLUMN via TEXT NOT NULL DEFAULT 'requested'"
+                )
+            except sqlite3.Error as exc:  # pragma: no cover - a locked or read-only database
+                raise StoreError(f"migration failed adding work_item.via: {exc}") from exc
         if self._table_sql("work_item").find("'merged'") < 0:
             self._rebuild("work_item", WORK_ITEM_DDL_V2, WORK_ITEM_COLUMNS, "idx_work_item_state")
         if self._table_sql("stage_run").find("'deliver'") < 0:
@@ -488,9 +514,9 @@ class SqliteStore:
             cur = self.conn.execute(
                 "INSERT INTO work_item "
                 "(kind, external_ref, title, state, tier_required, attempts, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, 'discovered', ?, 0, ?, ?)",
-                (kind, external_ref, title, tier_required, now, now),
+                "created_at, updated_at, via) "
+                "VALUES (?, ?, ?, 'discovered', ?, 0, ?, ?, ?)",
+                (kind, external_ref, title, tier_required, now, now, via),
             )
         except sqlite3.IntegrityError as exc:
             message = str(exc)

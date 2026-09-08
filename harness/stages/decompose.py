@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from harness import priority
 from harness.context import Context
 from harness.errors import GitHubError, HarnessError, RateCeilingReached, RunnerError
 from harness.halt import check_halt
@@ -101,7 +102,16 @@ def decompose(ctx: Context, issue_number: int) -> list[int]:
         # The store carries the paragraph as the issue body and appends the parent link (I-14).
         child = int(
             ctx.store.create_work_item(
-                kind="issue", external_ref=ref, title=title, tier_required=0, body=text
+                kind="issue",
+                external_ref=ref,
+                title=title,
+                tier_required=0,
+                body=text,
+                # B264/D63: a sub-issue arrived the way its parent did. Without this, splitting
+                # a suggestion would turn one item nobody asked for into eight `via:requested`
+                # ones that jump the priority queue -- which is the whole gate, defeated by a
+                # verb that is supposed to be a bookkeeping convenience.
+                via=priority.via_of(parent),
             )
         )
         write_redacted(

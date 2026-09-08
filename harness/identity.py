@@ -255,6 +255,31 @@ class Identity:
         names = {str(row.get("name") or "") for row in data if isinstance(row, dict)}
         return all(label in names for label in STATE_LABELS)
 
+    def trusted_without_access(self, trusted: object) -> tuple[str, ...] | None:
+        """Handles in the trust file that GitHub would not report as OWNER/MEMBER/COLLABORATOR.
+
+        The gate is two halves and the second is invisible: B131 needs the handle in
+        `trust.txt` **and** an `author_association` of OWNER, MEMBER or COLLABORATOR on the
+        repository the comment is on. A handle listed at level 2 who is not a collaborator here
+        comments, gets nothing, and has no way to tell that from the harness being asleep --
+        which is exactly how a handover fails quietly on the first day.
+
+        Returns None when it cannot be determined: the collaborators endpoint needs push
+        access, so tier 0 has no answer and must not invent a reassuring one.
+        """
+        handles = sorted(str(h) for h in (trusted or ()))
+        if not handles or not self.self_repo:
+            return ()
+        data = self._get(f"/repos/{self.self_repo}/collaborators?per_page=100")
+        if not isinstance(data, list):
+            return None
+        allowed = {
+            str(row.get("login") or "").lower() for row in data if isinstance(row, dict)
+        }
+        owner = self.self_repo.split("/")[0].lower()
+        allowed.add(owner)
+        return tuple(h for h in handles if h.lower() not in allowed)
+
     def trust_file_ready(self) -> bool:
         """The trust file exists, carries no placeholder, and names at least two handles."""
         path = getattr(self.config, "trust_file", None)

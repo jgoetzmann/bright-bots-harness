@@ -162,8 +162,16 @@ jobs:
             lines.push(`## harness heartbeat — ${new Date().toISOString()}`);
             lines.push(`run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`);
             lines.push('');
-            lines.push('### queue depth (open issues per state label)');
-            lines.push('| state | count |');
+            // The heartbeat is where a maintainer looks first and often the only page they
+            // read, so it carries the two links that turn "what is this" into an action.
+            const inboxRaw = (cfg.INBOX_ISSUE ?? '').toString().trim();
+            const inbox = parseInt(inboxRaw, 10);
+            if (Number.isFinite(inbox) && inbox > 0) {
+              lines.push(`**Want it to do something?** Comment \`/harness work <what>\` on [the inbox](${context.serverUrl}/${owner}/${repo}/issues/${inbox}). New here: [docs/FOR-MAINTAINERS.md](${context.serverUrl}/${owner}/${repo}/blob/main/docs/FOR-MAINTAINERS.md).`);
+              lines.push('');
+            }
+            lines.push('### queue depth (open issues per stage label)');
+            lines.push('| stage | count |');
             lines.push('|---|---|');
             for (const l of labels) lines.push(`| \`${l}\` | ${depth[l]} |`);
             lines.push('');

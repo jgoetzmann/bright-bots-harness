@@ -17,7 +17,14 @@
 3 jgoetzmann
 2 BrightBoost-Tech
 
-# TO ADD A MAINTAINER: add one line reading the digit 2, a space, then their GitHub handle.
+# TO ADD A MAINTAINER, TWO THINGS. Both, or their comments are read, denied and ignored:
+#
+#   1. add one line here: the digit 2, a space, then their GitHub handle; and
+#   2. invite them to THIS repository, so GitHub reports them as a collaborator.
+#
+# The second is the half people forget, and it fails silently from their side -- a denied
+# comment looks exactly like the harness being asleep. `harness doctor` names anyone listed
+# here who has no access, which is the only way to see it without asking them to test it.
 # Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
 #
 # Do not park a fill-me-in name here first. `Identity.trust_file_ready()` refuses the WHOLE

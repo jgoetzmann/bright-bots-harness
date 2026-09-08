@@ -778,3 +778,60 @@ def test_a_sub_issue_inherits_how_its_parent_arrived(tmp_path):
     assert children
     for child in children:
         assert priority.via_of(rig.store.get_work_item(child)) == "suggested"
+
+
+# ------------------------------------------------------------------------------------------
+# The other half of the trust gate
+# ------------------------------------------------------------------------------------------
+
+
+class _CollaboratorGh:
+    """Answers the collaborators endpoint and nothing else."""
+
+    def __init__(self, logins=None):
+        self.logins = logins
+        self.asked = []
+
+    def get(self, path):
+        self.asked.append(path)
+        if self.logins is None:
+            return None
+        return [{"login": name} for name in self.logins]
+
+
+def _identity(config, gh):
+    from harness.identity import Identity
+
+    return Identity(config, gh)
+
+
+def test_doctor_names_a_trusted_handle_that_github_would_refuse_anyway(tmp_path):
+    """B131's gate is two halves and the second is invisible: a handle at level 2 who is not a
+    collaborator comments, gets nothing, and cannot tell that from the harness being asleep.
+    Measured on the real repository while writing this: `BrightBoost-Tech` sat at level 2 in
+    `trust.txt` and was not a collaborator, so it could not command the harness at all."""
+    rig = request_rig(tmp_path)
+    gh = _CollaboratorGh(["jgoetzmann-bot"])
+
+    stranded = _identity(rig.config, gh).trusted_without_access(
+        ["jgoetzmann", "BrightBoost-Tech", "jgoetzmann-bot"]
+    )
+
+    # The owner of `self_repo` is always OWNER and never needs to be listed as a collaborator.
+    assert stranded == ("BrightBoost-Tech",)
+
+
+def test_the_access_check_says_nothing_rather_than_guessing_when_it_cannot_look(tmp_path):
+    """The collaborators endpoint needs push access, so tier 0 has no answer. None, not () --
+    "I could not check" must not be reported to an operator as "everyone is fine"."""
+    rig = request_rig(tmp_path)
+
+    assert _identity(rig.config, _CollaboratorGh(None)).trusted_without_access(["a"]) is None
+
+
+def test_the_access_check_makes_no_request_for_an_empty_trust_file(tmp_path):
+    rig = request_rig(tmp_path)
+    gh = _CollaboratorGh([])
+
+    assert _identity(rig.config, gh).trusted_without_access([]) == ()
+    assert gh.asked == []

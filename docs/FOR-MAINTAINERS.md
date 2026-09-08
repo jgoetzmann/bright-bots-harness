@@ -116,7 +116,24 @@ it is the operator's subscription.
 If you use one anyway, nothing happens and you get a reply saying which level it needed. Refusals
 are answered, never silent.
 
-## 7. Latency — why nothing happened yet
+## 7. If you comment and *nothing at all* happens
+
+Before assuming it is broken: the gate that lets you command it has two halves, and the second
+is invisible from your side.
+
+1. Your handle is in [`.harness/trust.txt`](../.harness/trust.txt), with a level.
+2. GitHub reports you as `OWNER`, `MEMBER` or `COLLABORATOR` on the repository you commented on —
+   which in practice means **you have been invited to it**.
+
+A comment that fails either half is read, counted as denied, and ignored. There is no reply,
+because replying to anyone who types `/harness` on a public repository is how a bot becomes a
+nuisance. So silence means one of three things: you are missing half the gate, the verb needed a
+level you do not have (that one *does* reply), or the sweep has not run yet — see below.
+
+`harness doctor` names anyone in the trust file who has no access, which is the only way to see
+this without asking someone to test it for you.
+
+## 8. Latency — why nothing happened yet
 
 On the **harness repository**, a comment wakes the job directly. Minutes.
 
@@ -125,7 +142,7 @@ It finds your comment by reading its notifications every three hours on weekdays
 Saturday afternoon waits until Monday morning. That is the design, not a fault. To skip the wait,
 ask Jack, or run `feedback` from the Actions tab.
 
-## 8. If something looks wrong
+## 9. If something looks wrong
 
 **To stop everything:** commit a file called `.harness/HALT` on `main`. Any content. Every spending
 workflow then exits before the dispatcher and before a single token. Deleting the file resumes.
@@ -137,7 +154,7 @@ anything by using it.
 **Anything stranger** — a stuck item, a run that keeps failing, spend that looks off —
 [OPERATIONS.md](OPERATIONS.md) has the diagnosis order, and §8 is how to stop everything.
 
-## 9. What is not yet true
+## 10. What is not yet true
 
 Being straight about the state of it:
 

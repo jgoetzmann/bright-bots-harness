@@ -9,6 +9,7 @@ Stack: Python 3.13 standard library + pytest==8.3.4 only.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -237,3 +238,70 @@ def test_readme_behavior_ranges_leave_no_specified_behavior_out():
     ranges = _readme_behavior_ranges()
     outside = sorted(n for n in defined if not any(low <= n <= high for low, high in ranges))
     assert not outside, f"README's ranges omit specified behaviors: {outside}"
+
+
+# --------------------------------------------------------------------------------------
+# FOR-MAINTAINERS.md — the page a second maintainer reads first, and often the only one
+# --------------------------------------------------------------------------------------
+
+
+def _for_maintainers() -> str:
+    return _read("docs/FOR-MAINTAINERS.md")
+
+
+def test_for_maintainers_names_only_real_verbs():
+    """It is the first page anybody reads, so a verb it names that does not exist is a person's
+    first command doing nothing — and a command that parses to nothing gets no reply."""
+    from harness.keywords import VERBS
+
+    named = {m.group(1).lower() for m in re.finditer(r"`/harness (\w+)", _for_maintainers())}
+
+    # Guard against the vacuous pass: if the page stops naming any verb at all, the subtraction
+    # below is empty and this test would go green on a page that had lost its whole point.
+    assert len(named) >= 6, f"FOR-MAINTAINERS.md names almost no verbs: {sorted(named)}"
+    unknown = sorted(named - set(VERBS))
+    assert unknown == [], f"FOR-MAINTAINERS.md names verbs that do not exist: {unknown}"
+
+
+def test_for_maintainers_names_only_real_stage_labels():
+    from harness.store.sqlite import LABELS
+
+    named = {m.group(0) for m in re.finditer(r"stage:[a-z-]+", _for_maintainers())}
+
+    # The two "your move" stages are the reason the page exists; it must still name both.
+    assert {"stage:needs-approval", "stage:needs-review"} <= named, (
+        f"the page no longer names both human gates: {sorted(named)}"
+    )
+    unknown = sorted(named - set(LABELS.values()))
+    assert unknown == [], f"FOR-MAINTAINERS.md names labels that do not exist: {unknown}"
+
+
+def test_for_maintainers_links_the_inbox_the_config_actually_points_at():
+    """The doc hard-codes the inbox issue's URL, because a link is what a reader can follow.
+    If `INBOX_ISSUE` moves and the link does not, the page sends its only audience to the wrong
+    thread — and comments on the wrong thread are read by nothing."""
+    config = json.loads(_read(".harness/config.json"))
+    inbox = int(config.get("INBOX_ISSUE") or 0)
+    if not inbox:
+        pytest.skip("INBOX_ISSUE is not set; the doc has no number to agree with")
+
+    linked = {int(m.group(1)) for m in re.finditer(r"/issues/(\d+)\)", _for_maintainers())}
+
+    assert inbox in linked, (
+        f"INBOX_ISSUE is {inbox} but FOR-MAINTAINERS.md links issues {sorted(linked)}"
+    )
+
+
+def test_for_maintainers_quotes_the_run_window_the_config_sets():
+    """§6 tells a maintainer when work runs, and that is the number they will plan around."""
+    config = json.loads(_read(".harness/config.json"))
+    start = str(config.get("RUN_WINDOW_START", ""))
+    end = str(config.get("RUN_WINDOW_END", ""))
+    text = _for_maintainers().lower()
+
+    for bound in (start, end):
+        day, _, time = bound.partition(" ")
+        assert day and time, f"unreadable run window bound in config.json: {bound!r}"
+        assert day in text and time in text, (
+            f"FOR-MAINTAINERS.md does not name the configured run window bound {bound!r}"
+        )

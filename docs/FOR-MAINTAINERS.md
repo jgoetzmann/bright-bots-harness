@@ -186,8 +186,8 @@ Being straight about the state of it:
   brightboost checks green. That took four attempts, and each failed attempt found a real defect in
   the harness rather than in the change it was delivering.
 - Everything on this page after that first run has been tested against a fake model, a fake GitHub
-  and a fake checkout. That is 1,635 passing tests, and it is genuinely weaker evidence than it
-  sounds: every defect the four live attempts found was invisible to the suite, because each lived
+  and a fake checkout. That is over 1,600 passing tests, and it is genuinely weaker evidence than
+  it sounds: every defect the four live attempts found was invisible to the suite, because each lived
   at a boundary the fakes replace.
 - So: expect the first live run of `ask`, `audit` and the inbox to find something. Report it rather
   than working around it — that is the most useful thing you can do in the first week.

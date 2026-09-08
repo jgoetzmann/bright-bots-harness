@@ -23,23 +23,23 @@ Where a step is a click in the GitHub UI, it says so. None of the commands here 
 ## 1. Reading the state
 
 The queue is GitHub. An item is an issue in this repository carrying exactly one
-`harness:*` label, and the issue thread is the event log: every transition posts a comment
+`stage:*` label, and the issue thread is the event log: every transition posts a comment
 naming the stage, the workflow run URL, the cost, and the new state (B101).
 
 | Label | Means | Who moves it on |
 |---|---|---|
-| `harness:queued` | eligible for a proposal | `discover.yml` |
-| `harness:proposing` | a propose job is in flight | the job |
-| `harness:proposed` | a proposal PR is open — **gate 1** | you, by merging the PR |
-| `harness:approved` | eligible for implementation | `implement.yml` |
-| `harness:running` | an implement job is in flight | the job |
-| `harness:packaged` | package built, delivery pending | the same job |
-| `harness:shipped` | upstream PR open — **gate 2** | Nathan or you, by merging upstream |
-| `harness:revising` | a revise cycle is in flight | the job |
-| `harness:merged` | upstream PR merged — terminal | — |
-| `harness:blocked` | gates red and honestly unfixable | you, by relabelling `harness:queued` or `harness:approved` |
-| `harness:needs-human` | revise cap reached | a trusted `/harness fix` |
-| `harness:abandoned` | terminal | — |
+| `stage:queued` | eligible for a proposal | `discover.yml` |
+| `stage:planning` | a propose job is in flight | the job |
+| `stage:needs-approval` | a proposal PR is open — **gate 1** | you, by merging the PR |
+| `stage:ready` | eligible for implementation | `implement.yml` |
+| `stage:building` | an implement job is in flight | the job |
+| `stage:packaged` | package built, delivery pending | the same job |
+| `stage:needs-review` | upstream PR open — **gate 2** | Nathan or you, by merging upstream |
+| `stage:revising` | a revise cycle is in flight | the job |
+| `stage:done` | upstream PR merged — terminal | — |
+| `stage:blocked` | gates red and honestly unfixable | you, by relabelling `stage:queued` or `stage:ready` |
+| `stage:needs-human` | revise cap reached | a trusted `/harness fix` |
+| `stage:dropped` | terminal | — |
 
 From your machine:
 
@@ -62,16 +62,16 @@ subscription's utilization is known). The last four are §13.
 ## 2. A failed run
 
 `ops.yml` fires on every completed run of the three spending workflows. On `failure` it
-opens (or updates) an issue here titled `ops: <workflow> failed`, labelled `harness:ops`,
+opens (or updates) an issue here titled `ops: <workflow> failed`, labelled `kind:ops`,
 with the run URL, the failing step name, and the last 50 log lines redacted. If the failure
 is in the transient set — network reset, npm registry 5xx, GitHub 5xx, runner eviction — and
 it is the first retry for that run, it re-dispatches once (B145). It never retries a job
 whose failing step name contains `run`, `revise`, `propose`, or `gate` (B146): a red gate is
 information, not a transient.
 
-So the first thing to read is the `harness:ops` issue, not the Actions log.
+So the first thing to read is the `kind:ops` issue, not the Actions log.
 
-1. Open Issues → label `harness:ops`. The newest one names the step.
+1. Open Issues → label `kind:ops`. The newest one names the step.
 2. If the step is `doctor`: a config key is missing or out of range, or `.harness/PIN` no
    longer matches. Run `harness doctor` locally; it exits 3 and names the key. For a pin
    mismatch see §10.
@@ -79,7 +79,7 @@ So the first thing to read is the `harness:ops` issue, not the Actions log.
 4. If the step is `harness run --item N` or `revise`: read the evidence. The run's
    `runs/item-N/` directory was uploaded as an artifact with `if: always()` (B126) —
    Actions → the run → Artifacts. `EVIDENCE.md` inside has verbatim gate output. The item
-   itself will be `harness:blocked` with the reason in a comment, or will be reset to its
+   itself will be `stage:blocked` with the reason in a comment, or will be reset to its
    previous state by the next run's reconciliation (§3).
 5. If the step is the ledger commit: `state/ledger.json` conflicted on **`harness-state`**,
    the branch the workflows keep it on (§12, D28). Do **not** rebuild it on `main`:
@@ -114,10 +114,10 @@ see every write the run would send (`gh.sent`) without sending any of them.
 
 ---
 
-## 3. A stuck item (`harness:running` for more than 3 hours)
+## 3. A stuck item (`stage:building` for more than 3 hours)
 
 An implement job is capped at `timeout-minutes: 120`. An item still labelled
-`harness:running` three hours after the label was applied, with no live workflow run, was
+`stage:building` three hours after the label was applied, with no live workflow run, was
 left mid-flight by a killed or timed-out job.
 
 **The harness fixes this itself.** Every `harness run` — scheduled or manual — begins with a
@@ -134,13 +134,13 @@ To do it now:
    progress, wait; it will finish or time out.
 2. Either trigger a run — Actions → `implement.yml` → Run workflow, `issue` blank — which
    reconciles first and then follows the dispatcher's plan; or relabel the issue by hand:
-   remove `harness:running`, add `harness:approved`. A label a human sets is honoured, not
+   remove `stage:building`, add `stage:ready`. A label a human sets is honoured, not
    overwritten (B102).
 3. Check the fork for a half-pushed branch, `harness/<kind>-N-<slug>`. A run that died
    before `deliver` pushed nothing. One that died after leaves a branch and no PR; the next
    run of the item re-cuts the branch from the fork's main.
 
-If the item comes back `harness:running` and dies again at the same point, it is not stuck,
+If the item comes back `stage:building` and dies again at the same point, it is not stuck,
 it is failing — §2, and read the artifact.
 
 ---
@@ -220,7 +220,7 @@ git push --force origin upstream/main:main        # with the machine account's P
 cd .. && harness sync-fork                        # expect exit 0 and the upstream sha
 ```
 
-Then check every `harness:shipped` item. A delivery PR whose base commit was one of the
+Then check every `stage:needs-review` item. A delivery PR whose base commit was one of the
 discarded ones needs `/harness rebase` from a trusted account; the item re-syncs, rebases
 onto the real upstream `main`, and re-runs the full gate sequence before pushing (B136).
 
@@ -377,7 +377,7 @@ gate, or drops one, the harness does not adapt (handoff §17.3). What you will s
   (`npm ERR! missing script`), and `EVIDENCE.md` records it as **pre-existing** with the
   verbatim output.
 - Every item then proposes with `gate_expectation: known-red` naming that gate, or lands
-  `harness:blocked` if the red is not one the proposal declared in `baseline_red`.
+  `stage:blocked` if the red is not one the proposal declared in `baseline_red`.
 - Nothing is loosened, skipped, or silently swapped. That is the invariant working.
 
 The fix is a reviewed code change here, not a config key (B112):
@@ -417,16 +417,16 @@ which is the point.
 
 | You want to | Do |
 |---|---|
-| Queue an issue | label it `harness:queued`, or comment `/harness queue` |
+| Queue an issue | label it `stage:queued`, or comment `/harness queue` |
 | Approve a proposal | **merge** its PR. Approving without merging does nothing; merge is what `implement.yml` listens for |
 | Send a proposal back | comment `/harness revise <notes>` on the proposal PR |
-| Reject a proposal | comment `/harness reject <why>`; the PR closes, the issue goes `harness:abandoned` |
-| Split a big issue | comment `/harness split`; up to `MAX_SUBISSUES` children, parent goes `harness:blocked` |
+| Reject a proposal | comment `/harness reject <why>`; the PR closes, the issue goes `stage:dropped` |
+| Split a big issue | comment `/harness split`; up to `MAX_SUBISSUES` children, parent goes `stage:blocked` |
 | Get a delivery PR fixed | review it upstream, or comment `/harness fix` there (§9 for timing) |
 | Rebase a conflicted delivery PR | comment `/harness rebase` |
 | Drop a delivery PR | comment `/harness stop`; the PR closes, the slot is freed |
-| Un-block an item | relabel it `harness:approved` (or `harness:queued` for a fresh proposal) |
-| Wake a `harness:needs-human` item | comment `/harness fix` from a trusted account; nothing else touches it |
+| Un-block an item | relabel it `stage:ready` (or `stage:queued` for a fresh proposal) |
+| Wake a `stage:needs-human` item | comment `/harness fix` from a trusted account; nothing else touches it |
 | Create the twelve labels | `harness init --labels` (idempotent; a no-op message without a token) |
 
 Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries
@@ -532,7 +532,7 @@ A weekly reset in the middle of an implementation used to mean a branch abandone
 1. A stop (usage or rate limit) inside `implement` / `continue` / `package` / `deliver` triggers a
    **handoff**: anything uncommitted is committed as `wip: handoff (<reason>)`, the branch is pushed
    to the **fork** (never upstream, never forced), `runs/item-N/HANDOFF.md` is written and posted as
-   a comment, the item returns to `harness:approved`, the ledger records a **carry**
+   a comment, the item returns to `stage:ready`, the ledger records a **carry**
    (`window.carry` = issue, since, reason), and the command exits **0**.
 2. `HANDOFF.md` is the operator's page: the reason, the branch, the base sha, the fork, the last gate
    results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and the exact next
@@ -541,8 +541,8 @@ A weekly reset in the middle of an implementation used to mean a branch abandone
    it may spend against `OVERRUN_PCT` (`10`) of the fresh week instead of waiting for
    `WEEKLY_USAGE_STOP_PCT`. When that leeway is used up the reason is `carry leeway 10% reached` and
    the item is handed off again — same branch, same file, no work lost.
-4. Green gates → the item goes `harness:packaged`, the carry is cleared, and the ordinary package and
-   deliver steps run. Red → `harness:blocked`, nothing pushed, as always (B136).
+4. Green gates → the item goes `stage:packaged`, the carry is cleared, and the ordinary package and
+   deliver steps run. Red → `stage:blocked`, nothing pushed, as always (B136).
 
 Only one item is carried at a time. To look at it, or to resume it by hand:
 
@@ -552,7 +552,7 @@ cat runs/item-42/HANDOFF.md          # after a run on this machine
 harness revise 42 --source continue  # what the run loop does for you
 ```
 
-To drop a carry instead of resuming it, relabel the issue `harness:blocked` and delete
+To drop a carry instead of resuming it, relabel the issue `stage:blocked` and delete
 `runs/item-N/HANDOFF.md`; the next dispatch then treats it as an ordinary blocked item.
 
 ### 13.5 Changing the knobs

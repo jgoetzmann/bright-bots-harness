@@ -20,6 +20,7 @@ from harness.config import CLASSIC_TOKEN_SHAPE, FINE_GRAINED_TOKEN_SHAPE, TOKEN_
 from harness.errors import ConfigError, GitHubError, RateCeilingReached, TierViolation
 from harness.gh import GitHubReadOnly
 from harness.redact import write_redacted
+from harness.store.sqlite import LABELS, STATES
 
 HANDLE = "brightboost-harness"
 KEY_NAME = TOKEN_KEY_NAME
@@ -43,21 +44,12 @@ TIER_NAMES: dict[int, str] = {
     2: "Tier 2 — push branches to its own fork and open pull requests",
 }
 
-#: The twelve state labels of handoff §4.2 (plus ``harness:packaged``, R-D).
-STATE_LABELS: tuple[str, ...] = (
-    "harness:queued",
-    "harness:proposing",
-    "harness:proposed",
-    "harness:approved",
-    "harness:running",
-    "harness:packaged",
-    "harness:shipped",
-    "harness:revising",
-    "harness:merged",
-    "harness:blocked",
-    "harness:needs-human",
-    "harness:abandoned",
-)
+#: The twelve state labels of handoff §4.2 (plus `packaged`, R-D), read from the store rather
+#: than repeated here. D4/B264 renamed the family from `harness:*` to `stage:*`, and a copy of
+#: the old names in this module would have made `harness doctor` report every label missing on
+#: a repository that had correctly migrated -- a readiness check failing *because* the operator
+#: did the right thing. There is one list, and it is the one the store writes.
+STATE_LABELS: tuple[str, ...] = tuple(LABELS[state] for state in STATES)
 
 # §13.2 for tiers 0 and 1, verbatim; §5.2 for tier 2 (classic PAT, ``public_repo`` only).
 # (permission, value for the tier, note)
@@ -262,6 +254,31 @@ class Identity:
             return False
         names = {str(row.get("name") or "") for row in data if isinstance(row, dict)}
         return all(label in names for label in STATE_LABELS)
+
+    def trusted_without_access(self, trusted: object) -> tuple[str, ...] | None:
+        """Handles in the trust file that GitHub would not report as OWNER/MEMBER/COLLABORATOR.
+
+        The gate is two halves and the second is invisible: B131 needs the handle in
+        `trust.txt` **and** an `author_association` of OWNER, MEMBER or COLLABORATOR on the
+        repository the comment is on. A handle listed at level 2 who is not a collaborator here
+        comments, gets nothing, and has no way to tell that from the harness being asleep --
+        which is exactly how a handover fails quietly on the first day.
+
+        Returns None when it cannot be determined: the collaborators endpoint needs push
+        access, so tier 0 has no answer and must not invent a reassuring one.
+        """
+        handles = sorted(str(h) for h in (trusted or ()))
+        if not handles or not self.self_repo:
+            return ()
+        data = self._get(f"/repos/{self.self_repo}/collaborators?per_page=100")
+        if not isinstance(data, list):
+            return None
+        allowed = {
+            str(row.get("login") or "").lower() for row in data if isinstance(row, dict)
+        }
+        owner = self.self_repo.split("/")[0].lower()
+        allowed.add(owner)
+        return tuple(h for h in handles if h.lower() not in allowed)
 
     def trust_file_ready(self) -> bool:
         """The trust file exists, carries no placeholder, and names at least two handles."""

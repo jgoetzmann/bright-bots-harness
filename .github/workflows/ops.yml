@@ -85,10 +85,12 @@ jobs:
               try { await github.rest.issues.getLabel({ owner, repo, name }); }
               catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name, color, description }); else throw e; }
             };
-            await ensureLabel('harness:ops', 'b60205', 'harness: a spending workflow failed');
+            // D4/B264: `kind:ops` is the D4 name, and its colour and description match LABEL_SPECS
+            // so `harness init --labels` and this workflow cannot disagree about it.
+            await ensureLabel('kind:ops', 'e11d21', 'a failed run');
             await ensureLabel('retried', 'fbca04', 'harness: the one automatic retry has been spent');
             const open = await github.paginate(github.rest.issues.listForRepo, {
-              owner, repo, state: 'open', labels: 'harness:ops', per_page: 100,
+              owner, repo, state: 'open', labels: 'kind:ops', per_page: 100,
             });
             let issue = open.find(i => !i.pull_request && i.title === title) || null;
             const alreadyRetried = !!(issue && issue.labels.some(l => (l.name || l) === 'retried'));
@@ -129,7 +131,7 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body });
               core.info(`updated ops issue #${issue.number}`);
             } else {
-              const created = await github.rest.issues.create({ owner, repo, title, body, labels: ['harness:ops'] });
+              const created = await github.rest.issues.create({ owner, repo, title, body, labels: ['kind:ops'] });
               issue = created.data;
               core.info(`opened ops issue #${issue.number}`);
             }

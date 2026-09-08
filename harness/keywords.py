@@ -39,7 +39,26 @@ VERB_LEVEL: dict[str, int] = {
 #: B283/D62 - appended to a command by the operator to start it now instead of on Monday.
 FORCE_FLAG = "--force"
 
-_COMMAND_RE = re.compile(r"^\s*/harness\s+(\w+)([^\n]*)", re.MULTILINE)
+#: `/harness <verb>` at the start of a line, after any number of leading @mentions.
+#:
+#: Two deliberate loosenings, each for a form somebody will certainly type:
+#:
+#: **Case.** Every page here says the harness is operated from a phone, and a phone
+#: autocapitalises the first word of a comment — so the most likely first command anyone ever
+#: types is `/Harness work ...`. The verb is lower-cased below, so the vocabulary is unchanged;
+#: only the shouting is forgiven.
+#:
+#: **Leading mentions.** On the product repository a mention is not decoration, it is the
+#: delivery mechanism: `sweep` reads notifications, and the machine account is not subscribed to
+#: an issue it has never touched, so `@jgoetzmann-bot` is the only thing that makes a cold thread
+#: visible at all. The handoff's own acceptance A3 says to write
+#: `@jgoetzmann-bot /harness work` — which, until this, parsed to nothing.
+#:
+#: What is NOT loosened is the anchor. Only @mentions may precede the command, so prose that
+#: happens to contain it — `as discussed, /harness stop` — is still prose.
+_COMMAND_RE = re.compile(
+    r"^\s*(?:@[\w-]+[ \t]+)*/harness\s+(\w+)([^\n]*)", re.MULTILINE | re.IGNORECASE
+)
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
 
@@ -96,10 +115,16 @@ def parse(body: str) -> tuple[str, str] | None:
 
 
 def split_force(args: str) -> tuple[str, bool]:
-    """``<args> --force`` -> ``(<args>, True)`` (B283). The flag may sit anywhere in the args."""
+    """``<args> --force`` -> ``(<args>, True)`` (B283). The flag may sit anywhere in the args.
+
+    Case-insensitive, like the verb. `--FORCE` used to do two wrong things at once: the flag was
+    not honoured, and it was not removed either, so it survived into the notes handed to a stage
+    as if somebody had meant to write it. A flag whose entire purpose is "start this now" must
+    not be quietly dropped over a shift key.
+    """
     parts = [part for part in (args or "").split() if part]
-    forced = FORCE_FLAG in parts
-    return " ".join(part for part in parts if part != FORCE_FLAG), forced
+    forced = any(part.lower() == FORCE_FLAG for part in parts)
+    return " ".join(part for part in parts if part.lower() != FORCE_FLAG), forced
 
 
 def command_from(

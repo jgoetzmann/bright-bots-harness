@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "## Findings\n\n1. **Activity cards are not reachable by keyboard** — `src/pages/Activities.tsx`, `src/components/ActivityCard.tsx` — high — the card is a `div` with `onClick` and no `tabIndex` or role, so it takes no focus and does not fire on Enter.\n2. **Icon-only buttons have no accessible name** — `src/components/Toolbar.tsx` — high — six buttons carry an SVG and no `aria-label`, so a screen reader announces each of them as \"button\".\n3. **Focus is never visible on the primary control** — `src/styles/buttons.css` — medium — `outline: none` is set globally with no `:focus-visible` replacement.\n4. **Headings skip a level on the activity page** — `src/pages/Activities.tsx` — low — an `h1` is followed directly by `h3`, which breaks landmark navigation.\n\n## Not reached\n\n- `src/admin`, ran out of room before opening it\n- `e2e/`, out of scope for this lens\n",
+  "turns": 22,
+  "cost_usd": 2.41,
+  "allowance_pct": 3.9,
+  "duration_ms": 402188,
+  "session_id": "fake-audit-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Audit this repository through one lens: accessibility in src/components."
+    },
+    {
+      "role": "assistant",
+      "content": "Read 41 files under src/. Four findings, ranked; src/admin not reached."
+    }
+  ],
+  "error": null
+}

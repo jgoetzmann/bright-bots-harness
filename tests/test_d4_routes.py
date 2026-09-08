@@ -778,3 +778,117 @@ def test_a_sub_issue_inherits_how_its_parent_arrived(tmp_path):
     assert children
     for child in children:
         assert priority.via_of(rig.store.get_work_item(child)) == "suggested"
+
+
+# ------------------------------------------------------------------------------------------
+# The other half of the trust gate
+# ------------------------------------------------------------------------------------------
+
+
+class _CollaboratorGh:
+    """Answers the collaborators endpoint and nothing else."""
+
+    def __init__(self, logins=None):
+        self.logins = logins
+        self.asked = []
+
+    def get(self, path):
+        self.asked.append(path)
+        if self.logins is None:
+            return None
+        return [{"login": name} for name in self.logins]
+
+
+def _identity(config, gh):
+    from harness.identity import Identity
+
+    return Identity(config, gh)
+
+
+def test_doctor_names_a_trusted_handle_that_github_would_refuse_anyway(tmp_path):
+    """B131's gate is two halves and the second is invisible: a handle at level 2 who is not a
+    collaborator comments, gets nothing, and cannot tell that from the harness being asleep.
+    Measured on the real repository while writing this: `BrightBoost-Tech` sat at level 2 in
+    `trust.txt` and was not a collaborator, so it could not command the harness at all."""
+    rig = request_rig(tmp_path)
+    gh = _CollaboratorGh(["jgoetzmann-bot"])
+
+    stranded = _identity(rig.config, gh).trusted_without_access(
+        ["jgoetzmann", "BrightBoost-Tech", "jgoetzmann-bot"]
+    )
+
+    # The owner of `self_repo` is always OWNER and never needs to be listed as a collaborator.
+    assert stranded == ("BrightBoost-Tech",)
+
+
+def test_the_access_check_says_nothing_rather_than_guessing_when_it_cannot_look(tmp_path):
+    """The collaborators endpoint needs push access, so tier 0 has no answer. None, not () --
+    "I could not check" must not be reported to an operator as "everyone is fine"."""
+    rig = request_rig(tmp_path)
+
+    assert _identity(rig.config, _CollaboratorGh(None)).trusted_without_access(["a"]) is None
+
+
+def test_the_access_check_makes_no_request_for_an_empty_trust_file(tmp_path):
+    rig = request_rig(tmp_path)
+    gh = _CollaboratorGh([])
+
+    assert _identity(rig.config, gh).trusted_without_access([]) == ()
+    assert gh.asked == []
+
+
+def test_a_command_survives_a_phone_autocapitalising_it():
+    """Every page in `docs/` says the harness is operated from a phone, and a phone
+    autocapitalises the first word of a comment — so the most likely first command anyone ever
+    types is `/Harness work ...`. It used to parse to nothing, and a comment that parses to
+    nothing gets no reply, which is indistinguishable from the harness being asleep.
+
+    The vocabulary is unchanged: the verb is still lower-cased, so only the shouting is
+    forgiven, and `/harness` must still start the line."""
+    from harness.keywords import parse
+
+    assert parse("/Harness work make the cards reachable") == (
+        "work", "make the cards reachable")
+    assert parse("/HARNESS ASK what does the registry do") == (
+        "ask", "what does the registry do")
+    # Still anchored to the start of a line: a mention mid-sentence is prose, not a command.
+    assert parse("as discussed, /Harness stop") is None
+
+
+def test_a_command_addressed_to_the_bot_by_mention_parses():
+    """On the product repository a mention is not decoration, it is the delivery mechanism:
+    `sweep` reads notifications, and the machine account is not subscribed to an issue it has
+    never touched, so `@jgoetzmann-bot` is the only thing that makes a cold thread visible.
+
+    The handoff's own acceptance A3 tells the reader to write `@jgoetzmann-bot /harness work` —
+    which parsed to nothing until this, so the documented way to reach the harness from
+    brightboost could not have worked."""
+    from harness.keywords import parse
+
+    assert parse("@jgoetzmann-bot /harness work") == ("work", "")
+    assert parse("@jgoetzmann-bot /harness work https://example/i/1") == (
+        "work", "https://example/i/1")
+    assert parse("@jgoetzmann-bot @jgoetzmann /Harness ask what is this") == (
+        "ask", "what is this")
+
+
+def test_only_mentions_may_precede_a_command_so_prose_stays_prose():
+    """The anchor is what stops a comment *discussing* the harness from commanding it. Leading
+    @mentions are addressed-to-the-bot; anything else is a sentence."""
+    from harness.keywords import parse
+
+    assert parse("as discussed, /harness stop") is None
+    assert parse("cc @jgoetzmann-bot /harness ask what is this") is None
+    assert parse("email me@example.com /harness stop") is None
+
+
+def test_the_force_flag_is_case_insensitive_like_everything_else():
+    """`--FORCE` used to do two wrong things at once: the flag was not honoured, and it was not
+    removed either, so it survived into the notes handed to a stage as if somebody had meant to
+    write it. A flag whose entire purpose is "start this now" must not be dropped over a shift
+    key — least of all when the verb beside it is already case-insensitive."""
+    from harness.keywords import split_force
+
+    assert split_force("tighten the budget --FORCE") == ("tighten the budget", True)
+    assert split_force("--Force") == ("", True)
+    assert split_force("tighten the budget") == ("tighten the budget", False)

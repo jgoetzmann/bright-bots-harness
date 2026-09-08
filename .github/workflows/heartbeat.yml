@@ -110,11 +110,13 @@ jobs:
             const forkRepo = (cfg.FORK_REPO || '').trim() || (process.env.FORK_REPO || '').trim();
             const upstreamRepo = cfg.UPSTREAM_REPO || 'Bright-Bots-Initiative/brightboost';
 
-            // queue depth per state label (open issues; PRs excluded)
+            // Queue depth per stage label (open issues; PRs excluded). D4/B264 renamed the
+            // family from `harness:*` to `stage:*`; counting the old names here after the
+            // migration would report a board of zeroes and read as "nothing in flight".
             const labels = [
-              'harness:queued', 'harness:proposing', 'harness:proposed', 'harness:approved',
-              'harness:running', 'harness:packaged', 'harness:shipped', 'harness:revising',
-              'harness:merged', 'harness:blocked', 'harness:needs-human', 'harness:abandoned',
+              'stage:queued', 'stage:planning', 'stage:needs-approval', 'stage:ready',
+              'stage:building', 'stage:packaged', 'stage:needs-review', 'stage:revising',
+              'stage:done', 'stage:blocked', 'stage:needs-human', 'stage:dropped',
             ];
             const depth = {};
             for (const label of labels) {
@@ -160,8 +162,27 @@ jobs:
             lines.push(`## harness heartbeat — ${new Date().toISOString()}`);
             lines.push(`run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`);
             lines.push('');
-            lines.push('### queue depth (open issues per state label)');
-            lines.push('| state | count |');
+            // The kill switch, first and loud. While it is engaged every spending workflow
+            // exits 0 before doing anything, so a comment asking for work is a silent no-op --
+            // the run goes green, nothing happens, and this page used to look entirely normal.
+            // That is the worst day a new maintainer can have, and it is one line to prevent.
+            const halted = fs.existsSync('.harness/HALT');
+            if (halted) {
+              lines.push('> ### The kill switch is ON');
+              lines.push('>');
+              lines.push('> `.harness/HALT` exists on `main`, so every spending workflow exits before it does anything. **Comments asking for work will be read and silently ignored.** Deleting that file, in one commit, resumes.');
+              lines.push('');
+            }
+            // The heartbeat is where a maintainer looks first and often the only page they
+            // read, so it carries the two links that turn "what is this" into an action.
+            const inboxRaw = (cfg.INBOX_ISSUE ?? '').toString().trim();
+            const inbox = parseInt(inboxRaw, 10);
+            if (Number.isFinite(inbox) && inbox > 0) {
+              lines.push(`**Want it to do something?** Comment \`/harness work <what>\` on [the inbox](${context.serverUrl}/${owner}/${repo}/issues/${inbox}). New here: [docs/FOR-MAINTAINERS.md](${context.serverUrl}/${owner}/${repo}/blob/main/docs/FOR-MAINTAINERS.md).`);
+              lines.push('');
+            }
+            lines.push('### queue depth (open issues per stage label)');
+            lines.push('| stage | count |');
             lines.push('|---|---|');
             for (const l of labels) lines.push(`| \`${l}\` | ${depth[l]} |`);
             lines.push('');

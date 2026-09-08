@@ -16,3 +16,18 @@
 # Changing this file requires a reviewed PR (see .github/CODEOWNERS).
 3 jgoetzmann
 2 BrightBoost-Tech
+
+# TO ADD A MAINTAINER, TWO THINGS. Both, or their comments are read, denied and ignored:
+#
+#   1. add one line here: the digit 2, a space, then their GitHub handle; and
+#   2. invite them to THIS repository, so GitHub reports them as a collaborator.
+#
+# The second is the half people forget, and it fails silently from their side -- a denied
+# comment looks exactly like the harness being asleep. `harness doctor` names anyone listed
+# here who has no access, which is the only way to see it without asking them to test it.
+# Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
+#
+# Do not park a fill-me-in name here first. `Identity.trust_file_ready()` refuses the WHOLE
+# file when a placeholder token survives anywhere in it, comments included, so a half-filled
+# line does not sit harmlessly: it fails the tier check in `harness doctor` and takes the two
+# real handles down with it. Add the line when you have the handle.

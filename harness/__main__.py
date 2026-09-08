@@ -733,6 +733,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"    no level given for {named}; read as level {trust_mod.DEFAULT_LEVEL} "
             f"({trust_mod.LEVEL_NAMES[trust_mod.DEFAULT_LEVEL]})"
         )
+    # B131's other half. A trust-file line alone grants nothing: GitHub must ALSO report the
+    # commenter as OWNER, MEMBER or COLLABORATOR. Nothing used to say so, and the failure is
+    # silent from the commenter's side -- their comment is read, denied, and ignored, which
+    # looks exactly like the harness being asleep.
+    stranded = _doctor_trust_access(config, args, trusted, payload)
+    if stranded:
+        named = ", ".join(f"@{h}" for h in stranded)
+        problems.append(
+            f"in the trust file but with no access to {config.self_repo}: {named}. The trust "
+            "file is half the gate; GitHub must also report them as OWNER, MEMBER or "
+            "COLLABORATOR. Invite them to the repository, or their commands are ignored."
+        )
     if problems:
         lines.append("degraded:")
         lines.extend(f"  - {p}" for p in problems)
@@ -746,6 +758,29 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------
 # setup
 # --------------------------------------------------------------------------------------
+
+
+def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:
+    """Trusted handles GitHub would refuse anyway; () when there are none or it cannot be told.
+
+    Never a hard failure: the collaborators endpoint needs push access, so tier 0 has no answer,
+    and doctor must not turn "I could not check" into a problem report.
+    """
+    payload["trust"]["access_checked"] = False
+    if config is None or not getattr(config, "self_repo", ""):
+        return ()
+    try:
+        ctx = _context(config, args, run_id="doctor")
+        stranded = Identity(config, ctx.gh).trusted_without_access(trusted)
+    except HarnessError:
+        return ()
+    except Exception:  # pragma: no cover - a check that cannot run must not break doctor
+        return ()
+    if stranded is None:
+        return ()
+    payload["trust"]["access_checked"] = True
+    payload["trust"]["without_access"] = list(stranded)
+    return stranded
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1214,9 +1249,11 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         }
         for row in priority.queue(store=ctx.store, ledger=ctx.ledger)
     ]
-    payload["suggested"] = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=config
-    )
+    # Spelled out rather than left as "reason, or null". An operator reading this wants to know
+    # whether suggested work may run, and a bare `null` reads as "no suggestion" rather than as
+    # "nothing is stopping it".
+    blocked = priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config)
+    payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 

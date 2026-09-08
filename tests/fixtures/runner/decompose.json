@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "1. Widen the bundle-size glob to cover the new chunk names — `scripts/check-bundle-size.js` reads a hard-coded `main.*.js` pattern, which no longer matches anything after the code-split. Widen it and update the unit test that asserts on the old pattern.\n2. Fail the check when the glob matches nothing — the script currently exits 0 on an empty match, which is how the first slice went unnoticed. A reviewer knows this is done when deleting the bundle makes CI red.\n3. Record the budget in one place — the ceiling is repeated in the script and in the workflow. Move it to `package.json` and read it from both.\n",
+  "turns": 3,
+  "cost_usd": 0.0142,
+  "allowance_pct": 0.3,
+  "duration_ms": 9631,
+  "session_id": "fake-decompose-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Split issue 816 into at most 8 independently deliverable sub-issues."
+    },
+    {
+      "role": "assistant",
+      "content": "Three slices; the second depends on the first landing."
+    }
+  ],
+  "error": null
+}

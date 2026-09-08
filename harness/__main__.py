@@ -1418,6 +1418,82 @@ def _item_for_command(ctx, config, cmd) -> int | None:
 _VIA_BY_SURFACE: dict[str, str] = {}
 
 
+def _next_scheduled(now) -> str:
+    """When the next scheduled thing happens, in the words the crons are written in.
+
+    An operator asking "why has nothing happened" is usually asking this. The two answers that
+    matter are when the sweep next reads comments and when the run window next opens.
+    """
+    # feedback.yml: `41 */3 * * 1-5` — minute 41 of hours 0,3,6,…,21, Monday to Friday.
+    nxt = now.replace(minute=41, second=0, microsecond=0)
+    while nxt <= now or nxt.hour % 3 != 0 or nxt.weekday() > 4:
+        nxt = nxt + timedelta(hours=1)
+    return iso(nxt)
+
+
+def _usage_report(ctx, config, now) -> str:
+    """Usage, the queue, and when the next thing happens — the answer to "what is going on".
+
+    Assembled from the same three sources the CLI reads, so a comment and `harness status`,
+    `harness ledger` and `harness dispatch` cannot disagree about the state of the system.
+    """
+    led = ctx.ledger
+    lines: list[str] = []
+
+    halt = led.halt_request()
+    if halt is not None:
+        why = f" — {halt['reason']}" if halt.get("reason") else ""
+        lines.append(
+            f"> **Halted** by @{halt.get('by', 'someone')} at {halt.get('at', 'unknown')}{why}. "
+            "Nothing will spend until `/harness resume`."
+        )
+        lines.append("")
+
+    weekly = led.weekly_utilization()
+    session = led.session_utilization()
+    lines.append("**Usage**")
+    if weekly is None and session is None:
+        lines.append("- not observed yet — the signal arrives on the headers of a real call")
+    else:
+        if weekly is not None:
+            lines.append(
+                f"- weekly **{weekly * 100:.0f}%** of the {config.weekly_usage_stop_pct:.0f}% stop"
+            )
+        if session is not None:
+            lines.append(
+                f"- session **{session * 100:.0f}%** of the "
+                f"{config.session_usage_stop_pct:.0f}% stop"
+            )
+    spent = float(led.window.get("spent_usd", 0.0) or 0.0)
+    lines.append(f"- ${spent:.2f} of ${float(config.weekly_cap_usd):.2f} this window")
+    lines.append("")
+
+    rows = priority.queue(store=ctx.store, ledger=led)
+    lines.append(f"**Queue** — {len(rows)} waiting")
+    if not rows:
+        lines.append("- empty")
+    for row in rows[:10]:
+        mark = " · **forced**" if row.forced else ""
+        note = f" · {row.note}" if row.note else ""
+        lines.append(f"- `{row.cls}` {row.label}{note}{mark}")
+    if len(rows) > 10:
+        lines.append(f"- …and {len(rows) - 10} more")
+    lines.append("")
+
+    blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config)
+    lines.append("**Next**")
+    if halt is not None:
+        lines.append("- nothing, while the halt stands")
+    else:
+        lines.append(f"- sweep reads comments again at **{_next_scheduled(now)}**")
+        lines.append(
+            f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
+            + ("; open now" if in_run_window(config, now) else "; closed now")
+        )
+        lines.append(f"- suggested work: {blocked or 'admitted'}")
+    return "\n".join(lines)
+
+
 def _via_for(cmd) -> str:
     return _VIA_BY_SURFACE.get(cmd.surface, "requested")
 
@@ -1459,9 +1535,15 @@ def _reply(ctx, config, cmd, message: str) -> None:
         return
     repo = config.upstream_repo if outward else config.self_repo
     # `steerable=False` drops the command table: the person reading this reply just gave a
-    # command, so listing the twelve of them back at them is noise on somebody else's thread.
-    body = message.strip() + "\n\n" + links.signature(
-        config, trusted=ctx.trusted, steerable=False
+    # command, so listing all of them back at them is noise on somebody else's thread. The
+    # one-line pointer goes in its place, so every answer says what else can be asked and where
+    # the full list is — without a reply becoming a manual.
+    body = "\n\n".join(
+        [
+            message.strip(),
+            links.reply_pointer(config),
+            links.signature(config, trusted=ctx.trusted, steerable=False),
+        ]
     )
     try:
         ctx.gh.comment(repo, int(cmd.number), body)
@@ -1493,6 +1575,29 @@ def _act_on_command(ctx, config, cmd) -> str:
         item_id, message = STAGES["request"](ctx, text=text, actor=cmd.actor, via=_via_for(cmd))
         return message + _forced(ctx, cmd, item_id)
 
+    if cmd.verb == "usage":
+        return _usage_report(ctx, config, ctx.clock.now())
+
+    if cmd.verb == "halt":
+        # Not `.harness/HALT` and not `HALT_FILE`: a third, deliberately different switch. This
+        # one lives in the ledger every runner fetches, so a comment stops the fleet without a
+        # commit -- and it gates the model calls rather than the job, which is what lets the
+        # sweep keep listening for `/harness resume`.
+        if ctx.ledger.halt_request() is not None:
+            return "already halted"
+        ctx.ledger.request_halt(cmd.actor, cmd.args, iso(ctx.clock.now()))
+        return (
+            f"**Halted** by @{cmd.actor}. Nothing will spend until `/harness resume`. This does "
+            "not stop the workflows themselves — for that, commit a file at `.harness/HALT`."
+        )
+
+    if cmd.verb == "resume":
+        was = ctx.ledger.halt_request()
+        if was is None:
+            return "not halted"
+        ctx.ledger.clear_halt()
+        return f"resumed by @{cmd.actor}; the halt set by @{was.get('by', 'someone')} is lifted"
+
     if cmd.verb == "ask":
         # B274: an answer, and nothing else. No item is resolved because none is involved.
         return STAGES["ask"](ctx, question=cmd.args, actor=cmd.actor)
@@ -1517,6 +1622,11 @@ def _act_on_command(ctx, config, cmd) -> str:
 
     if cmd.verb == "queue":
         if item_id is None:
+            # `queue` means two things and the surface tells them apart. On a work item it puts
+            # that item back; on a thread that IS no work item -- the inbox, most obviously --
+            # there is nothing to requeue, so the only sensible reading is "show me the queue".
+            if cmd.surface in ("inbox", "issue"):
+                return _usage_report(ctx, config, ctx.clock.now())
             return f"no work item for {cmd.surface} {cmd.number}"
         item = ctx.store.get_work_item(item_id)
         if item is None:

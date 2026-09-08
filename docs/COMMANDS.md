@@ -7,12 +7,87 @@ Actions run, and are mostly what the workflows call for you.
 If you only read one section, read [Comment commands](#comment-commands). The CLI is not required to
 use the harness.
 
+- [What it can do, and where you say it](#what-it-can-do-and-where-you-say-it)
+- [Where the harness is reading](#where-the-harness-is-reading)
+- [How it decides what to propose](#how-it-decides-what-to-propose)
 - [Comment commands](#comment-commands)
   - [Asking for work](#asking-for-work) · [Steering work](#steering-work-that-exists) ·
-    [Asking questions](#asking-questions) · [Audits](#audits) · [`--force`](#--force)
+    [Asking questions](#asking-questions) · [Audits](#audits) ·
+    [Looking and stopping](#looking-and-stopping) · [`--force`](#--force)
 - [Who may run what](#who-may-run-what)
 - [CLI subcommands](#cli-subcommands)
 - [Reading the result](#reading-the-result)
+
+---
+
+## What it can do, and where you say it
+
+Nine things, and the place you say each one. **Where matters**: most commands act on the thread
+they are written in, so the same words on the wrong thread do nothing.
+
+| I want to… | Say | Where | Costs |
+|---|---|---|---|
+| give it a job in words | `/harness work <what>` | the **inbox** issue | — |
+| give it a specific ticket | `/harness work <link>` · or **assign the bot** | the inbox, or **that product issue** | — |
+| ask about the codebase | `/harness ask <question>` | **anywhere it reads** | cents |
+| survey for problems | `/harness audit <lens>` | an issue **here** | up to $20 |
+| turn a finding into work | `/harness promote <n>` | **that audit issue** | — |
+| change a plan before code | `/harness revise <notes>` | the **proposal PR** | ~$0.50 |
+| change the code after it | `/harness fix <notes>` · `/harness rebase` | the **delivery PR** | ~$2.50 |
+| stop one thing | `/harness stop` · `/harness reject` | that PR | — |
+| see what is going on | `/harness usage` | **anywhere it reads** | — |
+| stop everything | `/harness halt` | **anywhere it reads** | — |
+
+`go`, `queue` and `split` round out the twelve; they are in the tables below.
+
+## Where the harness is reading
+
+It cannot answer where it cannot hear you, and the two repositories work differently.
+
+| Thread | Heard? | How, and how fast |
+|---|---|---|
+| **The inbox issue**, here | **always** | **polled** on every sweep, whether or not anyone is subscribed — this is why the inbox is the reliable front door |
+| Any issue or PR **here** | yes | the comment event wakes the workflow directly · **minutes** |
+| A **delivery PR** on brightboost | yes | the harness opened it, so it is subscribed · **up to 3 h** |
+| A brightboost issue it has **touched** | yes | it commented or was assigned, so it is subscribed · **up to 3 h** |
+| A **cold** brightboost issue | **only if you `@`-mention it** | nothing else generates a notification for an account that has never touched the thread |
+
+Two consequences worth knowing:
+
+- **On brightboost, `@jgoetzmann-bot` is not politeness — it is the delivery mechanism.** Without it
+  a comment on a fresh issue is never seen at all.
+- **Silence is ambiguous.** A comment from someone outside `trust.txt`, or from someone not invited
+  to the repository, is read, counted as denied, and ignored **with no reply**. That looks exactly
+  like the harness being asleep. `/harness usage` from a trusted handle is the quickest way to tell
+  the difference — if it answers, the harness is listening and the problem was your permissions.
+
+## How it decides what to propose
+
+Work reaches the queue four ways, and **three of the four are somebody asking**:
+
+| Route | Label | Model call to create it? |
+|---|---|---|
+| `/harness work <link>` or a bare number | `via:requested` | **no** — it just records the pointer |
+| `/harness work <sentence>` | `via:requested` | **no** |
+| assigning `@jgoetzmann-bot` | `via:assigned` | **no** — which issues are assigned is a fact, not a judgement |
+| `/harness promote <n>` from an audit | `via:audit` | **no** — the audit already did the reading |
+
+The fourth is the harness's own idea, and it is fenced:
+
+**`via:suggested`** — weekly discovery. It reaches for the product repository **only** when nothing
+anybody asked for is outstanding *and* weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50). It
+queues at most `SUGGEST_MAX_PER_RUN` (5), and for each one from an *unassigned* issue it comments
+there saying it has a plan, has not started, and will not without a green light. Ignoring that
+comment is a complete answer; `/harness go` is the only thing that releases it.
+
+**Then, for every route alike**, one model call turns the item into a *work package*: the diagnosis,
+the approach, the exact files it intends to touch, the behaviours it will add, and how a reviewer
+will know it worked. That package is validated before anyone sees it — including that every path it
+names **actually exists at the base commit** — and published as a pull request adding
+`proposals/<id>-<slug>.md`.
+
+**No code has been written at that point.** That is the whole design: the cheap artefact comes
+first, you approve or redirect it, and only a merge turns it into an implement run.
 
 ---
 
@@ -200,6 +275,43 @@ to `SUGGEST_MAX_PER_RUN` (5).
 
 The two steps are deliberate: one sentence from you must not become eight proposals nobody approved.
 
+### Looking and stopping
+
+#### `usage` — what is going on
+
+```
+/harness usage
+```
+
+Replies in the thread with the spend against both usage stops, the queue in priority order, and
+**when the next thing happens** — the next sweep, whether the run window is open, and whether
+suggested work is admitted. Changes nothing, and level 1 can run it.
+
+This is the first thing to try when nothing seems to be happening. `/harness queue` on the inbox
+does the same, because there is no work item there to put back.
+
+#### `halt` — stop everything
+
+```
+/harness halt the spend looks wrong
+```
+
+Stops the harness **spending anything** until it is resumed. Recorded in the ledger with who
+stopped it and why, and reported at the top of `/harness usage` and by `harness dispatch`. **Level 3
+only.**
+
+It stops the model calls, not the workflow runs — so the sweep keeps listening, which is what lets
+`/harness resume` lift it the same way it went on.
+
+```
+/harness resume
+```
+
+**To stop the workflows themselves**, not just the spending, commit a file at `.harness/HALT`. That
+is the switch that runs before anything else, and no command writes it — see
+[the two kill switches](#two-kill-switches-and-only-one-of-them-stops-actions) below. In fact there
+are three; the table there says which does what.
+
 ### `--force`
 
 ```
@@ -237,9 +349,9 @@ access.
 
 | Level | Who | Commands |
 |---|---|---|
-| **3** | operator | everything, including `reject` and `--force` |
+| **3** | operator | everything, including `reject`, `halt`, `resume` and `--force` |
 | **2** | maintainer | `work` `queue` `go` `audit` `promote` `revise` `fix` `rebase` `split` `stop` |
-| **1** | asker | `ask` |
+| **1** | asker | `ask`, `usage` |
 | **0** | not in the file | nothing; the comment body is never parsed |
 
 Using a verb above your level is answered, not silent: the reply names the level it needed.

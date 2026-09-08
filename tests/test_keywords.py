@@ -356,7 +356,10 @@ def test_B133_parse_each_verb():
     # Delivery 4 added five that ask for work rather than steer work that exists. What B133
     # pins is that each parses; the seven it was written for are still the first seven.
     assert VERBS[:7] == ("revise", "reject", "fix", "rebase", "stop", "split", "queue")
-    assert set(VERBS) - set(VERBS[:7]) == {"work", "audit", "promote", "go", "ask"}
+    assert set(VERBS) - set(VERBS[:7]) == {
+        "work", "audit", "promote", "go", "ask",   # D4: asking for work
+        "usage", "halt", "resume",                 # looking at it, and stopping it
+    }
     assert parse("/harness revise tighten the diagnosis") == ("revise", "tighten the diagnosis")
     assert parse("/harness reject not worth it") == ("reject", "not worth it")
     assert parse("/harness fix") == ("fix", "")

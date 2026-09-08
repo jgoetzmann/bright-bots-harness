@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping
 from harness import errors, priority
 from harness.clock import iso
 from harness.context import Context
-from harness.errors import BudgetExhausted, HarnessError
+from harness.errors import BudgetExhausted, Halted, HarnessError
 from harness.halt import check_halt
 from harness.runner import RunRequest, RunResult
 from harness.runner import base as runner_base
@@ -213,6 +213,16 @@ def run_model(
     the governor (B291): a class-0 `ask` past a usage stop still does not run.
     """
     check_halt(ctx.config.halt_file)
+    # The commanded halt (`/harness halt`). Checked here because this is the single admission
+    # point for every model call, so setting it stops all spending without stopping the sweep
+    # that is listening for `/harness resume`.
+    commanded = ctx.ledger.halt_request()
+    if commanded is not None:
+        raise Halted(
+            f"halted by @{commanded.get('by', 'someone')} at {commanded.get('at', 'unknown')}"
+            + (f": {commanded['reason']}" if commanded.get("reason") else "")
+            + ". `/harness resume` lifts it."
+        )
     refused = priority.admit(
         _class_of_call(ctx, stage, item_id),
         store=ctx.store,

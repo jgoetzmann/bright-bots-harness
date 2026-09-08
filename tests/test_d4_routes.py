@@ -10,6 +10,7 @@ the acceptance list in the handoff is for.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -1290,3 +1291,143 @@ def test_the_first_sweep_asks_github_for_the_bounded_window(tmp_path):
     run_sweep(gh, ledger)
 
     assert gh.since_args() and gh.since_args()[0] != "1970-01-01T00:00:00Z"
+
+
+# ------------------------------------------------------------------------------------------
+# usage / halt / resume, and the disambiguated `queue`
+# ------------------------------------------------------------------------------------------
+
+
+def _cmd(verb, surface="inbox", number=19, args="", actor="jgoetzmann"):
+    from harness.keywords import Command
+
+    return Command(verb=verb, args=args, surface=surface, number=number,
+                   comment_id="IC_x", actor=actor, level=3)
+
+
+def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
+    """The answer to "why is nothing happening", from the same sources the CLI reads, so a
+    comment and `harness status`/`ledger`/`dispatch` cannot disagree."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    rig.store.create_work_item(kind="issue", external_ref="issue:633", title="asked for")
+    rig.ctx.ledger.observe_usage(
+        {"seven_day": {"utilization": 0.4}, "five_hour": {"utilization": 0.2}},
+        "2026-09-07T00:00:00Z",
+    )
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
+
+    assert "**Usage**" in out and "weekly **40%**" in out
+    assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
+    assert "**Next**" in out and "sweep reads comments again at" in out
+
+
+def test_queue_on_the_inbox_shows_the_queue_rather_than_failing(tmp_path):
+    """`queue` means two things and the surface tells them apart: on a work item it puts that
+    item back, and on a thread that IS no work item the only sensible reading is "show me"."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("queue"))
+
+    assert "**Queue**" in out, "the inbox has no item to requeue, so `queue` reports"
+
+
+def test_halt_stops_spending_and_says_who(tmp_path):
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+
+    out = main_mod._act_on_command(
+        rig.ctx, rig.config, _cmd("halt", args="the spend looks wrong"))
+
+    assert "Halted" in out and "jgoetzmann" in out
+    halt = rig.ctx.ledger.halt_request()
+    assert halt["by"] == "jgoetzmann" and halt["reason"] == "the spend looks wrong"
+    # And it is reported where somebody would look for it.
+    assert "Halted" in main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
+
+
+def test_a_commanded_halt_refuses_every_model_call(tmp_path):
+    """The point of the switch. Enforced at `run_model`, the single admission point, so it
+    stops all spending without stopping the sweep that listens for `/harness resume`."""
+    from harness.errors import Halted
+    from harness.stages import run_model
+
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    main_mod._act_on_command(rig.ctx, rig.config, _cmd("halt", args="stop"))
+    before = rig.runner.calls
+
+    with pytest.raises(Halted) as excinfo:
+        run_model(rig.ctx, stage="propose", item_id=None, prompt="x",
+                  allowed_tools=(), disallowed_tools=(), timeout_s=1, cwd=rig.ctx.run_dir)
+
+    assert "halted by @jgoetzmann" in str(excinfo.value)
+    assert "resume" in str(excinfo.value), "the refusal must say how to lift it"
+    assert rig.runner.calls == before
+
+
+def test_resume_lifts_it_and_says_whose_halt(tmp_path):
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    assert "not halted" == main_mod._act_on_command(rig.ctx, rig.config, _cmd("resume"))
+
+    main_mod._act_on_command(rig.ctx, rig.config, _cmd("halt", args="x", actor="jgoetzmann"))
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("resume", actor="nathan"))
+
+    assert "resumed by @nathan" in out and "jgoetzmann" in out
+    assert rig.ctx.ledger.halt_request() is None
+
+
+def test_the_dispatcher_names_who_halted_it(tmp_path):
+    """`dispatch` printing a healthy budget beside a queue that will never move is exactly the
+    failure this avoids: the reason has to name the halt, not the budget."""
+    from harness.clock import parse_iso
+    from harness.dispatcher import Candidate, plan
+    from tests.test_dispatcher import NOW_ISO, PERIOD_START, github_config
+
+    config = github_config(tmp_path, slots=1)
+    candidate = Candidate(issue=4, stage="implement", created_at="2026-09-01T10:00:00Z")
+
+    led = Ledger.empty(PERIOD_START)
+    healthy = plan(now=parse_iso(NOW_ISO), ledger=led, config=config,
+                   candidates=(candidate,), merged=(), halted=False)
+
+    led.request_halt("jgoetzmann", "spend looks wrong", "2026-09-08T10:00:00Z")
+    stopped = plan(now=parse_iso(NOW_ISO), ledger=led, config=config,
+                   candidates=(candidate,), merged=(), halted=False)
+
+    assert stopped.start == (), "a halted harness starts nothing"
+    assert "halted by @jgoetzmann" in stopped.reason
+    assert "spend looks wrong" in stopped.reason
+    # The same inputs without the halt do start it, so the halt is what changed the answer.
+    assert healthy.start == (4,)
+
+
+def test_halt_and_resume_are_level_three():
+    """A level that can lift a halt is a level that can undo somebody else's decision to stop."""
+    from harness.keywords import VERB_LEVEL
+
+    assert VERB_LEVEL["halt"] == 3 and VERB_LEVEL["resume"] == 3
+    assert VERB_LEVEL["usage"] == 1, "reading the queue changes nothing"
+
+
+def test_the_commanded_halt_stops_discovers_spend_gate():
+    """`discover.yml` decides whether to spend from a `case` on the dispatcher's reason. It
+    matched bare `halted` EXACTLY, so `halted by @someone` fell through to `proceed=true` — a
+    harness a human had just stopped would have spent a discover call anyway."""
+    import re
+
+    workflow = pathlib.Path(".github/workflows/discover.yml").read_text(encoding="utf-8")
+    clause = re.search(r'^\s*"rate limited".*\)$', workflow, re.M)
+
+    assert clause is not None, "discover.yml's stop clause moved"
+    assert "halted*" in clause.group(0), (
+        "the stop clause must glob `halted*`, or a commanded halt falls through and spends"
+    )

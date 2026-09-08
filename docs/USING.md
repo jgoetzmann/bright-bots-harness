@@ -169,7 +169,9 @@ To steer it instead of merging, see the next section — `/harness fix`, `/harne
 
 ## The `/harness` comment commands
 
-The form is `/harness <verb> [args]` at the start of a line (leading whitespace is allowed). Everything after the verb to the end of that line is the argument, and is passed to the stage as notes.
+The form is `/harness <verb> [args]` at the start of a line. Everything after the verb to the end of that line is the argument, and is passed to the stage as notes.
+
+Leading whitespace is allowed, so is any capitalisation (`/Harness` is what a phone gives you), and so are leading `@mentions` — `@jgoetzmann-bot /harness work` is a command. That last one is not a convenience: on the product repository the mention is the *delivery mechanism*, because `sweep` reads notifications and the machine account is not subscribed to a thread it has never touched. Nothing else may precede the verb, so a sentence that merely mentions `/harness` is still a sentence.
 
 | Verb | What it does | Put it on | Picked up within |
 |---|---|---|---|

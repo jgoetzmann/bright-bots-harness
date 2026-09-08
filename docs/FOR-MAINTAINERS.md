@@ -41,6 +41,17 @@ link to it. Asking twice is one item, not two.
 **Or assign `@jgoetzmann-bot` to a brightboost issue.** That is the same gesture in the place you
 already work, and it needs no comment at all.
 
+**Or comment on the brightboost issue itself**, addressing the bot:
+
+```
+@jgoetzmann-bot /harness work
+```
+
+The mention is not politeness there — it is the delivery mechanism. The harness finds comments on
+brightboost by reading its notifications, and it is not subscribed to an issue it has never touched,
+so the mention is the only thing that makes the thread visible to it at all. On *this* repository
+you do not need it.
+
 ## 3. Your two moves
 
 Everything else the harness does is bookkeeping. There are exactly two moments it needs you, and
@@ -84,7 +95,8 @@ says so in the issue. Ignoring one is a complete answer.
 
 ## 5. The rest of the vocabulary
 
-Put any of these at the **start of a line** in a comment.
+Put any of these at the **start of a line** in a comment — after an `@mention` if you are
+addressing the bot, and in any capitalisation your phone gives you.
 
 | Command | Where | What it does |
 |---|---|---|
@@ -127,11 +139,22 @@ is invisible from your side.
 
 A comment that fails either half is read, counted as denied, and ignored. There is no reply,
 because replying to anyone who types `/harness` on a public repository is how a bot becomes a
-nuisance. So silence means one of three things: you are missing half the gate, the verb needed a
-level you do not have (that one *does* reply), or the sweep has not run yet — see below.
+nuisance.
+
+So total silence means one of these, most likely first:
+
+1. **The kill switch is on.** If `.harness/HALT` exists on `main`, every spending workflow exits
+   before it does anything — the run goes green and nothing happens. The weekly heartbeat says so
+   in a banner at the top; that is the fastest way to check.
+2. **You are missing half the gate** — most often the invite, not the trust-file line.
+3. **The sweep has not run yet.** On brightboost that is up to three hours, and over a weekend
+   until Monday. See below.
+
+A verb you do not have the level for is *not* on this list: that one replies, and names the level
+it needed.
 
 `harness doctor` names anyone in the trust file who has no access, which is the only way to see
-this without asking someone to test it for you.
+that half without asking someone to test it for you.
 
 ## 8. Latency — why nothing happened yet
 

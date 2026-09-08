@@ -493,6 +493,28 @@ Nothing below has been run **live**. What has been verified, and how:
 | The audit refusal | `harness discover --mode audit` with no lens, no network, no model call | A9 |
 | The environment | labels created, `INBOX_ISSUE` set to #19 and pinned, one legacy `harness:ops` label migrated | preconditions for A1–A8 |
 
+### Three things the acceptance list would have failed on, fixed before it was run
+
+Found by reading the list back against the parser rather than by a failing test:
+
+- **A3 could not have worked.** It says to comment `@jgoetzmann-bot /harness work` on a brightboost
+  issue, and the mention is not decoration there — `sweep` reads notifications and the machine
+  account is not subscribed to a thread it has never touched, so the mention is the *only* thing
+  that makes a cold thread visible. `/harness` was anchored to the start of a line, so that exact
+  string parsed to nothing. Leading @mentions are now allowed, and nothing else is: prose that
+  merely contains `/harness` is still prose.
+- **A phone breaks every command.** Every page here says the harness is operated from a browser or
+  a phone, and a phone autocapitalises the first word of a comment — so the most likely first
+  command anyone ever types is `/Harness work ...`. The match is case-insensitive now; the verb was
+  already lower-cased, so the vocabulary is unchanged.
+- **`--FORCE` did two wrong things at once** (A15/A16): the flag was not honoured, and it was not
+  removed either, so it survived into the notes handed to a stage as if it had been meant. A flag
+  whose entire purpose is "start this now" must not be dropped over a shift key.
+
+Each of these is silent from the commenter's side, which is what makes them expensive: a comment
+that parses to nothing gets no reply, deliberately, so it is indistinguishable from the harness
+being switched off.
+
 The gap that matters: **every one of those ran against a fake runner, a fake GitHub and a fake
 checkout.** Delivery 3 found four defects live — the argv limit, the pre-push hook, the `MAX_PATH`
 rmtree and the recovered `external_ref` — and not one was visible to the suite, because each lived

@@ -162,6 +162,17 @@ jobs:
             lines.push(`## harness heartbeat — ${new Date().toISOString()}`);
             lines.push(`run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`);
             lines.push('');
+            // The kill switch, first and loud. While it is engaged every spending workflow
+            // exits 0 before doing anything, so a comment asking for work is a silent no-op --
+            // the run goes green, nothing happens, and this page used to look entirely normal.
+            // That is the worst day a new maintainer can have, and it is one line to prevent.
+            const halted = fs.existsSync('.harness/HALT');
+            if (halted) {
+              lines.push('> ### The kill switch is ON');
+              lines.push('>');
+              lines.push('> `.harness/HALT` exists on `main`, so every spending workflow exits before it does anything. **Comments asking for work will be read and silently ignored.** Deleting that file, in one commit, resumes.');
+              lines.push('');
+            }
             // The heartbeat is where a maintainer looks first and often the only page they
             // read, so it carries the two links that turn "what is this" into an action.
             const inboxRaw = (cfg.INBOX_ISSUE ?? '').toString().trim();

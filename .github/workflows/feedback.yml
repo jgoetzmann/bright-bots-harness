@@ -27,6 +27,11 @@ jobs:
     name: feedback
     # Comment events only wake the job when the body carries a /harness command. This is a cost
     # filter on runner minutes; trust (B131) and parsing (B133) happen inside harness/keywords.py.
+    #
+    # `contains()` is case-insensitive, which is what makes `/Harness` (a phone autocapitalising
+    # the first word) reach the parser that now accepts it. If that ever changed, the command
+    # would not be lost -- the three-hourly schedule still picks it up through notifications --
+    # it would only be slow. The parser is the authority on the form; this is an optimisation.
     if: >-
       (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment')
       || contains(github.event.comment.body, '/harness')

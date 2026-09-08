@@ -52,7 +52,7 @@ from harness.store import (
 )
 # Not re-exported by `harness.store`: it is the GitHub backend's label vocabulary. `relabel`
 # needs it because it is the only mapping that reads BOTH label families (B265).
-from harness.store.github import STATE_OF_LABEL
+from harness.store.github import STATE_OF_LABEL, _label_names
 from harness import trust as trust_mod
 from harness.trust import load_trust
 
@@ -1693,19 +1693,39 @@ def cmd_relabel(args: argparse.Namespace) -> int:
     # that asks GitHub to filter by `LABELS[state]`, which is the NEW `stage:` name -- so it can
     # only ever return issues that have already been migrated, and the one command whose whole
     # job is to find `harness:*` issues could never see one.
-    listing = ctx.gh.get(f"/repos/{config.self_repo}/issues?state=open&per_page=100")
+    # `paginate`, not `get`: `get` is one request, and a one-shot migration that stops at the
+    # first hundred issues is worse than one that refuses, because it reports success.
+    listing = ctx.gh.paginate(f"/repos/{config.self_repo}/issues?state=open&per_page=100")
     inbox = int(getattr(config, "inbox_issue", 0) or 0)
     found: list[tuple[int, str, list[str]]] = []
+    ambiguous: list[int] = []
     for issue in listing if isinstance(listing, list) else []:
         if not isinstance(issue, dict) or "pull_request" in issue:
             continue
         number = int(issue.get("number", 0) or 0)
         if number <= 0 or number == inbox:
             continue
-        names = [str((row or {}).get("name") or "") for row in (issue.get("labels") or [])]
-        state = next((STATE_OF_LABEL[n] for n in names if n in STATE_OF_LABEL), None)
-        if state is not None:
-            found.append((number, state, names))
+        # `_label_names` rather than a hand-rolled comprehension: GitHub serves a label as an
+        # object here and as a bare string elsewhere, and that helper already handles both.
+        names = _label_names(issue)
+        states = {STATE_OF_LABEL[n] for n in names if n in STATE_OF_LABEL}
+        if len(states) > 1:
+            # `_state_of` REFUSES this rather than picking one, and so must this. Taking the
+            # first label in GitHub's serialisation order would resolve `harness:blocked` +
+            # `stage:ready` differently depending on array order -- either silently moving the
+            # item between states in a command whose contract is that it changes none, or
+            # writing two `stage:` labels and wedging the issue for every later reader.
+            ambiguous.append(number)
+            continue
+        if states:
+            found.append((number, states.pop(), names))
+
+    if ambiguous:
+        raise HarnessError(
+            f"issue(s) {sorted(ambiguous)} carry more than one state label, so their stage is "
+            "ambiguous and relabelling them would have to guess. Leave one state label on each "
+            "and run this again."
+        )
 
     busy = sorted(n for n, state, _names in found if state in RELABEL_BUSY_STATES)
     if busy:

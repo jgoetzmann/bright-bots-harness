@@ -305,3 +305,69 @@ def test_for_maintainers_quotes_the_run_window_the_config_sets():
         assert day in text and time in text, (
             f"FOR-MAINTAINERS.md does not name the configured run window bound {bound!r}"
         )
+
+
+# --------------------------------------------------------------------------------------
+# COMMANDS.md — the page that claims to document every command
+# --------------------------------------------------------------------------------------
+
+
+def _commands_md() -> str:
+    return _read("docs/COMMANDS.md")
+
+
+def test_commands_md_documents_every_verb_and_invents_none():
+    """Its whole claim is completeness. A verb missing from it is a capability nobody learns
+    about; a verb in it that does not exist is a command that silently does nothing when typed."""
+    from harness.keywords import VERBS
+
+    named = {m.group(1).lower() for m in re.finditer(r"/harness (\w+)", _commands_md())}
+    documented = named & set(VERBS)
+
+    assert set(VERBS) - documented == set(), f"undocumented verbs: {sorted(set(VERBS) - named)}"
+    assert len(documented) == len(VERBS)
+
+
+def test_commands_md_documents_every_cli_subcommand():
+    """Same claim, other surface. Checked against the parser rather than a hand-kept list."""
+    from harness.__main__ import COMMANDS
+
+    text = _commands_md()
+    missing = sorted(name for name in COMMANDS if f"harness {name}" not in text)
+
+    assert missing == [], f"CLI subcommands absent from COMMANDS.md: {missing}"
+
+
+def test_commands_md_states_each_verbs_real_level():
+    """The level table is the one thing a reader acts on before trying a command, and getting it
+    wrong wastes somebody's time on a refusal they were told would not happen."""
+    from harness.keywords import VERB_LEVEL
+
+    text = _commands_md()
+    # The page carries a "who may run what" table. Its rows are checked individually, because
+    # "the word `reject` and the string `level 3` both appear somewhere on the page" is not the
+    # same claim as "the table says reject is level 3".
+    rows = {
+        int(m.group(1)): m.group(2)
+        for m in re.finditer(r"^\|\s*\*\*(\d)\*\*\s*\|[^|]*\|([^|]*)\|", text, re.M)
+    }
+    assert set(rows) >= {1, 2, 3}, f"the level table is missing rows: {sorted(rows)}"
+
+    for verb, level in VERB_LEVEL.items():
+        assert verb in rows[level], (
+            f"`{verb}` is level {level}; the table's level-{level} row does not name it"
+        )
+
+
+def test_commands_md_does_not_confuse_the_two_kill_switches():
+    """`harness halt` writes `HALT_FILE` (the gitignored root file, which stops a local run);
+    `.harness/HALT` is committed and is what the workflows read. An operator told the CLI command
+    stops the fleet would believe they had switched it off while it kept spending."""
+    text = _commands_md()
+
+    assert "harness halt" in text
+    # The page must not claim the CLI command creates the committed switch.
+    assert not re.search(r"harness halt[^\n]*\.harness/HALT", text), (
+        "COMMANDS.md says `harness halt` creates .harness/HALT; it creates HALT_FILE"
+    )
+    assert "HALT_FILE" in text, "the page must name the file `harness halt` actually writes"

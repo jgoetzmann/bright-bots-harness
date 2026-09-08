@@ -5,8 +5,8 @@ You have been given level 2 on an automated agent that works on
 page is the whole of what you need to use it. It takes about five minutes and assumes you will never
 open a terminal.
 
-If you want the depth instead, [USING.md](USING.md) is the reference and this page is its front
-door.
+If you want the depth instead, [COMMANDS.md](COMMANDS.md) has every command with a worked
+example, and [USING.md](USING.md) is the reference behind both.
 
 ---
 

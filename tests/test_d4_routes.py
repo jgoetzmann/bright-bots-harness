@@ -1212,3 +1212,81 @@ def test_B244_asking_for_work_is_requested_wherever_it_was_typed():
 
     for surface in ("product_issue", "inbox", "issue", "delivery_pr"):
         assert main_mod._via_for(Cmd(surface)) == "requested", surface
+
+
+# ------------------------------------------------------------------------------------------
+# Defects the adversarial pass on the go-live PR found
+# ------------------------------------------------------------------------------------------
+
+
+def test_B283_force_is_actually_recorded_not_merely_announced(tmp_path):
+    """`_forced` built the sentence and skipped the side effect: the reply said the item was
+    exempt from the run window while `ledger.forced()` stayed empty, so the dispatcher never saw
+    it and a forced item waited for Monday exactly like an unforced one. The reply was a lie."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:900", title="t")
+
+    class Cmd:
+        force = True
+        actor = "jgoetzmann"
+
+    message = main_mod._forced(rig.ctx, Cmd(), item_id)
+
+    assert rig.ctx.ledger.forced() == (item_id,), "the exemption must be recorded, not just said"
+    assert "forced by @jgoetzmann" in message
+    assert any("forced by @jgoetzmann" in row["message"] for row in rig.store.events(item_id))
+
+
+def test_B283_no_force_records_nothing(tmp_path):
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:901", title="t")
+
+    class Cmd:
+        force = False
+        actor = "nathan"
+
+    assert main_mod._forced(rig.ctx, Cmd(), item_id) == ""
+    assert rig.ctx.ledger.forced() == ()
+
+
+def test_stop_on_a_delivery_pr_lands_in_a_legal_state():
+    """`shipped -> abandoned` is pinned illegal, and `stop` is documented on the delivery pull
+    request — which is open exactly when the item is `shipped`. It closed the PR, then raised,
+    leaving a closed pull request attached to a live item and posting no reply at all."""
+    from harness.store.sqlite import TRANSITIONS
+
+    assert "abandoned" not in TRANSITIONS["shipped"], "the premise of the fix"
+    assert "blocked" in TRANSITIONS["shipped"], "the target `stop` now uses"
+    # And still terminal-by-abandon everywhere that allows it, so `reject` at gate 1 is unchanged.
+    assert "abandoned" in TRANSITIONS["proposed"]
+
+
+def test_the_first_sweep_does_not_reach_back_to_the_epoch():
+    """An unset cursor means "this has never run here". Reading that as 1970 meant the first
+    sweep after the kill switch came off would act on every `/harness` comment ever left — a
+    stale `stop` from a month ago is history, not an instruction."""
+    from harness.keywords import FIRST_SWEEP_LOOKBACK_HOURS, _EPOCH, _first_sweep_since
+
+    since = _first_sweep_since("2026-09-08T12:00:00Z")
+
+    assert since == "2026-09-08T09:00:00Z"
+    assert FIRST_SWEEP_LOOKBACK_HOURS == 3, "one poll interval of overlap, so nothing is lost"
+    # A clock we cannot read falls back to the old behaviour rather than inventing a window.
+    assert _first_sweep_since("nonsense") == _EPOCH
+
+
+def test_the_first_sweep_asks_github_for_the_bounded_window(tmp_path):
+    """End to end through `sweep`: the `since` handed to the notifications API is the bounded
+    one, not the epoch."""
+    from tests.test_keywords import FakeGh, fresh_ledger, run_sweep
+
+    ledger = fresh_ledger(None)
+    gh = FakeGh(threads=[])
+
+    run_sweep(gh, ledger)
+
+    assert gh.since_args() and gh.since_args()[0] != "1970-01-01T00:00:00Z"

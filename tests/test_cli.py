@@ -2460,3 +2460,49 @@ def test_b267_relabel_refuses_while_a_job_is_in_flight():
     import harness.__main__ as main_mod
 
     assert main_mod.RELABEL_BUSY_STATES == ("proposing", "implementing", "revising")
+
+
+def test_doctor_a_stranded_trusted_handle_is_a_warning_not_an_outage(
+    tmp_path, monkeypatch, capsys
+):
+    """`harness doctor` gates feedback.yml and implement.yml under `set -e`, so anything that
+    reaches `problems` stops the harness entirely.
+
+    A trusted handle without repository access does not stop the harness — it stops that
+    person's comments, and everyone else's keep working. Filed as a problem, it took the whole
+    fleet down within an hour of going live: `feedback` and `implement` failed on every run,
+    and `ops` filed an issue about each one. A diagnostic added to make a silent failure visible
+    became a louder failure of its own.
+    """
+    monkeypatch.chdir(tmp_path)
+    write_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        cli, "_doctor_trust_access", lambda config, args, trusted, payload: ("someone",)
+    )
+
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert code == 0, "a stranded handle must not make doctor exit non-zero"
+    assert "warnings (the harness still runs)" in out
+    assert "@someone" in out and "no access" in out
+    assert "degraded:" not in out
+
+
+def test_doctor_a_real_problem_still_degrades(tmp_path, monkeypatch, capsys):
+    """The other half: splitting the lists must not make doctor stop failing on things that
+    genuinely stop the harness."""
+    monkeypatch.chdir(tmp_path)
+    write_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "HALT").write_text("stop\n", encoding="utf-8")
+
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert code == 3 and "degraded:" in out

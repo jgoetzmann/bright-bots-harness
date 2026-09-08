@@ -621,6 +621,9 @@ def _doctor_pin(root: Path, problems: list[str]) -> str:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     problems: list[str] = []
+    #: Things worth telling an operator that do NOT stop the harness running. Kept apart
+    #: from `problems` because `doctor`'s exit code gates two spending workflows.
+    warnings: list[str] = []
 
     binaries: dict[str, str | None] = {}
     for name in REQUIRED_BINARIES:
@@ -749,15 +752,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     stranded = _doctor_trust_access(config, args, trusted, payload)
     if stranded:
         named = ", ".join(f"@{h}" for h in stranded)
-        problems.append(
+        # A WARNING, not a problem, and the difference is why there are two lists.
+        # `harness doctor` gates feedback.yml and implement.yml under `set -e`, so anything
+        # reaching `problems` stops the harness entirely. This condition does not stop the
+        # harness -- it stops THAT PERSON'S comments, and everyone else's keep working.
+        # Filed as a problem it took the whole fleet down within an hour of going live: a
+        # diagnostic added to make a silent failure visible became a louder failure itself.
+        warnings.append(
             f"in the trust file but with no access to {config.self_repo}: {named}. The trust "
             "file is half the gate; GitHub must also report them as OWNER, MEMBER or "
             "COLLABORATOR. Invite them to the repository, or their commands are ignored."
         )
+    payload["warnings"] = list(warnings)
+    if warnings:
+        lines.append("warnings (the harness still runs):")
+        lines.extend(f"  - {w}" for w in warnings)
     if problems:
         lines.append("degraded:")
         lines.extend(f"  - {p}" for p in problems)
-    else:
+    elif not warnings:
         lines.append("all checks passed")
 
     _emit(payload, "\n".join(lines), args)

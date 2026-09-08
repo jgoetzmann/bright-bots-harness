@@ -174,3 +174,76 @@ a change*, which makes it as result-defining as the three modules in `verify_pin
 (`gates.py`, `packager.py`, `redact.py`). Adding it to the pinned set is a one-line change, but
 `PINNED` is frozen by RUN-DECISIONS-D2 §10 and asserted verbatim by a test, so widening it is a
 spec decision rather than a defect fix. Flagged here for the next spec revision.
+
+---
+
+## D55–D63 — Delivery 4: asking for work, and an order to the queue
+
+Implemented 2026-09-05 on `feat/delivery-4-labels`. The handoff
+([docs/delivery/DELIVERY-4-HANDOFF.md](docs/delivery/DELIVERY-4-HANDOFF.md)) carries the full
+argument for each; what follows is what changed in the code and the two places the design was
+wrong until the tests said so.
+
+**D55 — the inbox is not the record.** A pinned issue you comment on; the harness replies in-thread
+and opens an ordinary work item. The queue is already "one issue, one stage label" and everything is
+built on that, so a request that becomes work should become one of those rather than a new species.
+
+One thing the handoff did not anticipate: `keywords.sweep` reads *notifications*, and an account is
+not subscribed to an issue it has never touched. On the notification feed alone, the very first
+request ever made is the one that silently vanishes — which is precisely the failure the inbox
+exists to prevent. The inbox is therefore **polled** on every sweep, and de-duplicated by the same
+`ledger.seen(comment_id)` that guards every other command.
+
+**D56 — three label families.** Shipped in the previous change (B264–B268). `via:` now also reaches
+the priority queue, which needed a work item to be able to say how it arrived on *both* store
+backends — so `via` became a real column on sqlite (an additive `ALTER TABLE`, default
+`'requested'`) and is read off the label on GitHub.
+
+**D57 — audits produce a list, not work.** One findings issue, `kind:audit`, and deliberately **no
+stage label**: without one the store cannot see it, so an audit issue can never enter the queue.
+That is structural, rather than a rule somewhere that remembers to skip it. Findings become work
+only through `/harness promote`, and each then goes through the ordinary proposal gate.
+
+**D58 — suggested work, and the green light.** Weekly discovery runs only when nothing anybody asked
+for is outstanding, queues at most `SUGGEST_MAX_PER_RUN`, and comments once — ever — on each
+unassigned product issue it picked up, saying plainly that it has not started and will not without a
+green light.
+
+**D59 — `product_issue` and `inbox` are surfaces of their own.** Neither resolves through the thread
+number. The two repositories number independently, so `/harness stop` on brightboost #633 must not
+park harness work item #633, and a stray `stage:` label on the inbox must not queue the inbox.
+
+**D60 — levels.** `trust.txt` is `<level> <handle>`; a bare handle is level 1, least privilege on
+ambiguity. A digit-first token with a level outside 1–3 refuses the whole line rather than guessing
+— a test caught the first version of this registering a handle literally named `9`.
+
+**D61 — I-18, the harness never works on itself.** Refused in four places, each a different way of
+arriving: `load_config` (`UPSTREAM_REPO`/`REPO` == `SELF_REPO`), `discover.request` (a pasted link),
+`clone._source_repo` (the checkout) and `deliver` (the pull request, before the state check and long
+before the push). A system that can rewrite the rules it is governed by has no rules.
+
+**D62 — `--force`.** Level 3 only, recorded in the **ledger** beside the B209 carry rather than on
+the item, because it is a scheduling exemption and not a property of the work — the same item forced
+on Thursday and left alone on Friday is the same piece of work. That also means neither store needed
+a column for it. It lifts the calendar and nothing else, and the reply says so, because a flag named
+`force` invites the assumption that it lifts more.
+
+**D63 — one queue for every model call.** `run_model` is now the single admission point: every call
+is classed (`answer`, `unblock`, `directed`, `audit`, `suggested`) and admitted before the governor
+is consulted. Priority decides what runs *next*; it never decides that something may run which the
+governor would have refused, and the order is priority-then-governor so a class-0 `ask` past a usage
+stop still does not run.
+
+### Two things this change got wrong first
+
+Both were caught by the existing suite, and both are the same mistake — a new feature quietly
+changing an old contract:
+
+- **`harness dispatch` stopped emitting JSON.** Printing the queue after the plan produced two
+  documents on one stream, and `dispatch.yml` parses that stream. The queue is now a `queue` key
+  *inside* the plan, with `start`, `reason` and `skipped` unchanged and still first.
+- **Suggested work was refused on *unobserved* usage.** The subscription signal arrives on the
+  headers of a real model call, so a fresh ledger, every tier-0 run and every local run have none.
+  Treating unknown as "no headroom" would have silently disabled the discovery route that has worked
+  since Delivery 1. Unknown is not zero, but it is not empty either: the two usage stops are what
+  guard the allowance, and they are checked on every call regardless.

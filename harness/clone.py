@@ -59,9 +59,19 @@ def _source_repo(config) -> str:
     upstream. With no push there is no reason to prefer the fork at all.
     """
     fork = (getattr(config, "fork_repo", "") or "").strip()
-    if fork and int(getattr(config, "permission_tier", 0) or 0) >= 2:
-        return fork
-    return config.repo
+    chosen = fork if fork and int(getattr(config, "permission_tier", 0) or 0) >= 2 else config.repo
+    # B281/I-18: the last place a clone can be pointed at the harness itself. `load_config`
+    # already refuses `REPO == SELF_REPO`, so reaching this means the configuration was built
+    # some other way -- a test rig, a hand-made Config, a future caller. A second line, because
+    # a checkout of the harness is the one thing that turns "propose a change" into "propose a
+    # change to the rules that govern proposing changes".
+    self_repo = str(getattr(config, "self_repo", "") or "").strip()
+    if self_repo and chosen.strip().lower() == self_repo.lower():
+        raise CloneError(
+            f"refusing to clone {chosen}: it is the harness's own repository, and the harness "
+            "does not work on itself (I-18). Changes to the harness are made by a person."
+        )
+    return chosen
 
 
 #: The Windows extended-length prefix and its UNC form, spelled without an escape so no
@@ -204,14 +214,22 @@ class CloneManager:
         *,
         branch: str | None = None,
         from_fork: bool = False,
+        run_id: str | None = None,
+        read_only: bool = False,
     ) -> Lease:
         """Fresh clone under ``runs_dir/item-<id>/clone``; ``branch`` re-acquires an existing
-        one."""
+        one.
+
+        ``run_id`` names the directory for a read that belongs to no work item -- an `ask`, say,
+        which reads the repository and creates nothing. ``read_only`` stays on the default
+        branch and cuts none of its own, so a stage that only reads cannot leave one behind
+        (B274).
+        """
         blockers = self.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))
 
-        run_id = f"item-{item.id}"
+        run_id = run_id or f"item-{item.id}"
         run_dir = self._assert_under_runs_dir(Path(self.config.runs_dir) / run_id)
         clone_path = self._assert_under_runs_dir(run_dir / "clone")
 
@@ -269,6 +287,9 @@ class CloneManager:
                 raise CloneError(f"git switch {branch} failed ({code}): {err.strip()[-2000:]}")
             base_sha = self._fork_point(clone_path, head_sha, item)
             branch_name = branch
+        elif read_only:
+            base_sha = head_sha
+            branch_name = ""
         else:
             base_sha = head_sha
             branch_name = branch_name_for(item)

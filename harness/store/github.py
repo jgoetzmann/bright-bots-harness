@@ -138,6 +138,15 @@ def _timestamp(value: object) -> datetime | None:
         return None
 
 
+def _via_of(issue: Mapping[str, Any]) -> str:
+    """The `via:` label's value (B264/D56), or `requested` when the item predates the family."""
+    wanted = {label: name for name, label in VIA_LABELS.items()}
+    for label in _label_names(issue):
+        if label in wanted:
+            return wanted[label]
+    return "requested"
+
+
 def _item_from(issue: Mapping[str, Any], meta: Mapping[str, Any], state: str) -> WorkItem:
     number = int(issue["number"])
     parent = _int_or_none(meta.get("parent_id"))
@@ -169,6 +178,7 @@ def _item_from(issue: Mapping[str, Any], meta: Mapping[str, Any], state: str) ->
         attempts=_int_or_none(meta.get("attempts")) or 0,
         created_at=str(issue.get("created_at") or ""),
         updated_at=str(issue.get("updated_at") or ""),
+        via=_via_of(issue),
     )
 
 
@@ -224,10 +234,22 @@ class GitHubStore:
         query += f"&per_page={PER_PAGE}"
         rows = self._pages(f"/repos/{self.self_repo}/issues?{query}")
         # GitHub serves pull requests from the issues endpoint; they are not work items.
-        return [row for row in rows if "pull_request" not in row]
+        # B241: neither is the inbox, whatever labels it carries. It is a conversation that
+        # happens to live in an issue, and a stray `stage:` label on it -- applied by hand, or
+        # by a `relabel` that did not know better -- would otherwise put the inbox itself in
+        # the queue and start the harness working on its own request form.
+        inbox = int(getattr(self.config, "inbox_issue", 0) or 0)
+        return [
+            row
+            for row in rows
+            if "pull_request" not in row and int(row.get("number", 0) or 0) != inbox
+        ]
 
     def _issue(self, number: int) -> dict | None:
-        """The issue, read fresh (B102); None when it does not exist or is a pull request."""
+        """The issue, read fresh (B102); None when it does not exist, is a pull request, or is
+        the inbox (B241)."""
+        if int(getattr(self.config, "inbox_issue", 0) or 0) == int(number):
+            return None
         try:
             data = self.gh.get(f"/repos/{self.self_repo}/issues/{int(number)}")
         except GitHubError as exc:

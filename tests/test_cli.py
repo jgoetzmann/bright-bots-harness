@@ -196,17 +196,20 @@ def test_B65_the_global_config_flag_selects_the_env_file(tmp_path, monkeypatch, 
     capsys.readouterr()
 
 
-def test_B65_discover_mode_audit_exits_2_and_says_not_implemented(tmp_path, monkeypatch, capsys):
+def test_B256_discover_mode_audit_without_a_lens_exits_1_and_asks_for_one(
+    tmp_path, monkeypatch, capsys
+):
+    """B256: the mode is real now; an audit with no lens is not. Refused with no network."""
     monkeypatch.chdir(tmp_path)
     write_repo(tmp_path)
     assert cli.main(["init"]) == 0
     forbid_network(monkeypatch)
     capsys.readouterr()
 
-    assert cli.main(["discover", "--mode", "audit"]) == 2
+    assert cli.main(["discover", "--mode", "audit"]) == 1
 
     captured = capsys.readouterr()
-    assert "not implemented in delivery 1" in captured.err
+    assert "needs a lens" in captured.err
 
 
 def test_B65_approve_on_a_discovered_item_exits_1(tmp_path, monkeypatch, capsys):
@@ -797,7 +800,11 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     tmp_path, monkeypatch, capsys
 ):
     """A33 / B122 (handoff §6.4, D2-R6.4): `dispatch` emits {"start","reason","skipped"} in that
-    order, lists the approved item, and starts no stage run and no clone."""
+    order, lists the approved item, and starts no stage run and no clone.
+
+    B292 appends `queue` and `suggested` after those three. Appended, not woven in: `dispatch.yml`
+    reads the first three by name, so their presence, order and meaning are the contract and the
+    new keys must not disturb them."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -807,8 +814,11 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
 
     plan = dispatch_plan(capsys)
 
-    assert list(plan) == ["start", "reason", "skipped"]
+    assert list(plan)[:3] == ["start", "reason", "skipped"]
+    assert list(plan)[3:] == ["queue", "suggested"]
     assert plan["start"] == [item_id]
+    assert [row["item"] for row in plan["queue"]] == [item_id]
+    assert plan["queue"][0]["class"] == "directed" and plan["queue"][0]["forced"] is False
     assert plan["skipped"] == {}
     assert plan["reason"] == "budget 100% remaining, 1 of max 1 slots"
     assert stage_run_count(tmp_path) == 0

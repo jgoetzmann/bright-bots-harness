@@ -69,7 +69,7 @@ its own roots, or ask you for any access beyond `public_repo` on its own account
 
 ## Steering it
 
-From a comment on any harness issue or PR, `/harness <verb>` on its own line. These seven are
+From a comment on any harness issue or PR, `/harness <verb>` on its own line. These twelve are
 the whole list:
 
 | Verb | Where | What it does |
@@ -81,6 +81,20 @@ the whole list:
 | `stop` | Delivery PR | Closes the PR and abandons the item |
 | `split` | Issue here | Decomposes it into at most `MAX_SUBISSUES` sub-issues, in this repository only |
 | `queue` | Issue here | Returns the item to `discovered`; a no-op if it is already there |
+| `work` | Inbox issue here, or an issue upstream | Opens a work item and queues it. A pasted issue link tracks that issue; a sentence becomes an item of its own |
+| `ask` | Anywhere | Answers a question about the product repository. Changes nothing at all |
+| `audit` | Issue here | Reads the product repository through one lens and opens **one** findings issue. Creates no work items |
+| `promote` | Audit issue here | Turns findings into work items, ticking them off in the audit issue |
+| `go` | The upstream issue, or the item here | Green-lights a suggestion the harness made, so it may be proposed |
+
+Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the
+operator) everything, level 2 (maintainers) everything that queues or steers work, level 1
+(trusted) `ask` alone, level 0 nothing — a level-0 comment body is never even parsed. A refusal is
+answered rather than silent, naming the level the verb needed.
+
+Append `--force` to start something now rather than at the next run window. Level 3 only, and it
+lifts **the calendar and nothing else**: the kill switch, both usage stops, every USD cap and both
+human gates are unchanged.
 
 A command is acted on once; editing the comment does not re-trigger it. On this repository the
 comment events wake `feedback.yml` directly and latency is minutes. On the product repository
@@ -90,7 +104,15 @@ comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions 
 
 ## Giving it work
 
-**Assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
+**Comment on the inbox issue, or assign the bot.** Two gestures, either is enough.
+
+`/harness work make the activity cards keyboard reachable` on the pinned inbox issue opens a work
+item and replies in-thread with a link to it. A pasted product-repository issue link does the same
+thing as directed discovery. The thread holds the conversation; the issue holds the state — and the
+inbox is polled rather than waited for, because a notification only arrives on a thread the account
+is already subscribed to.
+
+**Or assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
 (D53): `feedback.yml` sweeps for assigned issues every three hours on a weekday, opens a work
 item for each one, and leaves alone any it has already queued. No label to invent, no Actions
 tab, no model call — which issues are assigned is a fact, not a judgement.
@@ -144,7 +166,7 @@ subcommands.
 | [docs/SAFETY.md](docs/SAFETY.md) | The tiers and the invariants, each with a command that proves it. Read before raising the tier |
 | [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) | What a work package and a review package contain, and how to reconstruct a run from one |
 | [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) | Running the same harness in the `bb` container, off the schedule |
-| [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D54, the amendment log for the frozen specs |
+| [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D63, the amendment log for the frozen specs |
 | [docs/delivery/](docs/delivery/README.md) | The frozen specs and their runnable review protocols. For reviewing, not operating |
 
 ## Current status

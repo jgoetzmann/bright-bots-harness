@@ -9,6 +9,7 @@ built in this file. Nothing touches the network, the wall clock, a real
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,7 +88,15 @@ ANTHROPIC_API_KEY=
 
 FROZEN_AT = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-RUNNER_STAGES = ("discover", "propose", "implement", "package", "diagnose_gate_failure")
+RUNNER_STAGES = (
+    "discover",
+    "propose",
+    "implement",
+    "package",
+    "diagnose_gate_failure",
+    "ask",
+    "audit",
+)
 
 
 def write_env(tmp_path: Path, *, fullsend: str = "false") -> Path:
@@ -165,6 +174,23 @@ def write_runner_fixtures(
         "implement": "Edited scripts/check-bundle-size.js to widen the glob.",
         "package": "Package assembled.",
         "diagnose_gate_failure": "The unit test asserts on the old glob; update it.",
+        "ask": "The game registry lives in `src/games/registry.ts:12` and maps a slug to a "
+               "lazy import.",
+        "audit": "\n".join(
+            [
+                "## Findings",
+                "",
+                "1. **Activity cards are not keyboard reachable** - `src/a.tsx` - high - a "
+                "div with onClick takes no focus.",
+                "2. **Three copies of the retry helper** - `src/api/x.ts` - low - the same "
+                "backoff is written three times.",
+                "",
+                "## Not reached",
+                "",
+                "- src/legacy, ran out of room",
+                "",
+            ]
+        ),
     }
     for stage in RUNNER_STAGES:
         payload = {
@@ -221,6 +247,13 @@ class FakeGh:
         self._pulls = list(pulls)
         self._branches = list(branches)
         self.calls: list[tuple] = []
+        # D4 writes: what the harness said, and where. Recorded rather than performed, so a test
+        # can assert on the exact words a person will read.
+        self.can_write = True
+        self.created_issues: list[dict] = []
+        self.comments_posted: list[tuple[str, int, str]] = []
+        self.updated_bodies: list[tuple[str, int, str]] = []
+        self.next_issue_number = 5000
 
     def issue(self, number: int) -> dict:
         self.calls.append(("issue", number))
@@ -260,9 +293,50 @@ class FakeGh:
         self.calls.append(("branches",))
         return list(self._branches)
 
+    def issue_comments(self, repo: str, number: int) -> list[dict]:
+        self.calls.append(("issue_comments", repo, number))
+        return [
+            {"body": body, "id": index, "node_id": f"IC_{index}"}
+            for index, (r, n, body) in enumerate(self.comments_posted)
+            if r == repo and n == int(number)
+        ]
+
+    def create_issue(self, title: str, body: str, labels) -> dict:
+        self.calls.append(("create_issue", title))
+        number = self.next_issue_number
+        self.next_issue_number += 1
+        row = {"number": number, "title": title, "body": body, "labels": list(labels)}
+        self.created_issues.append(row)
+        return row
+
+    def comment(self, repo: str, number: int, body: str) -> dict:
+        self.calls.append(("comment", repo, number))
+        self.comments_posted.append((repo, int(number), body))
+        return {"id": len(self.comments_posted)}
+
+    def update_issue_body(self, repo: str, number: int, body: str) -> dict:
+        self.calls.append(("update_issue_body", repo, number))
+        self.updated_bodies.append((repo, int(number), body))
+        for row in self.created_issues:
+            if row["number"] == int(number):
+                row["body"] = body
+        return {"number": int(number), "body": body}
+
     def get(self, path: str):
         self.calls.append(("get", path))
+        match = re.search(r"/issues/(\d+)$", path)
+        if match is not None:
+            for row in self.created_issues:
+                if row["number"] == int(match.group(1)):
+                    return dict(row)
         return {}
+
+    def write_calls(self) -> list[tuple]:
+        return [
+            call
+            for call in self.calls
+            if call[0] in ("create_issue", "comment", "update_issue_body")
+        ]
 
     def rate_budget_remaining(self) -> int:
         return 50
@@ -279,14 +353,17 @@ class FakeClones:
     def preflight(self) -> list[str]:
         return []
 
-    def acquire(self, item) -> Lease:
-        path = self.runs_dir / f"item-{item.id}" / "clone"
+    def acquire(self, item, *, branch=None, from_fork=False, run_id=None, read_only=False):
+        # `run_id` and `read_only` are D4's: a read that belongs to no work item names its own
+        # directory and cuts no branch.
+        name = run_id or f"item-{item.id}"
+        path = self.runs_dir / name / "clone"
         path.mkdir(parents=True, exist_ok=True)
         lease = Lease(
-            run_id=f"item-{item.id}",
+            run_id=name,
             path=path,
             base_sha="a" * 40,
-            branch="harness/fix-816-x",
+            branch="" if read_only else (branch or "harness/fix-816-x"),
         )
         self.acquired.append(lease)
         return lease
@@ -569,17 +646,19 @@ def test_B58_ignore_allowlist_admits_an_issue_without_the_allowlist_label(tmp_pa
 
 
 # --------------------------------------------------------------------------
-# B59 - audit mode
+# B59/B256 - audit mode
 # --------------------------------------------------------------------------
 
 
-def test_B59_audit_mode_raises_not_implemented_and_makes_no_model_call(tmp_path):
+def test_B256_audit_mode_without_a_lens_is_refused_before_any_model_call(tmp_path):
+    """B256 (superseding B59): the mode exists now, but "audit everything" does not. A lens is
+    what bounds the surface area, and the budget cannot bound it on its own."""
     rig = triage_rig(tmp_path, issues=(gh_issue(101),))
 
-    with pytest.raises(NotImplementedInDelivery1) as excinfo:
+    with pytest.raises(HarnessError) as excinfo:
         discover(rig.ctx, mode="audit", target=None, lens=None)
 
-    assert "not implemented in delivery 1" in str(excinfo.value)
+    assert "needs a lens" in str(excinfo.value)
     assert rig.runner.calls == 0
     assert rig.store.list_work_items() == []
 

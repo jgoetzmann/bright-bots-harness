@@ -223,7 +223,7 @@ def _who(entry: str, trusted: Iterable[str] | None) -> str:
 def reply_pointer(config: Any) -> str:
     """One line telling the reader of a reply what else they can say, and where the list is.
 
-    Not part of `signature`: a command reply wants the pointer without the twelve-row table,
+    Not part of `signature`: a command reply wants the pointer without the full table,
     and an ops alert -- `steerable=False` -- wants neither, because nobody answers an alert.
     """
     self_repo = str(getattr(config, "self_repo", "") or "")

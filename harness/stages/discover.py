@@ -41,7 +41,7 @@ def discover(
     ignore_allowlist: bool = False,
 ) -> list[int]:
     """Find work. Returns the work-item ids produced, best first."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     if mode == "audit":
         # B247: an audit produces one findings issue and no work items, so it returns no ids.

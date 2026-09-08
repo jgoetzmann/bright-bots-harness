@@ -69,7 +69,7 @@ its own roots, or ask you for any access beyond `public_repo` on its own account
 
 ## Steering it
 
-From a comment on any harness issue or PR, `/harness <verb>` on its own line. These twelve are
+From a comment on any harness issue or PR, `/harness <verb>` on its own line. These fifteen are
 the whole list:
 
 | Verb | Where | What it does |

@@ -212,17 +212,10 @@ def run_model(
     right now; the governor says whether there is allowance for it. Priority never overrules
     the governor (B291): a class-0 `ask` past a usage stop still does not run.
     """
-    check_halt(ctx.config.halt_file)
-    # The commanded halt (`/harness halt`). Checked here because this is the single admission
-    # point for every model call, so setting it stops all spending without stopping the sweep
-    # that is listening for `/harness resume`.
-    commanded = ctx.ledger.halt_request()
-    if commanded is not None:
-        raise Halted(
-            f"halted by @{commanded.get('by', 'someone')} at {commanded.get('at', 'unknown')}"
-            + (f": {commanded['reason']}" if commanded.get("reason") else "")
-            + ". `/harness resume` lifts it."
-        )
+    # Both switches, via the context: the file and the commanded halt. This is the last line of
+    # defence rather than the only one -- every stage checks at its own entry too, so a halted
+    # harness does not clone a repository and run `npm ci` before finding out.
+    ctx.check_halt()
     refused = priority.admit(
         _class_of_call(ctx, stage, item_id),
         store=ctx.store,

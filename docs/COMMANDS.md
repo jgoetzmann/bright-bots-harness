@@ -22,7 +22,7 @@ use the harness.
 
 ## What it can do, and where you say it
 
-Nine things, and the place you say each one. **Where matters**: most commands act on the thread
+Ten things, and the place you say each one. **Where matters**: most commands act on the thread
 they are written in, so the same words on the wrong thread do nothing.
 
 | I want to… | Say | Where | Costs |
@@ -32,13 +32,14 @@ they are written in, so the same words on the wrong thread do nothing.
 | ask about the codebase | `/harness ask <question>` | **anywhere it reads** | cents |
 | survey for problems | `/harness audit <lens>` | an issue **here** | up to $20 |
 | turn a finding into work | `/harness promote <n>` | **that audit issue** | — |
-| change a plan before code | `/harness revise <notes>` | the **proposal PR** | ~$0.50 |
-| change the code after it | `/harness fix <notes>` · `/harness rebase` | the **delivery PR** | ~$2.50 |
+| change a plan before code | `/harness revise <notes>` | the **proposal PR** | ~$0.50, a fresh `propose` |
+| change the code after it | `/harness fix <notes>` · `/harness rebase` | the **delivery PR** | ~$1.00, a `revise` cycle |
 | stop one thing | `/harness stop` · `/harness reject` | that PR | — |
 | see what is going on | `/harness usage` | **anywhere it reads** | — |
 | stop everything | `/harness halt` | **anywhere it reads** | — |
+| start it again | `/harness resume` | **anywhere it reads** | — |
 
-`go`, `queue` and `split` round out the twelve; they are in the tables below.
+`go`, `queue` and `split` round out the fifteen verbs; all of them are in the tables below.
 
 ## Where the harness is reading
 
@@ -48,14 +49,17 @@ It cannot answer where it cannot hear you, and the two repositories work differe
 |---|---|---|
 | **The inbox issue**, here | **always** | **polled** on every sweep, whether or not anyone is subscribed — this is why the inbox is the reliable front door |
 | Any issue or PR **here** | yes | the comment event wakes the workflow directly · **minutes** |
-| A **delivery PR** on brightboost | yes | the harness opened it, so it is subscribed · **up to 3 h** |
-| A brightboost issue it has **touched** | yes | it commented or was assigned, so it is subscribed · **up to 3 h** |
+| A **delivery PR** on brightboost | yes | the harness opened it, so it is subscribed · **up to 3 h on a weekday** |
+| A brightboost issue it has **touched** | yes | it commented or was assigned, so it is subscribed · **same** |
 | A **cold** brightboost issue | **only if you `@`-mention it** | nothing else generates a notification for an account that has never touched the thread |
 
 Two consequences worth knowing:
 
 - **On brightboost, `@jgoetzmann-bot` is not politeness — it is the delivery mechanism.** Without it
   a comment on a fresh issue is never seen at all.
+- **"Up to 3 hours" is a weekday figure.** The sweep's cron is `41 */3 * * 1-5`, so a comment left on
+  brightboost after Friday evening waits until Monday morning — around **51 hours** at worst.
+  `/harness usage` prints the next scheduled sweep, so you never have to work it out.
 - **Silence is ambiguous.** A comment from someone outside `trust.txt`, or from someone not invited
   to the repository, is read, counted as denied, and ignored **with no reply**. That looks exactly
   like the harness being asleep. `/harness usage` from a trusted handle is the quickest way to tell
@@ -74,11 +78,17 @@ Work reaches the queue four ways, and **three of the four are somebody asking**:
 
 The fourth is the harness's own idea, and it is fenced:
 
-**`via:suggested`** — weekly discovery. It reaches for the product repository **only** when nothing
-anybody asked for is outstanding *and* weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50). It
-queues at most `SUGGEST_MAX_PER_RUN` (5), and for each one from an *unassigned* issue it comments
-there saying it has a plan, has not started, and will not without a green light. Ignoring that
-comment is a complete answer; `/harness go` is the only thing that releases it.
+**`via:suggested`** — weekly discovery, and the only route the harness starts by itself. Three
+conditions, all required: nothing anybody asked for is outstanding, weekly usage is under
+`SUGGEST_MIN_HEADROOM_PCT` (50), and the issue carries `ALLOWLIST_LABEL` (`harness-ok`) — which
+nothing on brightboost does today, so in practice this route finds nothing unless someone passes
+`ignore_allowlist`. It queues at most `SUGGEST_MAX_PER_RUN` (5).
+
+Be clear about what the green light does and does not gate: the **proposal is written first**, and
+*then* the harness comments on the unassigned issue saying it has a plan, has not started the
+implementation, and will not without a green light. So a suggestion costs one `propose` call before
+anybody is asked. `/harness go` gates the expensive half — the implement run — not the cheap one.
+Ignoring the comment is a complete answer.
 
 **Then, for every route alike**, one model call turns the item into a *work package*: the diagnosis,
 the approach, the exact files it intends to touch, the behaviours it will add, and how a reviewer
@@ -105,7 +115,7 @@ Three things are forgiven, because all three are what people actually type:
 | `as discussed, /harness stop` | **not a command** — prose that mentions it is still prose |
 
 One more that bites: **only the first `/harness` line in a comment is read**, and if its verb is not
-one of the twelve, the whole comment is discarded rather than falling through to the next line.
+one of the fifteen, the whole comment is discarded rather than falling through to the next line.
 
 ### Asking for work
 
@@ -308,9 +318,8 @@ It stops the model calls, not the workflow runs — so the sweep keeps listening
 ```
 
 **To stop the workflows themselves**, not just the spending, commit a file at `.harness/HALT`. That
-is the switch that runs before anything else, and no command writes it — see
-[the two kill switches](#two-kill-switches-and-only-one-of-them-stops-actions) below. In fact there
-are three; the table there says which does what.
+is the switch that runs before anything else, and no command writes it. There are three switches
+in total — see [the table below](#three-kill-switches-and-what-each-one-stops).
 
 ### `--force`
 
@@ -433,6 +442,7 @@ harness decompose 4     # split into sub-issues
 ```bash
 harness halt            # create the LOCAL halt file (HALT_FILE, default ./HALT)
 harness resume          # remove it
+harness resume --commanded   # also lift a halt set by `/harness halt`
 harness sweep           # poll notifications, parse /harness commands, act on them
 harness relabel         # migrate open issues from harness:* to stage:/kind:/via:
 harness sync-fork       # fast-forward the fork from upstream; loud on divergence
@@ -451,18 +461,31 @@ harness local-loop      # the container loop: dispatch, run, sleep — what the 
 (you or the harness), and refuses to claim readiness the credential does not have. See
 [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`.
 
-### Two kill switches, and only one of them stops Actions
+### Three kill switches, and what each one stops
 
 This trips people, so it is worth being exact.
 
-| Switch | Written by | Stops |
-|---|---|---|
-| **`.harness/HALT`**, committed on `main` | **you, with a commit** — no CLI command writes it | **every spending workflow**, before the dispatcher and before a single token |
-| `HALT` at the repo root (`HALT_FILE`) | `harness halt` | a **local** `harness run`, at the next stage boundary, exit 5 |
+| Switch | Set by | Stops | Cleared by |
+|---|---|---|---|
+| **`.harness/HALT`**, committed on `main` | **a commit** — no command writes it | **every spending workflow**, before the dispatcher and before a single token | deleting the file |
+| **the commanded halt** | `/harness halt` (level 3) | **every model call and every stage**, on every runner that reads the ledger | `/harness resume` |
+| `HALT` at the repo root (`HALT_FILE`) | `harness halt` | a **local** `harness run` only | `harness resume` |
 
-The root file is gitignored, so an Actions runner never sees it — `harness halt` does **not** stop
-the fleet. **To stop everything, commit a file at `.harness/HALT`.** Any content. Deleting it
-resumes. One commit either way, from a phone, and you never need permission to use it.
+`/harness resume` is the ordinary way to lift a commanded halt, but it arrives through the sweep —
+so if the *sweep* is what is broken, `harness resume --commanded` lifts it from a terminal without
+depending on the thing that is stuck.
+
+The root file is gitignored, so an Actions runner never sees it — the **CLI** `harness halt` does
+not stop the fleet, while the **comment** `/harness halt` does.
+
+**The strongest is the commit.** `.harness/HALT` runs before the job does anything at all, so it
+holds even if the ledger cannot be read. Any content. Deleting it resumes. One commit either way,
+from a phone, and you never need permission to use it.
+
+> **Local mode caveat.** The commanded halt travels in `state/ledger.json`, which Actions runners
+> fetch from the `harness-state` branch. A container running `local-loop` against its own local
+> ledger will not see a halt set from a comment — stop that with `harness halt` or by stopping the
+> container.
 
 ---
 

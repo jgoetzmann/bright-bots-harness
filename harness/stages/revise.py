@@ -164,7 +164,7 @@ def revise(
     lease: Lease | None = None,
 ) -> Lease | None:
     """One revision cycle: the lease when a branch was revised, ``None`` when it stopped first."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
     if item is None:
@@ -297,7 +297,7 @@ def _revise_leased(
             "prepared the re-acquired clone: "
             + (", ".join(f"{r.name} (exit {r.exit_code})" for r in prep) or "nothing to install")
         )
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     upstream = str(ctx.config.upstream_repo)
     fork_owner = str(ctx.config.fork_repo or "").split("/")[0]
@@ -393,7 +393,7 @@ def _gate_and_ship(
 ) -> Lease | None:
     """B136: the complete sequence, then either blocked (red) or pushed and shipped (green)."""
     item_id = int(item.id)
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     baseline_red = _baseline_red(ctx, item_id)
     final = list(implement_mod.GATE_RUNNER(lease.path, baseline=False))
     implement_mod._write_gates(ctx, "final", final)
@@ -464,7 +464,7 @@ def _gate_and_hand_over(ctx: Context, item: Any, lease: Lease) -> Lease | None:
     the same rule as B136 - a resumed item gets no easier ride than a revised one.
     """
     item_id = int(item.id)
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     baseline_red = _baseline_red(ctx, item_id)
     final = list(implement_mod.GATE_RUNNER(lease.path, baseline=False))
     implement_mod._write_gates(ctx, "final", final)

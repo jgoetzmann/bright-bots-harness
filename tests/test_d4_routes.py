@@ -15,6 +15,9 @@ import pathlib
 import pytest
 
 from harness import priority
+from harness.stages import STAGES as _STAGES
+
+STAGES_implement = _STAGES["implement"]
 from harness.errors import BudgetExhausted, HarnessError
 from harness.ledger import Ledger
 from harness.stages.ask import QUESTION_LIMIT, ask
@@ -1321,7 +1324,9 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
 
     assert "**Usage**" in out and "weekly **40%**" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
-    assert "**Next**" in out and "sweep reads comments again at" in out
+    assert "**Next**" in out and "next scheduled sweep is" in out
+    # The ceiling quoted is the one the dispatcher spends against, not the raw cap.
+    assert "spendable this window" in out and "reserve" in out
 
 
 def test_queue_on_the_inbox_shows_the_queue_rather_than_failing(tmp_path):
@@ -1430,4 +1435,63 @@ def test_the_commanded_halt_stops_discovers_spend_gate():
     assert clause is not None, "discover.yml's stop clause moved"
     assert "halted*" in clause.group(0), (
         "the stop clause must glob `halted*`, or a commanded halt falls through and spends"
+    )
+
+
+def test_a_commanded_halt_refuses_implement_before_it_clones_anything(tmp_path):
+    """It used to be enforced only in `run_model`, which sits *after* the clone — so a halted
+    harness cloned the product repository, ran `npm ci` and the whole baseline gate sequence,
+    churned the upstream issue's labels, and only then exited 5. On `feedback.yml`'s reconcile
+    step that repeated every three hours for as long as the halt stood."""
+    from harness.errors import Halted
+    from harness.stages.propose import propose
+    from tests.test_stages import approved_item, proposable
+
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.clones.acquired.clear()
+    rig.log.clear()
+    rig.ctx.ledger.request_halt("jgoetzmann", "spend looks wrong", "2026-09-08T09:00:00Z")
+
+    with pytest.raises(Halted) as excinfo:
+        STAGES_implement(rig.ctx, item_id)
+
+    assert "halted by @jgoetzmann" in str(excinfo.value)
+    assert rig.clones.acquired == [], "nothing may be cloned under a halt"
+    assert rig.log == [], "no gates, no npm ci, nothing"
+    assert rig.store.get_work_item(item_id).state == "approved", "and no label churn"
+
+
+def test_a_halt_does_not_eat_the_resume_behind_it(tmp_path):
+    """Every command in a batch is marked seen while the batch is COLLECTED, so re-raising
+    `Halted` out of the loop consumed the rest of them permanently — including the
+    `/harness resume` that lifts the halt. The inbox is polled first, so a spending verb sitting
+    in front of the resume was the likely case, not the exotic one."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    main_mod._act_on_command(rig.ctx, rig.config, _cmd("halt", args="stop"))
+
+    # The command that raises, then the one that must still run.
+    refused = main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
+    assert "Halted" in refused, "usage still answers under a halt"
+
+    lifted = main_mod._act_on_command(rig.ctx, rig.config, _cmd("resume"))
+
+    assert "resumed by" in lifted
+    assert rig.ctx.ledger.halt_request() is None
+
+
+def test_the_sweep_loop_records_a_halt_instead_of_aborting():
+    """The loop must catch `Halted` per command, not re-raise it."""
+    import inspect
+
+    import harness.__main__ as main_mod
+
+    source = inspect.getsource(main_mod.cmd_sweep)
+
+    assert "except Halted as exc:" in source
+    assert "except Halted:\n                raise" not in source, (
+        "re-raising aborts the batch and consumes every command behind it"
     )

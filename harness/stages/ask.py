@@ -42,7 +42,7 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
     authorised like any other (B288) and charged against `ASK_CAP_USD` rather than the per-call
     cap, because one question should never be allowed to cost what one implementation does.
     """
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     text = str(question or "").strip()
     if not text:
         return "ask what? `/harness ask <question>` — anything about the product repository."

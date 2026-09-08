@@ -192,7 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
     archive.add_argument("--with-transcript", action="store_true", dest="with_transcript")
 
     sub.add_parser("halt", help="create the halt file")
-    sub.add_parser("resume", help="remove the halt file")
+    resume = sub.add_parser("resume", help="remove the halt file")
+    resume.add_argument(
+        "--commanded",
+        action="store_true",
+        help="also lift a halt set by `/harness halt` (recorded in the ledger)",
+    )
 
     # Delivery 2 (handoff §3.2)
     sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
@@ -841,9 +846,13 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     in_flight = [dataclasses.asdict(r) for r in ctx.store.list_stage_runs(status="running")]
 
-    payload = {"queue": queue, "budget": budget, "in_flight": in_flight}
+    halt = ctx.ledger.halt_request()
+    payload = {"queue": queue, "budget": budget, "in_flight": in_flight, "halt": halt}
 
-    lines = ["queue:"]
+    # First, and before the numbers: reporting a healthy queue and budget while nothing can run
+    # is the failure the dispatcher's `head` reason exists to prevent.
+    lines = _halt_lines(ctx.ledger)
+    lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.append("budget:")
     lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
@@ -1133,9 +1142,23 @@ def cmd_halt(args: argparse.Namespace) -> int:
 def cmd_resume(args: argparse.Namespace) -> int:
     config = _load(args)
     disengage(config.halt_file)
+    lines = [f"resumed - {config.halt_file} removed"]
+    lifted = None
+    if getattr(args, "commanded", False):
+        # The escape hatch. `/harness resume` is the ordinary way to lift a commanded halt, but
+        # it arrives through the sweep -- so if the sweep is what is broken, there has to be a
+        # way out that does not depend on it.
+        ctx = _context(config, args, run_id="resume")
+        lifted = ctx.ledger.halt_request()
+        if lifted is not None:
+            ctx.ledger.clear_halt()
+            ctx.save_ledger()
+            lines.append(f"commanded halt by @{lifted.get('by', 'someone')} lifted")
+        else:
+            lines.append("no commanded halt was set")
     _emit(
-        {"halt_file": str(config.halt_file), "halted": False},
-        f"resumed - {config.halt_file} removed",
+        {"halt_file": str(config.halt_file), "halted": False, "commanded_halt_lifted": lifted},
+        "\n".join(lines),
         args,
     )
     return EXIT_OK
@@ -1464,14 +1487,26 @@ def _usage_report(ctx, config, now) -> str:
                 f"- session **{session * 100:.0f}%** of the "
                 f"{config.session_usage_stop_pct:.0f}% stop"
             )
+    # The ceiling the DISPATCHER actually spends against, not the raw cap: `RESERVE_PCT` is held
+    # back, so quoting the cap overstates what is available by exactly the reserve.
     spent = float(led.window.get("spent_usd", 0.0) or 0.0)
-    lines.append(f"- ${spent:.2f} of ${float(config.weekly_cap_usd):.2f} this window")
+    ceiling = float(config.weekly_cap_usd) * (1.0 - float(config.reserve_pct) / 100.0)
+    lines.append(
+        f"- ${spent:.2f} of ${ceiling:.2f} spendable this window "
+        f"(${float(config.weekly_cap_usd):.2f} cap less {float(config.reserve_pct):.0f}% reserve)"
+    )
     lines.append("")
 
-    rows = priority.queue(store=ctx.store, ledger=led)
-    lines.append(f"**Queue** — {len(rows)} waiting")
-    if not rows:
-        lines.append("- empty")
+    try:
+        rows = priority.queue(store=ctx.store, ledger=led)
+        readable = True
+    except Exception as exc:  # pragma: no cover - a store that cannot answer says so
+        rows, readable = [], False
+        lines.append(f"**Queue** — could not be read: {exc}")
+    if readable:
+        lines.append(f"**Queue** — {len(rows)} waiting")
+        if not rows:
+            lines.append("- empty")
     for row in rows[:10]:
         mark = " · **forced**" if row.forced else ""
         note = f" · {row.note}" if row.note else ""
@@ -1483,9 +1518,15 @@ def _usage_report(ctx, config, now) -> str:
     blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config)
     lines.append("**Next**")
     if halt is not None:
-        lines.append("- nothing, while the halt stands")
+        lines.append(
+            "- nothing spends while the halt stands. `/harness resume` lifts it — comments here "
+            f"are read within minutes, and the next scheduled sweep is **{_next_scheduled(now)}**"
+        )
     else:
-        lines.append(f"- sweep reads comments again at **{_next_scheduled(now)}**")
+        lines.append(
+            f"- comments **here** wake it within minutes; on `{config.upstream_repo}` the next "
+            f"scheduled sweep is **{_next_scheduled(now)}**"
+        )
         lines.append(
             f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
             + ("; open now" if in_run_window(config, now) else "; closed now")
@@ -1727,8 +1768,15 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                     result = "\n\n".join(part for part in (result, cmd.note) if part)
                 record["result"] = result
                 _reply(ctx, config, cmd, result)
-            except Halted:
-                raise
+            except Halted as exc:
+                # A commanded halt refuses THIS command; it must not abort the batch. Every
+                # command in a batch is already marked seen while the batch is collected, so
+                # re-raising here consumed the rest of them permanently -- including the
+                # `/harness resume` that lifts the halt, which the inbox poll makes likely to
+                # sit behind a spending verb rather than in front of it. The switch would have
+                # been one a comment could set and no comment could clear.
+                record["result"] = str(exc)
+                _reply(ctx, config, cmd, str(exc))
             except RateLimited as exc:
                 record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
                 print(json.dumps(record, sort_keys=False))
@@ -1765,6 +1813,22 @@ def _self_repo_comments(ctx, config) -> list[dict]:
                 }
             )
     return comments
+
+
+def _halt_lines(led) -> list[str]:
+    """The commanded halt, wherever an operator looks for the state of the system.
+
+    `harness status` and `harness ledger` reporting a healthy queue and a healthy budget while
+    nothing can run is the same failure the dispatcher's `head` reason exists to prevent.
+    """
+    halt = led.halt_request()
+    if halt is None:
+        return []
+    why = f": {halt['reason']}" if halt.get("reason") else ""
+    return [
+        f"HALTED by @{halt.get('by', 'someone')} at {halt.get('at', 'unknown')}{why}",
+        "  nothing will spend until `/harness resume` (or `harness resume --commanded`)",
+    ]
 
 
 def _usage_lines(led, config) -> list[str]:
@@ -1907,6 +1971,7 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     now_iso = iso(ctx.clock.now())
     window = dict(led.window)
     lines = [f"ledger {ctx.ledger_path}" + ("  (rebuilt)" if rebuilt else "")]
+    lines.extend(_halt_lines(led))
     lines.append("window:")
     lines.append(f"  period_start        {window.get('period_start')}")
     lines.append(f"  spent_usd           {float(window.get('spent_usd') or 0.0):.2f}")
@@ -1928,6 +1993,11 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     lines.append(f"history: {len(led.history)} entr{'y' if len(led.history) == 1 else 'ies'}")
     cursor = (led.cursors or {}).get("notifications_last_seen")
     lines.append(f"notifications cursor: {cursor or 'none'}")
+    forced = led.forced()
+    if forced:
+        lines.append(
+            "window-exempt (--force): " + ", ".join(f"#{n}" for n in forced)
+        )
     print("\n".join(lines))
     return EXIT_OK
 

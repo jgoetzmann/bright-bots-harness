@@ -395,7 +395,7 @@ def build_pr_body(
 
 def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     """Push the branch and open the upstream PR; its URL, or ``""`` when the client cannot write."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     # B282/I-18: first, before the state check and long before the push. A delivery targets the
     # product repository; one that targeted the harness would be the harness proposing a change
     # to itself, with only a reviewer's attention between it and the rules that govern it.
@@ -493,7 +493,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
                 push=lambda path, refspec: ctx.gh.push_ref(path, refspec, remote_repo=fork),
             )
             ctx.record_decision(f"fork main is a fast-forward of upstream at {fork_sha}")
-        check_halt(ctx.config.halt_file)
+        ctx.check_halt()
 
         # 2. rebase the work branch onto upstream's default branch, inside the clone.
         conflicted = _rebase(the_lease, upstream, default_branch)
@@ -509,7 +509,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         ctx.record_decision(
             f"rebased {the_lease.branch} onto upstream/{default_branch} cleanly"
         )
-        check_halt(ctx.config.halt_file)
+        ctx.check_halt()
 
         # 3. push the branch to the fork — never to upstream (§5.3).
         ctx.gh.push_branch(the_lease.path, the_lease.branch, remote_repo=fork)

@@ -75,6 +75,11 @@ class Command:
     force: bool = False
     #: The actor's level, so a refusal can say what it would have needed.
     level: int = 0
+    #: Something to tell the actor that is NOT part of what they asked for -- a refused
+    #: `--force`, say. It rides beside `args` rather than inside it: folding it in made the
+    #: refusal notice part of the request, so `/harness work #5 --force` from level 2 stopped
+    #: looking like a pointer to issue 5 and opened a free-text item titled with the notice.
+    note: str = ""
 
 
 def comment_id(comment: Mapping[str, Any]) -> str:
@@ -177,10 +182,16 @@ def command_from(
         )
 
     args, forced = split_force(raw_args)
+    note = ""
     if forced and level < MAX_LEVEL:
         # B284: refused, but the command itself still stands -- the item is queued and waits.
+        # The notice goes to `note`, never into `args`: `args` is what the actor asked for, and
+        # a stage reads it as such.
         forced = False
-        args = f"{args} (--force ignored: it needs level {MAX_LEVEL})".strip()
+        note = (
+            f"`--force` needs level {MAX_LEVEL} and @{actor} is level {level}, so this waits "
+            "for the run window like anything else."
+        )
     return Command(
         verb=verb,
         args=args,
@@ -190,6 +201,7 @@ def command_from(
         actor=actor,
         force=forced,
         level=level,
+        note=note,
     )
 
 

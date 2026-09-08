@@ -603,9 +603,38 @@ def _propose_leased(
         f"touched_paths={len(front['touched_paths'])} depends_on={front['depends_on']}"
     )
     ctx.store.append_event(item_id, "info", f"proposal published: {location}")
+    _offer_the_green_light(ctx, item_id, location)
 
     log.info("proposed item %s -> %s (%s)", item_id, spec_path, location)
     return spec_path
+
+
+def _offer_the_green_light(ctx: Context, item_id: int, proposal_url: str) -> None:
+    """B259-B261: for a suggestion, say so on the product issue it came from.
+
+    Wired here rather than in the discover stage because the comment has to name the proposal,
+    and the proposal does not exist until this line. It applies only to work nobody asked for:
+    an assigned or requested item needs no permission, it already had it.
+
+    Never fatal. The proposal is published by the time this runs, and failing to advertise it
+    must not undo that or fail the run.
+    """
+    from harness.priority import via_of
+    from harness.stages.discover import ask_for_green_light
+
+    item = ctx.store.get_work_item(item_id)
+    if item is None or via_of(item) != "suggested":
+        return
+    number = item.issue_number
+    if number is None or not str(item.external_ref).startswith("issue:"):
+        return
+    try:
+        ask_for_green_light(
+            ctx, item_id=item_id, issue_number=int(number), proposal_url=str(proposal_url)
+        )
+    except Exception as exc:  # pragma: no cover - an outward write must not fail the stage
+        log.warning("could not ask for a green light on #%s: %s", number, exc)
+        ctx.store.append_event(item_id, "info", f"green-light comment failed: {exc}")
 
 
 def _enter(ctx: Context, item: Any, notes: str) -> str:

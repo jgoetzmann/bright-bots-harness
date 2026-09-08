@@ -552,6 +552,10 @@ D2_REQUIRED_TEST_FILES = [
     "tests/test_stages_decompose.py",
     "tests/fixtures/runner/revise.json",
     "tests/fixtures/runner/rate_limited.json",
+    # D4. `BACKEND=fake` is the documented way to try the harness without spending anything,
+    # so a stage with no fixture is a stage nobody can try safely.
+    "tests/fixtures/runner/ask.json",
+    "tests/fixtures/runner/audit.json",
 ]
 
 # Handoff §3 — every non-Python file marked NEW.
@@ -613,8 +617,13 @@ D3_NEW_CONFIG_JSON_KEYS = (
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
 )
-# The sixteen knob keys the shipped .harness/config.json must carry today.
-CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS
+# DELIVERY-4-HANDOFF section 7 — the one D4 key that belongs in the COMMITTED config rather
+# than in `.env`. It is repository state (which issue is the inbox), not an environment knob:
+# every runner that reads this repository must agree about it, and the six D4 caps beside it
+# in `config.CONFIG_JSON_KEYS` are per-environment and stay in `.env`.
+D4_NEW_CONFIG_JSON_KEYS = ("INBOX_ISSUE",)
+# The seventeen knob keys the shipped .harness/config.json must carry today.
+CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS + D4_NEW_CONFIG_JSON_KEYS
 
 # RUN-DECISIONS-D2 §2 — the D2 .env keys, .env.example values (inline; duplicated on purpose).
 D2_ENV_KEYS: dict[str, str] = {
@@ -1558,10 +1567,10 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
 
 def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
     """B112 / RUN-DECISIONS-D2 §2, §15 (handoff §5.5) as extended by RUN-DECISIONS-D3 "Config":
-    .harness/config.json is an object whose keys are exactly the sixteen operational knobs —
-    Delivery 2's eleven plus Delivery 3's five — and nothing that alters what the harness
-    concludes. It was eleven until D3 added the two usage stops, the carry leeway and the two
-    run-window bounds; the count lives in `CONFIG_JSON_KEYS`, which this reads."""
+    .harness/config.json is an object whose keys are exactly the operational knobs — Delivery
+    2's eleven, Delivery 3's five, and Delivery 4's `INBOX_ISSUE` — and nothing that alters what
+    the harness concludes. It was eleven until D3 added the two usage stops, the carry leeway and
+    the two run-window bounds; the count lives in `CONFIG_JSON_KEYS`, which this reads."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1736,11 +1745,18 @@ def test_b144_heartbeat_references_the_tracking_issue_and_spends_nothing():
 
 def test_b145_ops_listens_to_completed_runs_of_the_three_spending_workflows():
     """B145 (handoff §11.2, D2-R7.9): ops.yml triggers on workflow_run completed and files
-    harness:ops issues."""
+    ops issues under the `kind:` family.
+
+    B145 said `harness:ops`; D4/B264 renamed the families, and the name in the workflow must be
+    the one `LABEL_SPECS` creates or `harness init --labels` and this workflow would each make
+    their own label and the issue list would carry both."""
+    from harness.store.sqlite import KIND_LABELS
+
     text = _d2_workflow("ops.yml")
     assert "workflow_run" in text, "ops.yml must trigger on workflow_run (B145)"
     assert "completed" in text
-    assert "harness:ops" in text, "ops.yml must label its issues harness:ops (B145)"
+    assert KIND_LABELS["ops"] in text, f"ops.yml must label its issues {KIND_LABELS['ops']}"
+    assert "harness:ops" not in text, "the pre-D4 label name is still in ops.yml"
     for workflow in ("discover", "implement", "feedback"):
         assert re.search(workflow, text, re.I), f"ops.yml must watch {workflow} (B145)"
 
@@ -1972,14 +1988,18 @@ def test_b215_implement_yml_documents_the_dst_drift():
 # RUN-DECISIONS-D3 "Config": the knob set in .harness/config.json is the D2 eleven grown by
 # exactly the five D3 adds. The union is over the D2 constant, so it says something: were the
 # five dropped from the shipped file, this set would still demand them.
-D3_CONFIG_JSON_KEYS = tuple(sorted(set(D2_CONFIG_JSON_KEYS) | set(D3_NEW_CONFIG_JSON_KEYS)))
+D3_CONFIG_JSON_KEYS = tuple(
+    sorted(
+        set(D2_CONFIG_JSON_KEYS) | set(D3_NEW_CONFIG_JSON_KEYS) | set(D4_NEW_CONFIG_JSON_KEYS)
+    )
+)
 
 
 def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
     """B112 / RUN-DECISIONS-D3 "Config" ("Knob keys in .harness/config.json: add the five to
-    the allowed set"): the file is still an object of operational knobs only, now sixteen of
-    them — the two usage stops, the carry leeway and the two run-window bounds join the D2
-    eleven, and nothing else does."""
+    the allowed set"): the file is still an object of operational knobs only — the two usage
+    stops, the carry leeway and the two run-window bounds join the D2 eleven, D4 adds
+    `INBOX_ISSUE`, and nothing else does."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2512,3 +2532,27 @@ def test_b217_the_committed_pin_matches_this_working_tree():
         pytest.skip("no .harness/PIN in this tree")
 
     verify_pin.check(root)
+
+
+def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
+    """`BACKEND=fake` is what README.md and LOCAL-MODE.md tell a new operator to run, and the
+    fake runner answers by reading `tests/fixtures/runner/<stage>.json`. A stage with no fixture
+    is a stage that cannot be tried without spending real money -- which is exactly the audience
+    that most needs to try it. Delivery 4 shipped `ask` and `audit` without one; this is what
+    should have caught that.
+    """
+    from harness.runner.fake import DEFAULT_FIXTURES_DIR
+
+    # Every stage the fake runner can be asked for. `deliver` and `package`'s own model call
+    # goes through the `package` fixture; `discover`, `propose` and `implement` are D1's.
+    reachable = {
+        "discover", "propose", "implement", "package", "revise", "decompose",
+        "diagnose_gate_failure", "ask", "audit",
+    }
+    present = {path.stem for path in DEFAULT_FIXTURES_DIR.glob("*.json")}
+
+    missing = sorted(reachable - present)
+    assert missing == [], (
+        "no fake fixture for: " + ", ".join(missing) + " — `BACKEND=fake` cannot reach "
+        "those stages, so nobody can try them without a real credential"
+    )

@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "text": "The game registry is a single map from slug to lazy import, at `src/games/registry.ts:12`. Each entry is `{ slug, title, load }`, where `load` is a dynamic `import()` so a game's bundle is only fetched when its route is first visited (`src/routes/GameRoute.tsx:38`).\n\nAdding a game means adding one entry there and nothing else: the route, the card on the activities page and the sitemap all read the same map (`src/pages/Activities.tsx:21`, `scripts/sitemap.ts:14`).\n\nThere is no runtime validation of the map. A slug that collides with an existing one silently wins or loses depending on declaration order.\n",
+  "turns": 4,
+  "cost_usd": 0.0134,
+  "allowance_pct": 0.2,
+  "duration_ms": 8804,
+  "session_id": "fake-ask-0001",
+  "exit_code": 0,
+  "transcript": [
+    {
+      "role": "user",
+      "content": "Answer one question about this repository: what does the game registry do?"
+    },
+    {
+      "role": "assistant",
+      "content": "Read src/games/registry.ts and its three call sites; answered from what is there."
+    }
+  ],
+  "error": null
+}

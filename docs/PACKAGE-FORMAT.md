@@ -79,7 +79,7 @@ slices: 1                       # int, 1..5
 risk: low | medium | high       # closed enum
 touched_paths:                  # list[str], 1..40, each must exist in the product repo
   - src/…
-depends_on: []                  # list[int] — issue numbers that must reach harness:merged first
+depends_on: []                  # list[int] — issue numbers that must reach stage:done first
 estimated_turns: 40             # int, 1..MAX_TURNS_IMPLEMENT
 gate_expectation: green | known-red   # closed enum; known-red requires baseline_red below
 baseline_red: []                # list[str] — gate names already red before the change
@@ -87,11 +87,11 @@ baseline_red: []                # list[str] — gate names already red before th
 ```
 
 A proposal whose front matter fails validation is never opened as a PR: the stage retries
-once with the errors appended to the prompt, then marks the item `harness:blocked` with the
+once with the errors appended to the prompt, then marks the item `stage:blocked` with the
 errors in a comment (B103). Every `touched_paths` entry is checked against the product
 repository at the pinned base commit; a path that does not exist fails validation (B104).
 `depends_on` is read by the dispatcher, which will not start the item until every listed
-issue is `harness:merged` (B107). The front matter is the only place the model's output
+issue is `stage:done` (B107). The front matter is the only place the model's output
 becomes an instruction, which is why it is a closed schema and not free text.
 
 Under the sqlite store (local mode) the same file is written under `proposals/` next to the
@@ -328,7 +328,7 @@ branch onto the fork's main (a conflict here becomes a `revise --source conflict
 a failure), pushes the branch to the fork, opens a PR from
 `<machine-account>:harness/<kind>-<issue>-<slug>` into the product repository's default
 branch, requests review from every handle in `.harness/trust.txt`, comments the PR URL on
-the harness issue, and sets `harness:shipped`.
+the harness issue, and sets `stage:needs-review`.
 
 **The PR body is generated from the review package** (B108). It is not written by the
 model; it is the package's own files, concatenated in this order and redacted by

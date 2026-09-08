@@ -20,6 +20,7 @@ from harness.config import CLASSIC_TOKEN_SHAPE, FINE_GRAINED_TOKEN_SHAPE, TOKEN_
 from harness.errors import ConfigError, GitHubError, RateCeilingReached, TierViolation
 from harness.gh import GitHubReadOnly
 from harness.redact import write_redacted
+from harness.store.sqlite import LABELS, STATES
 
 HANDLE = "brightboost-harness"
 KEY_NAME = TOKEN_KEY_NAME
@@ -43,21 +44,12 @@ TIER_NAMES: dict[int, str] = {
     2: "Tier 2 — push branches to its own fork and open pull requests",
 }
 
-#: The twelve state labels of handoff §4.2 (plus ``harness:packaged``, R-D).
-STATE_LABELS: tuple[str, ...] = (
-    "harness:queued",
-    "harness:proposing",
-    "harness:proposed",
-    "harness:approved",
-    "harness:running",
-    "harness:packaged",
-    "harness:shipped",
-    "harness:revising",
-    "harness:merged",
-    "harness:blocked",
-    "harness:needs-human",
-    "harness:abandoned",
-)
+#: The twelve state labels of handoff §4.2 (plus `packaged`, R-D), read from the store rather
+#: than repeated here. D4/B264 renamed the family from `harness:*` to `stage:*`, and a copy of
+#: the old names in this module would have made `harness doctor` report every label missing on
+#: a repository that had correctly migrated -- a readiness check failing *because* the operator
+#: did the right thing. There is one list, and it is the one the store writes.
+STATE_LABELS: tuple[str, ...] = tuple(LABELS[state] for state in STATES)
 
 # §13.2 for tiers 0 and 1, verbatim; §5.2 for tier 2 (classic PAT, ``public_repo`` only).
 # (permission, value for the tier, note)

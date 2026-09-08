@@ -12,7 +12,7 @@ can act on from a phone. Python 3.13, standard library only.
 
 | Step | What happens | Where you see it |
 |---|---|---|
-| `discover` | Takes a product-repository issue — assigned to the machine account, picked by triage, or named by number in directed mode — and opens a work item for it | An issue here, labelled `harness:queued` |
+| `discover` | Takes a product-repository issue — assigned to the machine account, picked by triage, or named by number in directed mode — and opens a work item for it | An issue here, labelled `stage:queued` |
 | `propose` | Reads the code at a pinned commit and writes a work package: issue, diagnosis with file and line citations, approach, slices, behaviors, acceptance criteria, decisions, open questions, touched paths, risks | A PR here adding `proposals/<id>-<slug>.md`, from `harness/propose-<id>` |
 | **Gate 1 — you** | **Merging that PR is approval**: the push to `proposals/**` runs `harness approve`. Closing it without merging is rejection — nothing is implemented, because nothing reaches `approved` | The PR here |
 | `implement` | Branch on the fork, under `harness/`; the product's own gate sequence runs on the untouched tree as a baseline, then again after the change | Commits on `jgoetzmann-bot/brightboost` |
@@ -160,7 +160,8 @@ subcommands.
 
 | Document | When to read it |
 |---|---|
-| [docs/USING.md](docs/USING.md) | **Start here to operate it.** What arrives, where, and what you do about it — all of it from a browser or a phone |
+| [docs/FOR-MAINTAINERS.md](docs/FOR-MAINTAINERS.md) | **Start here.** Five minutes, no terminal: the one gesture that gives it work, your two moves, and how to stop it |
+| [docs/USING.md](docs/USING.md) | The reference behind that page. What arrives, where, and what you do about it — all of it from a browser or a phone |
 | [docs/PROPOSALS.md](docs/PROPOSALS.md) | How work is found and aimed: the discovery modes, what a proposal contains, and how to change its mind |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day to day and when something is wrong: reading the state (§1), a failed run, a stuck item, a diverged fork, a leaked secret, everyday actions (§11). §8 is how to stop everything |
 | [docs/SAFETY.md](docs/SAFETY.md) | The tiers and the invariants, each with a command that proves it. Read before raising the tier |
@@ -171,7 +172,15 @@ subcommands.
 
 ## Current status
 
-**Live, and it has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
+**Delivery 4 is merged, and the kill switch is on.** `.harness/HALT` exists on `main`, so every
+spending workflow exits before the dispatcher. Removing it — one commit — is the go-live step.
+The environment is ready for it: the nineteen labels exist, the request inbox is
+[#19](https://github.com/jgoetzmann/bright-bots-harness/issues/19) and pinned, and
+`.harness/config.json` points at it. What has not happened is a live run of anything Delivery 4
+added; §9 of [the D4 handoff](docs/delivery/DELIVERY-4-HANDOFF.md) is the list to work through,
+and A2 is the cheapest place to start because `/harness work <link>` makes no model call at all.
+
+**It has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
 queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product issue #633) went
 from directed discovery through a proposal pull request, gate 1, implement, package and
 delivery, and opened **[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**

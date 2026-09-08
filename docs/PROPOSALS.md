@@ -74,7 +74,7 @@ the marker in the body is the fallback for work items whose reference is not an 
 
 `--mode triage` does one of two different things depending on what is already queued.
 
-If any work item is in state `discovered` (`harness:queued`), triage ranks **those** and touches the
+If any work item is in state `discovered` (`stage:queued`), triage ranks **those** and touches the
 product repository not at all. It makes one model call with the queued items and, for the first
 `QUEUE_BODY_LIMIT = 20` of them, an excerpt of each body; it creates nothing, and returns the ids
 that went in, best first. If the ranking comes back with no usable number it falls back to store
@@ -228,7 +228,7 @@ model call inside it with `Read`, `Glob` and `Grep` only — `Bash`, `Edit`, `Wr
 branch `harness/propose-<id>` carrying exactly one file `proposals/<id>-<slug>.md`, and a pull
 request into `main` titled `proposal: <work item title> (#<id>)` whose body inlines the whole
 proposal so the gate can be judged without opening the diff. The item moves to `proposed` /
-`harness:proposed`.
+`stage:needs-approval`.
 
 Merging that pull request is gate 1. `implement.yml` triggers on a push to `main` touching
 `proposals/**`, reads the numeric prefix off each added or modified filename and runs `harness
@@ -388,7 +388,7 @@ before any model call.
 `/harness fix` and `/harness rebase` are not proposal verbs. They run a revision cycle on an item
 that already has a delivery pull request open (`shipped`), or one parked at `needs-human` — `fix` for
 review feedback, `rebase` for a conflict. The automatic loop is bounded by `MAX_REVISE_CYCLES` (3),
-past which the item goes to `harness:needs-human` and is left alone; a trusted `/harness fix`
+past which the item goes to `stage:needs-human` and is left alone; a trusted `/harness fix`
 restarts it, because a command from a trusted actor always carries notes and notes are what lifts the
 stop.
 

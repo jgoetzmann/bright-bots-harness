@@ -110,11 +110,13 @@ jobs:
             const forkRepo = (cfg.FORK_REPO || '').trim() || (process.env.FORK_REPO || '').trim();
             const upstreamRepo = cfg.UPSTREAM_REPO || 'Bright-Bots-Initiative/brightboost';
 
-            // queue depth per state label (open issues; PRs excluded)
+            // Queue depth per stage label (open issues; PRs excluded). D4/B264 renamed the
+            // family from `harness:*` to `stage:*`; counting the old names here after the
+            // migration would report a board of zeroes and read as "nothing in flight".
             const labels = [
-              'harness:queued', 'harness:proposing', 'harness:proposed', 'harness:approved',
-              'harness:running', 'harness:packaged', 'harness:shipped', 'harness:revising',
-              'harness:merged', 'harness:blocked', 'harness:needs-human', 'harness:abandoned',
+              'stage:queued', 'stage:planning', 'stage:needs-approval', 'stage:ready',
+              'stage:building', 'stage:packaged', 'stage:needs-review', 'stage:revising',
+              'stage:done', 'stage:blocked', 'stage:needs-human', 'stage:dropped',
             ];
             const depth = {};
             for (const label of labels) {

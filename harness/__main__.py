@@ -1214,9 +1214,11 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         }
         for row in priority.queue(store=ctx.store, ledger=ctx.ledger)
     ]
-    payload["suggested"] = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=config
-    )
+    # Spelled out rather than left as "reason, or null". An operator reading this wants to know
+    # whether suggested work may run, and a bare `null` reads as "no suggestion" rather than as
+    # "nothing is stopping it".
+    blocked = priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config)
+    payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 

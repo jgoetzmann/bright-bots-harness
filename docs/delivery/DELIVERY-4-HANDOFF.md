@@ -480,6 +480,30 @@ Each must be cited by a test that names it.
 
 Run in order. Each must hold exactly as written.
 
+### What has been checked so far — 2026-09-07
+
+Nothing below has been run **live**. What has been verified, and how:
+
+| Covered | By what | Which criteria it touches |
+|---|---|---|
+| The routes' logic | 1,636 unit tests, `tests/test_d4_routes.py` chief among them | most of A1–A18, *at the fake boundary only* |
+| The priority queue through the CLI | `harness dispatch` against a seeded three-item queue: assigned and promoted items sorted `directed` ahead of a `suggested` one, and suggested work refused with the blockers named | A17, A18 |
+| `--force` through the CLI | outside the run window `dispatch` started nothing; with the item forced it started, and the queue showed `forced: true` | A15 |
+| `--force` bypasses nothing else | the same forced item: refused by `.harness/HALT`, and refused by a 50% session utilization against a 1% stop, each naming its real reason | A16 |
+| The audit refusal | `harness discover --mode audit` with no lens, no network, no model call | A9 |
+| The environment | labels created, `INBOX_ISSUE` set to #19 and pinned, one legacy `harness:ops` label migrated | preconditions for A1–A8 |
+
+The gap that matters: **every one of those ran against a fake runner, a fake GitHub and a fake
+checkout.** Delivery 3 found four defects live — the argv limit, the pre-push hook, the `MAX_PATH`
+rmtree and the recovered `external_ref` — and not one was visible to the suite, because each lived
+at a boundary the fakes replace. A1 through A8 and A10 through A14 have not been exercised against
+real GitHub at all.
+
+Going live is one commit: delete `.harness/HALT` on `main`. Start with **A2**, which is the cheapest
+honest test in the list — `/harness work <link>` makes no model call at all, so it exercises the
+notification sweep, the trust gate, the store write and the reply with nothing but runner minutes at
+risk.
+
 **A1 — the inbox.** Comment `/harness work make the activity cards keyboard reachable` on
 `INBOX_ISSUE`. Within one `feedback.yml` run: a new issue exists labelled `stage:queued`
 `kind:product` `via:requested`, its body carries the text, and the inbox thread has a reply linking

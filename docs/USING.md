@@ -20,32 +20,32 @@ Five kinds of thing arrive. Four of them want something from you.
 
 | What arrives | Where | What you do |
 |---|---|---|
-| An issue labelled `harness:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run. Relabel or comment `/harness reject` if you disagree with the pick |
+| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run. Relabel or comment `/harness reject` if you disagree with the pick |
 | A PR adding `proposals/<issue>-<slug>.md` | this repo | **Gate 1.** Merge it to approve. Close it to withhold approval. This is the cheapest place to disagree |
 | A PR from a `jgoetzmann-bot:harness/…` branch | the product repo | **Gate 2.** Review it and merge, or steer it with a `/harness` comment. The harness cannot merge it |
 | A comment on issue #2, every Monday ~09:05 UTC | this repo | Skim it. It carries the queue depth per label, the last observed subscription usage, the last successful run of each workflow, and how far the fork has drifted from upstream. **Its absence is the alarm** |
-| An issue titled `ops: <workflow> failed`, labelled `harness:ops` | this repo | Something went red. [OPERATIONS §2](OPERATIONS.md#2-a-failed-run) |
+| An issue titled `ops: <workflow> failed`, labelled `kind:ops` | this repo | Something went red. [OPERATIONS §2](OPERATIONS.md#2-a-failed-run) |
 
-Every item is one issue in this repo carrying exactly one `harness:*` label — a transition removes the previous one — and its thread is the event log: each transition posts a comment naming the stage, the new state, the cost of the last recorded call, and the reason.
+Every item is one issue in this repo carrying exactly one `stage:*` label — a transition removes the previous one — and its thread is the event log: each transition posts a comment naming the stage, the new state, the cost of the last recorded call, and the reason.
 
 **To give it work, assign `@jgoetzmann-bot` to an issue on brightboost.** Nothing else is required: the sweep picks it up within three hours on a weekday and the first row above is what you will see. Everything else on this page is what to do once it has.
 
 | Label | Means | Who moves it on |
 |---|---|---|
-| `harness:queued` | eligible for a proposal | `discover.yml` |
-| `harness:proposing` | a propose job is in flight | the job |
-| `harness:proposed` | a proposal PR is open — **gate 1** | you, by merging it |
-| `harness:approved` | eligible for implementation | `implement.yml` |
-| `harness:running` | an implement job is in flight | the job |
-| `harness:packaged` | package built, delivery pending | the same job |
-| `harness:shipped` | upstream PR open — **gate 2** | you or Nathan (`BrightBoost-Tech`), by merging upstream |
-| `harness:revising` | a revise cycle is in flight | the job |
-| `harness:merged` | terminal | — (**you set this by hand**, see below) |
-| `harness:blocked` | gates red and honestly unfixable | you, by relabelling `harness:queued` or `harness:approved` |
-| `harness:needs-human` | revise cap reached | a trusted `/harness fix` |
-| `harness:abandoned` | terminal | — |
+| `stage:queued` | eligible for a proposal | `discover.yml` |
+| `stage:planning` | a propose job is in flight | the job |
+| `stage:needs-approval` | a proposal PR is open — **gate 1** | you, by merging it |
+| `stage:ready` | eligible for implementation | `implement.yml` |
+| `stage:building` | an implement job is in flight | the job |
+| `stage:packaged` | package built, delivery pending | the same job |
+| `stage:needs-review` | upstream PR open — **gate 2** | you or Nathan (`BrightBoost-Tech`), by merging upstream |
+| `stage:revising` | a revise cycle is in flight | the job |
+| `stage:done` | terminal | — (**you set this by hand**, see below) |
+| `stage:blocked` | gates red and honestly unfixable | you, by relabelling `stage:queued` or `stage:ready` |
+| `stage:needs-human` | revise cap reached | a trusted `/harness fix` |
+| `stage:dropped` | terminal | — |
 
-Nothing sets `harness:merged` for you: the label is read by the store and written by nobody. After you merge a delivery PR upstream, relabel its harness issue by hand — the dispatcher's `depends_on` waits on exactly that label, so an unrelabelled item silently blocks its dependants.
+Nothing sets `stage:done` for you: the label is read by the store and written by nobody. After you merge a delivery PR upstream, relabel its harness issue by hand — the dispatcher's `depends_on` waits on exactly that label, so an unrelabelled item silently blocks its dependants.
 
 ---
 
@@ -82,21 +82,21 @@ What to check, in the order that saves the most time:
 3. **`Open questions`.** Non-empty here means the spec is not decided. It blocks the fullsend path, and if any question is load-bearing it blocks the item. A proposal with real open questions wants `/harness revise`, not a merge.
 4. **`Acceptance criteria`.** Each line has to be independently checkable, because `ACCEPTANCE.md` in the delivery marks each one met or not met against the gate output.
 5. **`gate_expectation` and `baseline_red`.** `known-red` means the harness expects the product repo's gates to be red before it touches anything, and names which. If that surprises you, the gate sequence and upstream have drifted apart — [OPERATIONS §10](OPERATIONS.md#10-when-upstreams-gate-sequence-changes).
-6. **`touched_paths` and `depends_on`.** Every path was already checked to exist in the product repo at the pinned base commit; a proposal whose front matter fails validation is never opened as a PR at all — the stage retries once with the errors in the prompt, then blocks the item. `depends_on` lists issue numbers that must be `harness:merged` before the dispatcher will start this one.
+6. **`touched_paths` and `depends_on`.** Every path was already checked to exist in the product repo at the pinned base commit; a proposal whose front matter fails validation is never opened as a PR at all — the stage retries once with the errors in the prompt, then blocks the item. `depends_on` lists issue numbers that must be `stage:done` before the dispatcher will start this one.
 
 **Merging is approval.** Approving the PR without merging does nothing — `implement.yml` listens for the push to `proposals/**` on `main`, not for a review.
 
-Within a minute or so of the merge, `implement.yml` starts. It reads the number off the filename (`proposals/4-…md` → issue #4), runs `harness approve 4` so the issue goes `harness:approved`, then asks the dispatcher. If the run window is open and the usage stops are clear, it implements, packages and delivers in that same run. If not, the plan is empty with a reason and the next `implement` cron inside the window picks it up. Either way the issue thread gets a comment.
+Within a minute or so of the merge, `implement.yml` starts. It reads the number off the filename (`proposals/4-…md` → issue #4), runs `harness approve 4` so the issue goes `stage:ready`, then asks the dispatcher. If the run window is open and the usage stops are clear, it implements, packages and delivers in that same run. If not, the plan is empty with a reason and the next `implement` cron inside the window picks it up. Either way the issue thread gets a comment.
 
-One exception worth knowing: if `.harness/HALT` exists when you merge, the HALT check is the first step of the job, so **nothing happens at all** — the label does not even move, and no later run re-reads that push. After lifting the halt, relabel the issue `harness:approved` by hand (label moves are honoured, not overwritten) or run `harness approve 4` from a checkout.
+One exception worth knowing: if `.harness/HALT` exists when you merge, the HALT check is the first step of the job, so **nothing happens at all** — the label does not even move, and no later run re-reads that push. After lifting the halt, relabel the issue `stage:ready` by hand (label moves are honoured, not overwritten) or run `harness approve 4` from a checkout.
 
-**Closing is rejection**, but only in the sense that nothing implements: no workflow listens for a closed PR, so the issue sits on `harness:proposed` indefinitely. To record it properly, comment on the PR:
+**Closing is rejection**, but only in the sense that nothing implements: no workflow listens for a closed PR, so the issue sits on `stage:needs-approval` indefinitely. To record it properly, comment on the PR:
 
 ```
 /harness reject the component is still referenced by the onboarding flow
 ```
 
-which closes the PR and moves the issue to `harness:abandoned` within minutes. To send it back instead of killing it:
+which closes the PR and moves the issue to `stage:dropped` within minutes. To send it back instead of killing it:
 
 ```
 /harness revise cover the onboarding import path in the diagnosis
@@ -108,7 +108,7 @@ That re-runs the proposal with your note as extra instruction and costs a model 
 
 ## Reading a delivery PR on the product repo
 
-It comes from a branch in the fork's `harness/` namespace — `harness/fix-<n>-<slug>` in practice, since every work item is created with kind `issue` — into brightboost's default branch. Review is requested automatically from every handle in `.harness/trust.txt`; a handle GitHub refuses (not a collaborator upstream) is recorded as a refusal, not a failure. The URL is commented on the harness issue, which goes `harness:shipped`.
+It comes from a branch in the fork's `harness/` namespace — `harness/fix-<n>-<slug>` in practice, since every work item is created with kind `issue` — into brightboost's default branch. Review is requested automatically from every handle in `.harness/trust.txt`; a handle GitHub refuses (not a collaborator upstream) is recorded as a refusal, not a failure. The URL is commented on the harness issue, which goes `stage:needs-review`.
 
 The body is not written by the model. It is the review package's own files concatenated and redacted — four sections in this order, then the same footer every harness surface carries ([PACKAGE-FORMAT §6](PACKAGE-FORMAT.md#6-the-delivery-pr--the-package-as-a-pr-body-delivery-2)):
 
@@ -173,13 +173,13 @@ The form is `/harness <verb> [args]` at the start of a line (leading whitespace 
 
 | Verb | What it does | Put it on | Picked up within |
 |---|---|---|---|
-| `queue` | Moves the issue to `harness:queued` so the next `discover` run proposes it. Already-queued is a no-op | an issue **here** | minutes |
-| `split` | Runs `decompose`: up to `MAX_SUBISSUES` (8) child issues here, parent goes `harness:blocked`. A child is never split again | an issue **here** | minutes; costs a model call |
+| `queue` | Moves the issue to `stage:queued` so the next `discover` run proposes it. Already-queued is a no-op | an issue **here** | minutes |
+| `split` | Runs `decompose`: up to `MAX_SUBISSUES` (8) child issues here, parent goes `stage:blocked`. A child is never split again | an issue **here** | minutes; costs a model call |
 | `revise <notes>` | Re-runs `propose` with your notes appended and publishes the new work package | a proposal PR **here** | minutes; costs a model call |
-| `reject <why>` | Closes the PR and moves the item to `harness:abandoned`. Terminal | a proposal PR **here**, or a delivery PR upstream | minutes here, up to 3 h upstream |
+| `reject <why>` | Closes the PR and moves the item to `stage:dropped`. Terminal | a proposal PR **here**, or a delivery PR upstream | minutes here, up to 3 h upstream |
 | `fix <notes>` | One bounded revise cycle, source `review`: re-implements against the feedback, re-runs the **complete** gate sequence, and force-pushes to the fork only if the branch is under `harness/` and its tip is still a commit the harness authored | a delivery PR upstream | up to 3 h |
 | `rebase <notes>` | The same cycle, source `conflict`: rebases onto upstream's default branch, then re-runs the gates | a delivery PR upstream | up to 3 h |
-| `stop` | Closes the PR and moves the item to `harness:abandoned`, freeing the concurrency slot | a delivery PR upstream | up to 3 h |
+| `stop` | Closes the PR and moves the item to `stage:dropped`, freeing the concurrency slot | a delivery PR upstream | up to 3 h |
 
 `reject` and `stop` are the same action in code — close the pull request, abandon the item. The difference is what you mean by it: `reject` reads as a refusal at gate 1, `stop` as an abort at gate 2.
 
@@ -187,7 +187,7 @@ A successful `fix` or `rebase` moves the branch and nothing else. Nothing in `gh
 
 Red gates after a `fix` or `rebase` block the item and push nothing.
 
-`fix` and `rebase` are bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `harness:needs-human`, and only a keyword revise carrying notes from a trusted handle — `/harness fix` in practice, `/harness rebase` equally — restarts the loop.
+`fix` and `rebase` are bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `stage:needs-human`, and only a keyword revise carrying notes from a trusted handle — `/harness fix` in practice, `/harness rebase` equally — restarts the loop.
 
 `queue` and `split` act on the number of the thread the comment is on, so putting either on a pull request aims it at the wrong number. Keep them on issues in this repo.
 
@@ -222,10 +222,10 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 |---|---|---|---|
 | `discover` | `17 7 * * 0` — Sunday 07:17 UTC | `mode`, `target`, `lens`, `ignore_allowlist` | Finds work and proposes every item it created, in one run. Spends |
 | `implement` | `17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2` — inside the run window; and on any push to `proposals/**` on `main` | `issue` | Approves merged proposals, asks the dispatcher, then implements, packages and delivers. The expensive one |
-| `feedback` | `41 */3 * * 1-5`; and on any `/harness` comment here | none | Sweeps notifications for keyword commands, then reconciles items stranded in `harness:running` |
+| `feedback` | `41 */3 * * 1-5`; and on any `/harness` comment here | none | Sweeps notifications for keyword commands, then reconciles items stranded in `stage:building` |
 | `heartbeat` | `5 9 * * 1` — Monday 09:05 UTC | none | Posts the weekly comment on issue #2. Spends nothing: fake backend, tier 0, no model call |
 | `selftest` | every pull request here | none | Checks `.harness/PIN` when present, then the whole pytest suite under `BACKEND=fake`, on Linux and Windows. No secrets |
-| `ops` | on a failed `discover`/`implement`/`feedback` run | — | Opens or updates `ops: <workflow> failed` labelled `harness:ops`, with the redacted log tail, and re-runs failed jobs once on transient network causes only. **Cannot be dispatched by hand** |
+| `ops` | on a failed `discover`/`implement`/`feedback` run | — | Opens or updates `ops: <workflow> failed` labelled `kind:ops`, with the redacted log tail, and re-runs failed jobs once on transient network causes only. **Cannot be dispatched by hand** |
 
 ### Assigning the bot — how you queue work
 
@@ -252,13 +252,13 @@ gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
   -f mode=directed -f target=633
 ```
 
-That yields an issue here labelled `harness:queued`, then a proposal PR against this repo. Gate 1 is then yours.
+That yields an issue here labelled `stage:queued`, then a proposal PR against this repo. Gate 1 is then yours.
 
 ### Triage, and why it usually finds nothing
 
 `mode: triage` (the default) has two halves, and the order matters:
 
-- If **anything** here is already `harness:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first.
+- If **anything** here is already `stage:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first.
 - Only when the local queue is empty does it look at brightboost. There it drops issues assigned to **someone other than the machine account**, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture` — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`). An issue assigned to `@jgoetzmann-bot` survives and needs no allowlist label.
 
 No brightboost issue carries `harness-ok` and none is expected to, so plain triage on an empty queue finds nothing and makes no model call. That is the filter working, not a fault — assignment is the route that replaced the label. `ignore_allowlist: true` drops that one filter for a run; the other three still apply.
@@ -272,7 +272,7 @@ gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
 
 ### Implementing one item now
 
-The `issue` input is the **harness** issue number, not the product one, and it bypasses the run window — that is how you drive one item on a Thursday. It does not bypass the usage stops, and the item must already be `harness:approved`.
+The `issue` input is the **harness** issue number, not the product one, and it bypasses the run window — that is how you drive one item on a Thursday. It does not bypass the usage stops, and the item must already be `stage:ready`.
 
 ```bash
 gh workflow run implement.yml -R jgoetzmann/bright-bots-harness -f issue=4
@@ -385,7 +385,7 @@ A stop or a rate limit **in the middle of** `implement` / `continue` / `package`
 
 1. Uncommitted work is committed as `wip: handoff (<reason>)` and the branch is pushed to the fork only, never upstream, never forced.
 2. `runs/item-N/HANDOFF.md` is written and posted as a comment on the harness issue: the reason, the branch, the base sha, the last gate results, the acceptance criteria not yet met, and the exact next command.
-3. The item returns to `harness:approved`, the ledger records a **carry**, and the command exits 0.
+3. The item returns to `stage:ready`, the ledger records a **carry**, and the command exits 0.
 
 The carried item is the **first** thing the next run starts, **even outside the run window**, and it spends against `OVERRUN_PCT` (10) of the fresh week rather than waiting for `WEEKLY_USAGE_STOP_PCT`. Exhaust that leeway and the reason becomes `carry leeway 10% reached` and it is handed off again onto the same branch, with nothing lost. Only one item is carried at a time.
 
@@ -397,7 +397,7 @@ cat runs/item-4/HANDOFF.md            # after a run on this machine
 harness revise 4 --source continue    # what the next run does for you
 ```
 
-To drop a carry instead of resuming it, relabel the issue `harness:blocked` and delete `runs/item-N/HANDOFF.md`.
+To drop a carry instead of resuming it, relabel the issue `stage:blocked` and delete `runs/item-N/HANDOFF.md`.
 
 ### Where the numbers actually live
 
@@ -418,7 +418,7 @@ First command, every time: `harness dispatch`. Its `reason` string is the fastes
 | Symptom | Section |
 |---|---|
 | A red `discover`/`implement`/`feedback` run, and an `ops:` issue | §2 |
-| An item stuck on `harness:running` for more than three hours | §3 |
+| An item stuck on `stage:building` for more than three hours | §3 |
 | `reason` is `rate limited until …` | §4 |
 | `harness sync-fork` exits 1; the fork has diverged | §5 |
 | The schedules have simply stopped | §6 |

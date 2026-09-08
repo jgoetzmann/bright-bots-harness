@@ -1226,6 +1226,38 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
     )
 
 
+#: What the head of the queue is waiting for, by the stage it is in. `approved` is absent on
+#: purpose: that is the one state the dispatcher itself speaks for, so the plan answers it.
+_HEAD_WAIT: dict[str, str] = {
+    "discovered": "waiting to be proposed; `discover` ranks and proposes the queue",
+    "proposing": "a propose job is in flight",
+    "proposed": "waiting for a person to merge or close the proposal (gate 1)",
+    "implementing": "an implement job is in flight",
+    "packaged": "waiting for delivery",
+    "shipped": "waiting for a person on the upstream pull request (gate 2)",
+    "revising": "a revision cycle is in flight",
+    "blocked": "stopped; it needs a decision",
+    "needs-human": "retries spent; the harness will not try again on its own",
+}
+
+
+def _head_reason(plan: Plan, rows, config) -> dict:
+    """One sentence on the top of the queue: what it is, and why it is or is not starting."""
+    if not rows:
+        return {"item": None, "reason": "the queue is empty"}
+    head = rows[0]
+    number = head.item_id
+    if number is not None and number in plan.start:
+        return {"item": number, "reason": "starting now"}
+    if number is not None and str(number) in plan.skipped:
+        return {"item": number, "reason": plan.skipped[str(number)]}
+    waiting = _HEAD_WAIT.get(head.note or "")
+    if waiting:
+        return {"item": number, "reason": waiting}
+    # `approved` and anything unmapped: the dispatcher is the authority, so quote it.
+    return {"item": number, "reason": plan.reason}
+
+
 def cmd_dispatch(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
@@ -1238,6 +1270,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     # Added *inside* the plan document, not printed after it: stdout here is parsed by
     # `dispatch.yml`, and a second document appended to the first is not JSON any more.
     payload = json.loads(plan.to_json())
+    rows = priority.queue(store=ctx.store, ledger=ctx.ledger)
     payload["queue"] = [
         {
             "class": row.cls,
@@ -1247,8 +1280,14 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
             "state": row.note,
             "forced": row.forced,
         }
-        for row in priority.queue(store=ctx.store, ledger=ctx.ledger)
+        for row in rows
     ]
+    # B292's other half: not only what is waiting, but why the top of it is or is not moving.
+    # `plan.reason` and `plan.skipped` only speak for `approved` candidates, and the head of the
+    # queue is often in `discovered` or `proposing` -- for which the plan says nothing at all,
+    # so a healthy-looking "budget 100% remaining, 0 of max 1 slots" sat beside a stalled queue
+    # and explained none of it.
+    payload["head"] = _head_reason(plan, rows, config)
     # Spelled out rather than left as "reason, or null". An operator reading this wants to know
     # whether suggested work may run, and a bare `null` reads as "no suggestion" rather than as
     # "nothing is stopping it".
@@ -1365,9 +1404,14 @@ def _item_for_command(ctx, config, cmd) -> int | None:
     return None
 
 
-#: How the item arrived, for the `via:` label (B264). The surface is the honest answer: a
-#: comment on the product issue is someone pointing at that issue; the inbox is a request.
-_VIA_BY_SURFACE = {"product_issue": "assigned", "inbox": "requested"}
+#: How the item arrived, for the `via:` label (B264).
+#:
+#: Every `/harness work` is `requested`, wherever it was typed: a person asked for it in words.
+#: `assigned` means something else and only one thing -- the machine account was put in the
+#: Assignees box, which `discover --mode assigned` reads. Mapping the product-issue surface to
+#: `assigned` conflated "a human asked me here" with "a human assigned me", and `via:` feeds the
+#: priority queue, so the two must not blur.
+_VIA_BY_SURFACE: dict[str, str] = {}
 
 
 def _via_for(cmd) -> str:
@@ -1382,10 +1426,6 @@ def _forced(ctx, cmd, item_id: int | None) -> str:
     """
     if not getattr(cmd, "force", False) or item_id is None:
         return ""
-    ctx.ledger.force(int(item_id))
-    ctx.store.append_event(
-        int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"
-    )
     return (
         f" — forced by @{cmd.actor}, so it starts on the next sweep rather than waiting for "
         "the run window. The kill switch, both usage stops, every cap and both human gates "
@@ -1548,8 +1588,14 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 "result": "",
             }
             try:
-                record["result"] = _act_on_command(ctx, config, cmd)
-                _reply(ctx, config, cmd, record["result"])
+                result = _act_on_command(ctx, config, cmd)
+                # B284: anything the actor needs told that is not the outcome itself -- a
+                # refused `--force`, say. Appended to the reply rather than folded into the
+                # command, so it reaches the person without reaching the stage.
+                if getattr(cmd, "note", ""):
+                    result = "\n\n".join(part for part in (result, cmd.note) if part)
+                record["result"] = result
+                _reply(ctx, config, cmd, result)
             except Halted:
                 raise
             except RateLimited as exc:

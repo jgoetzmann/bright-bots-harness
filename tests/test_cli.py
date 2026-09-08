@@ -802,9 +802,9 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     """A33 / B122 (handoff §6.4, D2-R6.4): `dispatch` emits {"start","reason","skipped"} in that
     order, lists the approved item, and starts no stage run and no clone.
 
-    B292 appends `queue` and `suggested` after those three. Appended, not woven in: `dispatch.yml`
-    reads the first three by name, so their presence, order and meaning are the contract and the
-    new keys must not disturb them."""
+    B292 appends `queue`, `head` and `suggested` after those three. Appended, not woven in:
+    `dispatch.yml` reads the first three by name, so their presence, order and meaning are the
+    contract and the new keys must not disturb them."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -815,9 +815,10 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     plan = dispatch_plan(capsys)
 
     assert list(plan)[:3] == ["start", "reason", "skipped"]
-    assert list(plan)[3:] == ["queue", "suggested"]
+    assert list(plan)[3:] == ["queue", "head", "suggested"]
     assert plan["start"] == [item_id]
     assert [row["item"] for row in plan["queue"]] == [item_id]
+    assert plan["head"] == {"item": item_id, "reason": "starting now"}
     assert plan["queue"][0]["class"] == "directed" and plan["queue"][0]["forced"] is False
     assert plan["skipped"] == {}
     assert plan["reason"] == "budget 100% remaining, 1 of max 1 slots"

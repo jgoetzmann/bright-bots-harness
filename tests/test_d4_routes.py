@@ -527,9 +527,17 @@ def test_B290_suggested_waits_while_anything_is_outstanding(tmp_path):
 
 
 def test_B290_suggested_waits_when_the_week_has_no_headroom(tmp_path):
+    """Built through `observe_usage`, not by hand. The first version of this test assigned
+    `window["usage"] = {"weekly": ...}` — a shape nothing in production can produce, because
+    `USAGE_WINDOWS` is `("five_hour", "seven_day")`. It passed against a `headroom_pct` that
+    read the wrong key and therefore returned None forever, so the refusal it asserted was
+    unreachable and suggested work was admitted at any usage at all."""
     rig = request_rig(tmp_path)
     ledger = Ledger.empty("2026-09-01T00:00:00Z")
-    ledger.window["usage"] = {"weekly": {"utilization": 0.8, "resets_at": None}}
+    ledger.observe_usage(
+        {"seven_day": {"utilization": 0.8}, "five_hour": {"utilization": 0.1}},
+        "2026-09-07T00:00:00Z",
+    )
 
     refused = priority.admit("suggested", store=rig.store, ledger=ledger, config=rig.config)
 
@@ -540,7 +548,10 @@ def test_B290_suggested_waits_when_the_week_has_no_headroom(tmp_path):
 def test_B290_suggested_runs_when_the_queue_is_empty_and_the_week_is_fresh(tmp_path):
     rig = request_rig(tmp_path)
     ledger = Ledger.empty("2026-09-01T00:00:00Z")
-    ledger.window["usage"] = {"weekly": {"utilization": 0.1, "resets_at": None}}
+    ledger.observe_usage(
+        {"seven_day": {"utilization": 0.1}, "five_hour": {"utilization": 0.1}},
+        "2026-09-07T00:00:00Z",
+    )
 
     assert priority.admit("suggested", store=rig.store, ledger=ledger, config=rig.config) is None
 
@@ -564,9 +575,25 @@ def test_B290_a_queued_suggestion_does_not_block_the_next_one(tmp_path):
         kind="issue", external_ref="issue:900", title="my own idea", via="suggested"
     )
     ledger = Ledger.empty("2026-09-01T00:00:00Z")
-    ledger.window["usage"] = {"weekly": {"utilization": 0.1, "resets_at": None}}
+    ledger.observe_usage(
+        {"seven_day": {"utilization": 0.1}, "five_hour": {"utilization": 0.1}},
+        "2026-09-07T00:00:00Z",
+    )
 
     assert priority.admit("suggested", store=rig.store, ledger=ledger, config=rig.config) is None
+
+
+def test_B290_the_headroom_signal_is_the_one_the_ledger_actually_writes():
+    """The bug the test above was blind to, pinned directly: `headroom_pct` must read the same
+    window name `observe_usage` writes, or it silently returns None and the gate never binds."""
+    from harness.ledger import USAGE_WINDOWS
+
+    ledger = Ledger.empty("2026-09-01T00:00:00Z")
+    ledger.observe_usage({"seven_day": {"utilization": 0.95}}, "2026-09-07T00:00:00Z")
+
+    assert "seven_day" in USAGE_WINDOWS and "weekly" not in USAGE_WINDOWS
+    assert priority.headroom_pct(ledger) == 95.0
+    assert ledger.weekly_utilization() == 0.95
 
 
 def test_B288_a_refused_class_stops_the_call_before_the_runner(tmp_path):
@@ -598,22 +625,45 @@ def test_B288_a_refused_class_stops_the_call_before_the_runner(tmp_path):
     assert rig.runner.calls == before
 
 
-def test_B292_render_names_the_class_and_the_forced_flag():
-    rows = [
-        priority.Waiting(cls="answer", label="ask: why", since="2026-01-01"),
-        priority.Waiting(cls="directed", label="#4 a thing", forced=True, item_id=4, note="ready"),
-    ]
+def test_B292_the_head_of_the_queue_says_why_it_is_not_moving(tmp_path):
+    """B292: `plan.reason` and `plan.skipped` speak only for `approved` candidates, so a head in
+    `discovered` produced a healthy "budget 100% remaining, 0 of max 1 slots" beside a queue that
+    was going nowhere, and explained none of it."""
+    from harness.__main__ import _head_reason
+    from harness.dispatcher import Plan
 
-    lines = priority.render(rows, head_reason="starting 4")
+    plan = Plan(start=(), reason="budget 100% remaining, 0 of max 1 slots", skipped={})
+    rows = [priority.Waiting(cls="directed", label="#4 a thing", item_id=4, note="discovered")]
 
-    assert "queue: 2 waiting" in lines[0]
-    assert "answer" in lines[1]
-    assert "starting 4" in lines[2]
-    assert "[forced]" in lines[3]
+    assert _head_reason(plan, rows, None) == {
+        "item": 4,
+        "reason": "waiting to be proposed; `discover` ranks and proposes the queue",
+    }
 
 
-def test_B292_an_empty_queue_says_so():
-    assert priority.render([]) == ["queue: empty"]
+def test_B292_the_head_quotes_the_plan_when_the_plan_is_the_authority(tmp_path):
+    """For an `approved` item the dispatcher IS the answer, so the head repeats it rather than
+    inventing a second explanation that could disagree."""
+    from harness.__main__ import _head_reason
+    from harness.dispatcher import Plan
+
+    rows = [priority.Waiting(cls="directed", label="#4", item_id=4, note="approved")]
+
+    assert _head_reason(Plan(start=(4,), reason="r", skipped={}), rows, None)["reason"] == (
+        "starting now")
+    assert _head_reason(
+        Plan(start=(), reason="r", skipped={"4": "slots full"}), rows, None
+    )["reason"] == "slots full"
+    assert _head_reason(Plan(start=(), reason="reserve", skipped={}), rows, None)["reason"] == (
+        "reserve")
+
+
+def test_B292_an_empty_queue_says_so(tmp_path):
+    from harness.__main__ import _head_reason
+    from harness.dispatcher import Plan
+
+    assert _head_reason(Plan(start=(), reason="r", skipped={}), [], None) == {
+        "item": None, "reason": "the queue is empty"}
 
 
 # ------------------------------------------------------------------------------------------
@@ -892,3 +942,165 @@ def test_the_force_flag_is_case_insensitive_like_everything_else():
     assert split_force("tighten the budget --FORCE") == ("tighten the budget", True)
     assert split_force("--Force") == ("", True)
     assert split_force("tighten the budget") == ("tighten the budget", False)
+
+
+# ------------------------------------------------------------------------------------------
+# Defects the D4 audit found in the merged code. Each of these failed before its fix.
+# ------------------------------------------------------------------------------------------
+
+
+def test_B284_a_refused_force_does_not_contaminate_what_was_asked_for():
+    """The refusal notice used to be appended to `Command.args`, which is the text a stage reads
+    as the request. At level 2 that turned `/harness work #5 --force` into a free-text item
+    titled "(--force ignored: it needs level 3)" instead of a pointer to issue 5, and made
+    `/harness work --force` slip past the empty-request guard entirely."""
+    from harness.keywords import command_from
+    from harness.trust import parse_trust
+
+    trusted = parse_trust("3 jack\n2 nathan")
+
+    def comment(body, node):
+        return {"id": 1, "node_id": node, "body": body,
+                "user": {"login": "nathan"}, "author_association": "MEMBER"}
+
+    def cmd(body, node):
+        return command_from(comment(body, node), surface="inbox", number=19,
+                            trusted=trusted, ledger=Ledger.empty("2026-09-01T00:00:00Z"))
+
+    pointer = cmd("/harness work #5 --force", "IC_a")
+    assert pointer.args == "#5", "the pointer must survive a refused --force"
+    assert pointer.force is False
+    assert "level 3" in pointer.note
+
+    empty = cmd("/harness work --force", "IC_b")
+    assert empty.args == "", "an empty request must stay empty, not become the notice"
+
+    text = cmd("/harness work fix the header --force", "IC_c")
+    assert text.args == "fix the header"
+
+
+def test_B284_the_operator_still_gets_the_flag():
+    from harness.keywords import command_from
+    from harness.trust import parse_trust
+
+    got = command_from(
+        {"id": 1, "node_id": "IC_op", "body": "/harness work #5 --force",
+         "user": {"login": "jack"}, "author_association": "OWNER"},
+        surface="inbox", number=19, trusted=parse_trust("3 jack"),
+        ledger=Ledger.empty("2026-09-01T00:00:00Z"),
+    )
+
+    assert got.force is True and got.args == "#5" and got.note == ""
+
+
+def test_B241_the_store_never_returns_the_inbox_as_a_work_item(tmp_path):
+    """The guard exists in both `_issues` and `_issue`; what it did not have was a test, so a
+    stage label applied to the inbox by hand — putting the request form itself into the queue —
+    would not have been caught by anything. This is that test."""
+    from harness.store.github import GitHubStore
+
+    class Gh:
+        can_write = False
+        def __init__(self):
+            self.issues = [
+                {"number": 19, "labels": [{"name": "stage:queued"}], "title": "Inbox"},
+                {"number": 7, "labels": [{"name": "stage:queued"}], "title": "real work"},
+            ]
+        def get(self, path):
+            if "/issues/19" in path:
+                return self.issues[0]
+            if "/issues/7" in path:
+                return self.issues[1]
+            return self.issues
+
+    class Cfg:
+        self_repo = "o/r"
+        inbox_issue = 19
+
+    store = GitHubStore.__new__(GitHubStore)
+    store.gh = Gh()
+    store.config = Cfg()
+    store.self_repo = "o/r"
+
+    numbers = [int(row["number"]) for row in store._issues()]
+    assert numbers == [7], "the inbox must not be listed as a work item"
+    assert store._issue(19) is None, "the inbox must not resolve as a work item"
+    assert store._issue(7) is not None
+
+
+def test_B266_relabel_can_see_the_labels_it_exists_to_migrate():
+    """`relabel` enumerated through `list_work_items(state=...)`, which asks GitHub to filter by
+    the NEW `stage:` label — so it could only ever find issues that had already been migrated.
+    The one command whose whole job is to find `harness:*` issues could never see one."""
+    from harness.store.github import STATE_OF_LABEL
+
+    # The mapping relabel now reads must cover BOTH families, or it is back where it started.
+    assert STATE_OF_LABEL["harness:queued"] == "discovered"
+    assert STATE_OF_LABEL["stage:queued"] == "discovered"
+    assert STATE_OF_LABEL["harness:running"] == "implementing"
+    legacy = [name for name in STATE_OF_LABEL if name.startswith("harness:")]
+    assert len(legacy) == 12, f"every legacy state label must resolve: {sorted(legacy)}"
+
+
+def test_B259_the_green_light_has_a_production_caller():
+    """`ask_for_green_light` was written, tested, documented — and never called, so B259-B263
+    described something that did not happen. It is reached from `propose`, because the comment
+    has to name the proposal and the proposal does not exist until then."""
+    import inspect
+
+    from harness.stages import propose as propose_mod
+
+    source = inspect.getsource(propose_mod)
+    assert "ask_for_green_light" in source, "propose must offer the green light"
+    assert "_offer_the_green_light(ctx, item_id, location)" in source
+
+
+def test_B259_the_green_light_is_only_offered_for_suggested_work(tmp_path):
+    """An assigned or requested item needs no permission — it already had it."""
+    rig = request_rig(tmp_path)
+    from harness.stages.propose import _offer_the_green_light
+
+    asked = rig.store.create_work_item(
+        kind="issue", external_ref="issue:633", title="asked for", via="requested")
+    _offer_the_green_light(rig.ctx, asked, "https://example/p")
+    assert rig.gh.comments_posted == []
+
+    mine = rig.store.create_work_item(
+        kind="issue", external_ref="issue:640", title="my own idea", via="suggested")
+    _offer_the_green_light(rig.ctx, mine, "https://example/p")
+    assert [n for _r, n, _b in rig.gh.comments_posted] == [640]
+
+
+def test_B259_a_failed_green_light_never_fails_the_proposal(tmp_path):
+    """The proposal is published by the time this runs. Failing to advertise it must not undo
+    that."""
+    rig = request_rig(tmp_path)
+    from harness.stages.propose import _offer_the_green_light
+
+    item = rig.store.create_work_item(
+        kind="issue", external_ref="issue:641", title="t", via="suggested")
+
+    def boom(*a, **k):
+        raise RuntimeError("github is down")
+
+    rig.gh.comment = boom
+
+    _offer_the_green_light(rig.ctx, item, "https://example/p")  # must not raise
+
+    assert any("green-light comment failed" in row["message"]
+               for row in rig.store.events(item))
+
+
+def test_B244_asking_for_work_is_requested_wherever_it_was_typed():
+    """`via:assigned` means one thing only: the machine account was put in the Assignees box,
+    which is what `discover --mode assigned` reads. A person typing `/harness work` on a product
+    issue asked in words — that is `requested`. The two were conflated, and `via:` now feeds the
+    priority queue, so blurring them mis-sorts the work."""
+    import harness.__main__ as main_mod
+
+    class Cmd:
+        def __init__(self, surface):
+            self.surface = surface
+
+    for surface in ("product_issue", "inbox", "issue", "delivery_pr"):
+        assert main_mod._via_for(Cmd(surface)) == "requested", surface

@@ -28,7 +28,6 @@ __all__ = [
     "outstanding",
     "headroom_pct",
     "queue",
-    "render",
     "via_of",
 ]
 
@@ -138,7 +137,11 @@ def headroom_pct(ledger: Any) -> float | None:
     usage = window.get("usage")
     if not isinstance(usage, dict):
         return None
-    weekly = usage.get("weekly")
+    # `seven_day` is what the ledger stores and what `runner/cli.py` reads off the response
+    # headers -- `USAGE_WINDOWS` names the two windows and "weekly" is not one of them. Reading
+    # the wrong key here did not raise; it returned None forever, so the headroom half of B290
+    # never bound and suggested work was gated on the idle-queue check alone.
+    weekly = usage.get("seven_day")
     if not isinstance(weekly, dict):
         return None
     utilization = weekly.get("utilization")
@@ -258,21 +261,3 @@ def via_of(item: Any) -> str:
         return named
     ref = str(getattr(item, "external_ref", "") or "")
     return "audit" if ref.startswith("audit:") else "requested"
-
-
-def render(rows: Sequence[Waiting], *, head_reason: str = "") -> list[str]:
-    """The queue as lines for `harness dispatch` (B292).
-
-    "Why has my question not been answered" and "why is it proposing things nobody asked for"
-    should be one command with an answer, which means printing the order and not only the pick.
-    """
-    if not rows:
-        return ["queue: empty"]
-    lines = [f"queue: {len(rows)} waiting, highest priority first"]
-    for index, row in enumerate(rows):
-        mark = " [forced]" if row.forced else ""
-        note = f" ({row.note})" if row.note else ""
-        lines.append(f"  {rank(row.cls)}. {row.cls:<9} {row.label}{note}{mark}")
-        if index == 0 and head_reason:
-            lines.append(f"       -> {head_reason}")
-    return lines

@@ -17,7 +17,7 @@ log = logging.getLogger("harness")
 
 def package(ctx: Context, item_id: int, lease: Lease) -> Path:
     """Delegate to the packager, then transition ``implementing -> packaged``."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
     if item is None:

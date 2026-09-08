@@ -47,7 +47,7 @@ def parse_subissues(text: str) -> list[tuple[str, str]]:
 
 def decompose(ctx: Context, issue_number: int) -> list[int]:
     """B110: N sub-issues queued here, the parent blocked with the list. Returns the child ids."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     parent = ctx.store.get_work_item(int(issue_number))
     if parent is None:

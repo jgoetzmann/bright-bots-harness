@@ -451,7 +451,7 @@ def render_front_matter(front: Mapping[str, Any]) -> str:
 
 def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
     """B60 + §4.3: one model call, a spec file on disk, a validated proposal published."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
     if item is None:

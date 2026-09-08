@@ -13,6 +13,8 @@ from harness import redact
 from harness.clock import Clock, SystemClock, iso
 from harness.clone import CloneManager
 from harness.config import Config
+from harness import halt as halt_module
+from harness.errors import Halted
 from harness.gh import GitHubReadOnly, build_client
 from harness.governor import Governor
 from harness.ledger import Ledger
@@ -57,6 +59,24 @@ class Context:
     def run_dir(self) -> Path:
         """`runs/<run-id>/` — every artifact this run produces lives under here."""
         return self.config.runs_dir / self.run_id
+
+    def check_halt(self) -> None:
+        """Both switches a running stage has to honour, in one call.
+
+        The halt FILE (B148) and the commanded halt set by `/harness halt`. They are checked
+        together because a stage that honours one and not the other is worse than a stage that
+        honours neither -- the operator is told everything stopped, and it did not. Keeping this
+        on the context rather than in `halt.py` is what lets every call site pass both without
+        each remembering to.
+        """
+        halt_module.check_halt(self.config.halt_file)
+        commanded = self.ledger.halt_request()
+        if commanded is not None:
+            why = f": {commanded['reason']}" if commanded.get("reason") else ""
+            raise Halted(
+                f"halted by @{commanded.get('by', 'someone')} at "
+                f"{commanded.get('at', 'unknown')}{why}. `/harness resume` lifts it."
+            )
 
     def record_decision(self, text: str) -> None:
         """Append one dated line to the run's `DECISIONS.md`, redacted on the way out."""

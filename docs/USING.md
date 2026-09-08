@@ -202,7 +202,7 @@ Both of these must hold, or the comment is read and silently ignored (the denial
 
 ### Three parsing rules that bite
 
-- Only the **first** `/harness …` line in a comment is read. If its verb is not one of the twelve above, the whole comment is discarded — a typo does not fall through to the next line.
+- Only the **first** `/harness …` line in a comment is read. If its verb is not one of the fifteen above, the whole comment is discarded — a typo does not fall through to the next line.
 - A command is acted on **once**, keyed on the comment's node id. Editing a comment does not re-trigger it. Post a new one.
 - The argument is a single line. A multi-line note becomes the first line only.
 

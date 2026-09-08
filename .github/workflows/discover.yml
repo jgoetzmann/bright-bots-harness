@@ -197,7 +197,7 @@ jobs:
           reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           case "$reason" in
-            "rate limited"*|halted|reserve|"weekly usage "*|"session usage "*|"carry leeway "*)
+            "rate limited"*|halted*|reserve|"weekly usage "*|"session usage "*|"carry leeway "*)
               echo "dispatcher says: ${reason}; discover will not spend this run"
               echo "proceed=false" >> "$GITHUB_OUTPUT" ;;
             "outside run window"*)

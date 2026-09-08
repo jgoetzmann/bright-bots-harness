@@ -2032,6 +2032,10 @@ DISPATCHER_PY = HARNESS_DIR / "dispatcher.py"
 MUST_STOP_REASON_PREFIXES = frozenset({
     "rate limited until ",
     "halted",
+    # The commanded halt (`/harness halt`). It has to be classified separately because the
+    # workflow's `case` matched bare `halted` exactly, so `halted by @someone` would have fallen
+    # through to `proceed=true` and spent a discover call on a harness a human had just stopped.
+    "halted by @",
     "reserve",
     "weekly usage ",
     "session usage ",

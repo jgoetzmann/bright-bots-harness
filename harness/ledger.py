@@ -315,6 +315,30 @@ class Ledger:
         except (TypeError, ValueError):
             return None
 
+    # -- the commanded halt ------------------------------------------------------------------
+
+    def request_halt(self, actor: str, reason: str, at: str) -> None:
+        """Stop the harness SPENDING, on a level-3 `/harness halt`.
+
+        Deliberately not the same thing as either file switch. `.harness/HALT` is committed and
+        stops the workflows before they start; `HALT_FILE` stops a local run. This one lives in
+        the ledger, which every runner fetches, so a comment can stop the fleet without a commit
+        -- and it gates the model calls rather than the job, so the sweep keeps listening and
+        `/harness resume` can lift it the same way it went on.
+        """
+        self.window["halt"] = {
+            "by": str(actor),
+            "reason": str(reason or "").strip(),
+            "at": str(at),
+        }
+
+    def halt_request(self) -> dict | None:
+        halt = self.window.get("halt")
+        return dict(halt) if isinstance(halt, dict) and halt else None
+
+    def clear_halt(self) -> None:
+        self.window.pop("halt", None)
+
     # -- force (B283/D62) --------------------------------------------------------------------
 
     def force(self, item_id: int) -> None:
@@ -369,6 +393,15 @@ class Ledger:
         if isinstance(usage, dict) and usage:
             # Already normalised, by observe_usage or by from_json: write what is held.
             window["usage"] = dict(usage)
+        halt = self.halt_request()
+        if halt is not None:
+            # Written only once set, so a ledger that has never been halted by comment is
+            # byte-identical to the file it was before.
+            window["halt"] = {
+                "by": str(halt.get("by", "")),
+                "reason": str(halt.get("reason", "")),
+                "at": str(halt.get("at", "")),
+            }
         carry = self.window.get("carry")
         if isinstance(carry, dict) and carry:
             window["carry"] = {

@@ -16,6 +16,8 @@ VERBS: tuple[str, ...] = (
     "revise", "reject", "fix", "rebase", "stop", "split", "queue",
     # Delivery 4: asking for work rather than steering work that exists.
     "work", "audit", "promote", "go", "ask",
+    # Looking at it and stopping it, without a terminal or a commit.
+    "usage", "halt", "resume",
 )
 
 #: B270/B272/D60 - the level each verb needs. 3 is the operator, 2 a maintainer, 1 an asker.
@@ -34,7 +36,15 @@ VERB_LEVEL: dict[str, int] = {
     "rebase": 2,
     "split": 2,
     "stop": 2,
+    # Reading the queue and the spend changes nothing, so it sits with `ask`.
+    "usage": 1,
     "reject": 3,
+    # Stopping the harness is the operator's, and so is starting it again. `halt` could
+    # arguably be lower -- anyone who can see something going wrong should be able to stop it --
+    # but it is paired with `resume` here, and a level that can lift a halt is a level that can
+    # undo somebody else's decision to stop.
+    "halt": 3,
+    "resume": 3,
 }
 
 #: B283/D62 - appended to a command by the operator to start it now instead of on Monday.

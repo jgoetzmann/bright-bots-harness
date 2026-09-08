@@ -156,7 +156,7 @@ def _fullsend_forbidden(path: str) -> bool:
 
 def implement(ctx: Context, item_id: int) -> Lease:
     """Take an approved item to a committed, gate-checked branch inside a disposable clone."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
     if item is None:
@@ -191,7 +191,7 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
     # in the evidence as what it is.
     prep = list(PREPARE(lease.path))
     _write_gates(ctx, "prepare", prep)
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     if prep:
         ctx.record_decision(
             "prepared the clone: "
@@ -204,7 +204,7 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
     # B62: the untouched tree is measured before anything changes, and recorded separately.
     baseline = list(GATE_RUNNER(lease.path, baseline=True))
     _write_gates(ctx, "baseline", baseline)
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     pre_existing = sorted({r.name for r in baseline if r.exit_code != 0})
     if pre_existing:
         ctx.record_decision(
@@ -260,7 +260,7 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
     attempts = 0
     seen: set[str] = set()
     while True:
-        check_halt(ctx.config.halt_file)
+        ctx.check_halt()
         new_failures = _new_failures(baseline, final)
         if not new_failures:
             break

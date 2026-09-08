@@ -229,7 +229,7 @@ def tick(body: str, numbers: Iterable[int]) -> str:
 
 def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
     """B247-B251: one read of the product repository, one findings issue, no work items."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     scope = str(lens or "").strip()
     if not scope:
         # B256: refused before any GitHub read and before any model call. An audit with no lens
@@ -297,7 +297,7 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
 
 def promote(ctx: Context, *, issue_number: int, which: str, actor: str = "") -> list[int]:
     """B252-B254: one work item per named finding, `via:audit`, ticked off in the issue."""
-    check_halt(ctx.config.halt_file)
+    ctx.check_halt()
     issue = ctx.gh.get(f"/repos/{ctx.config.self_repo}/issues/{int(issue_number)}") or {}
     body = str(issue.get("body") or "")
     findings, _ = parse_findings(body)

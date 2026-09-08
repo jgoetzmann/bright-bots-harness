@@ -132,6 +132,13 @@ def plan(
         return Plan(start=(), reason=f"rate limited until {until}", skipped={})
     if halted:
         return Plan(start=(), reason="halted", skipped={})
+    # B-D4: the commanded halt, so `harness dispatch` says WHO stopped it and why rather than
+    # printing a healthy-looking budget beside a queue that will never move.
+    commanded = ledger.halt_request()
+    if commanded is not None:
+        who = commanded.get("by", "someone")
+        why = f": {commanded['reason']}" if commanded.get("reason") else ""
+        return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
     # B209: an item carried across a weekly reset resumes before anything else, on the
     # overrun leeway rather than the weekly stop, and even outside the run window.

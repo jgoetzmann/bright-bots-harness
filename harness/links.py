@@ -26,6 +26,7 @@ __all__ = [
     "refs",
     "quote_as_data",
     "signature",
+    "reply_pointer",
     "work_item_body",
     "proposal_pr_body",
 ]
@@ -45,6 +46,9 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("ask <question>", "answer a question about the code; changes nothing"),
     ("audit <what to look for>", "read the product repository and open one issue of findings"),
     ("promote <n>", "turn finding n of an audit into a work item of its own"),
+    ("usage", "show the spend, the queue, and when the next thing happens"),
+    ("halt", "stop the harness spending anything until it is resumed"),
+    ("resume", "lift a halt"),
 )
 
 #: Where a reader goes next. Relative to the harness repository's default branch.
@@ -214,6 +218,21 @@ def _who(entry: str, trusted: Iterable[str] | None) -> str:
             return " · ".join(f"@{h}" for h in handles)
         return f"nobody listed at level {needed}"
     return f"level {needed}+"
+
+
+def reply_pointer(config: Any) -> str:
+    """One line telling the reader of a reply what else they can say, and where the list is.
+
+    Not part of `signature`: a command reply wants the pointer without the full table,
+    and an ops alert -- `steerable=False` -- wants neither, because nobody answers an alert.
+    """
+    self_repo = str(getattr(config, "self_repo", "") or "")
+    if not self_repo:
+        return "`/harness usage` shows the queue, the spend, and when the next thing happens."
+    return (
+        "`/harness usage` shows the queue, the spend, and when the next thing happens · "
+        f"[every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md)"
+    )
 
 
 def work_item_body(

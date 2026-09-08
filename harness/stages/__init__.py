@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping
 from harness import errors, priority
 from harness.clock import iso
 from harness.context import Context
-from harness.errors import BudgetExhausted, HarnessError
+from harness.errors import BudgetExhausted, Halted, HarnessError
 from harness.halt import check_halt
 from harness.runner import RunRequest, RunResult
 from harness.runner import base as runner_base
@@ -212,7 +212,10 @@ def run_model(
     right now; the governor says whether there is allowance for it. Priority never overrules
     the governor (B291): a class-0 `ask` past a usage stop still does not run.
     """
-    check_halt(ctx.config.halt_file)
+    # Both switches, via the context: the file and the commanded halt. This is the last line of
+    # defence rather than the only one -- every stage checks at its own entry too, so a halted
+    # harness does not clone a repository and run `npm ci` before finding out.
+    ctx.check_halt()
     refused = priority.admit(
         _class_of_call(ctx, stage, item_id),
         store=ctx.store,

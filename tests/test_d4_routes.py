@@ -1028,18 +1028,85 @@ def test_B241_the_store_never_returns_the_inbox_as_a_work_item(tmp_path):
     assert store._issue(7) is not None
 
 
-def test_B266_relabel_can_see_the_labels_it_exists_to_migrate():
-    """`relabel` enumerated through `list_work_items(state=...)`, which asks GitHub to filter by
-    the NEW `stage:` label — so it could only ever find issues that had already been migrated.
-    The one command whose whole job is to find `harness:*` issues could never see one."""
-    from harness.store.github import STATE_OF_LABEL
+def test_B266_relabel_actually_migrates_a_legacy_labelled_issue():
+    """Drives `cmd_relabel` against a repository whose issues carry the OLD labels, which is the
+    only situation the command exists for.
 
-    # The mapping relabel now reads must cover BOTH families, or it is back where it started.
-    assert STATE_OF_LABEL["harness:queued"] == "discovered"
-    assert STATE_OF_LABEL["stage:queued"] == "discovered"
-    assert STATE_OF_LABEL["harness:running"] == "implementing"
-    legacy = [name for name in STATE_OF_LABEL if name.startswith("harness:")]
-    assert len(legacy) == 12, f"every legacy state label must resolve: {sorted(legacy)}"
+    The first version of this test asserted that `STATE_OF_LABEL` covers both families — true
+    whether or not `cmd_relabel` consults it — so it passed for a whole PR while the fix it was
+    written for was not even committed. `relabel` enumerated through
+    `list_work_items(state=...)`, which asks GitHub to filter by `LABELS[state]`, the NEW name,
+    and could only ever return issues that had already been migrated.
+    """
+    import harness.__main__ as main_mod
+
+    written: list[tuple[int, list[str]]] = []
+
+    class Gh:
+        can_write = True
+        def get(self, path):
+            assert "state=open" in path
+            return [
+                {"number": 4, "labels": [{"name": "harness:queued"}]},
+                {"number": 5, "labels": [{"name": "harness:shipped"}, {"name": "keep-me"}]},
+                {"number": 6, "labels": [{"name": "stage:done"}, {"name": "kind:product"},
+                                         {"name": "via:requested"}]},
+                {"number": 9, "labels": [{"name": "kind:ops"}]},
+                {"number": 19, "labels": [{"name": "harness:queued"}]},
+                {"number": 3, "labels": [{"name": "harness:queued"}], "pull_request": {}},
+            ]
+        def set_labels(self, repo, number, labels):
+            written.append((int(number), list(labels)))
+
+    class Cfg:
+        self_repo = "o/r"
+        inbox_issue = 19
+
+    class Ctx:
+        gh = Gh()
+
+    emitted = {}
+    main_mod._emit = lambda payload, text, args: emitted.update(payload)
+    main_mod._load = lambda args: Cfg()
+    main_mod._context = lambda config, args, run_id: Ctx()
+
+    assert main_mod.cmd_relabel(object()) == main_mod.EXIT_OK
+
+    by_number = dict(written)
+    # #4 and #5 carried legacy labels and had to move; #5 keeps the label that is not ours.
+    assert by_number[4] == ["kind:product", "stage:queued", "via:requested"]
+    assert by_number[5] == ["keep-me", "kind:product", "stage:needs-review", "via:requested"]
+    # #6 is already migrated, #9 carries no stage label, #19 is the inbox, #3 is a pull request.
+    assert set(by_number) == {4, 5}, f"only legacy issues should be written: {sorted(by_number)}"
+
+
+def test_B267_relabel_refuses_while_a_job_is_in_flight():
+    """The busy guard reads the same locally-classified list, so it must still see an issue that
+    carries a LEGACY in-flight label — the case where racing the job is most likely."""
+    import harness.__main__ as main_mod
+
+    class Gh:
+        can_write = True
+        def get(self, path):
+            return [{"number": 7, "labels": [{"name": "harness:running"}]}]
+        def set_labels(self, repo, number, labels):  # pragma: no cover - must not be reached
+            raise AssertionError("relabel wrote while a job was in flight")
+
+    class Cfg:
+        self_repo = "o/r"
+        inbox_issue = 0
+
+    class Ctx:
+        gh = Gh()
+
+    main_mod._load = lambda args: Cfg()
+    main_mod._context = lambda config, args, run_id: Ctx()
+
+    with pytest.raises(HarnessError) as excinfo:
+        main_mod.cmd_relabel(object())
+
+    assert "mid-flight" in str(excinfo.value)
+    assert "[7]" in str(excinfo.value)
 
 
 def test_B259_the_green_light_has_a_production_caller():

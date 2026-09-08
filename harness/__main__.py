@@ -50,6 +50,9 @@ from harness.store import (
     STATES,
     VIA_LABELS,
 )
+# Not re-exported by `harness.store`: it is the GitHub backend's label vocabulary. `relabel`
+# needs it because it is the only mapping that reads BOTH label families (B265).
+from harness.store.github import STATE_OF_LABEL
 from harness import trust as trust_mod
 from harness.trust import load_trust
 
@@ -1686,11 +1689,25 @@ def cmd_relabel(args: argparse.Namespace) -> int:
               "no write credential; nothing relabelled", args)
         return EXIT_OK
 
-    busy = [
-        item.id
-        for state in RELABEL_BUSY_STATES
-        for item in ctx.store.list_work_items(state=state)
-    ]
+    # Every open issue here, read once and classified locally. NOT `list_work_items(state=...)`:
+    # that asks GitHub to filter by `LABELS[state]`, which is the NEW `stage:` name -- so it can
+    # only ever return issues that have already been migrated, and the one command whose whole
+    # job is to find `harness:*` issues could never see one.
+    listing = ctx.gh.get(f"/repos/{config.self_repo}/issues?state=open&per_page=100")
+    inbox = int(getattr(config, "inbox_issue", 0) or 0)
+    found: list[tuple[int, str, list[str]]] = []
+    for issue in listing if isinstance(listing, list) else []:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        number = int(issue.get("number", 0) or 0)
+        if number <= 0 or number == inbox:
+            continue
+        names = [str((row or {}).get("name") or "") for row in (issue.get("labels") or [])]
+        state = next((STATE_OF_LABEL[n] for n in names if n in STATE_OF_LABEL), None)
+        if state is not None:
+            found.append((number, state, names))
+
+    busy = sorted(n for n, state, _names in found if state in RELABEL_BUSY_STATES)
     if busy:
         raise HarnessError(
             f"items {sorted(busy)} are mid-flight ({', '.join(RELABEL_BUSY_STATES)}); "
@@ -1699,27 +1716,22 @@ def cmd_relabel(args: argparse.Namespace) -> int:
 
     legacy_of = {label: state for state, label in LEGACY_LABELS.items()}
     relabelled: list[dict] = []
-    for state in STATES:
-        for item in ctx.store.list_work_items(state=state):
-            number = int(item.id)
-            # gh.issue() reads the PRODUCT repo; the work items live here.
-            issue = ctx.gh.get(f"/repos/{config.self_repo}/issues/{number}") or {}
-            names = [str((row or {}).get("name") or "") for row in (issue.get("labels") or [])]
-            kept = [n for n in names if n not in legacy_of and n != LABELS[state]]
-            wanted = [LABELS[state]]
-            if not any(n.startswith("kind:") for n in kept):
-                # Everything that is a work item is product work: I-18 means there is no other
-                # kind, and an audit issue is not a work item.
-                wanted.append(KIND_LABELS["product"])
-            if not any(n.startswith("via:") for n in kept):
-                # Nothing recorded how it arrived, because nothing used to. `requested` is the
-                # honest reading of an item that predates the distinction: a human caused it.
-                wanted.append(VIA_LABELS["requested"])
-            final = sorted(set(kept + wanted))
-            if sorted(set(names)) == final:
-                continue
-            ctx.gh.set_labels(config.self_repo, number, final)
-            relabelled.append({"item": number, "state": state, "labels": final})
+    for number, state, names in sorted(found):
+        kept = [n for n in names if n not in legacy_of and n != LABELS[state]]
+        wanted = [LABELS[state]]
+        if not any(n.startswith("kind:") for n in kept):
+            # Everything that is a work item is product work: I-18 means there is no other
+            # kind, and an audit issue is not a work item.
+            wanted.append(KIND_LABELS["product"])
+        if not any(n.startswith("via:") for n in kept):
+            # Nothing recorded how it arrived, because nothing used to. `requested` is the
+            # honest reading of an item that predates the distinction: a human caused it.
+            wanted.append(VIA_LABELS["requested"])
+        final = sorted(set(kept + wanted))
+        if sorted(set(names)) == final:
+            continue
+        ctx.gh.set_labels(config.self_repo, number, final)
+        relabelled.append({"item": number, "state": state, "labels": final})
 
     _emit(
         {"relabelled": relabelled, "skipped": None},

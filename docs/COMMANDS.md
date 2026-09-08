@@ -104,14 +104,18 @@ Bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `stage:needs-human`
 
 Rebases onto the product repository's default branch, then re-runs the gates.
 
-#### `stop` — abandon it
+#### `stop` — halt it
 
 ```
 /harness stop
 ```
 
-**On the delivery pull request.** Closes it and abandons the item, freeing the concurrency slot. The
-branch and the evidence stay where they are.
+**On the delivery pull request.** Closes it and moves the item to `stage:blocked`, freeing the
+concurrency slot. The branch and the evidence stay where they are, and `/harness queue` puts it
+back.
+
+Not `stage:dropped`: an item with a delivery pull request open is *stopped for a decision*, not
+discarded, and `shipped → abandoned` is a transition the state machine refuses on purpose.
 
 #### `reject` — refuse the plan
 
@@ -140,7 +144,8 @@ Sub-issues inherit how the parent arrived, so splitting a suggestion produces su
 /harness queue
 ```
 
-Returns a parked or blocked item to `stage:queued`. A no-op if it is already there.
+Returns a blocked item to `stage:queued`. A no-op if it is already there. This is how you undo a
+`stop`, or restart something the gates blocked once you have dealt with the cause.
 
 ### Asking questions
 
@@ -254,8 +259,10 @@ be. It reads its notifications on `feedback.yml`'s schedule (`41 */3 * * 1-5`). 
 
 ## CLI subcommands
 
-`harness <command>`. Add `--json` for machine-readable output. Most of these are what the workflows
-call; you rarely need them by hand.
+`harness <command>`. Most of these are what the workflows call; you rarely need them by hand.
+
+`--json` is a **global** flag and goes before the subcommand — `harness --json discover …`, not
+`harness discover --json`. Not every subcommand varies its output for it.
 
 ### Looking
 
@@ -273,7 +280,10 @@ harness ledger          # spend, per-stage medians, window state, distance to ea
   "start": [],
   "reason": "budget 90% remaining, 0 of max 1 slots",
   "skipped": {},
-  "queue": [ { "class": "directed", "rank": 2, "item": 4, "state": "discovered", "forced": false } ],
+  "queue": [
+    { "class": "directed", "rank": 2, "item": 4, "label": "#4 widen the bundle glob",
+      "state": "discovered", "forced": false }
+  ],
   "head": { "item": 4, "reason": "waiting to be proposed; `discover` ranks and proposes the queue" },
   "suggested": { "admitted": false, "reason": "work somebody asked for is still outstanding (#4)" }
 }
@@ -288,8 +298,11 @@ harness discover --mode triage                    # rank the queue, or find work
 harness discover --mode audit --lens "accessibility in src/components"
 ```
 
-`triage` reaches the product repository **only** when nothing anybody asked for is outstanding *and*
-weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50).
+`triage` reaches the product repository **only** when nothing anybody asked for is outstanding, and
+weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50) — or has never been observed, which is not
+treated as "no headroom". Even then it still requires `ALLOWLIST_LABEL` (`harness-ok`) on the issue
+unless you pass `--ignore-allowlist`, and nothing on the product repository carries that label
+today. Assignment and `/harness work` are the routes that work.
 
 ### Moving one item
 
@@ -306,7 +319,7 @@ harness decompose 4     # split into sub-issues
 ### Operating
 
 ```bash
-harness halt            # create .harness/HALT — stops every spending workflow
+harness halt            # create the LOCAL halt file (HALT_FILE, default ./HALT)
 harness resume          # remove it
 harness sweep           # poll notifications, parse /harness commands, act on them
 harness relabel         # migrate open issues from harness:* to stage:/kind:/via:
@@ -326,9 +339,18 @@ harness local-loop      # the container loop: dispatch, run, sleep — what the 
 (you or the harness), and refuses to claim readiness the credential does not have. See
 [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`.
 
-**`harness halt` is the one to remember.** It is also just a file: committing anything at
-`.harness/HALT` on `main` stops everything, and deleting it resumes. One commit either way, from a
-phone, and you never need permission to use it.
+### Two kill switches, and only one of them stops Actions
+
+This trips people, so it is worth being exact.
+
+| Switch | Written by | Stops |
+|---|---|---|
+| **`.harness/HALT`**, committed on `main` | **you, with a commit** — no CLI command writes it | **every spending workflow**, before the dispatcher and before a single token |
+| `HALT` at the repo root (`HALT_FILE`) | `harness halt` | a **local** `harness run`, at the next stage boundary, exit 5 |
+
+The root file is gitignored, so an Actions runner never sees it — `harness halt` does **not** stop
+the fleet. **To stop everything, commit a file at `.harness/HALT`.** Any content. Deleting it
+resumes. One commit either way, from a phone, and you never need permission to use it.
 
 ---
 

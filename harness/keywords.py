@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,15 @@ _COMMAND_RE = re.compile(
 )
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
+
+#: How far a FIRST sweep looks back when the ledger carries no cursor yet.
+#:
+#: Not to the epoch. An unset cursor means "this has never run here", and the honest reading of
+#: that is "start now", not "act on every `/harness` comment anyone has ever left". The first
+#: sweep after the kill switch comes off is exactly when a backlog would be most surprising and
+#: least wanted -- a stale `stop` from a month ago is not an instruction, it is history. One
+#: poll interval of overlap keeps a comment left moments before the first run from being lost.
+FIRST_SWEEP_LOOKBACK_HOURS = 3
 
 
 @dataclass(frozen=True)
@@ -205,6 +215,16 @@ def command_from(
     )
 
 
+def _first_sweep_since(now_iso: str) -> str:
+    """`FIRST_SWEEP_LOOKBACK_HOURS` before `now_iso`, or the epoch if that cannot be parsed."""
+    try:
+        now = datetime.strptime(str(now_iso), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return _EPOCH
+    back = now - timedelta(hours=FIRST_SWEEP_LOOKBACK_HOURS)
+    return back.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def thread_number(url: str) -> int | None:
     """``.../issues/12`` or ``.../pulls/12`` -> 12; anything else -> None."""
     match = _THREAD_NUMBER_RE.search(url)
@@ -267,7 +287,9 @@ def sweep(
     made is the one that silently vanishes. The inbox exists to be commented on by people who
     have not read this paragraph, so it is polled.
     """
-    since = ledger.cursors.get("notifications_last_seen") or _EPOCH
+    since = ledger.cursors.get("notifications_last_seen")
+    if not since:
+        since = _first_sweep_since(now_iso)
     commands: list[Command] = []
     seen_threads: set[tuple[str, int]] = set()
 

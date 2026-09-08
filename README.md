@@ -169,17 +169,22 @@ subcommands.
 | [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) | What a work package and a review package contain, and how to reconstruct a run from one |
 | [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) | Running the same harness in the `bb` container, off the schedule |
 | [DECISIONS.md](DECISIONS.md) | Why something is the way it is. D1–D63, the amendment log for the frozen specs |
+| [docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) | Proving it against real GitHub: nineteen steps ordered so the cheapest prove the most |
 | [docs/delivery/](docs/delivery/README.md) | The frozen specs and their runnable review protocols. For reviewing, not operating |
 
 ## Current status
 
-**Delivery 4 is merged, and the kill switch is on.** `.harness/HALT` exists on `main`, so every
-spending workflow exits before the dispatcher. Removing it — one commit — is the go-live step.
-The environment is ready for it: the nineteen labels exist, the request inbox is
+**Delivery 4 is merged and the kill switch is off.** The spending workflows run. The environment
+is ready: the nineteen labels exist, the request inbox is
 [#19](https://github.com/jgoetzmann/bright-bots-harness/issues/19) and pinned, and
-`.harness/config.json` points at it. What has not happened is a live run of anything Delivery 4
-added; §9 of [the D4 handoff](docs/delivery/DELIVERY-4-HANDOFF.md) is the list to work through,
-and A2 is the cheapest place to start because `/harness work <link>` makes no model call at all.
+`.harness/config.json` points at it.
+
+What has **not** happened is a live run of anything Delivery 4 added.
+[docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) is the order to find that out
+in — eighteen steps, the first six of which cost nothing at all because a pasted link goes through
+directed discovery and makes no model call.
+
+To stop everything again: commit a file at `.harness/HALT`.
 
 **It has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
 queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product issue #633) went

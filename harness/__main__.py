@@ -48,6 +48,7 @@ from harness.store import (
     LABEL_SPECS,
     LEGACY_LABELS,
     STATES,
+    TRANSITIONS,
     VIA_LABELS,
 )
 # Not re-exported by `harness.store`: it is the GitHub backend's label vocabulary. `relabel`
@@ -1429,6 +1430,13 @@ def _forced(ctx, cmd, item_id: int | None) -> str:
     """
     if not getattr(cmd, "force", False) or item_id is None:
         return ""
+    # The exemption itself, not just the sentence about it. Without these two lines the reply
+    # claimed the item was window-exempt while `ledger.forced()` stayed empty, so the dispatcher
+    # never saw it and a forced item waited for Monday exactly like an unforced one.
+    ctx.ledger.force(int(item_id))
+    ctx.store.append_event(
+        int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"
+    )
     return (
         f" — forced by @{cmd.actor}, so it starts on the next sweep rather than waiting for "
         "the run window. The kill switch, both usage stops, every cap and both human gates "
@@ -1539,13 +1547,23 @@ def _act_on_command(ctx, config, cmd) -> str:
         return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
 
     if cmd.verb in ("stop", "reject"):
+        item = ctx.store.get_work_item(item_id)
+        state = item.state if item is not None else ""
+        # `shipped -> abandoned` is pinned illegal (D1): an item with a delivery pull request
+        # open is not dropped, it is stopped for a decision. `stop` on a delivery PR is exactly
+        # that case, so it lands in `blocked` -- which is legal, reversible with `/harness
+        # queue`, and what the label already means. Choosing the target instead of hard-coding
+        # `abandoned` is what stops the documented gesture raising after it closed the PR.
+        target = "abandoned" if "abandoned" in TRANSITIONS.get(state, frozenset()) else "blocked"
+        # Transitioned FIRST: a refused transition must not leave a closed pull request attached
+        # to a live item, which is what happened when the close came first.
+        ctx.store.transition(item_id, target, reason=reason)
         repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
         closed = False
         if cmd.surface in ("proposal_pr", "delivery_pr") and ctx.gh.can_write:
             ctx.gh.close_pull(repo, cmd.number)
             closed = True
-        ctx.store.transition(item_id, "abandoned", reason=reason)
-        return f"item {item_id} abandoned" + ("; PR closed" if closed else "")
+        return f"item {item_id} {target}" + ("; PR closed" if closed else "")
 
     if cmd.verb == "revise":
         ctx.store.transition(item_id, "proposing", reason=reason)

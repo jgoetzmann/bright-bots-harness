@@ -37,7 +37,7 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("reject <reason>", "abandon this item; nothing further is attempted"),
     ("fix <notes>", "one more implementation pass against the same package"),
     ("rebase", "rebase the branch onto the product repository's current main"),
-    ("stop", "park this item now, leaving the branch and the evidence in place"),
+    ("stop", "block this item now, leaving the branch and the evidence in place"),
     ("split", "break this item into sub-issues and queue them separately"),
     ("queue", "put this item back in the queue after it was parked or blocked"),
     ("work <what, or a link>", "open a work item for this and put it in the queue"),

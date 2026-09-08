@@ -50,6 +50,7 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
 #: Where a reader goes next. Relative to the harness repository's default branch.
 DOC_LINKS: tuple[tuple[str, str], ...] = (
     ("Start here", "docs/FOR-MAINTAINERS.md"),
+    ("Every command", "docs/COMMANDS.md"),
     ("How to use it", "docs/USING.md"),
     ("Finding work and steering it", "docs/PROPOSALS.md"),
     ("What it will and will not do", "docs/SAFETY.md"),

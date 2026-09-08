@@ -161,6 +161,7 @@ subcommands.
 | Document | When to read it |
 |---|---|
 | [docs/FOR-MAINTAINERS.md](docs/FOR-MAINTAINERS.md) | **Start here.** Five minutes, no terminal: the one gesture that gives it work, your two moves, and how to stop it |
+| [docs/COMMANDS.md](docs/COMMANDS.md) | **Every command, with an example.** Both surfaces: the `/harness` comment verbs and the CLI subcommands |
 | [docs/USING.md](docs/USING.md) | The reference behind that page. What arrives, where, and what you do about it — all of it from a browser or a phone |
 | [docs/PROPOSALS.md](docs/PROPOSALS.md) | How work is found and aimed: the discovery modes, what a proposal contains, and how to change its mind |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day to day and when something is wrong: reading the state (§1), a failed run, a stuck item, a diverged fork, a leaked secret, everyday actions (§11). §8 is how to stop everything |

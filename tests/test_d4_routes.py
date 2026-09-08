@@ -1028,85 +1028,126 @@ def test_B241_the_store_never_returns_the_inbox_as_a_work_item(tmp_path):
     assert store._issue(7) is not None
 
 
-def test_B266_relabel_actually_migrates_a_legacy_labelled_issue():
-    """Drives `cmd_relabel` against a repository whose issues carry the OLD labels, which is the
-    only situation the command exists for.
-
-    The first version of this test asserted that `STATE_OF_LABEL` covers both families — true
-    whether or not `cmd_relabel` consults it — so it passed for a whole PR while the fix it was
-    written for was not even committed. `relabel` enumerated through
-    `list_work_items(state=...)`, which asks GitHub to filter by `LABELS[state]`, the NEW name,
-    and could only ever return issues that had already been migrated.
-    """
+def _relabel_rig(monkeypatch, issues, *, inbox=0, page_size=100):
+    """Drives `cmd_relabel` against a fake that pages the way GitHub actually does."""
     import harness.__main__ as main_mod
 
     written: list[tuple[int, list[str]]] = []
+    requests: list[str] = []
 
     class Gh:
         can_write = True
-        def get(self, path):
-            assert "state=open" in path
-            return [
-                {"number": 4, "labels": [{"name": "harness:queued"}]},
-                {"number": 5, "labels": [{"name": "harness:shipped"}, {"name": "keep-me"}]},
-                {"number": 6, "labels": [{"name": "stage:done"}, {"name": "kind:product"},
-                                         {"name": "via:requested"}]},
-                {"number": 9, "labels": [{"name": "kind:ops"}]},
-                {"number": 19, "labels": [{"name": "harness:queued"}]},
-                {"number": 3, "labels": [{"name": "harness:queued"}], "pull_request": {}},
-            ]
+
+        def paginate(self, path):
+            requests.append(path)
+            return list(issues)
+
+        def get(self, path):  # pragma: no cover - relabel must not use the one-shot path
+            raise AssertionError(f"relabel must paginate, not get: {path}")
+
         def set_labels(self, repo, number, labels):
             written.append((int(number), list(labels)))
 
     class Cfg:
         self_repo = "o/r"
-        inbox_issue = 19
+        inbox_issue = inbox
 
     class Ctx:
         gh = Gh()
 
-    emitted = {}
-    main_mod._emit = lambda payload, text, args: emitted.update(payload)
-    main_mod._load = lambda args: Cfg()
-    main_mod._context = lambda config, args, run_id: Ctx()
+    emitted: dict = {}
+    # Through `monkeypatch`, not by assignment: `_load` and `_context` are module globals every
+    # CLI command goes through, and a leaked stub would break whichever test is added next.
+    monkeypatch.setattr(main_mod, "_emit", lambda payload, text, args: emitted.update(payload))
+    monkeypatch.setattr(main_mod, "_load", lambda args: Cfg())
+    monkeypatch.setattr(main_mod, "_context", lambda config, args, run_id: Ctx())
+    return main_mod, written, requests, emitted
+
+
+def test_B266_relabel_actually_migrates_a_legacy_labelled_issue(monkeypatch):
+    """Drives `cmd_relabel` against a repository whose issues carry the OLD labels, which is the
+    only situation the command exists for.
+
+    The first version of this test asserted that `STATE_OF_LABEL` covers both families — true
+    whether or not `cmd_relabel` consults it — so it passed for a whole PR while the fix it was
+    written for was not even committed."""
+    issues = [
+        {"number": 4, "labels": [{"name": "harness:queued"}]},
+        # A legacy state label beside labels from the new families and one that is not ours.
+        {"number": 5, "labels": [{"name": "harness:shipped"}, {"name": "keep-me"},
+                                 {"name": "kind:audit"}, {"name": "via:suggested"}]},
+        # GitHub serves a label as a bare string on some endpoints; `_label_names` handles both.
+        {"number": 6, "labels": ["harness:blocked"]},
+        {"number": 7, "labels": [{"name": "stage:done"}, {"name": "kind:product"},
+                                 {"name": "via:requested"}]},
+        {"number": 9, "labels": [{"name": "kind:ops"}]},
+        {"number": 19, "labels": [{"name": "harness:queued"}]},
+        {"number": 3, "labels": [{"name": "harness:queued"}], "pull_request": {}},
+    ]
+    main_mod, written, requests, emitted = _relabel_rig(monkeypatch, issues, inbox=19)
 
     assert main_mod.cmd_relabel(object()) == main_mod.EXIT_OK
 
     by_number = dict(written)
-    # #4 and #5 carried legacy labels and had to move; #5 keeps the label that is not ours.
     assert by_number[4] == ["kind:product", "stage:queued", "via:requested"]
-    assert by_number[5] == ["keep-me", "kind:product", "stage:needs-review", "via:requested"]
-    # #6 is already migrated, #9 carries no stage label, #19 is the inbox, #3 is a pull request.
-    assert set(by_number) == {4, 5}, f"only legacy issues should be written: {sorted(by_number)}"
+    # An existing `kind:`/`via:` pair is KEPT, not overwritten with the defaults.
+    assert by_number[5] == ["keep-me", "kind:audit", "stage:needs-review", "via:suggested"]
+    # A bare-string label is a label.
+    assert by_number[6] == ["kind:product", "stage:blocked", "via:requested"]
+    # #7 already migrated, #9 has no stage label, #19 is the inbox, #3 is a pull request.
+    assert set(by_number) == {4, 5, 6}, f"only legacy issues should be written: {sorted(by_number)}"
+    # The emitted payload is the operator's record of what happened; pin it.
+    assert [row["item"] for row in emitted["relabelled"]] == [4, 5, 6]
+    assert emitted["skipped"] is None
 
 
-def test_B267_relabel_refuses_while_a_job_is_in_flight():
+def test_B266_relabel_reads_every_page_not_just_the_first(monkeypatch):
+    """`gh.get` is one request. Going through it meant that past a hundred open issues the
+    migration stopped silently, reported success, and left the rest carrying `harness:*`
+    forever — and the in-flight guard below never saw the issues it skipped."""
+    issues = [{"number": n, "labels": [{"name": "harness:queued"}]} for n in range(1, 151)]
+    main_mod, written, requests, emitted = _relabel_rig(monkeypatch, issues)
+
+    assert main_mod.cmd_relabel(object()) == main_mod.EXIT_OK
+
+    assert len(written) == 150, "every page must be migrated, not the first hundred"
+    assert requests and all("per_page=100" in r for r in requests)
+
+
+def test_B267_relabel_refuses_while_a_job_is_in_flight(monkeypatch):
     """The busy guard reads the same locally-classified list, so it must still see an issue that
     carries a LEGACY in-flight label — the case where racing the job is most likely."""
-    import harness.__main__ as main_mod
-
-    class Gh:
-        can_write = True
-        def get(self, path):
-            return [{"number": 7, "labels": [{"name": "harness:running"}]}]
-        def set_labels(self, repo, number, labels):  # pragma: no cover - must not be reached
-            raise AssertionError("relabel wrote while a job was in flight")
-
-    class Cfg:
-        self_repo = "o/r"
-        inbox_issue = 0
-
-    class Ctx:
-        gh = Gh()
-
-    main_mod._load = lambda args: Cfg()
-    main_mod._context = lambda config, args, run_id: Ctx()
+    issues = [
+        {"number": 4, "labels": [{"name": "harness:queued"}]},
+        {"number": 7, "labels": [{"name": "harness:running"}]},
+    ]
+    main_mod, written, _requests, _emitted = _relabel_rig(monkeypatch, issues)
 
     with pytest.raises(HarnessError) as excinfo:
         main_mod.cmd_relabel(object())
 
-    assert "mid-flight" in str(excinfo.value)
-    assert "[7]" in str(excinfo.value)
+    assert "mid-flight" in str(excinfo.value) and "[7]" in str(excinfo.value)
+    assert written == [], "nothing may be written once the guard fires"
+
+
+def test_B266_relabel_refuses_an_issue_whose_stage_is_ambiguous(monkeypatch):
+    """`_state_of` REFUSES an issue carrying two state labels rather than picking one, and so
+    must this. Taking the first in GitHub's serialisation order resolved
+    `harness:blocked` + `stage:ready` differently by array order: one way silently moved the item
+    between states in a command whose contract is that it changes none, the other wrote TWO
+    `stage:` labels and wedged the issue for every later reader of `_state_of`."""
+    for labels in (
+        [{"name": "harness:blocked"}, {"name": "stage:ready"}],
+        [{"name": "stage:ready"}, {"name": "harness:blocked"}],
+    ):
+        main_mod, written, _r, _e = _relabel_rig(monkeypatch, [{"number": 8, "labels": labels}])
+
+        with pytest.raises(HarnessError) as excinfo:
+            main_mod.cmd_relabel(object())
+
+        assert "more than one state label" in str(excinfo.value)
+        assert "[8]" in str(excinfo.value)
+        assert written == [], "an ambiguous issue must not be written to"
 
 
 def test_B259_the_green_light_has_a_production_caller():

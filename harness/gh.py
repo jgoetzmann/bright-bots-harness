@@ -200,6 +200,15 @@ class GitHubReadOnly:
         data, _ = self._fetch(self._url(path))
         return data
 
+    def paginate(self, path: str) -> list[dict]:
+        """Every page of a list endpoint, following Link headers (B266).
+
+        Public because `relabel` needs it: it reads the whole issue list directly rather than
+        through the store, and `get` is one request. A one-shot migration that stops at the
+        first page is worse than one that refuses -- it reports success.
+        """
+        return self._paginate(path)
+
     def _paginate(self, path: str) -> list[dict]:
         url: str | None = self._url(path)
         collected: list[dict] = []

@@ -370,10 +370,10 @@ def test_create_label_posts_to_the_given_repo_labels_endpoint_redacted_and_needs
     client = GitHubClient(
         "o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, self_repo="me/self", dry_run=True
     )
-    client.create_label("me/self", name="harness:queued", color="#0e8a16", description="secret=abc")
+    client.create_label("me/self", name="stage:queued", color="#0e8a16", description="secret=abc")
     (call,) = client.sent
     assert call["method"] == "POST" and call["url"].endswith("/repos/me/self/labels")
-    assert call["payload"]["name"] == "harness:queued" and call["payload"]["color"] == "0e8a16"
+    assert call["payload"]["name"] == "stage:queued" and call["payload"]["color"] == "0e8a16"
     assert "abc" not in call["payload"]["description"]
 
     unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)

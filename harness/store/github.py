@@ -13,17 +13,26 @@ from harness.errors import DuplicateWorkItem, GitHubError, IllegalTransition, St
 from harness import links
 from harness.redact import redact
 from harness.store.sqlite import (
+    KIND_LABELS,
     LABELS,
+    LEGACY_LABELS,
     STALE_PREVIOUS,
     TRANSITIONS,
     UPDATABLE_COLUMNS,
+    VIA_LABELS,
     SqliteStore,
     StageRun,
     WorkItem,
     bare_filename,
 )
 
-STATE_OF_LABEL: dict[str, str] = {label: state for state, label in LABELS.items()}
+# B264/D56: both families resolve. New writes use `stage:`; an issue labelled before the rename
+# keeps working until `harness relabel` has run, and after, because a human may re-apply an old
+# one by hand and the harness should read what is there rather than what it wishes were.
+STATE_OF_LABEL: dict[str, str] = {
+    **{label: state for state, label in LEGACY_LABELS.items()},
+    **{label: state for state, label in LABELS.items()},
+}
 
 META_PREFIX = "<!-- harness-meta "
 META_SUFFIX = " -->"
@@ -306,6 +315,8 @@ class GitHubStore:
         tier_required: int = 0,
         body: str = "",
         upstream_body: str = "",
+        kind_label: str = "product",
+        via: str = "requested",
     ) -> int:
         """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number."""
         for issue in self._issues(state="open"):
@@ -326,7 +337,14 @@ class GitHubStore:
             extra=body,
             trusted=self.trusted,
         )
-        created = self.gh.create_issue(title, redact(text), [LABELS["discovered"]])
+        # B264: one label from each family, always. `kind` here is the WorkItem's kind
+        # ("issue"); `kind_label` is the taxonomy axis, which is a different question.
+        labels = [LABELS["discovered"]]
+        if kind_label in KIND_LABELS:
+            labels.append(KIND_LABELS[kind_label])
+        if via in VIA_LABELS:
+            labels.append(VIA_LABELS[via])
+        created = self.gh.create_issue(title, redact(text), labels)
         number = int(created["number"])
         meta: dict[str, Any] = {
             "external_ref": external_ref,

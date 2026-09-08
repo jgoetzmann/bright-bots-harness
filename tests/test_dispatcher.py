@@ -252,7 +252,7 @@ def test_B107_partially_met_depends_on_names_the_unmerged_one(tmp_path):
 
 
 def test_B107_fully_merged_depends_on_starts(tmp_path):
-    """B107: once every dependency is harness:merged the candidate is eligible."""
+    """B107: once every dependency is stage:done the candidate is eligible."""
     config = github_config(tmp_path, slots=3)
     candidates = (Candidate(issue=830, depends_on=(816, 817), created_at="2026-09-01T10:00:00Z"),)
     result = run_plan(config, ledger_spent(0.0), candidates, merged={816, 817, 900})

@@ -336,7 +336,13 @@ class FakeGh:
         return [lab["name"] for lab in self._issue(repo or self.self_repo, number)["labels"]]
 
     def state_labels(self, number, *, repo=None) -> list[str]:
-        return sorted(n for n in self.labels(number, repo=repo) if n.startswith("harness:"))
+        # B264: the stage family, and the one it replaced -- an issue labelled before the
+        # rename still resolves, so this must see both.
+        return sorted(
+            n
+            for n in self.labels(number, repo=repo)
+            if n.startswith("stage:") or n.startswith("harness:")
+        )
 
     def comments_of(self, number, *, repo=None) -> list[dict]:
         return list(self.comments.get((repo or self.self_repo, number), []))
@@ -946,7 +952,7 @@ def test_deliver_returns_the_pr_url_and_ships_the_item(tmp_path):
     assert url == prs[0]["html_url"]
     assert url.startswith(f"https://github.com/{UPSTREAM}/pull/")
     assert s.store.get_work_item(ITEM).state == "shipped"
-    assert s.gh.state_labels(ITEM) == ["harness:shipped"]
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
     assert any(url in c["body"] for c in s.gh.comments_of(ITEM))
 
 
@@ -1002,7 +1008,7 @@ def test_deliver_from_a_wrong_entry_state_raises_and_opens_nothing(tmp_path):
         deliver(s.ctx, ITEM)
     assert s.gh.calls_named("create_pull") == []
     assert s.gh.calls_named("push_branch") == []
-    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.gh.state_labels(ITEM) == ["stage:ready"]
 
 
 def test_deliver_from_a_terminal_state_raises_and_opens_nothing(tmp_path):
@@ -1011,7 +1017,7 @@ def test_deliver_from_a_terminal_state_raises_and_opens_nothing(tmp_path):
     with pytest.raises(IllegalTransition):
         deliver(s.ctx, ITEM)
     assert s.gh.prs[UPSTREAM] == {}
-    assert s.gh.state_labels(ITEM) == ["harness:merged"]
+    assert s.gh.state_labels(ITEM) == ["stage:done"]
 
 
 def test_deliver_without_a_review_package_raises_and_opens_no_pr(tmp_path):
@@ -1278,7 +1284,7 @@ def test_B214_handoff_from_implementing_returns_the_item_to_approved(tmp_path):
     assert s.store.get_work_item(ITEM).state == "implementing"
     handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
     assert s.store.get_work_item(ITEM).state == "approved"
-    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.gh.state_labels(ITEM) == ["stage:ready"]
 
 
 def test_B214_handoff_from_packaged_returns_the_item_to_approved(tmp_path):
@@ -1287,7 +1293,7 @@ def test_B214_handoff_from_packaged_returns_the_item_to_approved(tmp_path):
     assert s.store.get_work_item(ITEM).state == "packaged"
     handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
     assert s.store.get_work_item(ITEM).state == "approved"
-    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.gh.state_labels(ITEM) == ["stage:ready"]
 
 
 def test_B214_handoff_sets_the_carry_issue_in_the_ledger_window(tmp_path):
@@ -1351,7 +1357,7 @@ def test_B214_handoff_of_an_item_that_is_already_approved_parks_it_without_a_tra
     s = setup_handoff(tmp_path, state="approved")
     handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
     assert s.store.get_work_item(ITEM).state == "approved"
-    assert s.gh.state_labels(ITEM) == ["harness:approved"]
+    assert s.gh.state_labels(ITEM) == ["stage:ready"]
     assert s.ctx.ledger.carry_issue() == ITEM
 
 

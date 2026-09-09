@@ -387,7 +387,7 @@ watchdog pushes. Verify (R5.7): `docker exec bb env | grep -c GITHUB` prints `0`
 
 The product repository is public. Anyone may comment on a delivery PR. Without a gate, any
 GitHub user could spend your Claude allowance, or steer what the model writes, by typing
-`/harness fix`. So every keyword command is authorised **before** its body is parsed, and it
+`/harness revise`. So every keyword command is authorised **before** its body is parsed, and it
 is honoured only if **both** hold:
 
 1. the commenter's handle is in `.harness/trust.txt` (case-insensitive), **and**
@@ -491,7 +491,7 @@ sequence — output that cannot read green for a broken tree, because a red tree
 and it comments on the tracking issue here saying so. Then it stops, because the item is now
 `shipped` and nothing moves it further without a trusted human typing a command. It cannot
 merge that PR, approve it, dismiss a review of it, edit your CI, touch your default branch,
-file an issue on your repository, or run again on that item without `/harness fix`. If
+file an issue on your repository, or run again on that item without `/harness revise`. If
 instead the bad run was a `propose`, the result is one proposal PR here that you close; if it
 was a `decompose`, at most `MAX_SUBISSUES` queued issues here, each of which still needs its
 own proposal PR merged before a token is spent on it. The residual harm is one bad PR that two

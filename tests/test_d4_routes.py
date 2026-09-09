@@ -9,12 +9,15 @@ the acceptance list in the handoff is for.
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import pathlib
 
 import pytest
 
 from harness import priority
+from harness.trust import parse_trust
 from harness.stages import STAGES as _STAGES
 
 STAGES_implement = _STAGES["implement"]
@@ -1320,7 +1323,7 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
         "2026-09-07T00:00:00Z",
     )
 
-    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("status"))
 
     assert "**Usage**" in out and "weekly **40%**" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
@@ -1329,16 +1332,15 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
     assert "spendable this window" in out and "reserve" in out
 
 
-def test_queue_on_the_inbox_shows_the_queue_rather_than_failing(tmp_path):
-    """`queue` means two things and the surface tells them apart: on a work item it puts that
-    item back, and on a thread that IS no work item the only sensible reading is "show me"."""
-    import harness.__main__ as main_mod
+def test_queue_is_an_alias_for_go_now(tmp_path):
+    """`queue` and `go` both meant "proceed with this" -- a suggestion becomes approved, a
+    stopped item goes back in the queue -- and which one applied depended on a state the person
+    could not see. They are one verb; the old name still parses to it."""
+    from harness.keywords import ALIASES, parse
 
-    rig = request_rig(tmp_path)
-
-    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("queue"))
-
-    assert "**Queue**" in out, "the inbox has no item to requeue, so `queue` reports"
+    assert ALIASES["queue"] == "go"
+    assert parse("/harness queue") == ("go", "")
+    assert parse("/harness-queue") == ("go", "")
 
 
 def test_halt_stops_spending_and_says_who(tmp_path):
@@ -1353,7 +1355,7 @@ def test_halt_stops_spending_and_says_who(tmp_path):
     halt = rig.ctx.ledger.halt_request()
     assert halt["by"] == "jgoetzmann" and halt["reason"] == "the spend looks wrong"
     # And it is reported where somebody would look for it.
-    assert "Halted" in main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
+    assert "Halted" in main_mod._act_on_command(rig.ctx, rig.config, _cmd("status"))
 
 
 def test_a_commanded_halt_refuses_every_model_call(tmp_path):
@@ -1420,7 +1422,17 @@ def test_halt_and_resume_are_level_three():
     from harness.keywords import VERB_LEVEL
 
     assert VERB_LEVEL["halt"] == 3 and VERB_LEVEL["resume"] == 3
-    assert VERB_LEVEL["usage"] == 1, "reading the queue changes nothing"
+    assert VERB_LEVEL["status"] == 1, "reading the queue changes nothing"
+    assert VERB_LEVEL["ask"] == 1
+    # Every live verb has a level; a verb without one defaults to 3 and would be a silent lockout.
+    from harness.keywords import ALIASES, VERBS
+
+    assert set(VERBS) - set(VERB_LEVEL) == set()
+    # An alias may also carry a level of its own, and `reject` does: it always meant "end this
+    # for good", which is the half of `stop` that level 2 does not get. Resolving before gating
+    # would have handed every maintainer a terminal verb as a side effect of a rename.
+    assert set(VERB_LEVEL) - set(VERBS) <= set(ALIASES)
+    assert VERB_LEVEL["reject"] == 3 and VERB_LEVEL["stop"] == 2
 
 
 def test_the_commanded_halt_stops_discovers_spend_gate():
@@ -1474,8 +1486,8 @@ def test_a_halt_does_not_eat_the_resume_behind_it(tmp_path):
     main_mod._act_on_command(rig.ctx, rig.config, _cmd("halt", args="stop"))
 
     # The command that raises, then the one that must still run.
-    refused = main_mod._act_on_command(rig.ctx, rig.config, _cmd("usage"))
-    assert "Halted" in refused, "usage still answers under a halt"
+    refused = main_mod._act_on_command(rig.ctx, rig.config, _cmd("status"))
+    assert "Halted" in refused, "status still answers under a halt"
 
     lifted = main_mod._act_on_command(rig.ctx, rig.config, _cmd("resume"))
 
@@ -1483,15 +1495,591 @@ def test_a_halt_does_not_eat_the_resume_behind_it(tmp_path):
     assert rig.ctx.ledger.halt_request() is None
 
 
-def test_the_sweep_loop_records_a_halt_instead_of_aborting():
-    """The loop must catch `Halted` per command, not re-raise it."""
-    import inspect
+def test_the_command_loop_answers_a_halt_and_keeps_going(tmp_path):
+    """The loop must catch `Halted` per command rather than re-raise it, and it must ANSWER --
+    a batch that silently drops the commands behind a halted one is the failure this guards.
 
+    Driven rather than read: this used to assert on `inspect.getsource`, which passes for a loop
+    that catches the exception and then does nothing with it.
+    """
     import harness.__main__ as main_mod
 
-    source = inspect.getsource(main_mod.cmd_sweep)
+    rig = request_rig(tmp_path)
+    main_mod._act_on_command(rig.ctx, rig.config, _cmd("halt", args="the spend looks wrong"))
+    posted_before = len(rig.gh.comments_posted)
 
-    assert "except Halted as exc:" in source
-    assert "except Halted:\n                raise" not in source, (
-        "re-raising aborts the batch and consumes every command behind it"
+    # A spending verb: the halt stops model calls, so `work` (which only opens an issue) is
+    # deliberately still allowed and would not exercise this path.
+    record, keep_going = main_mod.run_command(
+        rig.ctx, rig.config, _cmd("ask", args="what does the game registry do")
     )
+
+    assert keep_going is True, "a halt refuses one command, it does not abort the batch"
+    assert "halted by @jgoetzmann" in record["result"]
+    assert len(rig.gh.comments_posted) > posted_before, "the refusal was never said out loud"
+    assert "halted by @jgoetzmann" in rig.gh.comments_posted[-1][2]
+
+    # And the resume sitting behind it still runs.
+    lifted, _ = main_mod.run_command(rig.ctx, rig.config, _cmd("resume"))
+    assert "resumed by" in lifted["result"]
+    assert rig.ctx.ledger.halt_request() is None
+
+
+def test_a_rate_limit_is_the_one_thing_that_stops_the_batch(tmp_path):
+    """Everything else is answered and the loop moves on. A rate limit is different: the next
+    command fails the same way, and burning the rest against a closed window loses them."""
+    import harness.__main__ as main_mod
+    from harness.errors import RateLimited
+
+    rig = request_rig(tmp_path)
+    real = main_mod._act_on_command
+    main_mod._act_on_command = lambda *a, **k: (_ for _ in ()).throw(
+        RateLimited("slow down", reset_at="2026-09-09T12:00:00Z")
+    )
+    try:
+        record, keep_going = main_mod.run_command(rig.ctx, rig.config, _cmd("status"))
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is False
+    assert "2026-09-09T12:00:00Z" in record["result"]
+
+
+# ----------------------------------------------------------------------------------------------
+# The merged verbs: one word, and the surface or the state decides what it does.
+#
+# Three pairs went away because each named a distinction the thread already carried. What has to
+# hold now is that the single verb still reaches BOTH of the behaviours its pair used to split.
+
+
+def test_go_on_a_suggestion_approves_it(tmp_path):
+    """The first of `go`'s two jobs: the green light B262 was written for."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(
+        kind="issue", external_ref="issue:633", title="t", via="suggested"
+    )
+    # Where a suggestion actually waits: its proposal is published and the green-light comment
+    # is on the upstream issue, so the item sits at `proposed` until somebody says go.
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                             number=item_id))
+
+    assert "approved" in out
+    assert rig.store.get_work_item(item_id).state == "approved"
+
+
+def test_go_on_a_blocked_item_puts_it_back_in_the_queue(tmp_path):
+    """`queue`'s job, now reached by the same word. Without this branch, undoing a `stop` would
+    have no verb at all -- which is the regression the merge could most easily have caused."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "blocked", reason="a gate went red")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                             number=item_id))
+
+    assert "back in the queue" in out
+    assert rig.store.get_work_item(item_id).state == "discovered"
+
+
+def test_go_twice_is_a_no_op_that_says_so(tmp_path):
+    """Saying it again must not walk the item forward a second time."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+
+    # It starts at `discovered`, which is already in the queue.
+    first = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                               number=item_id))
+    assert "already in the queue" in first
+    assert rig.store.get_work_item(item_id).state == "discovered"
+
+    # And once approved, saying it again does not walk it on to `implementing`.
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+    rig.store.transition(item_id, "approved", reason="merged the proposal")
+    again = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                               number=item_id))
+    assert "already approved" in again
+    assert rig.store.get_work_item(item_id).state == "approved"
+
+
+def test_go_at_a_dead_end_answers_instead_of_raising(tmp_path):
+    """`needs-human` and the terminal states have no edge to `approved` or `discovered`. Letting
+    the store raise would put an IllegalTransition traceback in a comment reply, which tells the
+    person nothing they can do about it."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    for state in ("proposing", "proposed", "approved", "implementing", "packaged", "shipped",
+                  "needs-human"):
+        rig.store.transition(item_id, state, reason="t")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                              number=item_id))
+
+    assert "needs-human" in out and "/harness revise" in out
+    assert rig.store.get_work_item(item_id).state == "needs-human"
+
+
+def test_revise_runs_propose_on_a_proposal_pr_and_the_revise_cycle_on_a_delivery_pr(tmp_path):
+    """One verb, two mechanisms, chosen by `cmd.surface` and nothing else.
+
+    Both halves are asserted in one test on purpose: the claim IS that they differ, and two
+    separate tests could each pass while the branch that tells them apart had gone.
+    """
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+
+    # Both pull-request surfaces resolve the item by reading the pull's head ref, so the fake
+    # has to answer that -- 501 is the proposal PR for the item, 77 the delivery PR on its branch.
+    rig.store.update_work_item(item_id, branch_name="harness/item-1")
+    pulls = {
+        (rig.config.self_repo, 501): {"head": {"ref": f"harness/propose-{item_id}"}},
+        (rig.config.upstream_repo, 77): {"head": {"ref": "harness/item-1"}},
+    }
+    rig.gh.pull = lambda repo, number: pulls[(repo, int(number))]
+
+    called: list[str] = []
+    real = dict(main_mod.STAGES)
+    main_mod.STAGES["propose"] = lambda ctx, iid, **kw: called.append("propose") or "spec.md"
+    main_mod.STAGES["revise"] = lambda ctx, iid, **kw: called.append("revise") or object()
+    try:
+        on_proposal = main_mod._act_on_command(
+            rig.ctx, rig.config, _cmd("revise", surface="proposal_pr", number=501, args="notes")
+        )
+        # The stubbed propose left it at `proposing`; walk it to where a delivery PR exists.
+        for state in ("proposed", "approved", "implementing", "packaged", "shipped"):
+            rig.store.transition(item_id, state, reason="t")
+        on_delivery = main_mod._act_on_command(
+            rig.ctx, rig.config, _cmd("revise", surface="delivery_pr", number=77, args="notes")
+        )
+    finally:
+        main_mod.STAGES.update(real)
+
+    assert called == ["propose", "revise"], "the surface picks the mechanism"
+    assert "re-proposed" in on_proposal
+    assert "re-implemented" in on_delivery
+
+
+def test_the_retired_names_still_reach_the_verbs_they_became():
+    """Comments already written on open pull requests must not silently stop working. This is
+    the parse-level guarantee; the behaviour each lands on is covered above."""
+    from harness.keywords import ALIASES, parse
+
+    assert ALIASES["fix"] == "revise" and ALIASES["reject"] == "stop"
+    assert ALIASES["queue"] == "go" and ALIASES["usage"] == "status"
+    # Not old verbs: what people actually typed at it. `/harness ledger` appeared twice on the
+    # live inbox before anyone noticed it parsed as nothing at all.
+    assert ALIASES["ledger"] == "status" and ALIASES["help"] == "status"
+    for old, new in ALIASES.items():
+        assert parse(f"/harness {old} some words") == (new, "some words"), old
+        assert parse(f"/harness-{old}") == (new, ""), old
+
+
+def test_every_answer_in_a_thread_carries_the_pointer_to_the_other_commands(tmp_path):
+    """B236/B263 said the harness must answer. This says the answer must also leave the reader
+    knowing more than they did -- otherwise the only way to learn the second command is to read
+    the repository, which nobody commenting from a phone is going to do."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    main_mod._reply(rig.ctx, rig.config, _cmd("status", surface="inbox"), "here is the queue")
+
+    body = rig.gh.comments_posted[-1][2]
+    assert "here is the queue" in body
+    assert "You can also say" in body
+    assert "docs/COMMANDS.md" in body
+    assert "one per line" in body
+
+
+def test_a_reply_on_a_delivery_pr_offers_delivery_pr_commands(tmp_path):
+    """The pointer is per surface, and the surface reaches it through `_reply`. A pointer that
+    was right in `links` and dropped on the way here would look identical in every test above."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    main_mod._reply(rig.ctx, rig.config, _cmd("revise", surface="delivery_pr", number=77), "done")
+
+    body = rig.gh.comments_posted[-1][2]
+    assert "/harness rebase" in body
+    assert "/harness work" not in body, "there is no work item to open from a delivery PR"
+
+
+def test_stop_on_a_finished_item_answers_instead_of_raising(tmp_path):
+    """Stopping something twice is the likeliest way to reach a terminal state, and `merged` has
+    no outgoing edge at all. The reply has to say so rather than carry a traceback."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    for state in ("proposing", "proposed", "approved", "implementing", "packaged", "shipped",
+                  "merged"):
+        rig.store.transition(item_id, state, reason="t")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("stop", surface="issue",
+                                                              number=item_id))
+
+    assert "nothing left to stop" in out
+    assert rig.store.get_work_item(item_id).state == "merged"
+
+
+def test_a_command_that_errors_is_answered_in_the_thread(tmp_path):
+    """The failure this whole surface exists to avoid is silence. A HarnessError used to be
+    recorded to stdout and nowhere else, which from the commenter's side looks exactly like the
+    harness being asleep."""
+    import harness.__main__ as main_mod
+    from harness.errors import StoreError
+
+    rig = request_rig(tmp_path)
+    cmd = _cmd("go", surface="issue", number=4242)
+
+    real = main_mod._act_on_command
+    main_mod._act_on_command = lambda *a, **k: (_ for _ in ()).throw(StoreError("no such item"))
+    try:
+        record, keep_going = main_mod.run_command(rig.ctx, rig.config, cmd)
+    finally:
+        main_mod._act_on_command = real
+
+    assert rig.gh.comments_posted, "the error was never said out loud"
+    assert "no such item" in rig.gh.comments_posted[-1][2]
+    assert record["result"] == "error: no such item"
+    assert keep_going is True, "one bad command must not eat the rest of the batch"
+
+
+# ----------------------------------------------------------------------------------------------
+# What the adversarial pass on PR #30 found.
+#
+# Every one of these is a regression the merge introduced and green CI did not see, because the
+# tests written alongside the merge exercised the surfaces the merge was thinking about.
+
+
+def test_revise_wakes_a_needs_human_item_from_the_harness_issue(tmp_path):
+    """`stage:needs-human` is only visible on the harness issue, and OPERATIONS.md, USING.md and
+    `stages/revise.py` all tell the operator to type `/harness revise` THERE. Routing on the
+    surface instead of the state sent that to a re-propose, and `needs-human -> proposing` is
+    not a legal edge -- so the documented recovery answered with a traceback."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    for state in ("proposing", "proposed", "approved", "implementing", "packaged", "shipped",
+                  "needs-human"):
+        rig.store.transition(item_id, state, reason="t")
+
+    called: list[str] = []
+    real = dict(main_mod.STAGES)
+    main_mod.STAGES["revise"] = lambda ctx, iid, **kw: called.append("revise") or object()
+    main_mod.STAGES["propose"] = lambda ctx, iid, **kw: called.append("propose") or "spec.md"
+    try:
+        out = main_mod._act_on_command(
+            rig.ctx, rig.config,
+            _cmd("revise", surface="issue", number=item_id, args="the null check moved"),
+        )
+    finally:
+        main_mod.STAGES.update(real)
+
+    assert called == ["revise"], "the item's state says code exists, whatever thread this is"
+    assert "re-implemented" in out
+
+
+def test_go_does_not_walk_an_ordinary_proposal_past_gate_one(tmp_path):
+    """`go` is the green light for work NOBODY ASKED FOR. For everything else gate 1 is the
+    merge, and `go` must not be a way round it -- the more so because `queue` resolves here now,
+    and `queue` on a proposal used to mean the exact opposite."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(
+        kind="issue", external_ref="issue:633", title="t", via="requested"
+    )
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                              number=item_id))
+
+    assert rig.store.get_work_item(item_id).state == "proposed", "gate 1 was crossed"
+    assert "gate 1" in out and "Merging the proposal" in out
+
+
+def test_go_still_releases_a_suggestion_at_the_same_state(tmp_path):
+    """The other half of the same branch: B262's green light is exactly this case, and the guard
+    above must not take it away. Asserted beside its opposite so neither can drift alone."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(
+        kind="issue", external_ref="issue:633", title="t", via="suggested"
+    )
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                              number=item_id))
+
+    assert "approved" in out
+    assert rig.store.get_work_item(item_id).state == "approved"
+
+
+def test_go_on_a_blocked_item_that_has_a_branch_resumes_rather_than_restarts(tmp_path):
+    """A branch exists only once `implement` has run, which is only after gate 1 -- so it is the
+    honest test for "this was approved once". Sending it back to `discovered` orphans the branch
+    and buys a second proposal nobody asked for."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    for state in ("proposing", "proposed", "approved", "implementing", "packaged", "shipped"):
+        rig.store.transition(item_id, state, reason="t")
+    rig.store.update_work_item(item_id, branch_name="harness/item-1")
+    rig.store.transition(item_id, "blocked", reason="stopped for a decision")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                              number=item_id))
+
+    assert rig.store.get_work_item(item_id).state == "approved", "the branch was orphaned"
+    assert "back to approved" in out
+
+
+def test_go_on_a_blocked_item_with_no_branch_goes_back_to_the_queue(tmp_path):
+    """The other side of that fork: nothing was built, so there is nothing to resume, and
+    `approved` would put it past a gate 1 it never reached."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "blocked", reason="a gate went red")
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="issue",
+                                                              number=item_id))
+
+    assert rig.store.get_work_item(item_id).state == "discovered"
+    assert "back in the queue" in out
+
+
+def test_go_on_the_inbox_answers_with_the_queue(tmp_path):
+    """There is no work item on the inbox, so "proceed" can only be a question about the queue.
+    `/harness queue` answered it before the merge; falling through to a shrug was a capability
+    lost to a rename, on the one thread the sweep polls unconditionally."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+
+    out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="inbox"))
+
+    assert "no work item" not in out
+    assert "**Queue**" in out or "**Usage**" in out
+
+
+def test_stop_from_level_two_parks_and_from_level_three_ends_it(tmp_path):
+    """`reject` was level 3 and `stop` is level 2, and the difference was never cosmetic: level
+    2 keeps something out of a product repository, level 3 closes the book on it. Merging the
+    verbs must not hand every maintainer the terminal one, so the LEVEL decides the target."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    parked = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="a")
+    rig.store.transition(parked, "proposing", reason="t")
+    ended = rig.store.create_work_item(kind="issue", external_ref="issue:634", title="b")
+    rig.store.transition(ended, "proposing", reason="t")
+
+    two = dataclasses.replace(_cmd("stop", surface="issue", number=parked, actor="nathan"),
+                              level=2)
+    out_two = main_mod._act_on_command(rig.ctx, rig.config, two)
+    out_three = main_mod._act_on_command(
+        rig.ctx, rig.config, _cmd("stop", surface="issue", number=ended)
+    )
+
+    assert rig.store.get_work_item(parked).state == "blocked", "level 2 must not end an item"
+    assert "Parked, not ended" in out_two
+    assert rig.store.get_work_item(ended).state == "abandoned"
+    assert "abandoned" in out_three
+
+
+def test_the_reject_spelling_still_needs_level_three():
+    """The parse-level half of the same guarantee. `reject` resolves to `stop`, so gating on the
+    resolved verb alone would have silently dropped a level-3 verb to level 2."""
+    from harness.keywords import commands_from
+
+    class _L:
+        def seen(self, cid):
+            return False
+
+        def mark_seen(self, cid):
+            pass
+
+        def count_denied(self, actor):
+            pass
+
+    c = {"id": 5, "node_id": "IC_r", "user": {"login": "nathan"},
+         "author_association": "MEMBER",
+         "body": "/harness reject not now\n/harness stop instead\n"}
+    got = commands_from(c, trusted=parse_trust("2 nathan"), ledger=_L(), surface="issue",
+                        number=7)
+
+    assert [x.verb for x in got] == ["__denied__", "stop"]
+    assert "needs level 3" in got[0].args
+    assert "/harness reject" in got[0].args, "the refusal must name the word they typed"
+
+
+def test_the_thread_records_the_word_that_was_typed(tmp_path):
+    """The issue thread is the log. A log that says `stop` for a comment that said `reject`
+    cannot be read back honestly -- and per the test above, which word it was decides what the
+    commenter was allowed to do."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    cmd = dataclasses.replace(
+        _cmd("stop", surface="issue", number=item_id, args="not now"), typed="reject"
+    )
+
+    main_mod._act_on_command(rig.ctx, rig.config, cmd)
+
+    events = " ".join(str(e) for e in rig.store.events(item_id))
+    assert "/harness reject" in events, f"the log says the resolved word: {events[:200]}"
+
+
+def test_a_fenced_code_block_is_somebody_showing_a_command_not_giving_one():
+    """docs/COMMANDS.md ships a three-command block under the words "that is a normal thing to
+    send". Pasting it to explain the syntax would have run all three -- a model call and a real
+    work item from a comment whose whole purpose was to quote."""
+    from harness.keywords import parse_all
+
+    body = (
+        "here is how it works:\n"
+        "```\n"
+        "/harness-work make the cards keyboard reachable\n"
+        "/harness-ask which component owns them\n"
+        "```\n"
+        "/harness-status\n"
+    )
+
+    assert parse_all(body) == [("status", "")], "only the line outside the fence is a command"
+
+
+def test_one_comment_cannot_carry_an_unbounded_number_of_commands():
+    """Every command posts a reply and some spend. Unbounded, one comment is an unbounded number
+    of writes against GitHub's content-creation limit -- which then arrives as an error on a
+    LATER, unrelated command, after this comment was already marked seen."""
+    from harness.keywords import MAX_COMMANDS_PER_COMMENT, parse_all
+
+    assert len(parse_all("/harness-status\n" * 200)) == MAX_COMMANDS_PER_COMMENT
+
+
+def test_githubs_own_rate_ceiling_stops_the_batch_like_the_model_one(tmp_path):
+    """Two different ceilings, and only one of them used to stop. Left running, the loop ground
+    through every remaining command posting replies that were themselves refused and swallowed
+    -- consuming any `/harness resume` sitting behind the comment that tripped it."""
+    import harness.__main__ as main_mod
+    from harness.errors import RateCeilingReached
+
+    rig = request_rig(tmp_path)
+    real = main_mod._act_on_command
+    main_mod._act_on_command = lambda *a, **k: (_ for _ in ()).throw(
+        RateCeilingReached("secondary rate limit")
+    )
+    try:
+        record, keep_going = main_mod.run_command(rig.ctx, rig.config, _cmd("status"))
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is False
+    assert "rate ceiling" in record["result"]
+
+
+def test_one_comment_draws_one_reply_however_many_commands_it_carried(tmp_path):
+    """Three commands used to draw three replies, each with the full signature under it -- so
+    the thread filled with more of the harness's own writing than anybody else's, and every
+    extra comment was another write against GitHub's content-creation limit."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    cmds = [
+        dataclasses.replace(_cmd("status"), comment_id="IC_one"),
+        dataclasses.replace(_cmd("status"), comment_id="IC_one"),
+    ]
+
+    records, keep_going = main_mod.run_comment(rig.ctx, rig.config, cmds)
+
+    assert keep_going is True
+    assert len(records) == 2, "both commands still ran, and both are still in the log"
+    assert len(rig.gh.comments_posted) == 1, "one comment in, one answer out"
+    body = rig.gh.comments_posted[0][2]
+    assert body.count("**Usage**") == 2, "both answers are in it"
+    assert "**`/harness status`**" in body, "and each is labelled with what asked for it"
+
+
+def test_a_single_command_reply_is_not_labelled(tmp_path):
+    """The label is only useful when there is something to tell apart. Adding it to every reply
+    would put a heading on the ordinary case, which is most of them."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+
+    main_mod.run_comment(rig.ctx, rig.config, [_cmd("status")])
+
+    body = rig.gh.comments_posted[0][2]
+    assert "**Usage**" in body
+    assert "**`/harness status`** —" not in body
+
+
+def test_commands_from_different_comments_are_answered_separately(tmp_path):
+    """Grouping is by comment, not by thread: two people commenting in one sweep each get their
+    own answer, on their own comment."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    a = dataclasses.replace(_cmd("status"), comment_id="IC_a")
+    b = dataclasses.replace(_cmd("status"), comment_id="IC_b")
+
+    assert [len(g) for g in main_mod._by_comment([a, a, b])] == [2, 1]
+
+    for group in main_mod._by_comment([a, a, b]):
+        main_mod.run_comment(rig.ctx, rig.config, group)
+    assert len(rig.gh.comments_posted) == 2
+
+
+def test_a_rate_ceiling_partway_through_a_comment_still_says_what_ran(tmp_path):
+    """The commands before the ceiling did real work and the person has to be told, even though
+    the batch stops. Dropping the whole reply because the last command failed would lose the
+    record of the ones that did not."""
+    import harness.__main__ as main_mod
+    from harness.errors import RateCeilingReached
+
+    rig = request_rig(tmp_path)
+    calls = {"n": 0}
+    real = main_mod._act_on_command
+
+    def flaky(ctx, config, cmd):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RateCeilingReached("secondary rate limit")
+        return real(ctx, config, cmd)
+
+    main_mod._act_on_command = flaky
+    try:
+        cmds = [dataclasses.replace(_cmd("status"), comment_id="IC_x") for _ in range(3)]
+        records, keep_going = main_mod.run_comment(rig.ctx, rig.config, cmds)
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is False
+    assert len(records) == 2, "it stopped at the one that failed, not before it"
+    assert len(rig.gh.comments_posted) == 1
+    assert "**Usage**" in rig.gh.comments_posted[0][2], "the one that worked was still reported"

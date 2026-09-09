@@ -34,22 +34,33 @@ __all__ = [
 #: What each `/harness <verb>` does, in the words a reviewer needs. The keys are exactly
 #: `keywords.VERBS`; a test pins that, so a new verb cannot ship without a line here.
 VERB_HELP: tuple[tuple[str, str], ...] = (
-    ("revise <notes>", "redo the work with your notes as the brief"),
-    ("reject <reason>", "abandon this item; nothing further is attempted"),
-    ("fix <notes>", "one more implementation pass against the same package"),
-    ("rebase", "rebase the branch onto the product repository's current main"),
-    ("stop", "block this item now, leaving the branch and the evidence in place"),
-    ("split", "break this item into sub-issues and queue them separately"),
-    ("queue", "put this item back in the queue after it was parked or blocked"),
     ("work <what, or a link>", "open a work item for this and put it in the queue"),
-    ("go", "green-light a suggestion the harness made, so it may be proposed"),
     ("ask <question>", "answer a question about the code; changes nothing"),
+    ("status", "show the spend, the queue, and when the next thing happens"),
     ("audit <what to look for>", "read the product repository and open one issue of findings"),
     ("promote <n>", "turn finding n of an audit into a work item of its own"),
-    ("usage", "show the spend, the queue, and when the next thing happens"),
+    ("revise <notes>", "redo it with your notes: the plan on a proposal, the code on a delivery"),
+    ("rebase", "redo it after a conflict with the product repository's main"),
+    ("stop", "stop this item and close its pull request"),
+    ("go", "proceed with this: green-light a suggestion, or requeue a stopped item"),
+    ("split", "break this item into sub-issues and queue them separately"),
     ("halt", "stop the harness spending anything until it is resumed"),
     ("resume", "lift a halt"),
 )
+
+#: What to offer on each surface, most useful first. A reply listing all twelve is a wall nobody
+#: reads; three that make sense where the reader is standing get tried.
+SURFACE_HINTS: dict[str, tuple[str, ...]] = {
+    "inbox": ("work <what>", "ask <question>", "status"),
+    # An AUDIT issue is surface `issue` too, and carries no stage label by design -- so `go`
+    # and `split` both answer "no work item" there. `promote` is the one that works, and the
+    # two that do not are still right for a work item, so all three are offered and the reader
+    # picks. Offering only the pair that fails was the worse of the two errors.
+    "issue": ("go", "split", "promote <n>", "status"),
+    "product_issue": ("work", "ask <question>", "status"),
+    "proposal_pr": ("revise <notes>", "stop", "status"),
+    "delivery_pr": ("revise <notes>", "rebase", "stop"),
+}
 
 #: Where a reader goes next. Relative to the harness repository's default branch.
 DOC_LINKS: tuple[tuple[str, str], ...] = (
@@ -220,18 +231,25 @@ def _who(entry: str, trusted: Iterable[str] | None) -> str:
     return f"level {needed}+"
 
 
-def reply_pointer(config: Any) -> str:
-    """One line telling the reader of a reply what else they can say, and where the list is.
+def reply_pointer(config: Any, surface: str = "") -> str:
+    """What else the reader of a reply can say *here*, and where the whole list is.
 
-    Not part of `signature`: a command reply wants the pointer without the full table,
-    and an ops alert -- `steerable=False` -- wants neither, because nobody answers an alert.
+    Not part of `signature`: a command reply wants this without the full table, and an ops alert
+    -- `steerable=False` -- wants neither, because nobody answers an alert.
+
+    Offered by surface, because "what can I say" has a different answer on a delivery pull
+    request than on the inbox, and the useful version of that answer is the short one.
     """
     self_repo = str(getattr(config, "self_repo", "") or "")
+    hints = SURFACE_HINTS.get(surface) or ("status", "ask <question>", "work <what>")
+    offered = " · ".join(f"`/harness {h}`" for h in hints)
+    line = f"**You can also say:** {offered}"
     if not self_repo:
-        return "`/harness usage` shows the queue, the spend, and when the next thing happens."
+        return line + " — several may go in one comment, one per line; you get one reply."
     return (
-        "`/harness usage` shows the queue, the spend, and when the next thing happens · "
-        f"[every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md)"
+        line + " — several may go in one comment, one per line; you get one reply.\n"
+        f"[Every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md) · "
+        "`/harness-status` works too, if you prefer the hyphen."
     )
 
 

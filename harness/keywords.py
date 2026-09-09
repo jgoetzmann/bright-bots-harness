@@ -1,50 +1,85 @@
 """Keyword commands and the actor gate (handoff 8, 9.2 - B131-B135, B140, B141)."""
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from harness.errors import GitHubError
 from harness.trust import MAX_LEVEL, is_authorised
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # annotation only; no import-time dependency on ledger.py
     from harness.ledger import Ledger
 
 VERBS: tuple[str, ...] = (
-    "revise", "reject", "fix", "rebase", "stop", "split", "queue",
-    # Delivery 4: asking for work rather than steering work that exists.
-    "work", "audit", "promote", "go", "ask",
-    # Looking at it and stopping it, without a terminal or a commit.
-    "usage", "halt", "resume",
+    # Getting work, and getting answers.
+    "work", "ask", "status", "audit", "promote",
+    # Steering work that exists.
+    "revise", "rebase", "stop", "go", "split",
+    # The switch.
+    "halt", "resume",
 )
+
+#: Older names, still accepted. Three pairs were merged because the SURFACE already told them
+#: apart, so the second name only ever added a way to be wrong:
+#:
+#:   fix    -> revise   both mean "redo it with my notes"; a proposal PR re-proposes, a delivery
+#:                      pull request re-implements. One word, right thing by context.
+#:   reject -> stop     the same action in the same code path -- close the pull request, end the
+#:                      item. `reject` only ever encoded which gate you were standing at.
+#:   queue  -> go       both mean "proceed with this": a suggestion becomes approved, a blocked
+#:                      item goes back in the queue. Which one depends on where it already is.
+#:   usage  -> status   the CLI has always called this `status`; two names for one report was a
+#:                      needless thing to remember.
+#:
+#:   ledger -> status   not an old verb at all: the operator typed `/harness ledger` twice on the
+#:                      live inbox, reaching for the CLI subcommand of that name. `status` is
+#:                      what the CLI would have shown them, so it is what they get.
+#:   help   -> status   the first thing anyone types at something that takes commands. `status`
+#:                      answers, and every reply carries the pointer to the rest.
+#:
+#: Kept as aliases rather than removed: comments already written should not stop working, and a
+#: verb that silently does nothing is the worst failure this surface has.
+ALIASES: dict[str, str] = {
+    "fix": "revise",
+    "reject": "stop",
+    "queue": "go",
+    "usage": "status",
+    "ledger": "status",
+    "help": "status",
+}
 
 #: B270/B272/D60 - the level each verb needs. 3 is the operator, 2 a maintainer, 1 an asker.
 #: The line between 3 and 2 is halt versus end: level 2 can park an item and put it back,
 #: level 3 can abandon it. A product maintainer needs to be able to stop something heading at
 #: their repository without the operator; they do not need to close the book on it.
 VERB_LEVEL: dict[str, int] = {
+    # Reading changes nothing.
     "ask": 1,
+    "status": 1,
+    # Creating and steering work.
     "work": 2,
-    "queue": 2,
     "audit": 2,
     "promote": 2,
     "go": 2,
     "revise": 2,
-    "fix": 2,
     "rebase": 2,
     "split": 2,
     "stop": 2,
-    # Reading the queue and the spend changes nothing, so it sits with `ask`.
-    "usage": 1,
-    "reject": 3,
     # Stopping the harness is the operator's, and so is starting it again. `halt` could
     # arguably be lower -- anyone who can see something going wrong should be able to stop it --
     # but it is paired with `resume` here, and a level that can lift a halt is a level that can
     # undo somebody else's decision to stop.
     "halt": 3,
     "resume": 3,
+    # Not a live verb -- an alias with a level of its own. `reject` always meant "end this for
+    # good", which is the half of `stop` that level 2 does not get (see `_act_on_command`).
+    "reject": 3,
 }
 
 #: B283/D62 - appended to a command by the operator to start it now instead of on Monday.
@@ -67,8 +102,11 @@ FORCE_FLAG = "--force"
 #:
 #: What is NOT loosened is the anchor. Only @mentions may precede the command, so prose that
 #: happens to contain it — `as discussed, /harness stop` — is still prose.
+#: Both spellings, because both get typed: `/harness work …` and `/harness-work …`. The
+#: hyphenated form makes each command a single token, which is what makes several of them in one
+#: comment read naturally rather than looking like a sentence that got away from someone.
 _COMMAND_RE = re.compile(
-    r"^\s*(?:@[\w-]+[ \t]+)*/harness\s+(\w+)([^\n]*)", re.MULTILINE | re.IGNORECASE
+    r"^\s*(?:@[\w-]+[ \t]+)*/harness[ \t-]+(\w+)([^\n]*)", re.MULTILINE | re.IGNORECASE
 )
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
@@ -95,6 +133,9 @@ class Command:
     force: bool = False
     #: The actor's level, so a refusal can say what it would have needed.
     level: int = 0
+    #: The word actually typed, when an alias was used. The issue thread is the log, and a
+    #: log that records `stop` for a comment that said `reject` cannot be read back honestly.
+    typed: str = ""
     #: Something to tell the actor that is NOT part of what they asked for -- a refused
     #: `--force`, say. It rides beside `args` rather than inside it: folding it in made the
     #: refusal notice part of the request, so `/harness work #5 --force` from level 2 stopped
@@ -126,17 +167,59 @@ def authorise(comment: Mapping[str, Any], trusted: Any, ledger: Ledger, *, min_l
     return False
 
 
+def resolve(verb: str) -> str:
+    """The current name for `verb`, following :data:`ALIASES`."""
+    lowered = str(verb).lower()
+    return ALIASES.get(lowered, lowered)
+
+
+#: At most this many commands from one comment. Not a limit anybody types into: it is the
+#: blast radius of a paste. Every command posts a reply and some spend, so an unbounded comment
+#: is an unbounded number of writes against GitHub's content-creation limit -- which arrives as
+#: an error on a *later, unrelated* command, after this comment was already marked seen.
+MAX_COMMANDS_PER_COMMENT = 10
+
+#: A fenced block is somebody SHOWING a command, not giving one. This is not hypothetical:
+#: docs/COMMANDS.md ships a three-command block under the words "that is a normal thing to
+#: send", and pasting it to explain the syntax would have run all three.
+_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)|\Z)", re.M | re.S)
+
+
+def strip_fences(body: str) -> str:
+    """`body` with fenced code blocks blanked out, line count preserved."""
+    return _FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), body)
+
+
+def parse_all(body: str) -> list[tuple[str, str]]:
+    """Every command in `body`, in the order typed, as `(resolved verb, args)` pairs.
+
+    Reads every `/harness` line rather than only the first: a person with three things to say
+    should be able to say three things, and under the old rule one unknown verb at the top
+    discarded everything under it.
+    """
+    return [(verb, args) for verb, args, _typed in parse_typed(body)]
+
+
+def parse_typed(body: str) -> list[tuple[str, str, str]]:
+    """`parse_all`, plus the word that was actually typed -- which may be an alias."""
+    out: list[tuple[str, str, str]] = []
+    for match in _COMMAND_RE.finditer(strip_fences(body or "")):
+        typed = match.group(1).lower()
+        verb = resolve(typed)
+        if verb not in VERBS:
+            # Skipped, not fatal. Discarding the whole comment on one typo is what the
+            # first-line-only rule did, and it did it silently.
+            continue
+        out.append((verb, match.group(2).strip(), typed))
+        if len(out) >= MAX_COMMANDS_PER_COMMENT:
+            break
+    return out
+
+
 def parse(body: str) -> tuple[str, str] | None:
-    """``/harness <verb> [args]`` on its own line -> ``(verb, args)``; anything else -> None."""
-    if not isinstance(body, str):
-        return None
-    match = _COMMAND_RE.search(body)
-    if match is None:
-        return None
-    verb = match.group(1).lower()
-    if verb not in VERBS:
-        return None
-    return verb, match.group(2).strip()
+    """The first command in `body`, or None. Kept for callers that want exactly one."""
+    found = parse_all(body)
+    return found[0] if found else None
 
 
 def split_force(args: str) -> tuple[str, bool]:
@@ -170,30 +253,74 @@ def command_from(
     loop that spends the allowance. Refused structurally instead: the harness does not take
     orders from itself, whatever it happens to say.
     """
+    found = commands_from(
+        comment, surface=surface, number=number, trusted=trusted, ledger=ledger, machine=machine
+    )
+    return found[0] if found else None
+
+
+def commands_from(
+    comment: Mapping[str, Any],
+    *,
+    surface: str,
+    number: int,
+    trusted: frozenset[str],
+    ledger: Ledger,
+    machine: str = "",
+) -> list[Command]:
+    """Every command in one comment, in order.
+
+    The comment is marked seen ONCE, after parsing, however many commands it carried: the replay
+    guard is keyed on the comment, so marking per command would let a later sweep re-run the ones
+    an earlier one had not reached.
+    """
     cid = comment_id(comment)
     if ledger.seen(cid):
-        return None
+        return []
     author = str(((comment.get("user") or {}).get("login")) or "").lstrip("@").lower()
     if machine and author == str(machine).lstrip("@").lower():
-        return None
+        return []
     if not authorise(comment, trusted, ledger):
-        return None
-    parsed = parse(comment.get("body") or "")
-    if parsed is None:
-        return None
+        return []
+    parsed = parse_typed(comment.get("body") or "")
+    if not parsed:
+        return []
     ledger.mark_seen(cid)
-    verb, raw_args = parsed
     actor = str(comment["user"]["login"])
     level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
+    return [
+        _one(v, a, typed=t, surface=surface, number=number, cid=cid, actor=actor, level=level,
+             ledger=ledger)
+        for v, a, t in parsed
+    ]
+
+
+def _one(
+    verb: str,
+    raw_args: str,
+    *,
+    typed: str = "",
+    surface: str,
+    number: int,
+    cid: str,
+    actor: str,
+    level: int,
+    ledger: Ledger,
+) -> Command:
+    """One parsed `(verb, args)` pair as a Command, with the level gate applied."""
 
     # B270: the verb's own level, checked after parsing because the verb is what says which
-    # level is needed. The level-1 gate above is what keeps a level-0 body unparsed (B273).
-    needed = VERB_LEVEL.get(verb, 3)
+    # level is needed. The level-1 gate in `commands_from` keeps a level-0 body unparsed (B273).
+    #
+    # The TYPED word decides, when it has a level of its own. `reject` was level 3 and `stop` is
+    # level 2, so resolving before gating would have handed a terminal verb to every maintainer
+    # -- an authority change nobody asked for, arriving as a side effect of a rename.
+    needed = VERB_LEVEL.get(typed or verb, VERB_LEVEL.get(verb, 3))
     if level < needed:
         ledger.count_denied(actor)
         return Command(
             verb="__denied__",
-            args=f"/harness {verb} needs level {needed}; @{actor} is level {level}",
+            args=f"/harness {typed or verb} needs level {needed}; @{actor} is level {level}",
             surface=surface,
             number=int(number),
             comment_id=cid,
@@ -312,20 +439,30 @@ def sweep(
             # Only a pull request has review comments; asking an issue for them is a 404.
             comments.extend(gh.pull_review_comments(repo, number))
         for comment in comments:
-            command = command_from(
-                comment,
-                surface=surface,
-                number=number,
-                trusted=trusted,
-                ledger=ledger,
-                machine=machine,
+            commands.extend(
+                commands_from(
+                    comment,
+                    surface=surface,
+                    number=number,
+                    trusted=trusted,
+                    ledger=ledger,
+                    machine=machine,
+                )
             )
-            if command is not None:
-                commands.append(command)
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))
-    for notification in gh.notifications(since):
+    try:
+        notifications = list(gh.notifications(since))
+    except GitHubError as exc:
+        # The notifications endpoint needs a scope of its own, and I-15 gives the machine PAT
+        # `public_repo` and nothing else -- so a correctly-configured token can be refused here.
+        # Losing the feed costs cold product-issue mentions; letting the refusal out of `sweep`
+        # costs the INBOX TOO, which is the surface people who have read no documentation use.
+        # The inbox is read before this line for exactly that reason, so keep what it found.
+        log.warning("notifications unavailable, inbox only: %s", exc)
+        return commands
+    for notification in notifications:
         target = thread_target(
             notification,
             self_repo=self_repo,
@@ -335,5 +472,7 @@ def sweep(
         if target is None:
             continue
         read(*(target[0], target[1], target[2]))
+    # Advanced only on a feed that actually came back. Moving it after a failure would skip the
+    # window the failed call covered, and those mentions would never be read at all.
     ledger.cursors["notifications_last_seen"] = now_iso
     return commands

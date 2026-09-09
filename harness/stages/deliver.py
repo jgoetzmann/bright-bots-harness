@@ -337,9 +337,10 @@ def build_pr_body(
             "",
             "| comment | what happens |",
             "|---|---|",
-            "| `/harness fix <notes>` | one more implementation pass, your notes as the brief |",
+            "| `/harness revise <notes>` | one more implementation pass, your notes as the brief |",
             "| `/harness rebase` | rebase onto this repository's current `main`, then push again |",
-            "| `/harness stop` | close this and park the work item; nothing further is attempted |",
+            "| `/harness stop` | close this and park the work item; `/harness go` puts it back |",
+            "| `/harness status` | spend, queue, and when the next thing happens |",
             "",
             (
                 f"Honoured only from {_trusted_handles(trusted)}, and only when GitHub also "

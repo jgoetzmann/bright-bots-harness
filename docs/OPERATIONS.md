@@ -38,7 +38,7 @@ naming the stage, the workflow run URL, the cost, and the new state (B101).
 | `stage:revising` | a revise cycle is in flight | the job |
 | `stage:done` | upstream PR merged — terminal | — |
 | `stage:blocked` | gates red and honestly unfixable | you, by relabelling `stage:queued` or `stage:ready` |
-| `stage:needs-human` | revise cap reached | a trusted `/harness fix` |
+| `stage:needs-human` | revise cap reached | a trusted `/harness revise` |
 | `stage:dropped` | terminal | — |
 
 From your machine:
@@ -355,7 +355,7 @@ This is by design (B134), and it will look like a bug the first time.
   `feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency is up to `NOTIFY_POLL_HOURS`
   (three hours) on a weekday, and until Monday for a comment left on Saturday.
 
-So `/harness fix` on an upstream PR at 14:00 UTC Friday is acted on by about 17:41 Friday;
+So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on by about 17:41 Friday;
 at 20:00 Friday, by about 09:41 Monday. Review comments from trusted handles are picked up
 the same way and become `revise` items on the same schedule.
 
@@ -417,16 +417,16 @@ which is the point.
 
 | You want to | Do |
 |---|---|
-| Queue an issue | label it `stage:queued`, or comment `/harness queue` |
+| Queue an issue | label it `stage:queued`, or comment `/harness go` |
 | Approve a proposal | **merge** its PR. Approving without merging does nothing; merge is what `implement.yml` listens for |
 | Send a proposal back | comment `/harness revise <notes>` on the proposal PR |
-| Reject a proposal | comment `/harness reject <why>`; the PR closes, the issue goes `stage:dropped` |
+| Reject a proposal | comment `/harness stop <why>`; the PR closes, the issue goes `stage:dropped` |
 | Split a big issue | comment `/harness split`; up to `MAX_SUBISSUES` children, parent goes `stage:blocked` |
-| Get a delivery PR fixed | review it upstream, or comment `/harness fix` there (§9 for timing) |
+| Get a delivery PR fixed | review it upstream, or comment `/harness revise` there (§9 for timing) |
 | Rebase a conflicted delivery PR | comment `/harness rebase` |
 | Drop a delivery PR | comment `/harness stop`; the PR closes, the slot is freed |
 | Un-block an item | relabel it `stage:ready` (or `stage:queued` for a fresh proposal) |
-| Wake a `stage:needs-human` item | comment `/harness fix` from a trusted account; nothing else touches it |
+| Wake a `stage:needs-human` item | comment `/harness revise` from a trusted account; nothing else touches it |
 | Create the twelve labels | `harness init --labels` (idempotent; a no-op message without a token) |
 
 Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries

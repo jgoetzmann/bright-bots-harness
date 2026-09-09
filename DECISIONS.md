@@ -247,3 +247,108 @@ changing an old contract:
   Treating unknown as "no headroom" would have silently disabled the discovery route that has worked
   since Delivery 1. Unknown is not zero, but it is not empty either: the two usage stops are what
   guard the allowance, and they are checked on every call regardless.
+
+## D64 — twelve verbs, hyphenated, several to a comment
+
+Implemented 2026-09-09 on `feat/simpler-command-surface`.
+
+**Fifteen verbs became twelve.** Three pairs were merged and one was renamed:
+
+| Gone | Now | Why it was never a real choice |
+|---|---|---|
+| `fix` | `revise` | They differed only in whether code existed yet — which is exactly what "proposal pull request" versus "delivery pull request" already says |
+| `reject` | `stop` | They differed only in which gate you were at, and the thread you are on says which |
+| `queue` | `go` | Both mean "proceed with this"; which one applied depended on the item's state, which the person cannot see |
+| `usage` | `status` | One name, and it is the word people reach for |
+
+Each of the three pairs named a distinction the **surface already carried**. Asking someone to pick
+the right word for a fact the harness could read off the thread gave them a way to be wrong and gave
+the harness nothing. The four old names are kept in `keywords.ALIASES` and resolve to the verb they
+became, so comments already sitting on open pull requests do not silently stop working.
+
+The merge moved two decisions from the person into the code, and both had to be made honest about
+their edges:
+
+- `go` now reads the item's state, and `blocked` is the interesting one: it is reachable from both
+  sides of gate 1, so "proceed" points in two directions. A **branch** exists only once `implement`
+  has run, which is only after the proposal was merged — so it is the honest test for "this was
+  approved once", and it decides between `approved` (resume on the branch) and `discovered` (back in
+  the queue). `needs-human`, `merged` and `abandoned` have no useful edge, and are **answered**
+  rather than raised: an `IllegalTransition` traceback in a comment reply tells nobody anything.
+- `stop` on a terminal item says there is nothing left to stop, for the same reason.
+
+**`/harness-<verb>` parses as well as `/harness <verb>`.** The hyphen makes a command a single
+token, which is what makes the next part readable.
+
+**Every `/harness` line in a comment is read, not just the first.** They run top to bottom and each
+gets its own answer, each gated on *its own* level — so a level-2 handle sending `status` and `halt`
+in one comment gets the first and a refusal for the second. The comment is marked seen **once**,
+after parsing: marking per command would make the second command of a two-command comment look like
+a replay of the first. A line whose verb is not real is now skipped rather than discarding the
+comment, which is what the first-line rule used to do to anyone who made a typo.
+
+**Every reply carries a pointer to the other commands** (`links.reply_pointer`), offered by surface —
+`revise`/`rebase`/`stop` on a delivery pull request, `work`/`ask`/`status` on the inbox — plus the
+link to [docs/COMMANDS.md](docs/COMMANDS.md). An answer that says only what happened leaves the
+reader knowing one command and not that there are eleven others.
+
+### What this got wrong first
+
+- **`go` requeued from `needs-human` and `abandoned`.** Neither has an edge to `discovered`, so the
+  documented gesture would have raised after the reply had already been composed.
+- **A failed command was recorded and never said.** The sweep loop caught `HarnessError`, wrote it
+  to stdout, and replied nothing — which from the commenter's side is indistinguishable from the
+  harness being asleep, the one failure this whole surface exists to avoid. The loop is now
+  `run_command`, split out so that behaviour is driven by a test rather than read off the source.
+  (The test that guarded it *was* reading the source with `inspect.getsource`, and passed happily
+  for a loop that caught the exception and did nothing with it.)
+
+### What the adversarial pass then found
+
+Two independent reviews of the branch, neither of which could use "the tests pass" as evidence.
+Between them they found eight things the merge broke and the suite did not see — because the tests
+written alongside the merge exercised the surfaces the merge was thinking about. In severity order:
+
+1. **`revise` routed on the surface, not the state.** `stage:needs-human` is visible only on the
+   harness issue, and `docs/OPERATIONS.md`, `docs/USING.md` and `stages/revise.py` all tell the
+   operator to type the verb *there* — which fell through to a re-propose and raised, because
+   `needs-human → proposing` is not a legal edge. The documented recovery answered with a
+   traceback. It routes on the item's state now; the surface was only ever standing in for it.
+2. **`go` could walk an ordinary proposal past gate 1.** `go` is B262's green light for work
+   *nobody asked for*; for everything else the gate is the merge. Since `queue` now resolves to
+   `go`, and `queue` on a proposal used to mean the *opposite*, this was also a live inversion.
+   `go` at `proposed` is now restricted to `via:suggested` and says so otherwise.
+3. **`reject` silently dropped from level 3 to level 2.** Resolving the alias before the level gate
+   handed every maintainer a terminal verb as a side effect of a rename. The gate reads the **typed**
+   word's level now, and `stop`'s own target is level-dependent: level 2 parks (`blocked`,
+   reversible), level 3 ends it. That is the distinction `reject`'s name used to carry.
+4. **`go` on a blocked item restarted it from scratch**, orphaning the branch and buying a second
+   proposal. See the branch test above.
+5. **`go` on the inbox lost the queue report** — a capability quietly lost to a rename, on the one
+   thread the sweep polls unconditionally.
+6. **A fenced code block parsed as commands.** `docs/COMMANDS.md` ships a three-command block under
+   the words "that is a normal thing to send"; pasting it to explain the syntax would have run all
+   three. Fences are stripped before parsing, and one comment now yields at most ten commands.
+7. **GitHub's own rate ceiling did not stop the batch.** `RateCeilingReached` is a different
+   ceiling from the model's `RateLimited` and arrived as an ordinary error, so the loop ground on
+   posting replies that were themselves refused and swallowed — consuming any `/harness resume`
+   behind the comment that tripped it. Both ceilings stop the batch now.
+8. **The thread recorded the resolved verb, not the typed one.** The issue thread is the log, and
+   per (3) which word was used decides what the commenter was allowed to do.
+
+Nine tests were added, one per finding plus the green-light case beside its new guard, so none of
+them can come back quietly.
+
+### And what the first live run found
+
+Running the sweep against the live repository — the first time it had ever got that far — the
+notifications call returned **403, "Missing the `notifications` scope."** I-15 gives the machine PAT
+`public_repo` and nothing else, so the correctly-configured token is refused there. The exception
+came out of `sweep` and took the **inbox commands it had already collected** with it: the surface
+used by people who have read no documentation, lost because a feed nobody sees was refused.
+
+`sweep` now keeps what the inbox gave it and logs the refusal, and does **not** advance the
+notification cursor over a feed that never arrived — advancing it would skip that window for good.
+`harness doctor` reports the missing scope as a warning, so the gap is visible before it is a
+silence. Adding `notifications` to the PAT closes it; without that, cold product-issue mentions are
+the only thing missed.

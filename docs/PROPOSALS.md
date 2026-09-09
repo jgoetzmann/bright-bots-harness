@@ -340,8 +340,10 @@ package that failed the schema.
 
 ## Steering a proposal you do not like
 
-Put `/harness <verb>` on its own line in a comment. The verbs are exactly `revise`, `reject`, `fix`,
-`rebase`, `stop`, `split`, `queue` (`keywords.VERBS`). A command is honoured only when **both** halves
+Put `/harness <verb>` — or `/harness-<verb>` — on its own line in a comment; several may go in one
+comment. The verbs are exactly `work`, `ask`, `status`, `audit`, `promote`, `revise`, `rebase`,
+`stop`, `go`, `split`, `halt`, `resume` (`keywords.VERBS`), plus the six other words in
+`keywords.ALIASES` (`fix`, `reject`, `queue`, `usage`, `ledger`, `help`). A command is honoured only when **both** halves
 of the actor gate hold: the handle is in `.harness/trust.txt` — currently `jgoetzmann` and
 `BrightBoost-Tech` — **and** GitHub reports the commenter's association with that repository as
 `OWNER`, `MEMBER` or `COLLABORATOR`. Anyone else's comment is read, counted as denied, and ignored.
@@ -360,13 +362,13 @@ if it is left at the weekend.
 | What you want | Do this | What happens in code |
 |---|---|---|
 | reject the plan | close the proposal PR | gate 1's own mechanism; nothing further runs |
-| reject and mark the item dead | `/harness reject <reason>` on the PR | closes the PR and transitions the item to `abandoned` |
+| reject and mark the item dead | `/harness stop <reason>` on the PR | closes the PR and transitions the item to `abandoned` |
 | a different plan for the same ticket | `/harness revise <notes>` | item → `proposing`, `propose` re-runs with your notes in the prompt |
 | break up an oversized item | `/harness split` on the **harness issue** | `decompose` creates sub-issues, parent → `blocked` |
-| put a parked item back in the queue | `/harness queue` on the harness issue | item → `discovered` |
+| put a parked item back in the queue | `/harness go` on the harness issue | item → `discovered` |
 
 **Rejecting.** Closing the pull request is the documented gate action and needs no command. Use
-`/harness reject` when you also want the work item marked terminal rather than left sitting at
+`/harness stop` when you also want the work item marked terminal rather than left sitting at
 `proposed`. `/harness stop` runs the identical code path. Both close the pull request only when the
 GitHub client can write; the transition to `abandoned` happens either way.
 
@@ -385,10 +387,10 @@ paragraph in the body and `Split out of #<parent>` recorded — and moves the pa
 the list of children. Depth is one: a sub-issue names its parent, and asking to split one is refused
 before any model call.
 
-`/harness fix` and `/harness rebase` are not proposal verbs. They run a revision cycle on an item
-that already has a delivery pull request open (`shipped`), or one parked at `needs-human` — `fix` for
+`/harness revise` and `/harness rebase` are not proposal verbs. They run a revision cycle on an item
+that already has a delivery pull request open (`shipped`), or one parked at `needs-human` — `revise` for
 review feedback, `rebase` for a conflict. The automatic loop is bounded by `MAX_REVISE_CYCLES` (3),
-past which the item goes to `stage:needs-human` and is left alone; a trusted `/harness fix`
+past which the item goes to `stage:needs-human` and is left alone; a trusted `/harness revise`
 restarts it, because a command from a trusted actor always carries notes and notes are what lifts the
 stop.
 

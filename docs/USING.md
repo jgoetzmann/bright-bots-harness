@@ -20,7 +20,7 @@ Five kinds of thing arrive. Four of them want something from you.
 
 | What arrives | Where | What you do |
 |---|---|---|
-| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run. Relabel or comment `/harness reject` if you disagree with the pick |
+| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run. Relabel or comment `/harness stop` if you disagree with the pick |
 | A PR adding `proposals/<issue>-<slug>.md` | this repo | **Gate 1.** Merge it to approve. Close it to withhold approval. This is the cheapest place to disagree |
 | A PR from a `jgoetzmann-bot:harness/…` branch | the product repo | **Gate 2.** Review it and merge, or steer it with a `/harness` comment. The harness cannot merge it |
 | A comment on issue #2, every Monday ~09:05 UTC | this repo | Skim it. It carries the queue depth per label, the last observed subscription usage, the last successful run of each workflow, and how far the fork has drifted from upstream. **Its absence is the alarm** |
@@ -42,7 +42,7 @@ Every item is one issue in this repo carrying exactly one `stage:*` label — a 
 | `stage:revising` | a revise cycle is in flight | the job |
 | `stage:done` | terminal | — (**you set this by hand**, see below) |
 | `stage:blocked` | gates red and honestly unfixable | you, by relabelling `stage:queued` or `stage:ready` |
-| `stage:needs-human` | revise cap reached | a trusted `/harness fix` |
+| `stage:needs-human` | revise cap reached | a trusted `/harness revise` |
 | `stage:dropped` | terminal | — |
 
 Nothing sets `stage:done` for you: the label is read by the store and written by nobody. After you merge a delivery PR upstream, relabel its harness issue by hand — the dispatcher's `depends_on` waits on exactly that label, so an unrelabelled item silently blocks its dependants.
@@ -93,7 +93,7 @@ One exception worth knowing: if `.harness/HALT` exists when you merge, the HALT 
 **Closing is rejection**, but only in the sense that nothing implements: no workflow listens for a closed PR, so the issue sits on `stage:needs-approval` indefinitely. To record it properly, comment on the PR:
 
 ```
-/harness reject the component is still referenced by the onboarding flow
+/harness stop the component is still referenced by the onboarding flow
 ```
 
 which closes the PR and moves the issue to `stage:dropped` within minutes. To send it back instead of killing it:
@@ -163,35 +163,34 @@ Three things you do not need to check for, because the code to do them does not 
 - The PR cannot contain a change under `.github/**` (I-15): the machine account's PAT has no `workflow` scope, so GitHub itself refuses the push, and `_reject_forbidden_diff` in `stages/implement.py` catches the subtler cases a token scope cannot see.
 - The evidence cannot come from a widened gate: `harness/gates.py`, where the sequence lives, is hashed into `.harness/PIN` along with `packager.py`, `redact.py` and every file under `prompts/`. Every spending workflow runs `harness doctor` before its work step, and a pin mismatch fails it there.
 
-To steer it instead of merging, see the next section — `/harness fix`, `/harness rebase`, `/harness stop`. Note the latency: comments on the product repo are polled, not pushed.
+To steer it instead of merging, see the next section — `/harness revise`, `/harness rebase`, `/harness stop`. Note the latency: comments on the product repo are polled, not pushed.
 
 ---
 
 ## The `/harness` comment commands
 
-The form is `/harness <verb> [args]` at the start of a line. Everything after the verb to the end of that line is the argument, and is passed to the stage as notes.
+The form is `/harness <verb> [args]` — or `/harness-<verb> [args]` — at the start of a line. **Several commands go in one comment, one per line**; they run top to bottom and the harness answers once, with each answer labelled. Everything after the verb to the end of that line is the argument, and is passed to the stage as notes.
 
 Leading whitespace is allowed, so is any capitalisation (`/Harness` is what a phone gives you), and so are leading `@mentions` — `@jgoetzmann-bot /harness work` is a command. That last one is not a convenience: on the product repository the mention is the *delivery mechanism*, because `sweep` reads notifications and the machine account is not subscribed to a thread it has never touched. Nothing else may precede the verb, so a sentence that merely mentions `/harness` is still a sentence.
 
 | Verb | What it does | Put it on | Picked up within |
 |---|---|---|---|
-| `queue` | Moves the issue to `stage:queued` so the next `discover` run proposes it. Already-queued is a no-op | an issue **here** | minutes |
+| `go` | Puts a parked item back at `stage:queued` so the next `discover` run proposes it, or green-lights a suggestion. Already there is a no-op | an issue **here** | minutes |
 | `split` | Runs `decompose`: up to `MAX_SUBISSUES` (8) child issues here, parent goes `stage:blocked`. A child is never split again | an issue **here** | minutes; costs a model call |
-| `revise <notes>` | Re-runs `propose` with your notes appended and publishes the new work package | a proposal PR **here** | minutes; costs a model call |
-| `reject <why>` | Closes the PR and moves the item to `stage:dropped`. Terminal | a proposal PR **here**, or a delivery PR upstream | minutes here, up to 3 h upstream |
-| `fix <notes>` | One bounded revise cycle, source `review`: re-implements against the feedback, re-runs the **complete** gate sequence, and force-pushes to the fork only if the branch is under `harness/` and its tip is still a commit the harness authored | a delivery PR upstream | up to 3 h |
+| `revise <notes>` | On a **proposal** PR, re-runs `propose` with your notes appended and publishes the new work package | a proposal PR **here** | minutes; costs a model call |
+| `revise <notes>` | On a **delivery** PR, one bounded revise cycle, source `review`: re-implements against the feedback, re-runs the **complete** gate sequence, and force-pushes to the fork only if the branch is under `harness/` and its tip is still a commit the harness authored | a delivery PR upstream | up to 3 h |
 | `rebase <notes>` | The same cycle, source `conflict`: rebases onto upstream's default branch, then re-runs the gates | a delivery PR upstream | up to 3 h |
-| `stop` | Closes the PR and moves the item to `stage:dropped`, freeing the concurrency slot | a delivery PR upstream | up to 3 h |
+| `stop` | Closes the PR and stands the item down, freeing the concurrency slot | either PR | minutes here, up to 3 h upstream |
 
-`reject` and `stop` are the same action in code — close the pull request, abandon the item. The difference is what you mean by it: `reject` reads as a refusal at gate 1, `stop` as an abort at gate 2.
+`revise` and `stop` each cover both gates, because the pull request the comment is on already says which one you are at: on a proposal there is no code yet, so `revise` rewrites the plan and `stop` is a refusal; on a delivery PR the code exists, so `revise` re-implements and `stop` is an abort. The old names `fix` and `reject` still parse, to `revise` and `stop`.
 
-A successful `fix` or `rebase` moves the branch and nothing else. Nothing in `gh.py` can edit a pull request body, so the PR's Evidence section stays as first posted while its diff shows the revised tip; the new gate run is in `runs/item-<n>/gates/final.json` in the workflow artifact, and the decisions are on the issue.
+A successful `revise` or `rebase` moves the branch and nothing else. Nothing in `gh.py` can edit a pull request body, so the PR's Evidence section stays as first posted while its diff shows the revised tip; the new gate run is in `runs/item-<n>/gates/final.json` in the workflow artifact, and the decisions are on the issue.
 
-Red gates after a `fix` or `rebase` block the item and push nothing.
+Red gates after a `revise` or `rebase` block the item and push nothing.
 
-`fix` and `rebase` are bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `stage:needs-human`, and only a keyword revise carrying notes from a trusted handle — `/harness fix` in practice, `/harness rebase` equally — restarts the loop.
+`revise` and `rebase` are bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `stage:needs-human`, and only a keyword revise carrying notes from a trusted handle — `/harness revise` in practice, `/harness rebase` equally — restarts the loop.
 
-`queue` and `split` act on the number of the thread the comment is on, so putting either on a pull request aims it at the wrong number. Keep them on issues in this repo.
+`go` and `split` act on the number of the thread the comment is on, so putting either on a pull request aims it at the wrong number. Keep them on issues in this repo.
 
 ### Who may use them
 
@@ -202,7 +201,7 @@ Both of these must hold, or the comment is read and silently ignored (the denial
 
 ### Three parsing rules that bite
 
-- Only the **first** `/harness …` line in a comment is read. If its verb is not one of the fifteen above, the whole comment is discarded — a typo does not fall through to the next line.
+- **Every** `/harness …` line in a comment is read, top to bottom, and each gets its own answer. A line whose verb is not one of the twelve is skipped and the rest still run — a typo no longer eats the commands under it, which is what it used to do when only the first line was read.
 - A command is acted on **once**, keyed on the comment's node id. Editing a comment does not re-trigger it. Post a new one.
 - The argument is a single line. A multi-line note becomes the first line only.
 
@@ -212,7 +211,7 @@ On **this** repo, commands are event-driven: `feedback.yml` triggers on `issue_c
 
 On the **product** repo the harness receives no events — it is not a collaborator there, and it must not be. Commands on a delivery PR are found by `harness sweep`, which reads the machine account's notifications since the ledger cursor on `feedback.yml`'s schedule, `41 */3 * * 1-5`. That matches `NOTIFY_POLL_HOURS=3` in `.env` and `.harness/config.json`, which is the documented cadence for the same thing.
 
-So `/harness fix` on an upstream PR at 14:00 UTC on a Friday is acted on around 17:41 that day; the same comment at 20:00 Friday waits until about 09:41 Monday, because the cron does not run at weekends. To skip the wait, run `feedback.yml` by hand.
+So `/harness revise` on an upstream PR at 14:00 UTC on a Friday is acted on around 17:41 that day; the same comment at 20:00 Friday waits until about 09:41 Monday, because the cron does not run at weekends. To skip the wait, run `feedback.yml` by hand.
 
 ---
 

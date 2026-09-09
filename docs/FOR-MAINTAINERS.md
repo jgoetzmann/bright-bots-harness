@@ -69,12 +69,14 @@ spent on writing any.
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the real diff
 and every gate's output in the body. Read it like any other contributor's PR.
 
-- `/harness fix <what to change>` → one more implementation pass against your feedback, re-running
-  the complete gate sequence.
+- `/harness revise <what to change>` → one more implementation pass against your feedback,
+  re-running the complete gate sequence.
 - `/harness rebase` → same, after a conflict.
-- `/harness stop` → close it and abandon the item.
+- `/harness stop` → close it and stand down.
 
-Both of those verbs go **on the pull request**, as a normal review comment.
+All of those go **on the pull request**, as a normal review comment. `revise` and `stop` are the
+same two verbs you use at gate 1 — the pull request you are standing on says whether "redo it" means
+rewrite the plan or rewrite the code, so there is no second word to remember.
 
 ## 4. Reading the board at a glance
 
@@ -96,16 +98,17 @@ says so in the issue. Ignoring one is a complete answer.
 ## 5. The rest of the vocabulary
 
 Put any of these at the **start of a line** in a comment — after an `@mention` if you are
-addressing the bot, and in any capitalisation your phone gives you.
+addressing the bot, and in any capitalisation your phone gives you. `/harness-ask` works as well as
+`/harness ask`, and **several commands go in one comment, one per line.**
 
 | Command | Where | What it does |
 |---|---|---|
 | `/harness ask <question>` | anywhere | reads brightboost and answers, in the thread. **Changes nothing at all** |
 | `/harness audit <lens>` | an issue in the harness repo | reads brightboost through one lens and opens **one** findings issue. Creates no work |
 | `/harness promote 3` · `promote all` | on that audit issue | turns findings into work items |
-| `/harness go` | a suggestion | green-lights it |
+| `/harness go` | a suggestion, or a parked item | green-lights it, or puts it back in the queue |
 | `/harness split` | a work item | breaks it into sub-issues |
-| `/harness queue` | a work item | puts a parked one back |
+| `/harness status` | anywhere | spend, queue, and when the next thing happens |
 
 `ask` is the cheap one and the one to start with. It costs cents, changes nothing, and is the
 fastest way to find out whether the thing understands the codebase — ask it something you already
@@ -114,16 +117,25 @@ know the answer to.
 `audit` and `promote` are deliberately two steps. One sentence from you must not become eight
 proposals nobody approved: an audit produces a *list*, and you choose which lines become work.
 
+`status` is the one to reach for when nothing seems to be happening — it says whether the harness is
+halted, whether the run window is open, and when the next sweep is.
+
+There are twelve verbs in all, and every reply the harness sends points at the rest of them. Six
+other words are understood too: `fix`, `reject`, `queue` and `usage` mean `revise`, `stop`, `go`
+and `status`, and so do `ledger` and `help` — if you are not sure, `/harness help` is a real
+thing to type.
+
 ## 6. What you cannot do, and why
 
-`reject` and `--force` are level 3 (Jack only).
+`halt`, `resume` and `--force` are level 3 (Jack only).
 
 `--force` starts work now instead of at the next run window. The window — Monday 08:00 to Tuesday
 20:00 UTC — is the main thing standing between an enthusiastic week and an exhausted allowance.
 You can queue as much work as you like; whether it happens tonight is the operator's call, because
 it is the operator's subscription.
 
-`reject` is the one verb that ends a work item for good.
+`halt` stops the harness spending anything at all until it is resumed, which is why it sits at
+the same level as the switch that starts work early.
 
 If you use one anyway, nothing happens and you get a reply saying which level it needed. Refusals
 are answered, never silent.

@@ -1584,6 +1584,10 @@ def _usage_report(ctx, config, now) -> str:
             + ("; open now" if in_run_window(config, now) else "; closed now")
         )
         lines.append(f"- suggested work: {blocked or 'admitted'}")
+    # The other gate denominated in the allowance. Reported for the same reason: a maintainer
+    # whose audit was declined has to be able to find out why without reading the source.
+    audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config)
+    lines.append(f"- audits: {audit_blocked or 'admitted'}")
     return "\n".join(lines)
 
 
@@ -1969,6 +1973,13 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
         # it. Both ceilings mean the same thing here: stop, and let the next sweep retry.
         record["result"] = f"github rate ceiling reached: {exc}"
         return record, "", False
+    except BudgetExhausted as exc:
+        # NOT "that did not work". D3 is explicit that a usage stop is a normal outcome, like a
+        # closed run window -- the harness declining to spend the allowance you have left is the
+        # governor doing its job, and dressing it as a failure teaches people to read a working
+        # system as a broken one.
+        record["result"] = f"declined: {exc}"
+        return record, f"Not now — {exc}", True
     except HarnessError as exc:
         # Answered, not just recorded. A command that failed is the case where a person most
         # needs to hear something: recording it to stdout and saying nothing in the thread is
@@ -2087,6 +2098,18 @@ def cmd_ack(args: argparse.Namespace) -> int:
     # escape hatch is `/harness status`, which the same halt refuses. Both switches: the
     # committed one stops the workflows, the commanded one stops the spending.
     stopped = _ack_halt_reason(config)
+    if not stopped and "audit" in verbs:
+        # The same gate `stages/audit` applies at its entry. Without it the acknowledgement
+        # promises twenty minutes and the sweep then declines -- the exact failure this command
+        # exists to avoid, performed in public. Read-only and never raised: `ack` is a courtesy
+        # in front of the real thing, and the real thing checks for itself.
+        try:
+            led = ledger_mod.Ledger.load(Path(config.ledger_path))
+            refused = priority.admit("audit", store=None, ledger=led, config=config)
+        except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+            refused = None
+        if refused:
+            stopped = f"**Not now** — {refused}"
     if stopped:
         return _say(react=True, comment=mark_machine_written(stopped))
 

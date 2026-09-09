@@ -145,3 +145,130 @@ def test_work_a_person_asked_for_is_never_refused_here(cls):
     """Only the two classes with a written reason are gated. Everything else was asked for, and
     the governor is what decides whether there is allowance for it."""
     assert priority.admit(cls, store=None, ledger=_ledger(weekly=0.99), config=CONFIG) is None
+
+
+# --------------------------------------------------------------------------------------
+# Against a REAL ledger.
+#
+# Everything above builds a SimpleNamespace, which is why the suite could not see the bug the
+# adversarial pass found: `roll_window` leaves the last observation in place and the ledger's
+# staleness check is the only thing that makes that safe. A fake with no `period_start` and no
+# `observed_at` can never reach it.
+# --------------------------------------------------------------------------------------
+
+
+def _rolled_ledger():
+    """A fresh window carrying last window's reading — the case the guard exists for."""
+    from harness.ledger import Ledger
+
+    led = Ledger.empty("2026-09-07T00:00:00Z")
+    led.observe_usage(
+        {"seven_day": {"utilization": 0.88}, "five_hour": {"utilization": 0.63}},
+        "2026-09-04T10:00:00Z",          # a Friday, before this window started
+    )
+    return led
+
+
+def test_a_reading_from_before_the_window_is_not_reported_as_this_weeks():
+    """88% on Friday, a Monday roll, and nothing spent since. Reporting "2 points before the
+    stop" on a week with a full allowance is the most alarming possible way to be wrong — and it
+    contradicts `harness dispatch`, which reads through the ledger and correctly starts work."""
+    text = "\n".join(links.usage_headline(_rolled_ledger(), CONFIG))
+
+    assert "not measured yet" in text
+    assert "88" not in text and "2 points" not in text
+
+
+def test_the_audit_gate_does_not_refuse_a_whole_fresh_window():
+    """The same guard, on the reader B295 made the sole bound for `/harness audit`. Without it
+    every audit is refused for an entire week in which nothing has been spent, and nothing clears
+    it until some other stage happens to make a real model call."""
+    led = _rolled_ledger()
+
+    assert priority.headroom_pct(led) is None
+    assert priority.admit("audit", store=None, ledger=led, config=CONFIG) is None
+
+
+def test_a_reading_from_inside_the_window_is_reported():
+    """The other half: the guard must not swallow a live observation."""
+    from harness.ledger import Ledger
+
+    led = Ledger.empty("2026-09-07T00:00:00Z")
+    led.observe_usage({"seven_day": {"utilization": 0.18}}, "2026-09-09T10:00:00Z")
+
+    assert "18% used" in "\n".join(links.usage_headline(led, CONFIG))
+    assert priority.headroom_pct(led) == pytest.approx(18.0)
+
+
+def test_the_headline_agrees_with_the_ledgers_own_accessors():
+    """The claim the docstring makes. Both readings come off the same guarded accessor, so a
+    comment and `harness dispatch` cannot disagree about whether anything is measured at all."""
+    for led in (_rolled_ledger(), _live_ledger()):
+        measured = "not measured yet" not in "\n".join(links.usage_headline(led, CONFIG))
+        assert measured is (led.weekly_utilization() is not None)
+
+
+def _live_ledger():
+    from harness.ledger import Ledger
+
+    led = Ledger.empty("2026-09-07T00:00:00Z")
+    led.observe_usage({"seven_day": {"utilization": 0.42}}, "2026-09-08T10:00:00Z")
+    return led
+
+
+def test_under_a_point_of_headroom_does_not_read_as_stopped():
+    """`{:.0f}` of 0.4 is "0", and "0 points before the stop" reads as stopped while work in fact
+    continues — the CLI, rendering one decimal, says "0.4 to go" on the same ledger."""
+    text = "\n".join(links.usage_headline(_ledger(weekly=0.896), CONFIG))
+
+    assert "under a point" in text
+    assert "0 points" not in text
+
+
+def test_a_declined_call_is_answered_as_a_decision_not_a_failure(tmp_path):
+    """D3: a usage stop is a normal outcome, like a closed run window. Dressing the governor
+    doing its job as "that did not work" teaches people to read a working system as a broken
+    one — and `BudgetExhausted` is a `HarnessError`, so it landed in the generic branch."""
+    import harness.__main__ as main_mod
+    from harness.errors import BudgetExhausted
+
+    from tests.test_d4_routes import _cmd, request_rig
+
+    rig = request_rig(tmp_path)
+    real = main_mod._act_on_command
+    main_mod._act_on_command = lambda *a, **k: (_ for _ in ()).throw(
+        BudgetExhausted("weekly subscription usage is 80%, at or above the 75% ceiling")
+    )
+    try:
+        record, keep_going = main_mod.run_command(rig.ctx, rig.config, _cmd("audit"))
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is True, "a decline is not a reason to abandon the batch"
+    posted = rig.gh.comments_posted[-1][2]
+    assert "Not now" in posted and "80%" in posted
+    assert "did not work" not in posted
+    assert record["result"].startswith("declined:")
+
+
+def test_the_audit_stage_refuses_before_it_clones(tmp_path):
+    """`run_model` is the last line of defence, but by the time it says no a full fresh clone of
+    the product repository has been made for a call that is about to be refused. Driven rather
+    than read: the clone manager records every acquisition, so this asserts none happened."""
+    from harness.errors import BudgetExhausted
+    from harness.stages.audit import audit
+
+    from tests.test_d4_routes import request_rig
+
+    rig = request_rig(tmp_path)
+    # A live reading with no room left: observed inside the window, past the audit ceiling.
+    rig.ctx.ledger.observe_usage(
+        {"seven_day": {"utilization": 0.80}},
+        rig.ctx.ledger.window.get("period_start") or "2026-09-08T00:00:00Z",
+    )
+
+    with pytest.raises(BudgetExhausted) as caught:
+        audit(rig.ctx, lens="accessibility", actor="jgoetzmann")
+
+    assert "75%" in str(caught.value)
+    assert rig.ctx.clones.acquired == [], "it cloned the product repository to then refuse"

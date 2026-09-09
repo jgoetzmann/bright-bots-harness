@@ -86,14 +86,16 @@ def usage_headline(ledger: Any, config: Any) -> list[str]:
             if used is None:
                 continue
             left = stop - used
-            lines.append(
-                f"- {label}: **{used:.0f}% used**, "
-                + (
-                    f"**{left:.0f} points** before the {stop:.0f}% stop"
-                    if left > 0
-                    else f"**at or past** the {stop:.0f}% stop — nothing will start"
-                )
-            )
+            if left <= 0:
+                room = f"**at or past** the {stop:.0f}% stop — nothing will start"
+            elif left < 1:
+                # `{:.0f}` of 0.4 is "0", and "0 points before the stop" reads as stopped while
+                # work in fact continues -- the CLI, rendering one decimal, said "0.4 to go" on
+                # the same ledger. Below a point, say so rather than round to a claim.
+                room = f"**under a point** before the {stop:.0f}% stop"
+            else:
+                room = f"**{left:.0f} points** before the {stop:.0f}% stop"
+            lines.append(f"- {label}: **{used:.0f}% used**, {room}")
         lines.append(
             "- shared with whatever else this subscription is used for, so this moves when the "
             "harness is doing nothing"
@@ -117,12 +119,40 @@ def spend_estimate(ledger: Any, config: Any) -> str:
     )
 
 
+#: The ledger accessor for each window. Going through these rather than reading
+#: `window["usage"]` directly is not style: `roll_window` moves `period_start` and zeroes the
+#: spend but deliberately LEAVES the last observation in place, and the accessors' staleness
+#: check is the only thing that stops last week's figure being reported as this week's.
+_LEDGER_ACCESSOR = {"seven_day": "weekly_utilization", "five_hour": "session_utilization"}
+
+
 def _utilization(ledger: Any, key: str) -> float | None:
-    """`key`'s utilization as a percentage, or None when it has never been observed."""
-    window = getattr(ledger, "window", {}) or {}
+    """`key`'s utilization as a percentage, or None when it is unknown for THIS window.
+
+    Unknown covers three cases and they are all the same answer: never observed, not reported,
+    and observed before the window rolled. The third is the one that bites — a fresh week whose
+    ledger still carries Friday's 88% would otherwise read as "2 points before the stop" on a
+    week nothing has been spent in.
+    """
+    accessor = getattr(ledger, _LEDGER_ACCESSOR[key], None)
+    if callable(accessor):
+        fraction = accessor()
+        return None if fraction is None else float(fraction) * 100.0
+    # A ledger-shaped object without the accessors. Apply the same guard by hand rather than
+    # trusting the raw field, so a test double cannot be more permissive than the real thing.
+    return _raw_utilization(getattr(ledger, "window", {}) or {}, key)
+
+
+def _raw_utilization(window: Any, key: str) -> float | None:
+    """`_utilization`'s fallback: the same rule, applied to a plain window mapping."""
+    if not isinstance(window, dict):
+        return None
     usage = window.get("usage")
     if not isinstance(usage, dict):
         return None
+    observed_at, start = usage.get("observed_at"), window.get("period_start")
+    if observed_at and start and str(observed_at) < str(start):
+        return None  # ISO-8601 UTC sorts lexicographically, which is all this needs
     reported = usage.get(key)
     if not isinstance(reported, dict):
         return None

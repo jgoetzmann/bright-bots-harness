@@ -524,11 +524,12 @@ fact about reading these figures.
 
 What changed:
 
-- **`links.usage_headline` is the one place** that turns a ledger into the sentence people read, so
-  the comment reply, `harness status`, `harness ledger` and `harness dispatch` cannot drift apart
-  about what the number means. It leads with utilization, states the **headroom left** rather than
-  only the amount gone ("18% used, 72 points before the 90% stop"), and says the allowance is
-  shared.
+- **`links.usage_headline`** renders the comment reply: utilization first, the **headroom left**
+  rather than only the amount gone ("18% used, 72 points before the 90% stop"), and a line saying
+  the allowance is shared. It is *a* renderer, not the only one — `harness status` and `harness
+  ledger` go through `_usage_lines`, `harness dispatch` through `_usage_suffix`, and the heartbeat
+  builds its own in JavaScript. What they share is the **guarded read**, which is the part that
+  can drift and did (see below).
 - **Unmeasured is said as unmeasured**, never as zero. None is not zero: the signal rides on the
   headers of a real model call, so a fresh ledger, every tier-0 run and every local run have none.
   A headline reading "0% used" would be the most confident possible way of being wrong.
@@ -550,3 +551,49 @@ What changed:
   whether the thing that actually runs out is anywhere near its limit, and those are very different
   problems. `_usage_suffix` is empty until both windows have been observed, so the bare token
   survives everywhere nothing has been measured.
+
+### What the adversarial pass on D66 found
+
+Six things, and the first two are the same root cause — a guard I did not know was load-bearing.
+
+**`roll_window` deliberately leaves the last observation in place**, and `Ledger._utilization`'s
+staleness check is the only thing that makes that safe: an observation older than `period_start`
+is *last* window's, so it reports `None`. Both of the readers this change leaned on had grown
+their own raw read of `window["usage"]` and skipped it.
+
+- **The status comment would have reported last week's figure as this week's.** A Friday reading
+  of 88%, a Monday roll, and `/harness status` says "88% used, 2 points before the 90% stop" on a
+  week nothing has been spent in — while `harness dispatch`, reading through the ledger, correctly
+  says nothing is stopped. The docstring claiming the two "cannot disagree" was written in the same
+  change that made them.
+- **Worse for the new audit gate**, because `headroom_pct` has the same raw read and B295 made it
+  the *sole* bound on `/harness audit`. Every audit refused for an entire fresh window — failing
+  closed at exactly the moment there is the most room, and nothing clears it until some other stage
+  happens to make a real model call.
+
+Both readers go through the ledger's accessors now, with the same rule applied by hand for a
+ledger-shaped object that lacks them, so a test double cannot be more permissive than the real
+thing. **Which is exactly how this was missed:** every test in `tests/test_usage_not_spend.py`
+built its ledger as a `SimpleNamespace`, so the suite structurally could not reach the guard. The
+tests build real `Ledger` objects now, and one of them rolls a window.
+
+The rest:
+
+- **The audit gate cloned first and refused second.** `run_model` is the last line of defence, but
+  by the time it says no, a full fresh clone of the product repository has been made. Every other
+  stage checks at its own entry for this reason; this gate was the one arriving late.
+- **`ack` promised twenty minutes of audit the sweep was about to decline** — the exact failure
+  `cmd_ack` exists to avoid, performed in public. It consults the gate now, and `/harness status`
+  reports it beside the suggestion gate, so a maintainer whose audit was declined can find out why
+  without reading the source.
+- **A declined call was answered as "that did not work".** D3 is explicit that a usage stop is a
+  normal outcome, like a closed run window. `BudgetExhausted` now answers "Not now — …", because
+  dressing the governor doing its job as a failure teaches people to read a working system as a
+  broken one.
+- **"0 points before the stop" while nothing was stopped.** `{:.0f}` of 0.4 is "0", and the branch
+  was chosen on the unrounded value — so the comment claimed a stop the CLI, rendering one decimal,
+  correctly showed 0.4 short of. Under a point now says so.
+- **`docs/USING.md` quoted both renamed blocks verbatim**, and the weekly heartbeat — the one
+  report that goes out unprompted, and B144's alarm channel — still led with dollars and quoted the
+  raw cap rather than the cap less the reserve. Both fixed; the heartbeat drops a stale reading for
+  the same reason the accessors do.

@@ -133,9 +133,22 @@ def headroom_pct(ledger: Any) -> float | None:
     None is not zero. An unobserved allowance is unknown, and treating unknown as "plenty left"
     is how a system spends a week it did not have.
     """
+    # Through the ledger's own accessor, which applies the staleness guard: `roll_window` moves
+    # `period_start` and zeroes the spend but LEAVES the last observation in place, so a raw read
+    # reports the previous week's figure on a week nothing has been spent in. That was tolerable
+    # while this only gated `suggested`; B295 made it the sole bound on `/harness audit`, where
+    # it would have refused every audit for a whole fresh window -- failing closed at exactly the
+    # moment there is the most room.
+    accessor = getattr(ledger, "weekly_utilization", None)
+    if callable(accessor):
+        fraction = accessor()
+        return None if fraction is None else float(fraction) * 100.0
     window = getattr(ledger, "window", {}) or {}
     usage = window.get("usage")
     if not isinstance(usage, dict):
+        return None
+    observed_at, start = usage.get("observed_at"), window.get("period_start")
+    if observed_at and start and str(observed_at) < str(start):
         return None
     # `seven_day` is what the ledger stores and what `runner/cli.py` reads off the response
     # headers -- `USAGE_WINDOWS` names the two windows and "weekly" is not one of them. Reading

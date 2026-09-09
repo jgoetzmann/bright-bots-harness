@@ -186,13 +186,6 @@ jobs:
             lines.push('|---|---|');
             for (const l of labels) lines.push(`| \`${l}\` | ${depth[l]} |`);
             lines.push('');
-            lines.push('### spend this window (state/ledger.json)');
-            lines.push(`- period_start: ${fmt(w.period_start)}`);
-            lines.push(`- spent_usd: ${fmt(w.spent_usd)} of WEEKLY_CAP_USD ${fmt(cfg.WEEKLY_CAP_USD)} (RESERVE_PCT ${fmt(cfg.RESERVE_PCT)})`);
-            lines.push(`- calls: ${fmt(w.calls)}`);
-            lines.push(`- rate_limited_until: ${fmt(w.rate_limited_until)}`);
-            lines.push(`- history entries: ${Array.isArray(ledger.history) ? ledger.history.length : '?'}`);
-            lines.push('');
 
             // RUN-DECISIONS-D3: the last rate_limit_event the runner saw, stored as window.usage.
             // Reported, never depended on — an absent signal is a normal state and the USD path
@@ -200,22 +193,41 @@ jobs:
             const usage = w.usage || null;
             const pct = (u) =>
               (u && typeof u.utilization === 'number' ? `${Math.round(u.utilization * 1000) / 10}%` : '?');
-            lines.push('### subscription usage (last observed)');
-            if (usage) {
+            // B295: the subscription first and the dollar estimate under it, because the
+            // dollars are an estimate of API-equivalent cost that nobody bills and the
+            // utilization is what actually runs out. `observed_at` before `period_start` means
+            // the window rolled since the last real call, so the figure is LAST week's -- the
+            // ledger's own accessors drop it, and so must this.
+            const stale = usage && usage.observed_at && w.period_start
+              && String(usage.observed_at) < String(w.period_start);
+            const room = (u, stop) =>
+              (u && typeof u.utilization === 'number' && typeof stop === 'number')
+                ? `${Math.round((stop - u.utilization * 100) * 10) / 10} points to go`
+                : 'unknown';
+            lines.push('### allowance (shared with everything else this account does)');
+            if (usage && !stale) {
               const week = usage.seven_day || {};
               const session = usage.five_hour || {};
-              lines.push(`- weekly (seven_day): ${pct(week)} of WEEKLY_USAGE_STOP_PCT ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% — resets ${fmt(week.resets_at)}`);
-              lines.push(`- session (five_hour): ${pct(session)} of SESSION_USAGE_STOP_PCT ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% — resets ${fmt(session.resets_at)}`);
-              lines.push(`- status: ${fmt(usage.status)}`);
-              lines.push(`- observed_at: ${fmt(usage.observed_at)}`);
+              lines.push(`- this week: ${pct(week)} used — ${room(week, Number(cfg.WEEKLY_USAGE_STOP_PCT))} before the ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% stop; resets ${fmt(week.resets_at)}`);
+              lines.push(`- this session: ${pct(session)} used — ${room(session, Number(cfg.SESSION_USAGE_STOP_PCT))} before the ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% stop; resets ${fmt(session.resets_at)}`);
+              lines.push(`- status: ${fmt(usage.status)}, observed ${fmt(usage.observed_at)}`);
+            } else if (stale) {
+              lines.push(`- not measured yet this window: the last reading (${fmt(usage.observed_at)}) predates ${fmt(w.period_start)}, so it is last window's and is not shown.`);
             } else {
-              lines.push('- none observed yet: no `rate_limit_event` has been recorded. Nothing depends on this signal (B114); the USD caps govern alone.');
+              lines.push('- not measured yet: no `rate_limit_event` has been recorded. Nothing DEPENDS on this signal (B114); until one arrives the dollar estimate below is the only bound.');
             }
             lines.push(`- run window: ${fmt(cfg.RUN_WINDOW_START)} → ${fmt(cfg.RUN_WINDOW_END)} UTC; carry leeway OVERRUN_PCT ${fmt(cfg.OVERRUN_PCT)}%`);
             const carry = w.carry || null;
             lines.push(carry
               ? `- carried item: #${fmt(carry.issue)} since ${fmt(carry.since)} — ${fmt(carry.reason)}`
               : '- carried item: none');
+            lines.push('');
+            lines.push('### rough scale (estimated, not billed)');
+            lines.push(`- period_start: ${fmt(w.period_start)}`);
+            lines.push(`- est. api-equivalent: $${fmt(w.spent_usd)} over ${fmt(w.calls)} call(s), against a $${Math.round(Number(cfg.WEEKLY_CAP_USD) * (1 - Number(cfg.RESERVE_PCT) / 100))} backstop ($${fmt(cfg.WEEKLY_CAP_USD)} less ${fmt(cfg.RESERVE_PCT)}% reserve)`);
+            lines.push('- estimated from token counts; nobody bills it, and it is not what runs out.');
+            lines.push(`- rate_limited_until: ${fmt(w.rate_limited_until)}`);
+            lines.push(`- history entries: ${Array.isArray(ledger.history) ? ledger.history.length : '?'}`);
             lines.push('');
             lines.push('### last successful run');
             for (const [k, v] of Object.entries(lastSuccess)) lines.push(`- ${k}: ${v}`);

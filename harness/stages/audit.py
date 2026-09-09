@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from harness import links
 from harness.context import Context
-from harness.errors import HarnessError
+from harness.errors import BudgetExhausted, HarnessError
 from harness.halt import check_halt
 from harness.stages import data_block, load_prompt, run_model
 from harness.store.sqlite import KIND_LABELS, VIA_LABELS
@@ -240,6 +240,18 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
         )
     if not ctx.gh.can_write:
         raise HarnessError("audit opens an issue and there is no write credential")
+
+    # B295: checked HERE, before the clone. `run_model` checks it too and is the last line of
+    # defence, but by then a full fresh clone of the product repository has already been made
+    # for a call that is about to be refused. Every other stage checks at its own entry for the
+    # same reason -- `discover` does it before its GitHub reads "because the refusal is the same
+    # either way and the reads are not free", and B256's no-lens refusal above is before any
+    # read at all. This gate was the one arriving late.
+    from harness import priority
+
+    refused = priority.admit("audit", store=ctx.store, ledger=ctx.ledger, config=ctx.config)
+    if refused:
+        raise BudgetExhausted(refused)
 
     lease = ctx.clones.acquire(_READER, run_id="audit", read_only=True)
     stopped = ""

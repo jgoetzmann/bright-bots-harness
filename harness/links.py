@@ -52,7 +52,11 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
 #: reads; three that make sense where the reader is standing get tried.
 SURFACE_HINTS: dict[str, tuple[str, ...]] = {
     "inbox": ("work <what>", "ask <question>", "status"),
-    "issue": ("go", "split", "status"),
+    # An AUDIT issue is surface `issue` too, and carries no stage label by design -- so `go`
+    # and `split` both answer "no work item" there. `promote` is the one that works, and the
+    # two that do not are still right for a work item, so all three are offered and the reader
+    # picks. Offering only the pair that fails was the worse of the two errors.
+    "issue": ("go", "split", "promote <n>", "status"),
     "product_issue": ("work", "ask <question>", "status"),
     "proposal_pr": ("revise <notes>", "stop", "status"),
     "delivery_pr": ("revise <notes>", "rebase", "stop"),
@@ -241,9 +245,9 @@ def reply_pointer(config: Any, surface: str = "") -> str:
     offered = " · ".join(f"`/harness {h}`" for h in hints)
     line = f"**You can also say:** {offered}"
     if not self_repo:
-        return line + " — several may go in one comment, one per line."
+        return line + " — several may go in one comment, one per line; you get one reply."
     return (
-        line + " — several may go in one comment, one per line.\n"
+        line + " — several may go in one comment, one per line; you get one reply.\n"
         f"[Every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md) · "
         "`/harness-status` works too, if you prefer the hyphen."
     )

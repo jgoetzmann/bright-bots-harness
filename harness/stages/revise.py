@@ -187,7 +187,7 @@ def revise(
     elif entry_state == "needs-human":
         if not explicit:
             raise HarnessError(
-                f"item {item_id} is needs-human; revise runs only on an explicit /harness fix "
+                f"item {item_id} is needs-human; revise runs only on an explicit /harness revise "
                 "from a trusted actor (B137)"
             )
     elif entry_state == "packaged" and nested:
@@ -213,7 +213,8 @@ def revise(
             ctx,
             item_id,
             f"revise cap reached: {cycles} of {cap} cycles used on this delivery; "
-            "a trusted actor's /harness fix restarts the loop",
+            "a trusted actor's /harness revise restarts the loop; say it on the delivery "
+            "pull request or on this issue, either works",
         )
         return None
 

@@ -259,7 +259,11 @@ def test_for_maintainers_names_only_real_verbs():
     # Guard against the vacuous pass: if the page stops naming any verb at all, the subtraction
     # below is empty and this test would go green on a page that had lost its whole point.
     assert len(named) >= 6, f"FOR-MAINTAINERS.md names almost no verbs: {sorted(named)}"
-    unknown = sorted(named - set(VERBS))
+    # An alias is a real word to type, so naming one is not drift -- naming something that is
+    # neither is.
+    from harness.keywords import ALIASES
+
+    unknown = sorted(named - set(VERBS) - set(ALIASES))
     assert unknown == [], f"FOR-MAINTAINERS.md names verbs that do not exist: {unknown}"
 
 

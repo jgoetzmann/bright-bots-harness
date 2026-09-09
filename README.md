@@ -86,7 +86,7 @@ line. **Several may go in one comment, one per line.** These twelve are the whol
 | `split` | Issue here | Decomposes it into at most `MAX_SUBISSUES` sub-issues, in this repository only |
 | `halt` · `resume` | Anywhere | Stops the harness spending anything at all, and lifts it again |
 
-Four older names still parse, to the verb they became: `fix` → `revise`, `reject` → `stop`,
+Six other words are understood, each meaning the verb it became: `fix` → `revise`, `reject` → `stop`,
 `queue` → `go`, `usage` → `status`.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the

@@ -1,13 +1,17 @@
 """Keyword commands and the actor gate (handoff 8, 9.2 - B131-B135, B140, B141)."""
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from harness.errors import GitHubError
 from harness.trust import MAX_LEVEL, is_authorised
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # annotation only; no import-time dependency on ledger.py
     from harness.ledger import Ledger
@@ -33,6 +37,12 @@ VERBS: tuple[str, ...] = (
 #:   usage  -> status   the CLI has always called this `status`; two names for one report was a
 #:                      needless thing to remember.
 #:
+#:   ledger -> status   not an old verb at all: the operator typed `/harness ledger` twice on the
+#:                      live inbox, reaching for the CLI subcommand of that name. `status` is
+#:                      what the CLI would have shown them, so it is what they get.
+#:   help   -> status   the first thing anyone types at something that takes commands. `status`
+#:                      answers, and every reply carries the pointer to the rest.
+#:
 #: Kept as aliases rather than removed: comments already written should not stop working, and a
 #: verb that silently does nothing is the worst failure this surface has.
 ALIASES: dict[str, str] = {
@@ -40,6 +50,8 @@ ALIASES: dict[str, str] = {
     "reject": "stop",
     "queue": "go",
     "usage": "status",
+    "ledger": "status",
+    "help": "status",
 }
 
 #: B270/B272/D60 - the level each verb needs. 3 is the operator, 2 a maintainer, 1 an asker.
@@ -65,6 +77,9 @@ VERB_LEVEL: dict[str, int] = {
     # undo somebody else's decision to stop.
     "halt": 3,
     "resume": 3,
+    # Not a live verb -- an alias with a level of its own. `reject` always meant "end this for
+    # good", which is the half of `stop` that level 2 does not get (see `_act_on_command`).
+    "reject": 3,
 }
 
 #: B283/D62 - appended to a command by the operator to start it now instead of on Monday.
@@ -118,6 +133,9 @@ class Command:
     force: bool = False
     #: The actor's level, so a refusal can say what it would have needed.
     level: int = 0
+    #: The word actually typed, when an alias was used. The issue thread is the log, and a
+    #: log that records `stop` for a comment that said `reject` cannot be read back honestly.
+    typed: str = ""
     #: Something to tell the actor that is NOT part of what they asked for -- a refused
     #: `--force`, say. It rides beside `args` rather than inside it: folding it in made the
     #: refusal notice part of the request, so `/harness work #5 --force` from level 2 stopped
@@ -155,26 +173,47 @@ def resolve(verb: str) -> str:
     return ALIASES.get(lowered, lowered)
 
 
+#: At most this many commands from one comment. Not a limit anybody types into: it is the
+#: blast radius of a paste. Every command posts a reply and some spend, so an unbounded comment
+#: is an unbounded number of writes against GitHub's content-creation limit -- which arrives as
+#: an error on a *later, unrelated* command, after this comment was already marked seen.
+MAX_COMMANDS_PER_COMMENT = 10
+
+#: A fenced block is somebody SHOWING a command, not giving one. This is not hypothetical:
+#: docs/COMMANDS.md ships a three-command block under the words "that is a normal thing to
+#: send", and pasting it to explain the syntax would have run all three.
+_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)|\Z)", re.M | re.S)
+
+
+def strip_fences(body: str) -> str:
+    """`body` with fenced code blocks blanked out, line count preserved."""
+    return _FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), body)
+
+
 def parse_all(body: str) -> list[tuple[str, str]]:
-    """Every `/harness <verb> [args]` line in `body`, in order.
+    """Every command in `body`, in the order typed, as `(resolved verb, args)` pairs.
 
-    One comment may carry several. Asking for a status, an answer and a green light meant three
-    comments and three round trips through a three-hourly sweep, which is a long time to spend on
-    something a person would say in one breath.
-
-    A line whose verb is not a verb is skipped rather than stopping the read: with one command
-    per comment, refusing the whole comment on a typo was a defensible way to avoid acting on a
-    guess. With several, it would throw away the commands that ARE valid because one neighbour
-    was misspelt.
+    Reads every `/harness` line rather than only the first: a person with three things to say
+    should be able to say three things, and under the old rule one unknown verb at the top
+    discarded everything under it.
     """
-    if not isinstance(body, str):
-        return []
-    found: list[tuple[str, str]] = []
-    for match in _COMMAND_RE.finditer(body):
-        verb = resolve(match.group(1))
-        if verb in VERBS:
-            found.append((verb, match.group(2).strip()))
-    return found
+    return [(verb, args) for verb, args, _typed in parse_typed(body)]
+
+
+def parse_typed(body: str) -> list[tuple[str, str, str]]:
+    """`parse_all`, plus the word that was actually typed -- which may be an alias."""
+    out: list[tuple[str, str, str]] = []
+    for match in _COMMAND_RE.finditer(strip_fences(body or "")):
+        typed = match.group(1).lower()
+        verb = resolve(typed)
+        if verb not in VERBS:
+            # Skipped, not fatal. Discarding the whole comment on one typo is what the
+            # first-line-only rule did, and it did it silently.
+            continue
+        out.append((verb, match.group(2).strip(), typed))
+        if len(out) >= MAX_COMMANDS_PER_COMMENT:
+            break
+    return out
 
 
 def parse(body: str) -> tuple[str, str] | None:
@@ -243,16 +282,16 @@ def commands_from(
         return []
     if not authorise(comment, trusted, ledger):
         return []
-    parsed = parse_all(comment.get("body") or "")
+    parsed = parse_typed(comment.get("body") or "")
     if not parsed:
         return []
     ledger.mark_seen(cid)
     actor = str(comment["user"]["login"])
     level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
     return [
-        _one(v, a, surface=surface, number=number, cid=cid, actor=actor, level=level,
+        _one(v, a, typed=t, surface=surface, number=number, cid=cid, actor=actor, level=level,
              ledger=ledger)
-        for v, a in parsed
+        for v, a, t in parsed
     ]
 
 
@@ -260,6 +299,7 @@ def _one(
     verb: str,
     raw_args: str,
     *,
+    typed: str = "",
     surface: str,
     number: int,
     cid: str,
@@ -271,12 +311,16 @@ def _one(
 
     # B270: the verb's own level, checked after parsing because the verb is what says which
     # level is needed. The level-1 gate in `commands_from` keeps a level-0 body unparsed (B273).
-    needed = VERB_LEVEL.get(verb, 3)
+    #
+    # The TYPED word decides, when it has a level of its own. `reject` was level 3 and `stop` is
+    # level 2, so resolving before gating would have handed a terminal verb to every maintainer
+    # -- an authority change nobody asked for, arriving as a side effect of a rename.
+    needed = VERB_LEVEL.get(typed or verb, VERB_LEVEL.get(verb, 3))
     if level < needed:
         ledger.count_denied(actor)
         return Command(
             verb="__denied__",
-            args=f"/harness {verb} needs level {needed}; @{actor} is level {level}",
+            args=f"/harness {typed or verb} needs level {needed}; @{actor} is level {level}",
             surface=surface,
             number=int(number),
             comment_id=cid,
@@ -408,7 +452,17 @@ def sweep(
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))
-    for notification in gh.notifications(since):
+    try:
+        notifications = list(gh.notifications(since))
+    except GitHubError as exc:
+        # The notifications endpoint needs a scope of its own, and I-15 gives the machine PAT
+        # `public_repo` and nothing else -- so a correctly-configured token can be refused here.
+        # Losing the feed costs cold product-issue mentions; letting the refusal out of `sweep`
+        # costs the INBOX TOO, which is the surface people who have read no documentation use.
+        # The inbox is read before this line for exactly that reason, so keep what it found.
+        log.warning("notifications unavailable, inbox only: %s", exc)
+        return commands
+    for notification in notifications:
         target = thread_target(
             notification,
             self_repo=self_repo,
@@ -418,5 +472,7 @@ def sweep(
         if target is None:
             continue
         read(*(target[0], target[1], target[2]))
+    # Advanced only on a feed that actually came back. Moving it after a failure would skip the
+    # window the failed call covered, and those mentions would never be read at all.
     ledger.cursors["notifications_last_seen"] = now_iso
     return commands

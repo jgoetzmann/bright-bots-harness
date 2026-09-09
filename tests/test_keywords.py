@@ -702,3 +702,46 @@ def test_commands_from_gates_each_command_on_its_own_level():
     # asleep, which is the failure this whole surface exists to avoid.
     assert [x.verb for x in got] == ["status", "__denied__"]
     assert "needs level 3" in got[1].args
+
+
+def test_a_refused_notifications_feed_still_delivers_the_inbox():
+    """The notifications endpoint needs a scope of its own, and I-15 gives the machine PAT
+    `public_repo` and nothing else -- so a correctly-configured token is refused here with a 403.
+
+    Found by running the sweep against the live repository: it raised out of `sweep`, and the
+    inbox commands it had ALREADY collected went with it. The inbox is the surface used by people
+    who have read no documentation; losing it because a feed nobody sees was refused is the worse
+    half of the failure by a distance.
+    """
+    from harness.errors import GitHubError
+
+    ledger = fresh_ledger(None)
+    c = comment(login="jgoetzmann", association="OWNER", body="/harness-status", id=99,
+                node_id="IC_inbox99")
+
+    class Refusing(FakeGh):
+        def notifications(self, since):
+            raise GitHubError("github returned 403 ...: Missing the 'notifications' scope.")
+
+    gh = Refusing(comments={(SELF_REPO, 19): [c]})
+    cmds = sweep(gh, ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
+                 upstream_repo=UPSTREAM, inbox_issue=19)
+
+    assert [(x.verb, x.surface, x.number) for x in cmds] == [("status", "inbox", 19)]
+
+
+def test_the_cursor_does_not_advance_over_a_feed_that_never_arrived():
+    """Advancing it would skip the window the failed call covered, and every mention in that
+    window would go unread for good -- a silent, permanent hole rather than a retry."""
+    from harness.errors import GitHubError
+
+    ledger = fresh_ledger(CURSOR)
+
+    class Refusing(FakeGh):
+        def notifications(self, since):
+            raise GitHubError("403")
+
+    sweep(Refusing(), ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
+          upstream_repo=UPSTREAM, inbox_issue=0)
+
+    assert ledger.cursors["notifications_last_seen"] == CURSOR, "the window must be retried"

@@ -60,10 +60,10 @@ Two consequences worth knowing:
   a comment on a fresh issue is never seen at all.
 - **"Up to 3 hours" is a weekday figure.** The sweep's cron is `41 */3 * * 1-5`, so a comment left on
   brightboost after Friday evening waits until Monday morning — around **51 hours** at worst.
-  `/harness usage` prints the next scheduled sweep, so you never have to work it out.
+  `/harness status` prints the next scheduled sweep, so you never have to work it out.
 - **Silence is ambiguous.** A comment from someone outside `trust.txt`, or from someone not invited
   to the repository, is read, counted as denied, and ignored **with no reply**. That looks exactly
-  like the harness being asleep. `/harness usage` from a trusted handle is the quickest way to tell
+  like the harness being asleep. `/harness status` from a trusted handle is the quickest way to tell
   the difference — if it answers, the harness is listening and the problem was your permissions.
 
 ## How it decides what to propose
@@ -114,8 +114,8 @@ There are **twelve**, and the form is either of these at the **start of a line**
 Everything after the verb to the end of that line is the argument. The hyphenated spelling makes a
 command a single token, which is what makes the next part read cleanly.
 
-**Several commands go in one comment, one per line.** They run top to bottom, and each gets its own
-answer:
+**Several commands go in one comment, one per line.** They run top to bottom, and the harness
+answers once, with each answer labelled:
 
 ```
 /harness-status
@@ -123,8 +123,13 @@ answer:
 /harness-work make them keyboard reachable
 ```
 
-That is a normal thing to send. A command that is refused — wrong level, wrong surface — does not
-stop the ones under it.
+That is a normal thing to send. They run top to bottom and **you get one reply**, with each answer
+under the command that asked for it. A command that is refused — wrong level, wrong surface — does
+not stop the ones under it.
+
+Two limits apply, and neither is one you would type into: **at most ten commands from one comment**,
+and **nothing inside a fenced code block is a command** — so quoting the example above to explain it
+to somebody does not run it.
 
 Three things are forgiven, because all three are what people actually type:
 
@@ -153,8 +158,11 @@ A line whose verb is not one of the twelve is skipped, and the other lines still
 | `halt` | stop all spending | 3 |
 | `resume` | lift the halt | 3 |
 
-Four older names still work and mean the verb they became, so comments already written keep working:
-`fix` → `revise`, `reject` → `stop`, `queue` → `go`, `usage` → `status`.
+Six other words are understood and mean the verb they became, so comments already written keep
+working: `fix` → `revise`, `reject` → `stop`, `queue` → `go`, `usage` → `status`. So do
+`ledger` → `status` and `help` → `status`, which are not old verbs at all — they are what people
+reach for. `/harness ledger` was typed twice on the live inbox before anyone noticed it parsed as
+nothing.
 
 **Why four names went away.** Each of them named a distinction the *thread you are standing on*
 had already made. `fix` and `revise` differed only in whether code existed yet — which is exactly
@@ -291,16 +299,24 @@ Rebases onto the product repository's default branch, then re-runs the gates.
 /harness stop we are removing this feature next sprint
 ```
 
-Closes the pull request and moves the item off the queue, freeing the concurrency slot. The branch
-and the evidence stay where they are, and `/harness go` puts it back.
+Closes the pull request and stands the item down, freeing the concurrency slot. On the
+**proposal** pull request this is a refusal at gate 1; on the **delivery** pull request it is an
+abort at gate 2. The thread says which, so there is no second word to remember.
 
-On the **proposal** pull request this is a refusal at gate 1; on the **delivery** pull request it is
-an abort at gate 2. The thread says which, so there is no second word to remember —
-`/harness reject` is the old name for it.
+**How final it is depends on your level**, which is the distinction the old name `reject` carried:
 
-The item lands in `stage:blocked`, not `stage:dropped`: something with a pull request open is
-*stopped for a decision*, not discarded, and `shipped → abandoned` is a transition the state machine
-refuses on purpose.
+| Your level | What happens | Reversible |
+|---|---|---|
+| **2** (maintainer) | `stage:blocked` — parked. The branch and the evidence stay where they are | yes, `/harness go` |
+| **3** (operator) | `stage:dropped` — ended, where the state machine allows it | no |
+
+Level 2 is enough to keep something out of a product repository, which is what a product maintainer
+needs; ending a work item for good stays with the operator. `/harness reject` is the old spelling
+of the level-3 version and still needs level 3.
+
+One state is not a choice: an item with a delivery pull request open cannot be dropped
+(`shipped → abandoned` is refused on purpose), so it parks at whichever level you are — it is
+*stopped for a decision*, not discarded.
 
 #### `go` — proceed with this
 
@@ -313,8 +329,15 @@ Means one thing to say and two things to do, and **where the item already is** d
 - a **suggestion** waiting for a green light becomes approved. When the queue is empty and the week
   has budget, the harness may propose work nobody asked for; it comments saying so and waits. `go`
   is the only thing that releases it — ignoring that comment is a complete answer.
-- an item that was **stopped or blocked** goes back in the queue. This is how you undo a `stop`, or
-  restart something the gates blocked once you have dealt with the cause.
+- an item that was **stopped or blocked** picks up where it left off. If code had already been
+  written it returns to `stage:ready` on the branch it already has; if not, it goes back to
+  `stage:queued`. This is how you undo a `stop`.
+- on the **inbox**, where there is no item to proceed with, it answers with the queue — the same
+  report as `/harness status`.
+
+**`go` is not a way past gate 1.** On an ordinary proposal it says so and changes nothing: merging
+the proposal pull request is what approves that. The green light above applies only to work the
+harness suggested on its own, which is the case nobody can merge on your behalf.
 
 Already approved, or already queued, is a no-op that says so. `/harness queue` is the old name.
 
@@ -397,7 +420,7 @@ access.
 
 | Level | Who | Commands |
 |---|---|---|
-| **3** | operator | everything, including `halt`, `resume` and `--force` |
+| **3** | operator | everything, including `halt`, `resume`, `reject` (the terminal form of `stop`) and `--force` |
 | **2** | maintainer | `work` `go` `audit` `promote` `revise` `rebase` `split` `stop` |
 | **1** | asker | `ask`, `status` |
 | **0** | not in the file | nothing; the comment body is never parsed |

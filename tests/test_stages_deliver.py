@@ -1486,7 +1486,7 @@ def test_b232_the_body_opens_with_what_closes_and_how_to_steer_it(tmp_path):
     )
 
     assert body.index("Closes #633") < body.index("<details>")
-    assert body.index("/harness fix") < body.index("<details>")
+    assert body.index("/harness revise") < body.index("<details>")
     assert body.index("Approve and run") < body.index("<details>")
     assert "noise line" not in body
     assert len(body) < 12000, f"the body is {len(body)} characters"

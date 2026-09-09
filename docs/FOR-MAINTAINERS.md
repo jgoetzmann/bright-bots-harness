@@ -120,9 +120,10 @@ proposals nobody approved: an audit produces a *list*, and you choose which line
 `status` is the one to reach for when nothing seems to be happening — it says whether the harness is
 halted, whether the run window is open, and when the next sweep is.
 
-There are twelve verbs in all, and every reply the harness sends points at the rest of them. Four
-older names — `fix`, `reject`, `queue`, `usage` — still work and mean `revise`, `stop`, `go` and
-`status`.
+There are twelve verbs in all, and every reply the harness sends points at the rest of them. Six
+other words are understood too: `fix`, `reject`, `queue` and `usage` mean `revise`, `stop`, `go`
+and `status`, and so do `ledger` and `help` — if you are not sure, `/harness help` is a real
+thing to type.
 
 ## 6. What you cannot do, and why
 

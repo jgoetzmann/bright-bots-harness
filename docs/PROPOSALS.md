@@ -342,8 +342,8 @@ package that failed the schema.
 
 Put `/harness <verb>` — or `/harness-<verb>` — on its own line in a comment; several may go in one
 comment. The verbs are exactly `work`, `ask`, `status`, `audit`, `promote`, `revise`, `rebase`,
-`stop`, `go`, `split`, `halt`, `resume` (`keywords.VERBS`), plus the four old names in
-`keywords.ALIASES`. A command is honoured only when **both** halves
+`stop`, `go`, `split`, `halt`, `resume` (`keywords.VERBS`), plus the six other words in
+`keywords.ALIASES` (`fix`, `reject`, `queue`, `usage`, `ledger`, `help`). A command is honoured only when **both** halves
 of the actor gate hold: the handle is in `.harness/trust.txt` — currently `jgoetzmann` and
 `BrightBoost-Tech` — **and** GitHub reports the commenter's association with that repository as
 `OWNER`, `MEMBER` or `COLLABORATOR`. Anyone else's comment is read, counted as denied, and ignored.

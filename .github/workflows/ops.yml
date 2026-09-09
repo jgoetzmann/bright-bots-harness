@@ -12,6 +12,55 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  # An ops issue is opened by a failure and, until now, closed by nobody. They accumulated: a
+  # workflow that failed once in August still had an open issue in September, long after the
+  # cause was fixed, and the pile made the real ones harder to see. A green run of the same
+  # workflow is the most reliable evidence its ops issue is stale, and it costs one API call.
+  recovered:
+    name: ops recovered
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - name: Close the ops issue for a workflow that is green again
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const title = `ops: ${run.name} failed`;
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: 'kind:ops', per_page: 100,
+            });
+            const stale = open.filter(i => !i.pull_request && i.title === title);
+            if (stale.length === 0) {
+              core.info(`no open ops issue titled ${JSON.stringify(title)}`);
+              return;
+            }
+
+            for (const issue of stale) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: [
+                  `Closed automatically: **${run.name}** completed successfully.`,
+                  ``,
+                  `- recovering run: ${run.html_url} (event \`${run.event}\`, sha \`${run.head_sha}\`)`,
+                  ``,
+                  `A green run is evidence the cause is gone, not proof it was understood. If this`,
+                  `failure mattered, the diagnosis belongs in a commit or a decision record rather`,
+                  `than an open issue — reopen this one if it recurs, and the next failure opens a`,
+                  `fresh issue in any case.`,
+                ].join('\n'),
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed',
+              });
+              core.info(`closed ops issue #${issue.number}`);
+            }
+
   triage:
     name: ops triage
     if: github.event.workflow_run.conclusion == 'failure'

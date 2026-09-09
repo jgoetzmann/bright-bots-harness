@@ -349,8 +349,14 @@ It lifts **the calendar and nothing else**:
 
 Two things must hold, and **the second is invisible**: your handle must be in
 [`.harness/trust.txt`](../.harness/trust.txt) with a level, **and** GitHub must report you as
-`OWNER`, `MEMBER` or `COLLABORATOR` — which in practice means you have been invited to the
-repository.
+`OWNER`, `MEMBER` or `COLLABORATOR` on **the repository you are commenting on**.
+
+That second half is **per-repository**, which is more useful than it sounds: someone who is a member
+of `Bright-Bots-Initiative` but not of the harness repository can steer work where it lands — `fix`,
+`rebase`, `stop`, `ask` on brightboost issues and delivery pull requests — while the harness's own
+threads (the inbox, proposal pull requests, work items) stay with the people who run it. That is a
+deliberate arrangement, not a misconfiguration, and `harness doctor` reports it as a warning rather
+than a problem.
 
 A comment failing either half is read, counted as denied, and ignored **with no reply**, so it looks
 exactly like the harness being asleep. `harness doctor` names anyone in the trust file who has no

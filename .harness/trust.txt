@@ -15,6 +15,17 @@
 #
 # Changing this file requires a reviewed PR (see .github/CODEOWNERS).
 3 jgoetzmann
+
+# BrightBoost-Tech is level 2 and is deliberately NOT a collaborator here.
+#
+# The association half of the gate is per-repository, so this is not a mistake and does not need
+# fixing: its commands are ignored on THIS repository (the inbox, proposal pull requests, work
+# items) and work on `Bright-Bots-Initiative/brightboost`, where GitHub reports it as a member --
+# `fix`, `rebase`, `stop` and `ask` on product issues and delivery pull requests. That is the
+# intended split: it steers work on the product repository without operating the harness itself.
+#
+# `harness doctor` names it as a warning for exactly this reason, and a warning does not stop the
+# harness. Do not invite it here to silence that line.
 2 BrightBoost-Tech
 
 # TO ADD A MAINTAINER, TWO THINGS. Both, or their comments are read, denied and ignored:

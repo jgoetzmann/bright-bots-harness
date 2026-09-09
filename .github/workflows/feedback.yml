@@ -163,11 +163,32 @@ jobs:
         shell: bash
         run: harness doctor
 
-        # B105: fast-forward only; a diverged fork fails the job here and pushes nothing.
+        # B105: fast-forward only; a diverged fork pushes nothing.
+        #
+        # NOT fatal to the job. A fork that cannot be fast-forwarded stops DELIVERY -- it does
+        # not stop the harness hearing you. When this step failed hard it took `dispatch`, the
+        # keyword sweep, the assigned-issue sweep and the reconciler down with it, none of which
+        # touch the fork, and the sweep is the entire command surface. A stale fork must not
+        # deafen the harness.
+        #
+        # It fails for a structural reason as well as a transient one: under I-15 the PAT has no
+        # `workflow` scope on purpose, so fast-forwarding is refused outright whenever upstream
+        # has touched `.github/workflows/**` since the fork last synced. That is a standing
+        # condition, not a blip, and it must not mean permanent silence.
       - name: harness sync-fork
+        id: syncfork
         if: steps.halt.outputs.halted != 'true'
+        continue-on-error: true
         shell: bash
         run: harness sync-fork
+
+      - name: Note a stale fork
+        if: steps.syncfork.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning title=fork not synced::harness sync-fork failed, so the fork is behind \
+          upstream. Reading routes (sweep, ask, usage) still work; implementing is skipped this \
+          run, because a clone of a stale fork would silently base the work on the wrong commit."
 
         # B121/B122: printed for the record; the sweep and the reconciler act on their own rules.
       - name: harness dispatch
@@ -213,8 +234,11 @@ jobs:
 
         # B147: reconciliation lives at the entry of `harness run` — items in harness:running (and
         # revising/proposing) with no live workflow run for 3 hours go back to their previous label.
+        # Skipped when the fork is stale: `implement` clones the fork at tier 2, so running it
+        # here would base the diff, the gates and the pull request on a commit that is not
+        # upstream's HEAD and report it as though it were (D40).
       - name: Reconcile stale harness:running items (harness run)
-        if: steps.halt.outputs.halted != 'true'
+        if: steps.halt.outputs.halted != 'true' && steps.syncfork.outcome == 'success'
         shell: bash
         run: harness run
 

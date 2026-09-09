@@ -48,6 +48,69 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("resume", "lift a halt"),
 )
 
+#: Roughly how long each verb takes, and what it is doing while you wait.
+#:
+#: Only ever an ORDER OF MAGNITUDE. The point is not accuracy, it is the difference between
+#: "this is thinking" and "this is broken" -- the two look identical from a thread, and the
+#: second is the one people act on. A verb that reads the store answers in seconds; one that
+#: clones the product repository and calls a model does not, and saying so is the whole job.
+VERB_WAIT: dict[str, tuple[str, str]] = {
+    # verb: (how long, what it is doing)
+    "status": ("seconds", "reading the ledger and the queue"),
+    "go": ("seconds", "moving the item"),
+    "stop": ("seconds", "closing the pull request and standing the item down"),
+    "promote": ("seconds", "opening a work item per finding"),
+    "work": ("under a minute", "opening the work item"),
+    "resume": ("seconds", "lifting the halt"),
+    "halt": ("seconds", "recording the halt"),
+    "rebase": ("a few minutes", "rebasing onto the product repository and re-running the gates"),
+    "split": ("a minute or two", "reading the item and deciding how it divides"),
+    "ask": ("a couple of minutes", "cloning the product repository and reading it"),
+    "revise": ("several minutes", "another implementation pass, then the complete gate sequence"),
+    "audit": ("up to twenty minutes", "reading the product repository through your lens"),
+}
+
+#: Above this, an acknowledgement is worth its own comment; at or below it, the answer arrives
+#: about as fast as the acknowledgement would, and posting both is just noise.
+SLOW_WAITS: frozenset[str] = frozenset({
+    "a minute or two", "a few minutes", "a couple of minutes", "several minutes",
+    "up to twenty minutes",
+})
+
+
+def is_slow(verb: str) -> bool:
+    """True when `verb` is worth acknowledging before it answers."""
+    wait, _doing = VERB_WAIT.get(verb, ("", ""))
+    return wait in SLOW_WAITS
+
+
+def acknowledgement(verbs: "Iterable[str]") -> str:
+    """"Working on it", naming each verb and how long it should take. "" when none is slow.
+
+    Returned empty for a comment of fast verbs on purpose: an acknowledgement that lands two
+    seconds before the answer it acknowledges has told the reader nothing and cost them a
+    notification. The eyes reaction is the acknowledgement in that case.
+    """
+    seen: list[str] = []
+    for verb in verbs:
+        if verb not in VERB_WAIT or verb in seen:
+            continue
+        seen.append(verb)
+    if not any(is_slow(v) for v in seen):
+        return ""
+    lines = ["**Working on it.**", ""]
+    for verb in seen:
+        wait, doing = VERB_WAIT[verb]
+        lines.append(f"- `/harness {verb}` — {doing}. About **{wait}**.")
+    lines += [
+        "",
+        "The answer replaces nothing; it arrives as a new comment on this thread. If it does "
+        "not, `/harness status` says whether the harness is halted, whether the run window is "
+        "open, and when the next sweep is.",
+    ]
+    return "\n".join(lines)
+
+
 #: What to offer on each surface, most useful first. A reply listing all twelve is a wall nobody
 #: reads; three that make sense where the reader is standing get tried.
 SURFACE_HINTS: dict[str, tuple[str, ...]] = {

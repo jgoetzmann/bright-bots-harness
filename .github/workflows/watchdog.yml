@@ -1,0 +1,154 @@
+# watchdog.yml — notice when a scheduled run did not happen, and start one. B294.
+# Spends nothing itself: it dispatches feedback.yml, which has its own halt, window and budget
+# checks and refuses on its own terms.
+#
+# The failure this exists for is the quiet one. A run that FAILS files an ops issue and gets
+# retried; a run that never starts does neither, because nothing fired. GitHub drops scheduled
+# runs under load, and disables schedules outright on a repository with no pushes for 60 days.
+# Either way the only symptom is that comments on the product repository go unanswered — which
+# from the outside is indistinguishable from nobody having commented.
+name: watchdog
+
+on:
+  schedule:
+    # Offset from feedback's `41 */3 * * 1-5` in both hour and minute, so a scheduler wedge that
+    # swallows one is less likely to swallow both. It runs at weekends as well, but only so that
+    # Monday's first check is on time — it will not dispatch then. See the weekday gate below.
+    - cron: "17 */4 * * *"
+  workflow_dispatch: {}
+
+env:
+  PYTHONUTF8: "1"
+
+# Not the ledger group: this writes no state, and queueing the watchdog behind the very run it
+# is watching for would make it useless exactly when it is needed.
+concurrency:
+  group: watchdog
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    name: watchdog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write              # read run history; dispatch feedback.yml
+      issues: write               # the ops issue, when it is a pattern rather than a hiccup
+    steps:
+      - name: Start feedback if nothing has swept in too long
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const WORKFLOW = 'feedback.yml';
+
+            // feedback runs every 3h on weekdays. Six hours means at least two consecutive
+            // scheduled runs are missing, which is past anything a delayed queue explains.
+            // Deliberately not tighter: GitHub routinely runs a cron minutes late, and a
+            // watchdog that fires on lateness doubles the load it is watching.
+            const STALE_HOURS = 6;
+            // No scheduled run in half a day, on days when they are scheduled, is not a blip.
+            const DEAD_HOURS = 12;
+
+            const now = new Date();
+            const weekday = now.getUTCDay() >= 1 && now.getUTCDay() <= 5;
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner, repo, workflow_id: WORKFLOW, per_page: 50,
+            }, r => r.data);
+            const startedAt = (r) => new Date(r.run_started_at || r.created_at).getTime();
+            const hoursSince = (t) => (now.getTime() - t) / 3_600_000;
+
+            // Any run that got as far as EXECUTING proves the scheduler and the workflow are
+            // both alive, so a failed run counts here as much as a green one. This is looking
+            // for the ABSENCE of runs; ops.yml owns the failures, and a watchdog that also
+            // re-dispatched on failure would fight it.
+            const alive = runs
+              .filter(r => r.status === 'completed' || r.status === 'in_progress')
+              .map(startedAt)
+              .sort((a, b) => b - a);
+            const ageHours = alive.length ? hoursSince(alive[0]) : Infinity;
+            const ago = alive.length ? `${ageHours.toFixed(1)}h ago` : 'never';
+
+            core.info(`last ${WORKFLOW} run of any kind: ${ago} (threshold ${STALE_HOURS}h)`);
+            core.summary.addRaw(`Last \`${WORKFLOW}\` run started **${ago}**.\n\n`);
+
+            // The cron is `1-5`, so Saturday and Sunday have no scheduled runs to miss. The
+            // watchdog restores the intended cadence; it does not invent a new one. Without
+            // this gate it would sweep all weekend, which is a policy change nobody asked for
+            // and one the docs contradict — a Friday-evening comment is documented as waiting
+            // for Monday.
+            if (!weekday) {
+              core.summary.addRaw('Weekend: `feedback` is not scheduled, so nothing is missing.\n');
+              await core.summary.write();
+              return;
+            }
+            if (ageHours < STALE_HOURS) {
+              core.summary.addRaw('Within threshold; nothing to do.\n');
+              await core.summary.write();
+              return;
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo, workflow_id: WORKFLOW, ref: context.payload.repository.default_branch,
+            });
+            core.warning(`no ${WORKFLOW} run for ${ago}; dispatched one`);
+            core.summary.addRaw('Past the threshold, so one was dispatched.\n\n');
+
+            // One miss is a hiccup, and the dispatch above already fixed it — an issue per
+            // hiccup is how an ops list becomes noise nobody reads. What deserves an issue is
+            // the schedule being DEAD, and the evidence for that is specific: no run triggered
+            // by `schedule` for half a day, on days when they are scheduled. A dispatch of mine
+            // resets the "any run" clock but never this one, so the two cannot be confused.
+            const lastScheduled = runs
+              .filter(r => r.event === 'schedule')
+              .map(startedAt)
+              .sort((a, b) => b - a)[0];
+            const scheduledAgeHours = lastScheduled ? hoursSince(lastScheduled) : Infinity;
+            const scheduledAgo = lastScheduled
+              ? `${scheduledAgeHours.toFixed(1)}h ago` : 'not in the last 50 runs';
+            core.info(`last SCHEDULED run: ${scheduledAgo} (dead threshold ${DEAD_HOURS}h)`);
+            core.summary.addRaw(`Last **scheduled** run: ${scheduledAgo}.\n`);
+            await core.summary.write();
+
+            if (scheduledAgeHours < DEAD_HOURS) {
+              core.info('the schedule fired recently enough; this was a gap, not a stoppage');
+              return;
+            }
+
+            const title = 'ops: scheduled runs are not firing';
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: 'kind:ops', per_page: 100,
+            });
+            const existing = open.find(i => !i.pull_request && i.title === title) || null;
+
+            const body = [
+              `## ${title}`,
+              ``,
+              `No \`${WORKFLOW}\` run triggered by \`schedule\` for **${scheduledAgo}**, on days when`,
+              `it is scheduled every three hours. The watchdog dispatched one just now`,
+              `(last run of any kind before that: ${ago}), so the immediate gap is covered.`,
+              ``,
+              `This is not a failed run — a failed run files its own issue and is retried. This is a`,
+              `run that never started, and GitHub does that for two reasons worth telling apart:`,
+              ``,
+              `- **the scheduler dropped it under load.** Common and self-correcting. The dispatch`,
+              `  above is the whole fix, and this issue can be closed.`,
+              `- **no push for 60 days, so GitHub disabled the schedules.** This does *not* correct`,
+              `  itself: re-enable them on the Actions tab. Any push resets the 60-day clock.`,
+              ``,
+              `While the schedule is down, comments on the **product repository** go unanswered —`,
+              `they are found by polling notifications, not pushed. Comments on the inbox issue are`,
+              `unaffected: they fire \`ack.yml\` and \`feedback.yml\` on the event itself.`,
+              ``,
+              `_Close this once the schedule is running again. The watchdog keeps dispatching`,
+              `meanwhile, and adds a comment here each time it has to._`,
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
+              core.info(`updated ops issue #${existing.number}`);
+            } else {
+              const created = await github.rest.issues.create({ owner, repo, title, body, labels: ['kind:ops'] });
+              core.info(`opened ops issue #${created.data.number}`);
+            }

@@ -221,6 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
 
+    ack = sub.add_parser(
+        "ack", help="say 'working on it' for one comment, before the work starts"
+    )
+    ack.add_argument("--body-file", required=True, help="file holding the comment body")
+    ack.add_argument("--actor", required=True, help="the commenter's login")
+    ack.add_argument("--association", default="", help="GitHub author_association")
+    ack.add_argument("--repo", default="", help="repository the comment is on")
+    ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
+
     sub.add_parser(
         "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
     )
@@ -1981,6 +1990,70 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
     return record, "", True
 
 
+def cmd_ack(args: argparse.Namespace) -> int:
+    """Decide what to say about one comment before any work starts (B293).
+
+    A separate command, and a separate workflow, because of what it is FOR. The sweep is the
+    thing that takes minutes -- checkout, install, doctor, sync-fork, dispatch, then the model
+    call itself -- and for all of those minutes a thread shows nothing at all. Silence and
+    thinking look identical from there, and silence is the one people act on: they comment
+    again, or they conclude the harness is off. This says which it is, in seconds.
+
+    Prints one JSON object: ``{"react": bool, "comment": str}``.
+
+    - ``react`` is "the sweep is going to act on this", which is worth a reaction even when it
+      is not worth a comment.
+    - ``comment`` is the acknowledgement, or "" when everything asked for is fast enough that
+      the answer beats the acknowledgement.
+
+    Both are decided with the SAME parser and the SAME trust gate the sweep uses, rather than a
+    second copy of either: a copy drifts, and the way that surfaces is somebody being told the
+    harness heard them when it did not, on a public repository.
+
+    Never spends, never writes, and never fails the workflow -- exit 0 on every path, because an
+    acknowledgement that can break the run it precedes is a worse bargain than no
+    acknowledgement.
+    """
+    def _say(react: bool = False, comment: str = "") -> int:
+        print(json.dumps({"react": bool(react), "comment": comment}))
+        return EXIT_OK
+
+    try:
+        body = Path(args.body_file).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        LOG.warning("ack: could not read %s: %s", args.body_file, exc)
+        return _say()
+
+    actor = str(args.actor or "").lstrip("@")
+    try:
+        config = _load(args)
+        trusted = trust_mod.load_trust(Path(config.trust_file))
+    except HarnessError as exc:
+        # No config, no trust file, nothing to say. Not an error: `ack` is an optional courtesy
+        # in front of the real thing, and the real thing does its own checking.
+        LOG.warning("ack: %s", exc)
+        return _say()
+
+    # The harness comments on the threads it watches, and every reply it writes carries a
+    # pointer that mentions `/harness`. Without this it would react to its own answers, on every
+    # thread, for ever. Checked first because it is the cheapest and the most embarrassing.
+    machine = discover_stage.machine_account(config)
+    if machine and actor.lower() == str(machine).lstrip("@").lower():
+        return _say()
+
+    # The same gate `keywords.authorise` applies, in the same order: a level in the trust file,
+    # AND an association GitHub vouches for. Acknowledging a comment the sweep will then ignore
+    # is the worst of both -- it tells an untrusted commenter they were heard, in public.
+    if not trust_mod.is_authorised(actor, str(args.association or ""), trusted):
+        return _say()
+
+    verbs = [verb for verb, _args in keywords.parse_all(body)]
+    if not verbs:
+        return _say()
+
+    return _say(react=True, comment=links.acknowledgement(verbs))
+
+
 def cmd_sweep(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
@@ -2370,6 +2443,7 @@ COMMANDS = {
     "revise": cmd_revise,
     "decompose": cmd_decompose,
     "sweep": cmd_sweep,
+    "ack": cmd_ack,
     "ledger": cmd_ledger,
     "relabel": cmd_relabel,
     "sync-fork": cmd_sync_fork,

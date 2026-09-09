@@ -352,3 +352,64 @@ notification cursor over a feed that never arrived — advancing it would skip t
 `harness doctor` reports the missing scope as a warning, so the gap is visible before it is a
 silence. Adding `notifications` to the PAT closes it; without that, cold product-issue mentions are
 the only thing missed.
+
+## D65 — the second answer, and the run that never started
+
+Implemented 2026-09-09 on `feat/instant-ack-and-ops-retries`. Three changes, all about the same
+thing from different angles: **a thread cannot tell thinking from broken, and people act on the
+second reading.**
+
+**B293 — `ack.yml`, an answer within seconds.** A `/harness` comment on the harness repository
+already wakes `feedback.yml` on the event, but that workflow installs the package, runs `doctor`,
+syncs the fork and takes the `harness-ledger` lock — so its first useful output is minutes away, and
+can be much further if an `implement` run holds the lock. For all of those minutes the thread shows
+nothing. Now it shows a 👀 reaction immediately, and — when anything asked for takes more than a
+moment — one short comment naming each verb, what it is doing, and roughly how long.
+
+Four things make it worth having rather than noise:
+
+- **It takes no lock and installs nothing.** Not a first step of `feedback.yml`, because that job's
+  latency is exactly the problem. `harness-ledger` serialises every workflow that writes state, and
+  an acknowledgement that queues behind a twenty-minute implement run is not an acknowledgement. The
+  harness is stdlib-only, so `PYTHONPATH=.` replaces a twenty-second `pip install`.
+- **It reuses the parser and the trust gate**, via a `harness ack` subcommand rather than a script
+  in the workflow. A second copy of either would drift, and the way that surfaces is somebody being
+  told they were heard when they were not — on a public repository. A fenced block, an unknown verb,
+  an untrusted commenter or a wrong `author_association` all produce silence.
+- **Fast verbs get the reaction and no comment.** An acknowledgement that lands two seconds before
+  the answer has told the reader nothing and cost them a notification.
+- **It cannot spend and cannot fail the run.** Tier 0, fake backend, no secret beyond
+  `GITHUB_TOKEN`, and exit 0 on every path including a missing file.
+
+The comment body reaches Python through the environment, never through `${{ }}` inside a `run:`
+block: that substitution happens before bash sees the line, so a backtick in a stranger's comment
+would otherwise be a command on the runner.
+
+**B294 — `watchdog.yml`, for the run that never started.** A run that *fails* files a `kind:ops`
+issue and is retried. A run that never *starts* does neither, because nothing fired, and the only
+symptom is that comments on the product repository go unanswered — indistinguishable from nobody
+having commented. Every four hours, on a weekday, if no `feedback` run of any kind has started in
+six, the watchdog dispatches one.
+
+Three decisions inside it are worth the words:
+
+- **A failed run counts as proof of life.** It measures the *absence* of runs. `ops.yml` owns
+  failures, and two things re-dispatching the same workflow would fight.
+- **It does not sweep at weekends.** `feedback`'s cron is `1-5` deliberately and the documentation
+  says a Friday-evening comment waits for Monday. A watchdog that dispatched all weekend would
+  change that policy while looking like a bug fix — which is how policy changes get in.
+- **An issue only for a stoppage, not a gap.** One miss is a hiccup the dispatch already fixed, and
+  an issue per hiccup is how an ops list becomes noise nobody reads. The evidence for a stoppage is
+  different and specific: no run triggered by `schedule` for twelve hours. The watchdog's own
+  dispatches reset the first clock and never that one. The issue names both causes, because only one
+  self-corrects — GitHub disables schedules after 60 days without a push, and waiting for that to
+  recover is waiting forever.
+
+**Retries go from one to three attempts.** One was not enough: the failures that actually happen
+here are network and registry blips, and those cluster, so a single retry lands inside the same bad
+minute often enough to be no retry at all. The cap now counts `run_attempt` rather than a `retried`
+label on the ops issue — the label capped retries *per issue*, so one transient failure in August
+spent the retry for every later failure of that workflow until a human closed the issue, and nobody
+did. What did not change: a failure inside a model call or a gate still never retries at all. Those
+cost money and fail for reasons a retry cannot fix, so more attempts would only buy more spend on
+the same wrong answer.

@@ -451,7 +451,9 @@ from harness import verify_pin as verify_pin_mod
 
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 SPENDING_WORKFLOWS = ("discover.yml", "implement.yml", "feedback.yml")
-ALL_WORKFLOWS = (
+#: The six the Delivery 2 handoff froze. Still every workflow that can spend, hold the ledger
+#: lock, or run on a schedule that matters -- which is what D2-R1.5 was actually protecting.
+HANDOFF_WORKFLOWS = (
     "discover.yml",
     "implement.yml",
     "feedback.yml",
@@ -459,6 +461,14 @@ ALL_WORKFLOWS = (
     "heartbeat.yml",
     "selftest.yml",
 )
+#: Added since, each by a numbered decision. A workflow file appearing with no entry here is the
+#: thing D2-R1.5 exists to catch: something that runs on this repository's schedule and secrets
+#: that nobody wrote down a reason for.
+ADDED_WORKFLOWS = {
+    "ack.yml": "D65/B293 — say 'working on it' within seconds; spends nothing, takes no lock",
+    "watchdog.yml": "D65/B294 — dispatch feedback when a scheduled run never started",
+}
+ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # RUN-DECISIONS-D2 §15 / handoff §7.1 — the frozen crons. ops.yml and selftest.yml have none.
 # Delivery 3 replaced implement.yml's single every-6h cron with the three that bound the
 # Mon 08:00 -> Tue 20:00 UTC run window (RUN-DECISIONS-D3 "Workflows"), so each entry is the
@@ -468,6 +478,10 @@ FROZEN_CRONS = {
     "implement.yml": ["17 8,14,20 * * 1", "17 2,8,14 * * 2", "23 20 * * 2"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
+    # D65/B294. Offset from feedback's in BOTH fields on purpose: a watchdog sharing a cron
+    # expression with the thing it watches is watching itself fail. `ack.yml` has none -- it is
+    # event-driven only, which is the whole reason it can be fast.
+    "watchdog.yml": ["17 */4 * * *"],
 }
 ROUND_MINUTES = (0, 15, 30, 45)
 
@@ -1466,12 +1480,41 @@ def test_d2_r1_4_the_three_new_stages_exist():
     assert present == ["decompose.py", "deliver.py", "revise.py"]
 
 
-def test_d2_r1_5_exactly_six_workflow_files_with_the_specified_names():
-    """D2-R1.5 (handoff §3, §7): six YAML files, exactly the named ones."""
+def test_d2_r1_5_the_workflow_set_is_the_handoffs_six_plus_only_what_was_written_down():
+    """D2-R1.5 (handoff §3, §7), widened once and deliberately.
+
+    The rule was "exactly these six". What it was protecting is not the number: it is that
+    nothing runs on this repository's schedule and secrets without a written reason. So the six
+    are still required and none may go, and anything else has to be named in `ADDED_WORKFLOWS`
+    with the decision that added it. An unexplained file still fails, which is the whole point.
+    """
     assert WORKFLOWS_DIR.is_dir(), ".github/workflows/ is required"
     found = sorted(p.name for p in WORKFLOWS_DIR.glob("*.yml"))
-    assert found == sorted(ALL_WORKFLOWS), f"workflow set differs from handoff §7: {found}"
-    assert list(WORKFLOWS_DIR.glob("*.yaml")) == [], "no .yaml files beside the six .yml"
+
+    missing = sorted(set(HANDOFF_WORKFLOWS) - set(found))
+    assert missing == [], f"a workflow the handoff froze is gone: {missing}"
+
+    unexplained = sorted(set(found) - set(HANDOFF_WORKFLOWS) - set(ADDED_WORKFLOWS))
+    assert unexplained == [], (
+        f"workflow files with no decision behind them: {unexplained}. Add an ADDED_WORKFLOWS "
+        "entry naming the decision, or delete the file."
+    )
+    assert list(WORKFLOWS_DIR.glob("*.yaml")) == [], "no .yaml files beside the .yml"
+
+
+def test_every_added_workflow_cites_a_decision_and_the_decision_exists():
+    """The entry is only worth having if it points somewhere. A citation to a decision nobody
+    wrote is the same as no reason at all, just harder to notice."""
+    import re
+
+    decisions = (REPO_ROOT / "DECISIONS.md").read_text(encoding="utf-8")
+    for name, reason in ADDED_WORKFLOWS.items():
+        assert (WORKFLOWS_DIR / name).is_file(), f"{name} is listed but absent"
+        found = re.match(r"(D\d+)/(B\d+)", reason)
+        assert found, f"{name}: the reason must open with a D-number and a B-number"
+        assert f"## {found.group(1)} " in decisions, (
+            f"{name} cites {found.group(1)}, which DECISIONS.md does not carry"
+        )
 
 
 def test_d2_r1_6_governance_files_exist():

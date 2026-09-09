@@ -574,3 +574,26 @@ a `harness doctor` failure naming the key, never a silently different budget.
 Three things these knobs deliberately cannot do: make the harness merge anything, move a gate, or
 let it spend past `WEEKLY_CAP_USD` — the USD cap and the reserve still apply underneath, and a usage
 stop never removes them.
+
+## When a scheduled run never happens
+
+A run that **fails** files a `kind:ops` issue and is retried automatically — up to three attempts,
+for transient causes only, and never for a failure inside a model call or a gate (those cost money
+and fail for reasons a retry cannot fix). A run that **never starts** does neither, because nothing
+fired, and the only symptom is that comments on the product repository go unanswered — which looks
+exactly like nobody having commented.
+
+`watchdog.yml` covers that. It runs every four hours, and on a weekday, if no `feedback` run of any
+kind has started in six hours, it dispatches one. Two causes, and only one self-corrects:
+
+| Cause | What you see | What to do |
+|---|---|---|
+| GitHub dropped the cron under load | one dispatch, no issue | nothing; it is already fixed |
+| No push for 60 days, so GitHub disabled the schedules | a `kind:ops` issue titled **scheduled runs are not firing** | re-enable them on the Actions tab; any push resets the 60-day clock |
+
+The watchdog does **not** react to failures — `ops.yml` owns those, and two things re-running the
+same workflow would fight. It measures the absence of runs, so a failed run counts as proof of life.
+
+It does not sweep at weekends either. `feedback`'s cron is `1-5` on purpose and the documented
+behaviour is that a Friday-evening comment waits for Monday; a watchdog that dispatched all weekend
+would change that policy while looking like a bug fix.

@@ -1,0 +1,148 @@
+# ack.yml — say "working on it" within seconds of a /harness comment, before the work starts.
+# Spends nothing: no model call, no clone, no secret beyond GITHUB_TOKEN. B293.
+#
+# Why this is its own workflow rather than a first step of feedback.yml: it has to be FAST, and
+# feedback.yml cannot be. That one installs the package, runs doctor, syncs the fork and takes a
+# concurrency lock shared with every other spending workflow — so it can sit queued behind an
+# implement run for many minutes before its first step executes. An acknowledgement that waits
+# for a lock is not an acknowledgement. This one takes no lock, installs nothing, and reads only
+# the checked-out source.
+name: ack
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+# Deliberately NOT `group: harness-ledger`. This job writes no state, so it has no business
+# queueing behind the workflows that do — which is the whole point of it existing separately.
+# Keyed per comment so two comments never serialise against each other either.
+concurrency:
+  group: ack-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  ack:
+    name: ack
+    # A cost filter on runner minutes, not a security gate: trust (B131) and parsing (B133)
+    # happen inside `harness ack`, using the same code the sweep uses, so the two cannot drift
+    # into disagreeing about who is allowed to say what.
+    #
+    # The machine account is NOT excluded here, on purpose — it is an ordinary user rather than
+    # a `Bot` type, so this expression cannot see it. `harness ack` refuses it by login, which
+    # is the check that works. It matters: every reply the harness writes carries a pointer
+    # mentioning `/harness`, so without that refusal it would react to its own answers for ever.
+    if: contains(github.event.comment.body, '/harness')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write                # the acknowledgement comment and the eyes reaction
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Not installed: the harness is stdlib-only, so PYTHONPATH is enough and a pip step is
+      # ~20s this job does not have to spend. The .env is the example file with the two
+      # identities filled in — `ack` reads SELF_REPO, TRUST_FILE and the machine account and
+      # nothing else, and can neither authenticate nor spend at tier 0.
+      - name: Write a read-only .env
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          over = {
+              "BACKEND": "fake",
+              "PERMISSION_TIER": "0",
+              "STORE_BACKEND": "sqlite",
+              "SELF_REPO": "${{ github.repository }}",
+              "TRUST_FILE": ".harness/trust.txt",
+          }
+          out = []
+          for line in pathlib.Path(".env.example").read_text(encoding="utf-8").splitlines():
+              key = line.split("=", 1)[0].strip()
+              out.append(f"{key}={over.pop(key)}" if key in over else line)
+          out += [f"{k}={v}" for k, v in over.items()]
+          pathlib.Path(".env").write_text("\n".join(out) + "\n", encoding="utf-8")
+          PY
+
+      # Written to a file rather than interpolated into a shell command: a comment body is
+      # untrusted text on a public repository, and `${{ }}` is substituted before bash ever sees
+      # the line — which is how a backtick in somebody's comment becomes a command on the
+      # runner. The body reaches python through the environment, never through a shell.
+      - name: Capture the comment body
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          python -c 'import os,pathlib; pathlib.Path("comment.txt").write_text(os.environ["COMMENT_BODY"], encoding="utf-8")'
+
+      # Two decisions, both made by the harness rather than by this file: whether the sweep is
+      # going to act at all (worth a reaction), and whether it will take long enough to be worth
+      # a comment as well. Every failure mode here ends in "say nothing" — never in a red run on
+      # somebody's thread — so the call cannot fail the step and the parse has a `{}` fallback.
+      - name: Decide what to say
+        id: ack
+        shell: bash
+        env:
+          PYTHONPATH: .
+          ACTOR: ${{ github.event.comment.user.login }}
+          ASSOCIATION: ${{ github.event.comment.author_association }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          python -m harness ack --body-file comment.txt --actor "$ACTOR" --association "$ASSOCIATION" --repo "${{ github.repository }}" --number "$NUMBER" > ack.json || true
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib
+          try:
+              d = json.loads(pathlib.Path("ack.json").read_text(encoding="utf-8") or "{}")
+          except Exception:
+              d = {}
+          comment = str(d.get("comment") or "")
+          pathlib.Path("ack.md").write_text(comment, encoding="utf-8")
+          print("react=" + ("true" if d.get("react") else "false"))
+          print("say=" + ("true" if comment.strip() else "false"))
+          PY
+
+      # The reaction goes on whenever the harness is going to act at all, including for the fast
+      # verbs that get no comment. It is the cheapest possible "heard you" and costs the thread
+      # nothing — no notification, no scrollback. `continue-on-error` because a reaction that
+      # fails must not turn somebody's comment into a red X.
+      - name: React
+        if: steps.ack.outputs.react == 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const id = context.payload.comment.id;
+            const isReview = context.eventName === 'pull_request_review_comment';
+            const fn = isReview
+              ? github.rest.reactions.createForPullRequestReviewComment
+              : github.rest.reactions.createForIssueComment;
+            await fn({ owner, repo, comment_id: id, content: 'eyes' });
+
+      - name: Say it
+        if: steps.ack.outputs.say == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const number = context.payload.issue?.number ?? context.payload.pull_request?.number;
+            if (!number) { core.info('no issue or pull request number'); return; }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: number,
+              body: fs.readFileSync('ack.md', 'utf8').trim(),
+            });

@@ -128,8 +128,52 @@ jobs:
             }
 
             // --- classification (B146) ---------------------------------------------------
-            // Never retry a failure inside a model call or a gate: those step names carry run/revise/propose/gate.
-            const modelOrGate = /run|revise|propose|gate/i.test(failingStep);
+            // An ALLOW-LIST, and the difference matters more than it looks.
+            //
+            // `reRunWorkflowRunFailedJobs` re-runs the whole JOB, and all three spending
+            // workflows are a single job. So "did the failing STEP spend?" is the wrong
+            // question -- the right one is "had the job spent anything by the time it failed?",
+            // because a re-run starts at the top and does it all again.
+            //
+            // The step that makes a run durable, `Commit state/ledger.json`, runs AFTER the
+            // spend and matches no model-or-gate pattern. A denial list let it through: a push
+            // to `harness-state` losing its connection meant a retry that reloaded the
+            // PRE-RUN ledger, found the same comment unseen (B135's guard lives in
+            // `seen_comment_ids`, which only reaches the branch through that push), and paid
+            // for the same model call a second time -- invisibly to WEEKLY_CAP_USD, because the
+            // ledger recording the first attempt was exactly what failed to save.
+            //
+            // So: retry only steps known to run before anything is spent. Anything else, named
+            // or not, is left for a human. A step added later is not retried until somebody
+            // decides it is safe, which is the right default for a workflow that spends money.
+            //
+            // This is B146 made stronger, not replaced. B146's rule was "never retry a failure
+            // inside a model call or a gate" -- a red gate is information, not a transient, and
+            // `revise` and `propose` fail for reasons a retry cannot fix. Everything that rule
+            // refused, this refuses; what it adds is everything that runs AFTER those, which the
+            // old word list could not see.
+            // Every one of these is a real step name from discover.yml, implement.yml and
+            // feedback.yml, and every step in those three files is classified one way or the
+            // other by a test -- so a step added later fails the suite until somebody decides
+            // which side it is on, rather than defaulting to "retry a job that spends".
+            const RETRYABLE_STEPS = [
+              'HALT check (.harness/HALT on the default branch)',
+              'Checkout',
+              'Load state/ledger.json from harness-state',
+              'Set up Python 3.13',
+              'Set up Node',
+              'Install harness and the claude CLI',
+              'Write .env from .env.example and repository configuration',
+              'harness doctor',
+              'harness sync-fork',
+              'Note a stale fork',
+              'Approve merged proposals (push to proposals/**)',
+              'harness dispatch',
+            ];
+            const preSpend = RETRYABLE_STEPS.includes(failingStep);
+            // Kept under its old name because the message below reads better for the case it
+            // actually describes, which is still the commonest reason a step is not retryable.
+            const modelOrGate = !preSpend;
             const transientRe = new RegExp([
               'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'socket hang up',
               'npm ERR! (network|fetch|ERR_SOCKET|E5\\d\\d)', 'registry\\.npmjs\\.org.*\\b5\\d\\d\\b',
@@ -150,13 +194,16 @@ jobs:
             // D4/B264: `kind:ops` is the D4 name, and its colour and description match LABEL_SPECS
             // so `harness init --labels` and this workflow cannot disagree about it.
             await ensureLabel('kind:ops', 'e11d21', 'a failed run');
+            // `ensureLabel` only CREATES a missing label, so a description changed here never
+            // reaches a label that already exists. Left accurate for a fresh repository; the
+            // live one carries the old wording and the issue body is the authority anyway.
             await ensureLabel('retried', 'fbca04', 'harness: automatically retried at least once');
             const open = await github.paginate(github.rest.issues.listForRepo, {
               owner, repo, state: 'open', labels: 'kind:ops', per_page: 100,
             });
             let issue = open.find(i => !i.pull_request && i.title === title) || null;
-            // Kept as a MARKER, not a gate: it says "this has been retried at least once" to
-            // anybody reading the issue list. The cap is `run_attempt` above.
+            // A MARKER, not a gate: it says "this has been retried at least once" to anybody
+            // scanning the issue list. The cap itself is `run_attempt` above.
             const alreadyRetried = !!(issue && issue.labels.some(l => (l.name || l) === 'retried'));
 
             const willRetry = transient && attempt < MAX_ATTEMPTS;
@@ -167,7 +214,7 @@ jobs:
             } else if (transient) {
               action = `transient failure on attempt ${attempt}: ${MAX_ATTEMPTS} attempts is the cap; left for a human.`;
             } else if (modelOrGate) {
-              action = `failure inside "${failingStep}" (a model call or a gate): information, not a transient; left for a human (B146).`;
+              action = `failure inside "${failingStep}", which is not on the list of steps known to run before anything is spent: a re-run would redo the whole job, so this is left for a human (B146).`;
             } else {
               action = 'not classified as transient: left for a human.';
             }
@@ -179,7 +226,8 @@ jobs:
               `- failing job: ${failedJob ? `${failedJob.name} (${failedJob.html_url})` : '(none identified)'}`,
               `- failing step: ${failingStep}`,
               `- classification: ${transient ? 'transient' : 'not transient'}`,
-              `- attempts: ${attempt} of ${MAX_ATTEMPTS}`,
+              `- failing step runs before any spend: ${preSpend ? 'yes' : 'no'}`,
+              `- attempts: ${attempt} of ${MAX_ATTEMPTS}${alreadyRetried ? ' (this issue has seen a retry before)' : ''}`,
               `- action: ${action}`,
               ``,
               `<details><summary>last 50 log lines (redacted)</summary>`,

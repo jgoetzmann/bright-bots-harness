@@ -1804,12 +1804,35 @@ def test_b145_ops_listens_to_completed_runs_of_the_three_spending_workflows():
         assert re.search(workflow, text, re.I), f"ops.yml must watch {workflow} (B145)"
 
 
-def test_b146_ops_names_the_step_kinds_it_never_retries():
-    """B146 (handoff §11.2, D2-R7.9): the retry exclusion list names revise, propose and gate
-    steps — a red gate is information, not a transient."""
+def test_b146_ops_never_retries_a_step_that_could_have_spent():
+    """B146 (handoff §11.2, D2-R7.9): a red gate is information, not a transient.
+
+    D65 replaced the `/run|revise|propose|gate/i` denial list with an allow-list, which is the
+    same rule made stronger: `reRunWorkflowRunFailedJobs` re-runs the whole JOB, so what matters
+    is not whether the failing step spent but whether the job had spent by the time it failed.
+    `Commit state/ledger.json` is the case the words missed — it runs after the spend, matches
+    none of them, and a retry there reloads the pre-run ledger and pays for the same model call
+    twice. So this asserts the property rather than the vocabulary.
+    """
     text = _d2_workflow("ops.yml")
-    for word in ("revise", "propose", "gate"):
-        assert re.search(word, text, re.I), f"ops.yml never-retry rule must name {word!r} (B146)"
+    allow = text.split("RETRYABLE_STEPS = [")[1].split("];")[0]
+
+    assert "const preSpend = RETRYABLE_STEPS.includes(failingStep);" in text, (
+        "the allow-list must be the thing that decides, not merely present"
+    )
+    # Every step that runs a model call, a gate, or anything after the spend.
+    for step in (
+        "Discover and propose",
+        "Run planned items",
+        "Sweep keywords",
+        "Reconcile stale",
+        "Commit state/ledger.json",
+        "Upload run artifacts",
+    ):
+        assert step not in allow, f"ops.yml would retry a job that had already spent: {step!r}"
+    # And B146's own words are still in the file, so the rule stays findable by its name.
+    for word in ("revise", "propose", "gate", "spend"):
+        assert re.search(word, text, re.I), f"ops.yml must still name {word!r} (B146)"
 
 
 def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():

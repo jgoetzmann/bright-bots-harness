@@ -443,3 +443,60 @@ template and never touches `links`. `ack.yml` posts through `github-script` rath
 `FakeGh.comment` marks too. A fake that did not would let the marker be deleted with a green
 suite, which is the failure mode this repository keeps finding.
 
+### What the adversarial pass on D65 found
+
+Two independent reviews. Eight things, and the two worst were mine to have caught.
+
+**The retry raise could have paid for a model call twice.** `reRunWorkflowRunFailedJobs` re-runs
+the whole **job**, and all three spending workflows are one job — so "did the failing *step*
+spend?" was the wrong question. `Commit state/ledger.json` runs *after* the spend and matches no
+model-or-gate pattern, so a denial list let it through: a lost push to `harness-state` meant a
+retry that reloaded the **pre-run** ledger, found the same comment unseen (B135's guard lives in
+`seen_comment_ids`, which reaches the branch only through that push), and paid for the same model
+call again — invisibly to `WEEKLY_CAP_USD`, because the ledger recording the first attempt was
+exactly what failed to save. Raising the cap from one to three would have made it twice.
+
+Now an **allow-list** of steps known to run before anything is spent, drawn from the real step
+names, with a test asserting that every step of all three workflows is classified one way or the
+other. A step added later fails the suite until somebody decides, rather than defaulting to
+"re-run a job that spends".
+
+**A comment-driven workflow checked out the pull request's code.** On
+`pull_request_review_comment` GitHub sets `GITHUB_REF` to `refs/pull/N/merge`, so a bare
+`actions/checkout` lands the *pull request's* tree — and both `ack.yml` and (pre-existing on main)
+`feedback.yml` then run that tree's `harness/` code. On a public repository that is a stranger's
+Python on the runner, and in `feedback.yml` it is a stranger's Python beside the machine account's
+PAT. Both now pin `ref` to the default branch. This one was live before this branch existed.
+
+The rest:
+
+- **A skipped run read as proof of life.** `status: completed` includes a run whose only job was
+  skipped, and `feedback.yml` creates one for *every* comment on the repository. So any comment
+  traffic inside a six-hour window convinced the watchdog the schedule was fine — precisely when
+  somebody is looking at it because it is not. Worse, the dead-schedule check sat *behind* that
+  gate, so it never ran. It is asked on every tick now, and skipped, cancelled, stale and
+  startup-failure runs no longer count.
+- **A queued dispatch was invisible**, so the watchdog would dispatch over its own pending run,
+  cancel it, and then read the cancelled corpse as success — keeping the sweep it was trying to
+  cause from ever running.
+- **`DEAD_HOURS` did not know about the weekend.** Friday 21:41 to Monday 00:41 is fifty-one hours
+  with nothing scheduled in them, so a twelve-hour threshold filed a false stoppage on any Monday
+  where the 00:41 run was late. Counted in weekday *slots* now.
+- **A quote-reply is a person, not the harness.** GitHub's quote-reply copies the source comment's
+  raw markdown, HTML comments included — so the marker introduced above dropped the most natural
+  way to answer the harness. The quoted form (`> <!-- ... -->`) is what tells them apart.
+- **`ack` promised work a halted harness will not do**, and offered `/harness status` as the way to
+  find out, which the same halt refuses. It checks both switches now and says which one is on.
+- **`ack` gated on membership, not on the verb's level**, so a level-1 asker would have been
+  promised twenty minutes of audit and then denied it in public.
+- **The per-comment concurrency key throttled nothing** — unique every time, so sixty comments
+  meant sixty parallel jobs, filling the account's allowance and queueing the spending workflows
+  behind the acknowledgement mechanism. Keyed per commenter now.
+- **`Say it` could turn somebody's comment red.** `createComment` 403s on a locked issue, a fork
+  pull request's read-only token, and the secondary content-creation limit.
+
+And one claim withdrawn: the watchdog **cannot** report GitHub's 60-day disablement, because that
+rule disables every schedule on the repository including the watchdog itself. The documentation
+said it would. The signal that actually survives is the weekly heartbeat comment going missing,
+which is what B144 built it for.
+

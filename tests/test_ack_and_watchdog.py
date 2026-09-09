@@ -115,7 +115,8 @@ def test_the_acknowledgement_says_the_answer_is_a_separate_comment():
 # --------------------------------------------------------------------------------------
 
 
-def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER") -> dict:
+def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER",
+             trust="3 jgoetzmann\n2 nathan\n") -> dict:
     """`harness ack` through the CLI the workflow actually calls, as the dict it prints."""
     import json
 
@@ -124,7 +125,7 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
     body_file = tmp_path / "comment.txt"
     body_file.write_text(body, encoding="utf-8")
     code = main([
-        "--config", str(_env(tmp_path)), "ack",
+        "--config", str(_env(tmp_path, trust=trust)), "ack",
         "--body-file", str(body_file), "--actor", actor, "--association", association,
     ])
     assert code == 0, "ack must never fail the run it precedes"
@@ -135,15 +136,15 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
     return json.loads(out)
 
 
-def _env(tmp_path) -> Path:
-    trust = tmp_path / "trust.txt"
-    trust.write_text("3 jgoetzmann\n2 nathan\n", encoding="utf-8")
+def _env(tmp_path, trust="3 jgoetzmann\n2 nathan\n") -> Path:
+    trust_file = tmp_path / "trust.txt"
+    trust_file.write_text(trust, encoding="utf-8")
     src = (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     over = {
         "BACKEND": "fake",
         "PERMISSION_TIER": "0",
         "STORE_BACKEND": "sqlite",
-        "TRUST_FILE": str(trust),
+        "TRUST_FILE": str(trust_file),
         "DB_PATH": str(tmp_path / "h.db"),
         "RUNS_DIR": str(tmp_path / "runs"),
         "PACKAGES_DIR": str(tmp_path / "pkgs"),
@@ -251,7 +252,17 @@ def test_ack_does_not_share_the_ledger_lock():
     groups = re.findall(r"^  group: (.+)$", text, re.M)
     assert groups, "ack.yml declares no concurrency group at all"
     assert "harness-ledger" not in groups
-    assert groups == ["ack-${{ github.event.comment.id }}"]
+
+
+def test_the_ack_concurrency_key_is_a_throttle_rather_than_a_formality():
+    """Keyed per COMMENT the key is unique every time, so the group blocks nothing: sixty
+    comments become sixty parallel jobs, which fills the account's concurrent-job allowance and
+    queues the spending workflows behind an acknowledgement mechanism. Per commenter, one
+    person's comments serialise and nobody else is affected."""
+    group = re.findall(r"^  group: (.+)$", _wf("ack.yml"), re.M)[0]
+
+    assert "github.event.comment.id" not in group, "a per-comment key throttles nothing"
+    assert "github.event.comment.user.login" in group
 
 
 def test_ack_never_interpolates_the_comment_body_into_a_shell():
@@ -325,8 +336,8 @@ def test_the_watchdog_does_not_sweep_at_weekends():
     would look like a bug fix, which is how policy changes get in."""
     text = _wf("watchdog.yml")
 
-    assert "getUTCDay() >= 1 && now.getUTCDay() <= 5" in text
-    assert "if (!weekday)" in text
+    assert "d.getUTCDay() >= 1 && d.getUTCDay() <= 5" in text
+    assert "if (!weekday(now))" in text
 
 
 def test_the_watchdog_treats_a_failed_run_as_proof_of_life():
@@ -334,10 +345,46 @@ def test_the_watchdog_treats_a_failed_run_as_proof_of_life():
     re-dispatched on failure would fight it — each re-running what the other just started."""
     text = _wf("watchdog.yml")
 
-    assert "r.status === 'completed' || r.status === 'in_progress'" in text
     live = [ln for ln in text.splitlines()
             if "conclusion === 'failure'" in ln and not ln.lstrip().startswith("//")]
     assert live == [], f"the watchdog must not react to failures; ops.yml owns those: {live}"
+
+
+def test_a_skipped_run_is_not_proof_of_life():
+    """`status: completed` is also true of a run whose only job was skipped -- and feedback.yml
+    creates one of those for EVERY comment on the repository, including every reply the harness
+    writes. Counting them meant any comment traffic in a six-hour window silently convinced the
+    watchdog the schedule was fine, which is precisely when somebody is looking at it because it
+    is not."""
+    text = _wf("watchdog.yml")
+
+    assert "'skipped'" in text and "DEAD_CONCLUSIONS" in text
+    for dead in ("skipped", "cancelled", "stale", "startup_failure"):
+        assert f"'{dead}'" in text, f"a {dead} run reads as a run that did something"
+
+
+def test_a_queued_dispatch_stops_the_watchdog_dispatching_again():
+    """A dispatch can sit `queued` for hours behind the shared `harness-ledger` lock. Dispatching
+    over it cancels it and starts the clock again, so the watchdog would keep the sweep it is
+    trying to cause from ever running -- and the cancelled corpses would then read as proof it
+    had worked."""
+    text = _wf("watchdog.yml")
+
+    assert "'queued'" in text and "somethingPending" in text
+    assert "} else if (somethingPending) {" in text
+
+
+def test_the_dead_schedule_check_is_not_behind_the_staleness_check():
+    """The one failure this workflow exists for was the one it could not see: a person notices
+    nothing is answering and comments, which leaves a run behind, which makes the staleness gate
+    return early -- taking the dead-schedule check with it."""
+    text = _wf("watchdog.yml")
+
+    dead_at = text.index("const lastScheduled")
+    dispatch_at = text.index("createWorkflowDispatch")
+    assert dead_at < dispatch_at, (
+        "the schedule check must be asked on every tick, before any early return"
+    )
 
 
 def test_the_watchdog_files_an_issue_on_a_dead_schedule_not_a_late_one():
@@ -348,8 +395,10 @@ def test_the_watchdog_files_an_issue_on_a_dead_schedule_not_a_late_one():
     text = _wf("watchdog.yml")
 
     assert "r.event === 'schedule'" in text
-    assert "DEAD_HOURS" in text
-    assert "scheduledAgeHours < DEAD_HOURS" in text
+    # Counted in SLOTS, not hours. Friday 21:41 to Monday 00:41 is fifty-one hours with nothing
+    # scheduled in them, so an hours-based threshold files a false stoppage every Monday.
+    assert "DEAD_SLOTS" in text and "missedSlots" in text
+    assert "missed < DEAD_SLOTS" in text
 
 
 def test_the_watchdog_names_the_sixty_day_rule():
@@ -389,18 +438,68 @@ def test_the_retry_cap_is_counted_per_run_not_per_issue():
 
     gates = [ln for ln in text.splitlines()
              if "alreadyRetried" in ln and not ln.lstrip().startswith("//")
-             and "const alreadyRetried" not in ln]
+             and "const alreadyRetried" not in ln
+             and "`- attempts:" not in ln]  # the issue body may still REPORT it
     assert gates == [], f"the retry cap must not be a label on the issue: {gates}"
     assert "run.run_attempt" in text
 
 
-def test_a_model_or_gate_failure_still_never_retries():
-    """The one rule the higher cap must not loosen. Those cost money and fail for reasons a
-    retry cannot fix, so more attempts would only mean more spend on the same wrong answer."""
+def test_only_steps_that_run_before_any_spend_are_retryable():
+    """An ALLOW-list, and the difference is money.
+
+    `reRunWorkflowRunFailedJobs` re-runs the whole JOB, and all three spending workflows are one
+    job — so "did the failing STEP spend?" is the wrong question. `Commit state/ledger.json`
+    runs AFTER the spend and matches no model-or-gate pattern, so a denial list let it through:
+    a lost push to `harness-state` meant a retry that reloaded the PRE-RUN ledger, found the
+    same comment unseen, and paid for the same model call again — invisibly to the weekly cap,
+    because the ledger recording the first attempt was exactly what failed to save.
+    """
     text = _wf("ops.yml")
 
-    assert "const modelOrGate = /run|revise|propose|gate/i.test(failingStep);" in text
-    assert "const transient = !modelOrGate &&" in text
+    assert "const RETRYABLE_STEPS = [" in text
+    assert "const preSpend = RETRYABLE_STEPS.includes(failingStep);" in text
+    assert "const modelOrGate = !preSpend;" in text
+    assert "'Commit state/ledger.json'" not in text, "the step that makes a run durable"
+    assert "'Upload run artifacts'" not in text, "runs after the spend too"
+
+
+def test_every_step_of_every_spending_workflow_is_classified():
+    """The guard that makes the allow-list safe. A step added to one of the three spending
+    workflows and named in neither list would default to "not retryable", which is the safe
+    side — but silently, and the next person to wonder why their infrastructure blip was not
+    retried has nothing to read. Failing here forces the decision to be made once, out loud."""
+    import re as _re
+
+    ops = _wf("ops.yml")
+    allow = set(_re.findall(r"^\s+'([^']+)',$", ops.split("RETRYABLE_STEPS = [")[1]
+                            .split("];")[0], _re.M))
+    assert allow, "the allow-list did not parse"
+
+    # Everything after the spend, plus the spending steps themselves. Named here so the two
+    # lists together have to cover every step, and neither can silently shrink.
+    never = {
+        "Discover and propose (harness discover, harness propose)",
+        "Run planned items (harness run --item)",
+        "Sweep keywords (harness sweep; may run revise/propose)",
+        "Queue issues assigned to the bot (harness discover --mode assigned)",
+        "Reconcile stale harness:running items (harness run)",
+        "Commit state/ledger.json",
+        "Upload run artifacts",
+    }
+
+    # Six spaces is the step level in all three files; a `- name:` at any other depth is a job
+    # name or something inside a `with:`, neither of which is a step. Read rather than parsed
+    # because the harness is stdlib-only and a YAML parser is not available to the suite.
+    for name in ("discover.yml", "implement.yml", "feedback.yml"):
+        labels = _re.findall(r"^      - name: (.+)$", _wf(name), _re.M)
+        assert len(labels) >= 10, f"{name}: only {len(labels)} steps found; the regex is wrong"
+        for label in labels:
+            label = label.strip()
+            assert label in allow or label in never, (
+                f"{name}: step {label!r} is in neither list. Decide whether a re-run of the "
+                "whole job after it fails is safe, and add it to RETRYABLE_STEPS in ops.yml "
+                "or to `never` here."
+            )
 
 
 @pytest.mark.parametrize("name", ["ack.yml", "watchdog.yml"])
@@ -475,3 +574,116 @@ def test_both_comment_driven_workflows_skip_the_harnesss_own_comments(name):
     assert f"!contains(github.event.comment.body, '{MACHINE_MARKER}')" in condition, (
         f"{name} will wake on the harness's own comments"
     )
+
+
+# --------------------------------------------------------------------------------------
+# What the adversarial pass on PR #32 found
+# --------------------------------------------------------------------------------------
+
+
+def test_a_halted_harness_says_so_instead_of_promising_twenty_minutes(tmp_path, capsys):
+    """`.harness/HALT` stops every workflow before its first step, so `feedback.yml` goes green
+    having done nothing. An acknowledgement that promises an audit anyway is worse than silence
+    — and the escape hatch it offers, `/harness status`, is refused by the same halt."""
+    import harness.__main__ as main_mod
+
+    env = _env(tmp_path)
+    (tmp_path / ".harness").mkdir(exist_ok=True)
+    (tmp_path / ".harness" / "HALT").write_text("stop", encoding="utf-8")
+
+    body = tmp_path / "c.txt"
+    body.write_text("/harness audit accessibility", encoding="utf-8")
+
+    import os
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        assert main_mod.main([
+            "--config", str(env), "ack", "--body-file", str(body),
+            "--actor", "jgoetzmann", "--association", "OWNER",
+        ]) == 0
+    finally:
+        os.chdir(cwd)
+
+    import json
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["react"] is True, "it was read, and saying so is the point"
+    assert "halted" in out["comment"].lower()
+    assert "twenty minutes" not in out["comment"]
+
+
+def test_the_ack_only_promises_verbs_the_actor_may_actually_give(tmp_path, capsys):
+    """The sweep applies `VERB_LEVEL` per verb and refuses the rest. Acknowledging all of them
+    promises a level-1 asker twenty minutes of audit and then denies it — the exact failure
+    `cmd_ack` exists to avoid, performed in public."""
+    out = _run_ack(tmp_path, capsys, "/harness audit accessibility\n/harness ask what is this\n",
+                   actor="asker", association="MEMBER", trust="1 asker\n3 jgoetzmann\n")
+
+    assert "/harness ask" in out["comment"]
+    assert "/harness audit" not in out["comment"], "level 1 cannot audit; do not promise it"
+
+
+def test_a_level_one_actor_with_nothing_allowed_is_answered_by_the_sweep_not_here(
+    tmp_path, capsys
+):
+    """When every verb is above them there is nothing to acknowledge, and the sweep's refusal is
+    the right answer — it names the level they needed, which this cannot."""
+    out = _run_ack(tmp_path, capsys, "/harness audit accessibility", actor="asker",
+                   association="MEMBER", trust="1 asker\n")
+
+    assert out == {"react": False, "comment": ""}
+
+
+@pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
+def test_a_quote_reply_to_the_harness_is_still_a_persons_comment(name):
+    """GitHub's quote-reply copies the source comment's raw markdown, HTML comments included, as
+    `> <!-- ... -->`. Skipping on the bare marker dropped the most natural way to answer the
+    harness: quote its reply and add a command. The quoted form is what tells them apart."""
+    from harness.gh import MACHINE_MARKER
+
+    text = _wf(name)
+    condition = text.split("jobs:", 1)[1].split("runs-on:", 1)[0]
+
+    assert f"!contains(github.event.comment.body, '{MACHINE_MARKER}')" in condition
+    assert f"contains(github.event.comment.body, '> {MACHINE_MARKER}')" in condition, (
+        f"{name} drops a human who quote-replies to the harness"
+    )
+
+
+@pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
+def test_a_comment_driven_workflow_checks_out_the_default_branch_not_the_pull_request(name):
+    """On `pull_request_review_comment` GitHub sets GITHUB_REF to `refs/pull/N/merge`, so a bare
+    checkout lands the PULL REQUEST'S tree — and both of these then run that tree's `harness/`
+    code. On a public repository that is a stranger's Python on the runner, and in
+    `feedback.yml` it is a stranger's Python beside the machine account's PAT."""
+    text = _wf(name)
+    checkout = text.split("actions/checkout@v4", 1)[1].split("- name:", 1)[0]
+
+    assert "ref: ${{ github.event.repository.default_branch }}" in checkout, (
+        f"{name} checks out whatever the pull request contains"
+    )
+
+
+def test_neither_comment_step_can_red_somebody_elses_thread():
+    """Both writes are courtesies. `issues.createComment` 403s on a locked issue, on a fork pull
+    request's read-only token, and on GitHub's secondary content-creation limit — none of which
+    is the commenter's fault, and all of which would put a red cross on their thread."""
+    text = _wf("ack.yml")
+
+    for step in ("React", "Say it"):
+        block = text.split(f"- name: {step}\n", 1)[1].split("uses:", 1)[0]
+        assert "continue-on-error: true" in block, f"{step} can fail the run"
+
+
+def test_the_watchdog_does_not_claim_to_catch_its_own_disablement():
+    """GitHub's 60-day rule disables EVERY schedule on a quiet public repository, this one
+    included — so it would not be running to report it. Promising otherwise sends an operator
+    looking for an issue that cannot arrive, while the signal that does survive (the weekly
+    heartbeat going missing, B144) goes unmentioned."""
+    text = _wf("watchdog.yml")
+    docs = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
+
+    assert "heartbeat" in text, "the workflow must name the alarm that outlives it"
+    assert "60 days" in docs and "heartbeat" in docs.split("60 days")[1][:800]

@@ -589,7 +589,15 @@ kind has started in six hours, it dispatches one. Two causes, and only one self-
 | Cause | What you see | What to do |
 |---|---|---|
 | GitHub dropped the cron under load | one dispatch, no issue | nothing; it is already fixed |
-| No push for 60 days, so GitHub disabled the schedules | a `kind:ops` issue titled **scheduled runs are not firing** | re-enable them on the Actions tab; any push resets the 60-day clock |
+| Four weekday slots missed in a row | a `kind:ops` issue titled **scheduled runs are not firing** | re-enable the schedule on the Actions tab |
+| **No repository activity for 60 days** | nothing at all — see below | push anything, then re-enable on the Actions tab |
+
+**The watchdog cannot report the 60-day case, and it is worth knowing why.** GitHub disables
+scheduled workflows on a public repository with no activity for 60 days — *all* of them, including
+the watchdog. It is not running, so it cannot tell you it is not running. Two things do: GitHub
+emails the repository owner, and the **weekly heartbeat comment** on the tracking issue stops
+appearing. That absence has been the alarm for this since B144, and it is still the only one that
+survives its own failure mode.
 
 The watchdog does **not** react to failures — `ops.yml` owns those, and two things re-running the
 same workflow would fight. It measures the absence of runs, so a failed run counts as proof of life.

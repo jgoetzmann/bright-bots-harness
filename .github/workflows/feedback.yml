@@ -43,7 +43,8 @@ jobs:
     if: >-
       (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment')
       || (contains(github.event.comment.body, '/harness')
-          && !contains(github.event.comment.body, '<!-- bright-bots-harness -->'))
+          && (!contains(github.event.comment.body, '<!-- bright-bots-harness -->')
+              || contains(github.event.comment.body, '> <!-- bright-bots-harness -->')))
     runs-on: ubuntu-latest
     timeout-minutes: 120          # B125
     permissions:
@@ -75,8 +76,19 @@ jobs:
 
       - name: Checkout
         if: steps.halt.outputs.halted != 'true'
+        # `ref` pinned, and this is not belt-and-braces. On `pull_request_review_comment`
+        # GitHub sets GITHUB_REF to `refs/pull/N/merge`, so a bare checkout lands the PULL
+        # REQUEST'S tree -- and the next steps then run that tree's `harness/` code. On a public
+        # repository that is a stranger's Python executing on the runner; on this workflow it
+        # would also be a stranger's parser deciding who is trusted, which is exactly the drift
+        # a shared subcommand exists to prevent.
+        #
+        # Worse here than next door: this job keeps its credentials and writes HARNESS_GITHUB_TOKEN
+        # into `.env`, so an unpinned checkout would hand the machine account's PAT to whatever
+        # code the pull request happened to contain.
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
         # D28: the ledger lives on the unprotected `harness-state` branch (main requires a reviewed PR,

@@ -1991,6 +1991,38 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
     return record, "", True
 
 
+def _ack_halt_reason(config) -> str:
+    """Why nothing is going to happen, or "" when something will.
+
+    Read from the checkout and the ledger the workflow has to hand, and never raised: a
+    diagnostic in front of the real thing must not fail in front of the real thing.
+    """
+    try:
+        if repo_halted(Path(".")):
+            return (
+                "**The harness is halted.** `.harness/HALT` is committed on the default branch, "
+                "which stops every workflow before it starts — so this command was read, and "
+                "nothing will run until that file is removed."
+            )
+    except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+        pass
+    try:
+        led = ledger_mod.Ledger.load(Path(config.ledger_path))
+        halt = led.halt_request()
+    except Exception:  # pragma: no cover - same
+        return ""
+    if not halt:
+        return ""
+    who = str(halt.get("actor") or "someone")
+    why = str(halt.get("reason") or "").strip()
+    return (
+        f"**The harness is halted** — by @{who}"
+        + (f": {why}" if why else "")
+        + ". Nothing will spend until `/harness resume`, so this command was read and will not "
+        "be acted on."
+    )
+
+
 def cmd_ack(args: argparse.Namespace) -> int:
     """Decide what to say about one comment before any work starts (B293).
 
@@ -2048,9 +2080,27 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if not trust_mod.is_authorised(actor, str(args.association or ""), trusted):
         return _say()
 
-    verbs = [verb for verb, _args in keywords.parse_all(body)]
+    # Only the verbs this actor may actually give. The sweep applies `VERB_LEVEL` per verb after
+    # parsing and refuses the rest, so acknowledging all of them would promise a level-1 asker
+    # twenty minutes of audit and then deny it -- the exact failure this command exists to
+    # avoid, performed in public.
+    level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
+    verbs = [
+        verb for verb, _args, typed in keywords.parse_typed(body)
+        # The TYPED word's level when it has one of its own -- `reject` is level 3 and resolves
+        # to `stop`, which is level 2, so resolving before gating would over-promise.
+        if level >= keywords.VERB_LEVEL.get(typed or verb, keywords.VERB_LEVEL.get(verb, 3))
+    ]
     if not verbs:
         return _say()
+
+    # A halted harness is going to do none of this, and saying "about twenty minutes" while
+    # nothing will ever run is worse than saying nothing -- the more so because the reply's own
+    # escape hatch is `/harness status`, which the same halt refuses. Both switches: the
+    # committed one stops the workflows, the commanded one stops the spending.
+    stopped = _ack_halt_reason(config)
+    if stopped:
+        return _say(react=True, comment=mark_machine_written(stopped))
 
     text = links.acknowledgement(verbs)
     # Marked like everything else the harness writes. The workflow posts this through

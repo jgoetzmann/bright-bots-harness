@@ -32,11 +32,15 @@ jobs:
     # happen inside `harness ack`, using the same code the sweep uses, so the two cannot drift
     # into disagreeing about who is allowed to say what.
     #
-    # The machine account is NOT excluded here, on purpose — it is an ordinary user rather than
-    # a `Bot` type, so this expression cannot see it. `harness ack` refuses it by login, which
-    # is the check that works. It matters: every reply the harness writes carries a pointer
-    # mentioning `/harness`, so without that refusal it would react to its own answers for ever.
-    if: contains(github.event.comment.body, '/harness')
+    # The second clause is the one that matters for cost. Every comment the harness writes ends
+    # up quoting `/harness` at somebody — the reply pointer, and this workflow's own "working on
+    # it" is a LIST of commands — so without it the harness would wake itself, for ever. The
+    # marker is on the body rather than the login because this expression cannot read
+    # `.harness/config.json`, and the machine account is an ordinary user, not a `Bot` type.
+    # `harness ack` refuses that login too; this is the half that saves the runner minute.
+    if: >-
+      contains(github.event.comment.body, '/harness')
+      && !contains(github.event.comment.body, '<!-- bright-bots-harness -->')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

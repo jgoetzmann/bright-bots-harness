@@ -32,9 +32,18 @@ jobs:
     # the first word) reach the parser that now accepts it. If that ever changed, the command
     # would not be lost -- the three-hourly schedule still picks it up through notifications --
     # it would only be slow. The parser is the authority on the form; this is an optimisation.
+    #
+    # The second clause skips the harness's own comments. Every reply it writes ends with a
+    # pointer naming `/harness status` and two others, so without it each reply woke another
+    # full run of this workflow — checkout, install, doctor, sync-fork, sweep — which found
+    # nothing, because `keywords.commands_from` skips the machine account, and posted nothing,
+    # having taken the ledger lock to do it. Four such runs in 27 seconds were observed on the
+    # live inbox. A marker rather than a login test because this expression cannot read
+    # `.harness/config.json`, and the machine account is an ordinary user, not a `Bot` type.
     if: >-
       (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment')
-      || contains(github.event.comment.body, '/harness')
+      || (contains(github.event.comment.body, '/harness')
+          && !contains(github.event.comment.body, '<!-- bright-bots-harness -->'))
     runs-on: ubuntu-latest
     timeout-minutes: 120          # B125
     permissions:

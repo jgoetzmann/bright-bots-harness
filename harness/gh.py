@@ -35,6 +35,38 @@ _LINK_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"', re.IGNORECASE)
 DRY_RUN_SHA = "0" * 40
 
 
+#: An invisible mark on every comment the harness writes, so a workflow can tell the harness's
+#: own voice from a person's without knowing the machine account's name.
+#:
+#: Needed because the harness quotes commands back at people: every reply ends with a pointer
+#: naming `/harness status` and two others, and both `feedback.yml` and `ack.yml` wake on
+#: `contains(comment.body, '/harness')`. So each reply the harness posted woke a full feedback
+#: run -- checkout, install, doctor, sync-fork, sweep -- which found nothing (the sweep skips the
+#: machine account's own comments) and posted nothing, having taken the ledger lock to do it.
+#: Four such runs in twenty-seven seconds were observed on the live inbox on 2026-09-09.
+#:
+#: A marker rather than a login test, because a workflow `if:` cannot read
+#: `.harness/config.json`, and the machine account is an ordinary user rather than the `Bot`
+#: type GitHub would filter. An HTML comment renders as nothing, so it costs the reader nothing.
+MACHINE_MARKER = "<!-- bright-bots-harness -->"
+
+
+def mark_machine_written(body: str) -> str:
+    """`body` with the machine marker on it, once.
+
+    Applied at the transport rather than at each call site, so a site added later cannot forget
+    it -- and because the one that most needed it, `deliver.handoff`, builds its body from a
+    template and never touches `links`.
+
+    Idempotent: a body already carrying the marker comes back unchanged, so a retry cannot stack
+    them.
+    """
+    text = str(body)
+    if MACHINE_MARKER in text:
+        return text
+    return f"{text}\n\n{MACHINE_MARKER}" if text.strip() else MACHINE_MARKER
+
+
 def _header(headers: Any, name: str) -> str | None:
     """Read one header off any object exposing ``.get`` (or nothing at all)."""
     if headers is None:
@@ -384,7 +416,9 @@ class GitHubClient(GitHubReadOnly):
     def comment(self, repo: str, number: int, body: str) -> dict:
         self._require_write("comment")
         n = int(number)
-        payload = redact.redact_json({"body": str(body)})
+        # Marked here rather than by the caller: every comment on this path is the harness
+        # speaking, and a caller that forgets makes the harness talk to itself.
+        payload = redact.redact_json({"body": mark_machine_written(body)})
         data = self._write(
             "POST",
             f"/repos/{repo}/issues/{n}/comments",

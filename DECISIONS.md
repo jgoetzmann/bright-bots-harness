@@ -413,3 +413,33 @@ spent the retry for every later failure of that workflow until a human closed th
 did. What did not change: a failure inside a model call or a gate still never retries at all. Those
 cost money and fail for reasons a retry cannot fix, so more attempts would only buy more spend on
 the same wrong answer.
+
+### The harness was already waking itself
+
+Found on the live inbox while building the above, not by a test: **four full `feedback` runs in
+twenty-seven seconds**, each triggered by a reply the harness had just posted.
+
+The cause is D64's reply pointer meeting `feedback.yml`'s trigger. Every reply now ends with
+"**You can also say:** `/harness status` · …", and the workflow wakes on
+`contains(github.event.comment.body, '/harness')`. So each reply woke another run — checkout,
+install, doctor, sync-fork, sweep — which correctly found nothing, because `commands_from` skips
+the machine account, and correctly posted nothing, having taken the `harness-ledger` lock to do it.
+Depth one rather than a loop, only because a run that posts nothing triggers nothing.
+
+`ack.yml` would have made it worse in the obvious way and in one that is worse than obvious: the
+acknowledgement's entire content is a *list* of `/harness` commands.
+
+**The fix is a marker, not a login test.** `gh.comment` appends `<!-- bright-bots-harness -->` to
+every body it posts, and both comment-driven workflows skip comments carrying it. A marker because
+a workflow `if:` cannot read `.harness/config.json` to learn the machine account's name, and
+because that account is an ordinary user rather than the `Bot` type GitHub would filter for us. An
+HTML comment renders as nothing, so it costs the reader nothing.
+
+Applied at the **transport** rather than at the three call sites, so a fourth added later cannot
+forget it — and because the site that most needed it, `deliver.handoff`, builds its body from a
+template and never touches `links`. `ack.yml` posts through `github-script` rather than through
+`gh.comment`, so `harness ack` marks its own output explicitly.
+
+`FakeGh.comment` marks too. A fake that did not would let the marker be deleted with a green
+suite, which is the failure mode this repository keeps finding.
+

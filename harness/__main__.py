@@ -35,6 +35,7 @@ from harness.errors import (
     RateLimited,
     RepoHalted,
 )
+from harness.gh import mark_machine_written
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness import priority
@@ -2051,7 +2052,12 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if not verbs:
         return _say()
 
-    return _say(react=True, comment=links.acknowledgement(verbs))
+    text = links.acknowledgement(verbs)
+    # Marked like everything else the harness writes. The workflow posts this through
+    # `github-script` rather than through `gh.comment`, so the transport does not mark it -- and
+    # an unmarked acknowledgement, whose whole content is a list of `/harness` commands, would
+    # wake `feedback.yml` and this workflow all over again.
+    return _say(react=True, comment=mark_machine_written(text) if text else "")
 
 
 def cmd_sweep(args: argparse.Namespace) -> int:

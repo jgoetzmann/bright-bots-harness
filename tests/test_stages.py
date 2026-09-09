@@ -18,6 +18,7 @@ import pytest
 
 import harness.stages.implement as implement_mod
 from harness.clock import FrozenClock
+from harness.gh import mark_machine_written
 from harness.clone import Lease
 from harness.config import load_config
 from harness.context import build_context
@@ -311,7 +312,10 @@ class FakeGh:
 
     def comment(self, repo: str, number: int, body: str) -> dict:
         self.calls.append(("comment", repo, number))
-        self.comments_posted.append((repo, int(number), body))
+        # Marked, because the real client marks — a fake that does not is a fake that would let
+        # the marker be deleted with a green suite. It is what stops the harness waking itself:
+        # `ack.yml` and `feedback.yml` both skip comments carrying it.
+        self.comments_posted.append((repo, int(number), mark_machine_written(body)))
         return {"id": len(self.comments_posted)}
 
     def update_issue_body(self, repo: str, number: int, body: str) -> dict:

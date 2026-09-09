@@ -407,3 +407,71 @@ def test_a_model_or_gate_failure_still_never_retries():
 def test_the_new_workflows_bound_their_own_runtime(name):
     """B125. A workflow with no timeout is one that can hold a runner for six hours."""
     assert "timeout-minutes:" in _wf(name)
+
+
+# --------------------------------------------------------------------------------------
+# The marker — the harness must not wake itself
+#
+# Found on the live inbox, not by a test: four full `feedback` runs in twenty-seven seconds,
+# each triggered by a reply the harness had just posted. The replies carry a pointer naming
+# `/harness status`, and both workflows wake on `contains(comment.body, '/harness')`. Every one
+# of those runs did a checkout, an install, a doctor, a fork sync and a sweep, found nothing —
+# `keywords.commands_from` skips the machine account — and posted nothing, having taken the
+# ledger lock to do it.
+# --------------------------------------------------------------------------------------
+
+
+def test_every_comment_the_harness_posts_carries_the_marker(tmp_path):
+    """Applied at the transport, so a call site added later cannot forget it. Three exist today
+    and only two of them go through code that knows about `links` at all."""
+    from harness.gh import MACHINE_MARKER, mark_machine_written
+
+    assert mark_machine_written("hello").endswith(MACHINE_MARKER)
+    assert MACHINE_MARKER.startswith("<!--"), "it has to render as nothing"
+
+
+def test_marking_is_idempotent():
+    """A retry, or a body assembled from a piece that was already marked, must not stack them."""
+    from harness.gh import MACHINE_MARKER, mark_machine_written
+
+    once = mark_machine_written("hello")
+    assert mark_machine_written(once) == once
+    assert once.count(MACHINE_MARKER) == 1
+
+
+def test_the_transport_marks_it_rather_than_the_caller(tmp_path):
+    """Driven through the client, because the claim is about `gh.comment` and not about a helper
+    somebody remembered to call."""
+    from tests.test_stages import FakeGh
+
+    gh = FakeGh()
+    gh.comment("owner/repo", 19, "the queue is empty")
+
+    body = gh.comments_posted[-1][2]
+    assert "the queue is empty" in body
+    assert "<!-- bright-bots-harness -->" in body
+
+
+def test_the_acknowledgement_is_marked_too(tmp_path, capsys):
+    """`ack.yml` posts through `github-script`, not through `gh.comment`, so the transport does
+    not mark it — and an acknowledgement is the worst possible unmarked comment, because its
+    entire content is a list of `/harness` commands."""
+    out = _run_ack(tmp_path, capsys, "/harness ask what does the registry do")
+
+    assert "<!-- bright-bots-harness -->" in out["comment"]
+
+
+@pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
+def test_both_comment_driven_workflows_skip_the_harnesss_own_comments(name):
+    """The two that wake on `contains(body, '/harness')`. Either one missing the guard is the
+    live bug back again, and it costs a full workflow run per comment the harness writes."""
+    from harness.gh import MACHINE_MARKER
+
+    text = _wf(name)
+    job = text.split("jobs:", 1)[1]
+    condition = job.split("runs-on:", 1)[0]
+
+    assert "contains(github.event.comment.body, '/harness')" in condition
+    assert f"!contains(github.event.comment.body, '{MACHINE_MARKER}')" in condition, (
+        f"{name} will wake on the harness's own comments"
+    )

@@ -1325,11 +1325,15 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
 
     out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("status"))
 
-    assert "**Usage**" in out and "weekly **40%**" in out
+    assert "**Allowance**" in out
+    # Headroom, not only consumption: "40% used" is a fact, "50 points before the stop" is
+    # the one somebody can act on.
+    assert "40% used" in out and "50 points" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
     # The ceiling quoted is the one the dispatcher spends against, not the raw cap.
-    assert "spendable this window" in out and "reserve" in out
+    # The dollar figure survives underneath, said as the estimate it is.
+    assert "reserve" in out and "nobody bills it" in out
 
 
 def test_queue_is_an_alias_for_go_now(tmp_path):
@@ -1883,7 +1887,7 @@ def test_go_on_the_inbox_answers_with_the_queue(tmp_path):
     out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("go", surface="inbox"))
 
     assert "no work item" not in out
-    assert "**Queue**" in out or "**Usage**" in out
+    assert "**Queue**" in out or "**Allowance**" in out
 
 
 def test_stop_from_level_two_parks_and_from_level_three_ends_it(tmp_path):
@@ -2021,7 +2025,7 @@ def test_one_comment_draws_one_reply_however_many_commands_it_carried(tmp_path):
     assert len(records) == 2, "both commands still ran, and both are still in the log"
     assert len(rig.gh.comments_posted) == 1, "one comment in, one answer out"
     body = rig.gh.comments_posted[0][2]
-    assert body.count("**Usage**") == 2, "both answers are in it"
+    assert body.count("**Allowance**") == 2, "both answers are in it"
     assert "**`/harness status`**" in body, "and each is labelled with what asked for it"
 
 
@@ -2035,7 +2039,7 @@ def test_a_single_command_reply_is_not_labelled(tmp_path):
     main_mod.run_comment(rig.ctx, rig.config, [_cmd("status")])
 
     body = rig.gh.comments_posted[0][2]
-    assert "**Usage**" in body
+    assert "**Allowance**" in body
     assert "**`/harness status`** —" not in body
 
 
@@ -2082,4 +2086,4 @@ def test_a_rate_ceiling_partway_through_a_comment_still_says_what_ran(tmp_path):
     assert keep_going is False
     assert len(records) == 2, "it stopped at the one that failed, not before it"
     assert len(rig.gh.comments_posted) == 1
-    assert "**Usage**" in rig.gh.comments_posted[0][2], "the one that worked was still reported"
+    assert "**Allowance**" in rig.gh.comments_posted[0][2], "the one that worked was still reported"

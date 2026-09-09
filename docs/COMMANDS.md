@@ -147,7 +147,7 @@ A line whose verb is not one of the twelve is skipped, and the other lines still
 |---|---|---|
 | `work` | open a work item | 2 |
 | `ask` | answer a question, change nothing | 1 |
-| `status` | spend, queue, and when the next thing happens | 1 |
+| `status` | allowance left, queue, and when the next thing happens | 1 |
 | `audit` | read through one lens, open a findings issue | 2 |
 | `promote` | turn findings into work items | 2 |
 | `revise` | redo it with my notes | 2 |
@@ -220,7 +220,8 @@ way to find out whether the harness understands the codebase — ask it somethin
 /harness status
 ```
 
-Replies in the thread with the spend against both usage stops, the queue in priority order, and
+Replies in the thread with **how much of the subscription is left** against both stops, the
+queue in priority order, and
 **when the next thing happens** — the next sweep, whether the run window is open, and whether
 suggested work is admitted. Changes nothing, and level 1 can run it.
 
@@ -240,8 +241,16 @@ Reads the product repository through that one lens and opens **one** issue: a ra
 labelled `kind:audit`, deliberately with **no stage label** — so the store cannot see it and it can
 never enter the queue.
 
-It creates **no work items**. Charged against `AUDIT_CAP_USD` (20.00). An audit stopped by its cap
-still opens the issue, marked incomplete, listing under `## Not reached` what it never opened.
+It creates **no work items**. An audit stopped by its cap still opens the issue, marked
+incomplete, listing under `## Not reached` what it never opened.
+
+**Two bounds, and only one of them is real.** `AUDIT_CAP_USD` (20.00) is passed to the runner as
+`--max-budget-usd` and does stop a single call — but it is an estimate of API-equivalent cost, and
+on a subscription nobody bills that. The bound that matters is `AUDIT_MIN_HEADROOM_PCT` (75): an
+audit is refused outright when the seven-day subscription usage is already at or above it. It is
+the longest single call the harness makes, and **the allowance is shared with everything else this
+account does** — so starting a twenty-minute read with a fifth of the week left is how you find it
+gone the next time you need it yourself.
 
 **A lens is required.** `/harness audit` with nothing after it is refused before any model call —
 "audit everything" is the one scope the budget cannot bound.

@@ -154,7 +154,12 @@ def plan(
     spent = float(ledger.window.get("spent_usd", 0.0) or 0.0)
     ceiling = weekly_cap * (1.0 - reserve_pct / 100.0)
     if spent >= ceiling:
-        return Plan(start=(), reason="reserve", skipped={})
+        # B122 pins this token exactly, and `implement.yml` echoes it, so the word stays. What
+        # is appended is the subscription reading beside it -- an operator who sees "reserve"
+        # alone cannot tell whether the thing that actually runs out is anywhere near its limit,
+        # and the two are very different problems. `_usage_suffix` is empty until both windows
+        # have been observed, so the bare token survives wherever nothing has been measured.
+        return Plan(start=(), reason="reserve" + _usage_suffix(ledger), skipped={})
     remaining = ceiling - spent
 
     max_slots = int(config.max_concurrent_items)

@@ -500,3 +500,53 @@ rule disables every schedule on the repository including the watchdog itself. Th
 said it would. The signal that actually survives is the weekly heartbeat comment going missing,
 which is what B144 built it for.
 
+
+## D66 / B295 — the subscription is the metric, not the dollars
+
+Implemented 2026-09-09 on `feat/usage-not-spend`, prompted by the operator reading a live status
+report and saying the quiet part: *spend is probably the wrong metric, you should be using usage.*
+
+They were right, and the first live run had already shown it without anyone noticing. One model
+call: **$0.28** estimated, and the seven-day subscription window at **18%**. By the dollar figure
+the harness had used 0.08% of its allowance. By the number that actually governs, nearly a fifth of
+the week.
+
+**Why the dollars were never the constraint.** The `$` figures are an *estimate of API-equivalent
+cost*, derived from token counts. Nobody bills them. What runs out is the utilization of two
+windows the API reports on the headers of every call — five-hour and seven-day — and the harness
+has watched those since Delivery 3 (D31/D32). It simply never *led* with them: every report opened
+with a dollar total, and the two usage lines were a footnote under it.
+
+**And the allowance is shared.** Most of that 18% was not the harness at all — it is the same
+subscription the operator uses for their own work, so the number moves while the harness is asleep.
+A dollar total the harness accumulates itself cannot show that, and it is the single most important
+fact about reading these figures.
+
+What changed:
+
+- **`links.usage_headline` is the one place** that turns a ledger into the sentence people read, so
+  the comment reply, `harness status`, `harness ledger` and `harness dispatch` cannot drift apart
+  about what the number means. It leads with utilization, states the **headroom left** rather than
+  only the amount gone ("18% used, 72 points before the 90% stop"), and says the allowance is
+  shared.
+- **Unmeasured is said as unmeasured**, never as zero. None is not zero: the signal rides on the
+  headers of a real model call, so a fresh ledger, every tier-0 run and every local run have none.
+  A headline reading "0% used" would be the most confident possible way of being wrong.
+- **The dollar line survives in smaller print, labelled.** It is kept for exactly three things: a
+  sense of scale, the `--max-budget-usd` flag the runner really does enforce on a single call, and
+  being the only bound that exists before a real call has ever been made. B114 is unchanged — no
+  decision may *depend* on the signal being present.
+- **`harness status` stopped printing two different percentages as if they were one thing.** The
+  block it called `budget:` is the harness's own accounting in budget units, which is not the
+  subscription; both now say which they are.
+- **An audit is gated on usage** (`AUDIT_MIN_HEADROOM_PCT`, 75). It is the longest single call the
+  harness makes — twenty minutes — and it was bounded only by `AUDIT_CAP_USD`, which on a
+  subscription is a fiction. Starting a twenty-minute read with a fifth of the week left is how the
+  operator finds the allowance gone the next time *they* need it. The floor is looser than
+  `SUGGEST_MIN_HEADROOM_PCT` (50) on purpose: somebody asked for the audit, and nobody asked for
+  suggested work.
+- **`reserve` keeps its exact token** — B122 pins it and `implement.yml` echoes it — but now
+  carries the subscription reading beside it. An operator seeing "reserve" alone cannot tell
+  whether the thing that actually runs out is anywhere near its limit, and those are very different
+  problems. `_usage_suffix` is empty until both windows have been observed, so the bare token
+  survives everywhere nothing has been measured.

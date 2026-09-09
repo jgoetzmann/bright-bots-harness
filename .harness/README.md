@@ -59,7 +59,8 @@ change, reviewed as one (B112):
   `harness/keywords.py`).
 
 Adding such a key to `config.json` does not silently take effect: `load_config` rejects any key
-outside the list above (`config.CONFIG_JSON_KEYS`, twenty-three keys since the Delivery 4 knobs),
+outside the list above (`config.CONFIG_JSON_KEYS`, twenty-four keys since B295 added the
+audit headroom floor),
 so the run fails at `harness doctor` naming the key (A30).
 
 ## Notes

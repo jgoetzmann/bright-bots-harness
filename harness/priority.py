@@ -160,12 +160,32 @@ def admit(
     ledger: Any,
     config: Any,
 ) -> str | None:
-    """None when a call of this class may proceed, else the reason it may not (B290).
+    """None when a call of this class may proceed, else the reason it may not (B290/B295).
 
-    Only `suggested` is ever refused here. Everything else was asked for by a person, and the
-    governor is what decides whether there is allowance for it — this function's job is to stop
-    the harness spending on its own ideas while somebody's actual request is waiting.
+    Two classes are refused here, and for different reasons.
+
+    `suggested` is work nobody asked for, so it waits for an empty queue and for headroom: the
+    harness must not spend on its own ideas while somebody's actual request is outstanding.
+
+    `audit` was asked for, but it is the one operation that can run for twenty minutes on a
+    single call, and it is bounded by a **dollar** cap — which on a subscription is a fiction.
+    What actually runs out is the seven-day utilization, and it is SHARED with everything else
+    this account does. So an audit needs room measured in the units that run out: starting a
+    twenty-minute read with a fifth of the week left is how the operator finds the allowance
+    gone the next time they need it themselves.
+
+    Everything else was asked for by a person and is bounded by the governor.
     """
+    if cls == "audit":
+        floor = float(getattr(config, "audit_min_headroom_pct", 75.0) or 0.0)
+        used = headroom_pct(ledger)
+        if used is not None and used >= floor:
+            return (
+                f"weekly subscription usage is {used:.0f}%, at or above the {floor:.0f}% ceiling "
+                "for an audit — it is the longest single call the harness makes, and the "
+                "allowance is shared. Ask again after the window resets, or narrow the lens"
+            )
+        return None
     if cls != "suggested":
         return None
 

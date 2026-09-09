@@ -565,6 +565,7 @@ D2_ENV: dict[str, str] = {
     "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
+    "AUDIT_MIN_HEADROOM_PCT": "75",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -986,6 +987,7 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "ASK_CAP_USD": 0.25,
     "ASK_MAX_PER_DAY": 9,
     "SUGGEST_MIN_HEADROOM_PCT": 40,
+    "AUDIT_MIN_HEADROOM_PCT": 65,
 }
 
 

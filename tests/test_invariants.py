@@ -2152,9 +2152,21 @@ def _reason_prefix_and_sample(node: ast.AST) -> tuple[str, str] | None:
 
     A plain string is its own prefix and sample; an f-string's prefix is the constant text
     before its first placeholder, and the sample fills every placeholder with ``1``.
+
+    Concatenation is how a reason gains detail without losing its token -- B295 appends the
+    subscription reading to ``reserve`` so an operator can see both bounds at once. The left
+    operand is the prefix, and the sample carries a suffix so a workflow matching the token
+    exactly rather than as a prefix fails here. It has done: ``halted`` was once a bare `case`
+    pattern, and ``halted by @someone`` fell straight through it to proceed=true.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value, node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _reason_prefix_and_sample(node.left)
+        if left is None:
+            return None
+        prefix, sample = left
+        return prefix, f"{sample}; and more"
     if not isinstance(node, ast.JoinedStr):
         return None
     prefix_parts: list[str] = []

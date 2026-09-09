@@ -48,6 +48,93 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("resume", "lift a halt"),
 )
 
+def usage_headline(ledger: Any, config: Any) -> list[str]:
+    """How much of the subscription is left, in the units the subscription is actually sold in.
+
+    The harness spent a delivery reporting dollars, and dollars are the wrong number. Nothing
+    bills them: the estimate is derived from token counts, and what actually runs out is the
+    utilization of two windows the API reports on the headers of every call — five-hour and
+    seven-day. The first live run made the gap plain. One model call, **$0.28** estimated, and
+    the seven-day window at **18%**: by the dollar figure the harness had used 0.08% of its
+    allowance, and by the real one, nearly a fifth of the week.
+
+    Most of that 18% was not the harness. **The allowance is shared with whatever else the
+    operator does with the same subscription**, which is the single most important fact about
+    reading these numbers and the one a dollar total hides completely.
+
+    Dollars are kept, below and in smaller print, for the three things they are still good for:
+    a sense of scale, the `--max-budget-usd` flag the runner really does enforce per call, and
+    being the only signal at all before a real call has ever been made.
+    """
+    lines = ["**Allowance**"]
+    weekly = _utilization(ledger, "seven_day")
+    session = _utilization(ledger, "five_hour")
+    weekly_stop = float(getattr(config, "weekly_usage_stop_pct", 90.0))
+    session_stop = float(getattr(config, "session_usage_stop_pct", 70.0))
+
+    if weekly is None and session is None:
+        lines.append(
+            "- **not measured yet** — the signal rides on the headers of a real model call, so "
+            "a run that has not made one has nothing to report. Until then the dollar estimate "
+            "below is all there is, and it is an estimate."
+        )
+    else:
+        for label, used, stop in (
+            ("this week", weekly, weekly_stop),
+            ("this session", session, session_stop),
+        ):
+            if used is None:
+                continue
+            left = stop - used
+            lines.append(
+                f"- {label}: **{used:.0f}% used**, "
+                + (
+                    f"**{left:.0f} points** before the {stop:.0f}% stop"
+                    if left > 0
+                    else f"**at or past** the {stop:.0f}% stop — nothing will start"
+                )
+            )
+        lines.append(
+            "- shared with whatever else this subscription is used for, so this moves when the "
+            "harness is doing nothing"
+        )
+    return lines
+
+
+def spend_estimate(ledger: Any, config: Any) -> str:
+    """The dollar line, said as the estimate it is."""
+    window = getattr(ledger, "window", {}) or {}
+    spent = float(window.get("spent_usd", 0.0) or 0.0)
+    calls = int(window.get("calls", 0) or 0)
+    cap = float(getattr(config, "weekly_cap_usd", 0.0) or 0.0)
+    reserve = float(getattr(config, "reserve_pct", 0.0) or 0.0)
+    ceiling = cap * (1.0 - reserve / 100.0)
+    return (
+        f"<sub>Rough scale: about **${spent:.2f}** of API-equivalent cost over {calls} "
+        f"call(s) this window, against a ${ceiling:,.0f} backstop (${cap:,.0f} less "
+        f"{reserve:.0f}% reserve). "
+        "Estimated from token counts — nobody bills it, and it is not what runs out.</sub>"
+    )
+
+
+def _utilization(ledger: Any, key: str) -> float | None:
+    """`key`'s utilization as a percentage, or None when it has never been observed."""
+    window = getattr(ledger, "window", {}) or {}
+    usage = window.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    reported = usage.get(key)
+    if not isinstance(reported, dict):
+        return None
+    raw = reported.get("utilization")
+    if raw is None:
+        return None
+    try:
+        return float(raw) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 #: Roughly how long each verb takes, and what it is doing while you wait.
 #:
 #: Only ever an ORDER OF MAGNITUDE. The point is not accuracy, it is the difference between

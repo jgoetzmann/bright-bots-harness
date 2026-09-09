@@ -247,3 +247,56 @@ changing an old contract:
   Treating unknown as "no headroom" would have silently disabled the discovery route that has worked
   since Delivery 1. Unknown is not zero, but it is not empty either: the two usage stops are what
   guard the allowance, and they are checked on every call regardless.
+
+## D64 — twelve verbs, hyphenated, several to a comment
+
+Implemented 2026-09-09 on `feat/simpler-command-surface`.
+
+**Fifteen verbs became twelve.** Three pairs were merged and one was renamed:
+
+| Gone | Now | Why it was never a real choice |
+|---|---|---|
+| `fix` | `revise` | They differed only in whether code existed yet — which is exactly what "proposal pull request" versus "delivery pull request" already says |
+| `reject` | `stop` | They differed only in which gate you were at, and the thread you are on says which |
+| `queue` | `go` | Both mean "proceed with this"; which one applied depended on the item's state, which the person cannot see |
+| `usage` | `status` | One name, and it is the word people reach for |
+
+Each of the three pairs named a distinction the **surface already carried**. Asking someone to pick
+the right word for a fact the harness could read off the thread gave them a way to be wrong and gave
+the harness nothing. The four old names are kept in `keywords.ALIASES` and resolve to the verb they
+became, so comments already sitting on open pull requests do not silently stop working.
+
+The merge moved two decisions from the person into the code, and both had to be made honest about
+their edges:
+
+- `go` now reads the item's state. `blocked` is the one state with an edge back to `discovered`, so
+  that is the one that requeues — which is exactly the state `stop` leaves an item in, so undoing a
+  `stop` works. `needs-human`, `merged` and `abandoned` have no useful edge, and are **answered**
+  rather than raised: an `IllegalTransition` traceback in a comment reply tells nobody anything.
+- `stop` on a terminal item says there is nothing left to stop, for the same reason.
+
+**`/harness-<verb>` parses as well as `/harness <verb>`.** The hyphen makes a command a single
+token, which is what makes the next part readable.
+
+**Every `/harness` line in a comment is read, not just the first.** They run top to bottom and each
+gets its own answer, each gated on *its own* level — so a level-2 handle sending `status` and `halt`
+in one comment gets the first and a refusal for the second. The comment is marked seen **once**,
+after parsing: marking per command would make the second command of a two-command comment look like
+a replay of the first. A line whose verb is not real is now skipped rather than discarding the
+comment, which is what the first-line rule used to do to anyone who made a typo.
+
+**Every reply carries a pointer to the other commands** (`links.reply_pointer`), offered by surface —
+`revise`/`rebase`/`stop` on a delivery pull request, `work`/`ask`/`status` on the inbox — plus the
+link to [docs/COMMANDS.md](docs/COMMANDS.md). An answer that says only what happened leaves the
+reader knowing one command and not that there are eleven others.
+
+### What this got wrong first
+
+- **`go` requeued from `needs-human` and `abandoned`.** Neither has an edge to `discovered`, so the
+  documented gesture would have raised after the reply had already been composed.
+- **A failed command was recorded and never said.** The sweep loop caught `HarnessError`, wrote it
+  to stdout, and replied nothing — which from the commenter's side is indistinguishable from the
+  harness being asleep, the one failure this whole surface exists to avoid. The loop is now
+  `run_command`, split out so that behaviour is driven by a test rather than read off the source.
+  (The test that guarded it *was* reading the source with `inspect.getsource`, and passed happily
+  for a loop that caught the exception and did nothing with it.)

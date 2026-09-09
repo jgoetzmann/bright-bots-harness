@@ -33,13 +33,14 @@ they are written in, so the same words on the wrong thread do nothing.
 | survey for problems | `/harness audit <lens>` | an issue **here** | up to $20 |
 | turn a finding into work | `/harness promote <n>` | **that audit issue** | — |
 | change a plan before code | `/harness revise <notes>` | the **proposal PR** | ~$0.50, a fresh `propose` |
-| change the code after it | `/harness fix <notes>` · `/harness rebase` | the **delivery PR** | ~$1.00, a `revise` cycle |
-| stop one thing | `/harness stop` · `/harness reject` | that PR | — |
-| see what is going on | `/harness usage` | **anywhere it reads** | — |
+| change the code after it | `/harness revise <notes>` · `/harness rebase` | the **delivery PR** | ~$1.00, a `revise` cycle |
+| stop one thing | `/harness stop` | either PR | — |
+| see what is going on | `/harness status` | **anywhere it reads** | — |
 | stop everything | `/harness halt` | **anywhere it reads** | — |
 | start it again | `/harness resume` | **anywhere it reads** | — |
 
-`go`, `queue` and `split` round out the fifteen verbs; all of them are in the tables below.
+`go` and `split` round out the twelve verbs; all of them are in the tables below, and
+`/harness-<verb>` works as well as `/harness <verb>`.
 
 ## Where the harness is reading
 
@@ -103,8 +104,27 @@ first, you approve or redirect it, and only a merge turns it into an implement r
 
 ## Comment commands
 
-The form is `/harness <verb> [args]` at the **start of a line**. Everything after the verb to the end
-of that line is the argument.
+There are **twelve**, and the form is either of these at the **start of a line**:
+
+```
+/harness work make the activity cards keyboard reachable
+/harness-work make the activity cards keyboard reachable
+```
+
+Everything after the verb to the end of that line is the argument. The hyphenated spelling makes a
+command a single token, which is what makes the next part read cleanly.
+
+**Several commands go in one comment, one per line.** They run top to bottom, and each gets its own
+answer:
+
+```
+/harness-status
+/harness-ask which component owns the activity cards
+/harness-work make them keyboard reachable
+```
+
+That is a normal thing to send. A command that is refused — wrong level, wrong surface — does not
+stop the ones under it.
 
 Three things are forgiven, because all three are what people actually type:
 
@@ -114,8 +134,34 @@ Three things are forgiven, because all three are what people actually type:
 | `@jgoetzmann-bot /harness work …` | fine — leading `@mentions` are allowed |
 | `as discussed, /harness stop` | **not a command** — prose that mentions it is still prose |
 
-One more that bites: **only the first `/harness` line in a comment is read**, and if its verb is not
-one of the fifteen, the whole comment is discarded rather than falling through to the next line.
+A line whose verb is not one of the twelve is skipped, and the other lines still run.
+
+### The twelve
+
+| Verb | What it does | Level |
+|---|---|---|
+| `work` | open a work item | 2 |
+| `ask` | answer a question, change nothing | 1 |
+| `status` | spend, queue, and when the next thing happens | 1 |
+| `audit` | read through one lens, open a findings issue | 2 |
+| `promote` | turn findings into work items | 2 |
+| `revise` | redo it with my notes | 2 |
+| `rebase` | rebase onto the default branch, re-run the gates | 2 |
+| `stop` | close it and stand down | 2 |
+| `go` | proceed with this | 2 |
+| `split` | break it into child issues | 2 |
+| `halt` | stop all spending | 3 |
+| `resume` | lift the halt | 3 |
+
+Four older names still work and mean the verb they became, so comments already written keep working:
+`fix` → `revise`, `reject` → `stop`, `queue` → `go`, `usage` → `status`.
+
+**Why four names went away.** Each of them named a distinction the *thread you are standing on*
+had already made. `fix` and `revise` differed only in whether code existed yet — which is exactly
+what "proposal pull request" versus "delivery pull request" says. `reject` and `stop` differed only
+in which gate you were at. `queue` and `go` were both "proceed with this", and which one applied
+depended on a state nobody could see. Asking someone to pick the right word for a fact the surface
+already carries only gives them a way to be wrong.
 
 ### Asking for work
 
@@ -145,95 +191,6 @@ On a brightboost issue, with no argument, this means *this one*. The mention is 
 harness finds product-repository comments by reading its notifications, and it is not subscribed to a
 thread it has never touched, so the mention is the only thing that makes a cold issue visible to it.
 
-#### `go` — green-light a suggestion
-
-```
-/harness go
-```
-
-When the queue is empty and the week has budget, the harness may propose work nobody asked for. It
-comments on the product issue saying so and waits. `go` is the only thing that releases it.
-
-Nothing else does — ignoring that comment is a complete answer.
-
-### Steering work that exists
-
-#### `revise` — change the plan (gate 1)
-
-```
-/harness revise the migration has to be reversible; say how in the plan
-```
-
-**On the proposal pull request.** Returns the item to `planning` and rewrites the work package with
-your note as the brief. No code has been written yet at this point, so this is the cheap place to
-change direction.
-
-#### `fix` — change the code (gate 2)
-
-```
-/harness fix the null check belongs in the caller, not the helper
-```
-
-**On the delivery pull request.** One more implementation pass against your feedback, then the
-**complete** gate sequence again — not just the tests that were failing. Force-pushes to the fork
-only if the branch is under `harness/` and its tip is still a commit the harness authored.
-
-Bounded by `MAX_REVISE_CYCLES` (3). At the cap the item goes `stage:needs-human` and only a trusted
-`/harness fix` restarts it.
-
-#### `rebase` — the same, after a conflict
-
-```
-/harness rebase
-```
-
-Rebases onto the product repository's default branch, then re-runs the gates.
-
-#### `stop` — halt it
-
-```
-/harness stop
-```
-
-**On the delivery pull request.** Closes it and moves the item to `stage:blocked`, freeing the
-concurrency slot. The branch and the evidence stay where they are, and `/harness queue` puts it
-back.
-
-Not `stage:dropped`: an item with a delivery pull request open is *stopped for a decision*, not
-discarded, and `shipped → abandoned` is a transition the state machine refuses on purpose.
-
-#### `reject` — refuse the plan
-
-```
-/harness reject we are removing this feature next sprint
-```
-
-**On the proposal pull request.** Same action as `stop` in code — close and abandon — but it means
-something different: a refusal at gate 1 rather than an abort at gate 2. **Level 3 only.**
-
-#### `split` — break it up
-
-```
-/harness split
-```
-
-**On an issue in the harness repository.** Decomposes it into at most `MAX_SUBISSUES` (8) child
-issues, each delivered separately; the parent goes `stage:blocked`. A child is never split again.
-Costs a model call.
-
-Sub-issues inherit how the parent arrived, so splitting a suggestion produces suggestions.
-
-#### `queue` — put it back
-
-```
-/harness queue
-```
-
-Returns a blocked item to `stage:queued`. A no-op if it is already there. This is how you undo a
-`stop`, or restart something the gates blocked once you have dealt with the cause.
-
-### Asking questions
-
 #### `ask` — answer, change nothing
 
 ```
@@ -248,6 +205,19 @@ across everyone. Past the cap it says so and makes **no model call**.
 
 The answer names the commit it read and says it is a reading, not a decision. **This is the cheapest
 way to find out whether the harness understands the codebase — ask it something you already know.**
+
+#### `status` — what is going on
+
+```
+/harness status
+```
+
+Replies in the thread with the spend against both usage stops, the queue in priority order, and
+**when the next thing happens** — the next sweep, whether the run window is open, and whether
+suggested work is admitted. Changes nothing, and level 1 can run it.
+
+This is the first thing to try when nothing seems to be happening. `/harness usage` is the same
+command under its old name.
 
 ### Audits
 
@@ -285,30 +255,92 @@ to `SUGGEST_MAX_PER_RUN` (5).
 
 The two steps are deliberate: one sentence from you must not become eight proposals nobody approved.
 
-### Looking and stopping
+### Steering work that exists
 
-#### `usage` — what is going on
+#### `revise` — redo it with my notes
 
 ```
-/harness usage
+/harness revise the migration has to be reversible; say how in the plan
+/harness revise the null check belongs in the caller, not the helper
 ```
 
-Replies in the thread with the spend against both usage stops, the queue in priority order, and
-**when the next thing happens** — the next sweep, whether the run window is open, and whether
-suggested work is admitted. Changes nothing, and level 1 can run it.
+One verb, and **the pull request you are on decides what it means**:
 
-This is the first thing to try when nothing seems to be happening. `/harness queue` on the inbox
-does the same, because there is no work item there to put back.
+| Where you say it | What happens |
+|---|---|
+| the **proposal** pull request (gate 1) | back to `planning`; the work package is rewritten with your note as the brief. No code exists yet, so this is the cheap place to change direction. |
+| the **delivery** pull request (gate 2) | one more implementation pass against your feedback, then the **complete** gate sequence again — not just the tests that were failing. |
 
-#### `halt` — stop everything
+On a delivery pull request it force-pushes to the fork only if the branch is under `harness/` and its
+tip is still a commit the harness authored. Bounded by `MAX_REVISE_CYCLES` (3); at the cap the item
+goes `stage:needs-human` and only a trusted `/harness revise` restarts it.
+
+`/harness fix` is the same command under its old name.
+
+#### `rebase` — the same, after a conflict
+
+```
+/harness rebase
+```
+
+Rebases onto the product repository's default branch, then re-runs the gates.
+
+#### `stop` — close it and stand down
+
+```
+/harness stop we are removing this feature next sprint
+```
+
+Closes the pull request and moves the item off the queue, freeing the concurrency slot. The branch
+and the evidence stay where they are, and `/harness go` puts it back.
+
+On the **proposal** pull request this is a refusal at gate 1; on the **delivery** pull request it is
+an abort at gate 2. The thread says which, so there is no second word to remember —
+`/harness reject` is the old name for it.
+
+The item lands in `stage:blocked`, not `stage:dropped`: something with a pull request open is
+*stopped for a decision*, not discarded, and `shipped → abandoned` is a transition the state machine
+refuses on purpose.
+
+#### `go` — proceed with this
+
+```
+/harness go
+```
+
+Means one thing to say and two things to do, and **where the item already is** decides which:
+
+- a **suggestion** waiting for a green light becomes approved. When the queue is empty and the week
+  has budget, the harness may propose work nobody asked for; it comments saying so and waits. `go`
+  is the only thing that releases it — ignoring that comment is a complete answer.
+- an item that was **stopped or blocked** goes back in the queue. This is how you undo a `stop`, or
+  restart something the gates blocked once you have dealt with the cause.
+
+Already approved, or already queued, is a no-op that says so. `/harness queue` is the old name.
+
+#### `split` — break it up
+
+```
+/harness split
+```
+
+**On an issue in the harness repository.** Decomposes it into at most `MAX_SUBISSUES` (8) child
+issues, each delivered separately; the parent goes `stage:blocked`. A child is never split again.
+Costs a model call.
+
+Sub-issues inherit how the parent arrived, so splitting a suggestion produces suggestions.
+
+### Stopping everything
+
+#### `halt` — stop all spending
 
 ```
 /harness halt the spend looks wrong
 ```
 
 Stops the harness **spending anything** until it is resumed. Recorded in the ledger with who
-stopped it and why, and reported at the top of `/harness usage` and by `harness dispatch`. **Level 3
-only.**
+stopped it and why, and reported at the top of `/harness status` and by `harness dispatch`.
+**Level 3 only.**
 
 It stops the model calls, not the workflow runs — so the sweep keeps listening, which is what lets
 `/harness resume` lift it the same way it went on.
@@ -352,8 +384,9 @@ Two things must hold, and **the second is invisible**: your handle must be in
 `OWNER`, `MEMBER` or `COLLABORATOR` on **the repository you are commenting on**.
 
 That second half is **per-repository**, which is more useful than it sounds: someone who is a member
-of `Bright-Bots-Initiative` but not of the harness repository can steer work where it lands — `fix`,
-`rebase`, `stop`, `ask` on brightboost issues and delivery pull requests — while the harness's own
+of `Bright-Bots-Initiative` but not of the harness repository can steer work where it lands —
+`revise`, `rebase`, `stop`, `ask` on brightboost issues and delivery pull requests — while the
+harness's own
 threads (the inbox, proposal pull requests, work items) stay with the people who run it. That is a
 deliberate arrangement, not a misconfiguration, and `harness doctor` reports it as a warning rather
 than a problem.
@@ -364,9 +397,9 @@ access.
 
 | Level | Who | Commands |
 |---|---|---|
-| **3** | operator | everything, including `reject`, `halt`, `resume` and `--force` |
-| **2** | maintainer | `work` `queue` `go` `audit` `promote` `revise` `fix` `rebase` `split` `stop` |
-| **1** | asker | `ask`, `usage` |
+| **3** | operator | everything, including `halt`, `resume` and `--force` |
+| **2** | maintainer | `work` `go` `audit` `promote` `revise` `rebase` `split` `stop` |
+| **1** | asker | `ask`, `status` |
 | **0** | not in the file | nothing; the comment body is never parsed |
 
 Using a verb above your level is answered, not silent: the reply names the level it needed.

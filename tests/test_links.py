@@ -231,3 +231,52 @@ def test_b228_no_bare_and_test_under_set_e():
     step = _discover_yml().split("Discover and propose", 1)[1]
 
     assert "] && args+=" not in step
+
+
+# --------------------------------------------------------------------------------------
+# The pointer every reply carries
+#
+# The harness answers in threads. An answer that says only what happened leaves the reader
+# where they started: knowing one command and not that there are eleven others.
+# --------------------------------------------------------------------------------------
+
+
+def test_every_reply_offers_more_commands_and_links_the_full_list():
+    text = links.reply_pointer(CONFIG, "inbox")
+
+    assert "You can also say" in text
+    assert "docs/COMMANDS.md" in text, "the pointer has to reach the whole list, not just three"
+    assert "one per line" in text, "the multi-command rule is worth nothing if nobody is told"
+    assert "/harness-" in text, "and so is the hyphenated spelling"
+
+
+def test_the_pointer_offers_what_makes_sense_on_this_surface():
+    """"What can I say" has a different answer on a delivery pull request than on the inbox, and
+    the useful version of it is the short one. Offering `split` on a delivery PR -- where it acts
+    on the wrong number -- is worse than offering nothing."""
+    on_delivery = links.reply_pointer(CONFIG, "delivery_pr")
+    on_inbox = links.reply_pointer(CONFIG, "inbox")
+
+    assert "rebase" in on_delivery and "rebase" not in on_inbox
+    assert "work <what>" in on_inbox and "work <what>" not in on_delivery
+    assert on_delivery != on_inbox
+
+
+def test_the_pointer_never_offers_a_verb_that_does_not_exist():
+    """The same drift guard the signature has: a renamed verb must not survive here."""
+    from harness.keywords import VERBS
+
+    for surface in list(links.SURFACE_HINTS) + ["", "something_new"]:
+        text = links.reply_pointer(CONFIG, surface)
+        offered = re.findall(r"`/harness[ -](\w+)", text)
+        assert offered, f"{surface}: the pointer offered nothing"
+        unknown = sorted(set(offered) - set(VERBS))
+        assert unknown == [], f"{surface}: pointer offers verbs that do not exist: {unknown}"
+
+
+def test_an_unknown_surface_still_gets_a_usable_pointer():
+    """Surfaces are added over time. A missing entry must degrade to the general three, not to
+    an empty line that reads as the harness having nothing to offer."""
+    text = links.reply_pointer(CONFIG, "a_surface_added_later")
+
+    assert "status" in text and "ask" in text

@@ -291,7 +291,7 @@ def test_B135_replay_of_the_same_comment_returns_none_the_second_time():
                 node_id="IC_kwDOAbc555")
     first = command_from(c, surface="delivery_pr", number=77, trusted=TRUSTED, ledger=ledger)
     assert isinstance(first, Command)
-    assert first.verb == "fix"
+    assert first.verb == "revise"  # `fix` is an alias now
     assert ledger.seen("IC_kwDOAbc555") is True
     second = command_from(c, surface="delivery_pr", number=77, trusted=TRUSTED, ledger=ledger)
     assert second is None
@@ -305,7 +305,7 @@ def test_B135_replay_sweep_twice_second_sweep_is_empty():
                 node_id="IC_q1")
     gh = FakeGh(threads=[thread(SELF_REPO, 12, "Issue", "t1")], comments={(SELF_REPO, 12): [c]})
     first = run_sweep(gh, ledger)
-    assert [(x.verb, x.number) for x in first] == [("queue", 12)]
+    assert [(x.verb, x.number) for x in first] == [("go", 12)]  # `queue` is an alias now
     assert "IC_q1" in ledger.cursors["seen_comment_ids"]
     second = run_sweep(gh, ledger)
     assert second == []
@@ -353,20 +353,20 @@ def test_B135_replay_key_falls_back_to_str_of_numeric_id():
 
 def test_B133_parse_each_verb():
     """B133/§8.3: every verb in VERBS parses from a line-start '/harness <verb> <args>'."""
-    # Delivery 4 added five that ask for work rather than steer work that exists. What B133
-    # pins is that each parses; the seven it was written for are still the first seven.
-    assert VERBS[:7] == ("revise", "reject", "fix", "rebase", "stop", "split", "queue")
-    assert set(VERBS) - set(VERBS[:7]) == {
-        "work", "audit", "promote", "go", "ask",   # D4: asking for work
-        "usage", "halt", "resume",                 # looking at it, and stopping it
-    }
-    assert parse("/harness revise tighten the diagnosis") == ("revise", "tighten the diagnosis")
-    assert parse("/harness reject not worth it") == ("reject", "not worth it")
-    assert parse("/harness fix") == ("fix", "")
-    assert parse("/harness rebase") == ("rebase", "")
-    assert parse("/harness stop") == ("stop", "")
-    assert parse("/harness split") == ("split", "")
-    assert parse("/harness queue") == ("queue", "")
+    from harness.keywords import ALIASES
+
+    for verb in VERBS:
+        assert parse(f"/harness {verb} some args") == (verb, "some args"), verb
+        assert parse(f"/harness {verb}") == (verb, ""), verb
+
+    # Three pairs were merged because the SURFACE already told them apart, so the second name
+    # only added a way to be wrong. The old names still parse -- to the verb they became, since
+    # comments already written must not silently stop working.
+    assert parse("/harness fix tighten it") == ("revise", "tighten it")
+    assert parse("/harness reject not worth it") == ("stop", "not worth it")
+    assert parse("/harness queue") == ("go", "")
+    assert parse("/harness usage") == ("status", "")
+    assert set(ALIASES) & set(VERBS) == set(), "an alias must not also be a live verb"
 
 
 def test_B133_parse_unknown_verb_is_none():
@@ -388,12 +388,12 @@ def test_B133_parse_mid_body_not_at_line_start_is_none():
 def test_B133_parse_finds_the_command_on_its_own_line_in_a_multiline_body():
     """B133/RUN-DECISIONS-D2 §6 regex (multiline): a command on a later line is found."""
     assert parse("Thanks for the PR.\n/harness rebase\nAlso fix the typo.") == ("rebase", "")
-    assert parse("\n\n/harness fix\n") == ("fix", "")
+    assert parse("\n\n/harness fix\n") == ("revise", "")
 
 
 def test_B133_parse_allows_leading_whitespace():
     """B133/RUN-DECISIONS-D2 §6 regex: ^\\s* permits indentation before /harness."""
-    assert parse("   /harness queue") == ("queue", "")
+    assert parse("   /harness queue") == ("go", "")
     assert parse("\t/harness stop") == ("stop", "")
 
 
@@ -411,11 +411,18 @@ def test_B133_parse_bare_harness_without_verb_is_none():
     assert parse("/harness\n") is None
 
 
-def test_B133_parse_requires_whitespace_between_harness_and_verb():
-    """B133/RUN-DECISIONS-D2 §6 regex: '/harnessfix' and '/harness-fix' are not commands."""
-    assert parse("/harnessfix") is None
-    assert parse("/harness-fix") is None
+def test_B133_parse_requires_a_separator_between_harness_and_verb():
+    """B133/RUN-DECISIONS-D2 §6 regex: `/harnessstop` is not a command — the verb has to be a
+    separate token, or any word beginning "harness" becomes one.
+
+    `/harness-stop` IS one now, reversing that clause of §6: the hyphenated spelling makes each
+    command a single token, which is what lets several sit in one comment without reading as a
+    sentence that got away from someone."""
+    assert parse("/harnessstop") is None
     assert parse("/harnessstop now") is None
+    assert parse("/harness-stop") == ("stop", "")
+    assert parse("/harness-work make the cards reachable") == (
+        "work", "make the cards reachable")
 
 
 def test_B133_parse_args_stop_at_the_end_of_the_command_line():
@@ -444,7 +451,7 @@ def test_B131_command_from_trusted_owner_returns_the_full_command():
     cmd = command_from(c, surface="delivery_pr", number=42, trusted=TRUSTED, ledger=ledger)
     # B283/B270 appended `force` and `level`. The level is the actor's, recorded so a refusal
     # can say what it would have needed; jgoetzmann is the operator.
-    assert cmd == Command(verb="fix", args="", surface="delivery_pr", number=42,
+    assert cmd == Command(verb="revise", args="", surface="delivery_pr", number=42,
                           comment_id="IC_abc", actor="jgoetzmann", force=False, level=3)
     assert ledger.cursors["keyword_denied"] == {}
 
@@ -523,7 +530,7 @@ def test_B140_sweep_reads_notifications_since_the_cursor_and_returns_commands_in
     gh, _ = sweep_fixture()
     cmds = run_sweep(gh, ledger)
     assert [(c.verb, c.surface, c.number) for c in cmds] == [
-        ("queue", "issue", 12), ("fix", "delivery_pr", 77), ("queue", "product_issue", 900)]
+        ("go", "issue", 12), ("revise", "delivery_pr", 77), ("go", "product_issue", 900)]
     assert cmds[0].comment_id == "IC_self12" and cmds[0].actor == "jgoetzmann"
     assert cmds[1].comment_id == "PRRC_up77" and cmds[1].actor == "jgoetzmann"
     assert cmds[2].comment_id == "IC_up900" and cmds[2].actor == "jgoetzmann"
@@ -615,3 +622,83 @@ def test_B140_sweep_mixed_trusted_and_untrusted_returns_only_the_trusted_command
     assert [(x.verb, x.comment_id) for x in cmds] == [("stop", "IC_good")]
     assert ledger.cursors["keyword_denied"] == {"mallory": 1}
     assert gh.write_calls() == []
+
+
+# --------------------------------------------------------------------------------------------
+# Several commands in one comment, and the hyphenated spelling.
+#
+# Both exist for the same reason: a person on a phone thinking of three things should be able to
+# say three things. Reading only the first line was a rule nothing enforced except the parser.
+
+
+def test_parse_all_reads_every_command_line_in_order():
+    """Not just the first. Order is the order they were typed, because they are steps."""
+    from harness.keywords import parse_all
+
+    body = (
+        "morning!\n"
+        "/harness-status\n"
+        "/harness ask which component owns the activity cards\n"
+        "/harness-work make them keyboard reachable\n"
+        "thanks\n"
+    )
+    assert parse_all(body) == [
+        ("status", ""),
+        ("ask", "which component owns the activity cards"),
+        ("work", "make them keyboard reachable"),
+    ]
+
+
+def test_parse_all_skips_an_unknown_verb_without_dropping_the_rest():
+    """The old parser read the first `/harness` line and discarded the comment if its verb was
+    not real -- so one typo silently ate the commands under it."""
+    from harness.keywords import parse_all
+
+    assert parse_all("/harness frobnicate\n/harness status\n") == [("status", "")]
+
+
+def test_parse_all_resolves_aliases_so_a_mixed_comment_still_lands():
+    from harness.keywords import parse_all
+
+    assert parse_all("/harness fix tighten it\n/harness-queue\n") == [
+        ("revise", "tighten it"), ("go", "")]
+
+
+def test_parse_all_of_prose_is_empty():
+    """Prose that mentions the harness is still prose, however many times it does it."""
+    from harness.keywords import parse_all
+
+    assert parse_all("as discussed, /harness stop -- and maybe /harness go later") == []
+
+
+def test_commands_from_marks_the_comment_seen_once_for_a_multi_command_body():
+    """B135 is per *comment*, not per command. Marking once per command would make the second
+    command of a two-command comment look like a replay of the first and be dropped."""
+    from harness.keywords import commands_from
+
+    ledger = fresh_ledger()
+    c = comment(login="jgoetzmann", association="OWNER", id=1, node_id="IC_multi",
+                body="/harness-status\n/harness-go\n")
+
+    first = commands_from(c, trusted=TRUSTED, ledger=ledger, surface="issue", number=12)
+    assert [(x.verb, x.number) for x in first] == [("status", 12), ("go", 12)]
+
+    assert commands_from(c, trusted=TRUSTED, ledger=ledger, surface="issue", number=12) == [], (
+        "the whole comment is seen, so a second sweep replays neither command")
+
+
+def test_commands_from_gates_each_command_on_its_own_level():
+    """A level-2 handle sending `status` and `halt` in one comment gets the first done and the
+    second refused. Gating the comment on its highest verb would refuse the harmless one too;
+    gating on its lowest would let the halt through."""
+    from harness.keywords import commands_from
+
+    c = comment(login="nathan", association="MEMBER", id=2, node_id="IC_mixed",
+                body="/harness-status\n/harness-halt the spend looks wrong\n")
+    got = commands_from(c, trusted=parse_trust("2 nathan"), ledger=fresh_ledger(),
+                        surface="issue", number=12)
+
+    # The refusal is answered rather than dropped -- silence here reads as the harness being
+    # asleep, which is the failure this whole surface exists to avoid.
+    assert [x.verb for x in got] == ["status", "__denied__"]
+    assert "needs level 3" in got[1].args

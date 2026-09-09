@@ -54,6 +54,7 @@ from harness.store import (
 # Not re-exported by `harness.store`: it is the GitHub backend's label vocabulary. `relabel`
 # needs it because it is the only mapping that reads BOTH label families (B265).
 from harness.store.github import STATE_OF_LABEL, _label_names
+from harness.store.sqlite import TRANSITIONS
 from harness import trust as trust_mod
 from harness.trust import load_trust
 
@@ -1598,7 +1599,7 @@ def _reply(ctx, config, cmd, message: str) -> None:
     body = "\n\n".join(
         [
             message.strip(),
-            links.reply_pointer(config),
+            links.reply_pointer(config, cmd.surface),
             links.signature(config, trusted=ctx.trusted, steerable=False),
         ]
     )
@@ -1608,6 +1609,17 @@ def _reply(ctx, config, cmd, message: str) -> None:
         # A reply that cannot be posted must not undo work that already happened.
         logging.getLogger("harness").warning(
             "could not reply on %s#%s: %s", repo, cmd.number, exc)
+
+
+#: What to say instead of an IllegalTransition when `go` is aimed at a state it cannot move.
+_GO_DEAD_ENDS: dict[str, str] = {
+    "needs-human": (
+        "It hit the revision cap, so it is waiting for a person: `/harness revise <notes>` on "
+        "the delivery pull request restarts it."
+    ),
+    "merged": "It is already delivered and merged.",
+    "abandoned": "It was stopped for good; `/harness work` opens a fresh item.",
+}
 
 
 def _act_on_command(ctx, config, cmd) -> str:
@@ -1632,7 +1644,7 @@ def _act_on_command(ctx, config, cmd) -> str:
         item_id, message = STAGES["request"](ctx, text=text, actor=cmd.actor, via=_via_for(cmd))
         return message + _forced(ctx, cmd, item_id)
 
-    if cmd.verb == "usage":
+    if cmd.verb == "status":
         return _usage_report(ctx, config, ctx.clock.now())
 
     if cmd.verb == "halt":
@@ -1677,22 +1689,6 @@ def _act_on_command(ctx, config, cmd) -> str:
 
     item_id = _item_for_command(ctx, config, cmd)
 
-    if cmd.verb == "queue":
-        if item_id is None:
-            # `queue` means two things and the surface tells them apart. On a work item it puts
-            # that item back; on a thread that IS no work item -- the inbox, most obviously --
-            # there is nothing to requeue, so the only sensible reading is "show me the queue".
-            if cmd.surface in ("inbox", "issue"):
-                return _usage_report(ctx, config, ctx.clock.now())
-            return f"no work item for {cmd.surface} {cmd.number}"
-        item = ctx.store.get_work_item(item_id)
-        if item is None:
-            return f"no work item {item_id}"
-        if item.state == "discovered":
-            return "already queued"
-        ctx.store.transition(item_id, "discovered", reason=reason)
-        return "discovered" + _forced(ctx, cmd, item_id)
-
     if cmd.verb == "split":
         if item_id is None:
             return f"no work item for {cmd.surface} {cmd.number}"
@@ -1703,25 +1699,50 @@ def _act_on_command(ctx, config, cmd) -> str:
         return "no work item for this thread"
 
     if cmd.verb == "go":
-        # B262: the green light on a suggestion. Only this moves a suggested item forward, and
-        # it is still only the first of the two human gates -- the proposal must still be merged.
+        # "Proceed with this." What that means depends on where the item already is, which is
+        # why `queue` was folded in here: a suggestion waiting for a green light becomes
+        # approved (B262), and an item that was stopped or blocked goes back in the queue. Both
+        # are the same request in the person's head, and asking them to pick the right word for
+        # a state they cannot see was never going to work.
         item = ctx.store.get_work_item(item_id)
         if item is None:
             return f"no work item {item_id}"
-        if item.state == "approved":
-            return "already approved"
+        state = item.state
+        if state == "blocked":
+            # The one state the transition table lets back to `discovered`, and the one `stop`
+            # leaves an item in -- so this is how a `stop` is undone.
+            ctx.store.transition(item_id, "discovered", reason=reason)
+            return f"item {item_id} back in the queue" + _forced(ctx, cmd, item_id)
+        if state == "approved":
+            return f"item {item_id} is already approved and waiting for a runner"
+        if state == "discovered":
+            return f"item {item_id} is already in the queue"
+        if "approved" not in TRANSITIONS.get(state, frozenset()):
+            # Answered, not raised. `needs-human` and the two terminal states have nowhere to go
+            # from here, and an IllegalTransition traceback in a comment reply tells the person
+            # nothing they can act on.
+            return (
+                f"item {item_id} is `{state}`, which `go` cannot move. "
+                + _GO_DEAD_ENDS.get(state, "Say what you want to happen and I will say if I can.")
+            )
         ctx.store.transition(item_id, "approved", reason=reason)
         return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
 
-    if cmd.verb in ("stop", "reject"):
+    if cmd.verb == "stop":
         item = ctx.store.get_work_item(item_id)
         state = item.state if item is not None else ""
         # `shipped -> abandoned` is pinned illegal (D1): an item with a delivery pull request
         # open is not dropped, it is stopped for a decision. `stop` on a delivery PR is exactly
-        # that case, so it lands in `blocked` -- which is legal, reversible with `/harness
-        # queue`, and what the label already means. Choosing the target instead of hard-coding
+        # that case, so it lands in `blocked` -- which is legal, reversible with `/harness go`,
+        # and what the label already means. Choosing the target instead of hard-coding
         # `abandoned` is what stops the documented gesture raising after it closed the PR.
-        target = "abandoned" if "abandoned" in TRANSITIONS.get(state, frozenset()) else "blocked"
+        legal = TRANSITIONS.get(state, frozenset())
+        if not legal:
+            # `merged` and `abandoned` are terminal, so there is nothing to stop. Said rather
+            # than raised: an IllegalTransition traceback in a reply is not an answer, and this
+            # is the likeliest way to reach one -- somebody stopping a thing twice.
+            return f"item {item_id} is already `{state}`; there is nothing left to stop."
+        target = "abandoned" if "abandoned" in legal else "blocked"
         # Transitioned FIRST: a refused transition must not leave a closed pull request attached
         # to a live item, which is what happened when the close came first.
         ctx.store.transition(item_id, target, reason=reason)
@@ -1733,13 +1754,19 @@ def _act_on_command(ctx, config, cmd) -> str:
         return f"item {item_id} {target}" + ("; PR closed" if closed else "")
 
     if cmd.verb == "revise":
+        # "Redo it with my notes." On a proposal there is no code yet, so redoing it means
+        # rewriting the plan; on a delivery pull request the code exists, so it means another
+        # implementation pass against the same package. That is one intention with two
+        # mechanisms, and the thread the person is standing on already says which -- `fix` only
+        # ever asked them to name a distinction the surface had already made.
+        if cmd.surface == "delivery_pr":
+            lease = STAGES["revise"](
+                ctx, item_id, source="review", notes=cmd.args or "/harness revise"
+            )
+            return f"item {item_id} re-implemented: {'revised' if lease else 'not revised'}"
         ctx.store.transition(item_id, "proposing", reason=reason)
         spec_path = STAGES["propose"](ctx, item_id, notes=cmd.args)
         return f"item {item_id} re-proposed: {spec_path}"
-
-    if cmd.verb == "fix":
-        lease = STAGES["revise"](ctx, item_id, source="review", notes=cmd.args or "/harness fix")
-        return f"item {item_id} revise(review): {'revised' if lease else 'not revised'}"
 
     if cmd.verb == "rebase":
         notes = cmd.args or "/harness rebase"
@@ -1747,6 +1774,54 @@ def _act_on_command(ctx, config, cmd) -> str:
         return f"item {item_id} revise(conflict): {'revised' if lease else 'not revised'}"
 
     return f"unknown verb {cmd.verb}"
+
+
+def run_command(ctx, config, cmd) -> tuple[dict, bool]:
+    """Act on one command, answer in its thread, and say whether the batch may continue.
+
+    Split out of the sweep loop so the answering behaviour can be exercised without standing up
+    a whole sweep -- every branch here ends in a reply, and a branch that quietly stopped
+    replying would look, from the thread, exactly like the harness being asleep.
+    """
+    record = {
+        "verb": cmd.verb,
+        "args": cmd.args,
+        "surface": cmd.surface,
+        "number": cmd.number,
+        "comment_id": cmd.comment_id,
+        "actor": cmd.actor,
+        "result": "",
+    }
+    try:
+        result = _act_on_command(ctx, config, cmd)
+        # B284: anything the actor needs told that is not the outcome itself -- a refused
+        # `--force`, say. Appended to the reply rather than folded into the command, so it
+        # reaches the person without reaching the stage.
+        if getattr(cmd, "note", ""):
+            result = "\n\n".join(part for part in (result, cmd.note) if part)
+        record["result"] = result
+        _reply(ctx, config, cmd, result)
+    except Halted as exc:
+        # A commanded halt refuses THIS command; it must not abort the batch. Every command in a
+        # batch is already marked seen while the batch is collected, so re-raising here consumed
+        # the rest of them permanently -- including the `/harness resume` that lifts the halt,
+        # which the inbox poll makes likely to sit behind a spending verb rather than in front of
+        # it. The switch would have been one a comment could set and no comment could clear.
+        record["result"] = str(exc)
+        _reply(ctx, config, cmd, str(exc))
+    except RateLimited as exc:
+        # The one case that stops the batch: the next command would fail the same way, and
+        # burning the rest of them against a closed window loses them for good.
+        record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
+        return record, False
+    except HarnessError as exc:
+        # Answered, not just recorded. A command that failed is the case where a person most
+        # needs to hear something: recording it to stdout and saying nothing in the thread is
+        # indistinguishable, from where they are standing, from the harness being asleep --
+        # which is the one failure this whole surface exists to avoid.
+        record["result"] = f"error: {exc}"
+        _reply(ctx, config, cmd, f"that did not work: {exc}")
+    return record, True
 
 
 def cmd_sweep(args: argparse.Namespace) -> int:
@@ -1766,40 +1841,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             machine=discover_stage.machine_account(config),
         )
         for cmd in commands:
-            record = {
-                "verb": cmd.verb,
-                "args": cmd.args,
-                "surface": cmd.surface,
-                "number": cmd.number,
-                "comment_id": cmd.comment_id,
-                "actor": cmd.actor,
-                "result": "",
-            }
-            try:
-                result = _act_on_command(ctx, config, cmd)
-                # B284: anything the actor needs told that is not the outcome itself -- a
-                # refused `--force`, say. Appended to the reply rather than folded into the
-                # command, so it reaches the person without reaching the stage.
-                if getattr(cmd, "note", ""):
-                    result = "\n\n".join(part for part in (result, cmd.note) if part)
-                record["result"] = result
-                _reply(ctx, config, cmd, result)
-            except Halted as exc:
-                # A commanded halt refuses THIS command; it must not abort the batch. Every
-                # command in a batch is already marked seen while the batch is collected, so
-                # re-raising here consumed the rest of them permanently -- including the
-                # `/harness resume` that lifts the halt, which the inbox poll makes likely to
-                # sit behind a spending verb rather than in front of it. The switch would have
-                # been one a comment could set and no comment could clear.
-                record["result"] = str(exc)
-                _reply(ctx, config, cmd, str(exc))
-            except RateLimited as exc:
-                record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
-                print(json.dumps(record, sort_keys=False))
-                break
-            except HarnessError as exc:
-                record["result"] = f"error: {exc}"
+            record, keep_going = run_command(ctx, config, cmd)
             print(json.dumps(record, sort_keys=False))
+            if not keep_going:
+                break
     finally:
         _save_ledger(ctx)
     return EXIT_OK

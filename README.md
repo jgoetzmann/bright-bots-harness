@@ -69,23 +69,25 @@ its own roots, or ask you for any access beyond `public_repo` on its own account
 
 ## Steering it
 
-From a comment on any harness issue or PR, `/harness <verb>` on its own line. These fifteen are
-the whole list:
+From a comment on any harness issue or PR, `/harness <verb>` — or `/harness-<verb>` — on its own
+line. **Several may go in one comment, one per line.** These twelve are the whole list:
 
 | Verb | Where | What it does |
 |---|---|---|
-| `revise` | Proposal PR | Returns the item to `proposing` and re-runs `propose` with your notes as guidance |
-| `reject` | Proposal PR | Closes the PR and abandons the item |
-| `fix` | Delivery PR | One revision cycle with source `review`, your notes as the feedback |
-| `rebase` | Delivery PR | One revision cycle with source `conflict` |
-| `stop` | Delivery PR | Closes the PR and abandons the item |
-| `split` | Issue here | Decomposes it into at most `MAX_SUBISSUES` sub-issues, in this repository only |
-| `queue` | Issue here | Returns the item to `discovered`; a no-op if it is already there |
 | `work` | Inbox issue here, or an issue upstream | Opens a work item and queues it. A pasted issue link tracks that issue; a sentence becomes an item of its own |
 | `ask` | Anywhere | Answers a question about the product repository. Changes nothing at all |
+| `status` | Anywhere | Spend against both usage stops, the queue in order, and when the next thing happens |
 | `audit` | Issue here | Reads the product repository through one lens and opens **one** findings issue. Creates no work items |
 | `promote` | Audit issue here | Turns findings into work items, ticking them off in the audit issue |
-| `go` | The upstream issue, or the item here | Green-lights a suggestion the harness made, so it may be proposed |
+| `revise` | Either PR | On a proposal, re-runs `propose` with your notes as guidance; on a delivery PR, one revision cycle with source `review`. The PR you are on decides which |
+| `rebase` | Delivery PR | One revision cycle with source `conflict` |
+| `stop` | Either PR | Closes the PR and stands the item down — a refusal at gate 1, an abort at gate 2 |
+| `go` | The upstream issue, or the item here | Green-lights a suggestion the harness made, or puts a parked item back in the queue |
+| `split` | Issue here | Decomposes it into at most `MAX_SUBISSUES` sub-issues, in this repository only |
+| `halt` · `resume` | Anywhere | Stops the harness spending anything at all, and lifts it again |
+
+Four older names still parse, to the verb they became: `fix` → `revise`, `reject` → `stop`,
+`queue` → `go`, `usage` → `status`.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the
 operator) everything, level 2 (maintainers) everything that queues or steers work, level 1

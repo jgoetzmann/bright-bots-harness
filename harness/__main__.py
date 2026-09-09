@@ -759,9 +759,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         # Filed as a problem it took the whole fleet down within an hour of going live: a
         # diagnostic added to make a silent failure visible became a louder failure itself.
         warnings.append(
-            f"in the trust file but with no access to {config.self_repo}: {named}. The trust "
-            "file is half the gate; GitHub must also report them as OWNER, MEMBER or "
-            "COLLABORATOR. Invite them to the repository, or their commands are ignored."
+            f"no access to {config.self_repo}: {named}. The association half of the gate is "
+            f"per-repository, so their commands are ignored ON {config.self_repo} -- the inbox, "
+            "proposal pull requests and work items. If GitHub reports them as a member or "
+            f"collaborator on {config.upstream_repo} their commands still work THERE, on "
+            "product issues and delivery pull requests. Invite them here only if you want them "
+            "to steer the harness's own threads too."
         )
     payload["warnings"] = list(warnings)
     if warnings:

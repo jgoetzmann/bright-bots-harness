@@ -321,3 +321,25 @@ def test_b269_a_malformed_level_line_is_refused_and_recorded(tmp_path):
     assert trusted.level_of("9") == 0
     assert trusted.malformed == ("9 someone", "0 nobody")
     assert trusted.level_of("jgoetzmann") == 3, "one bad line does not poison the file"
+
+
+def test_the_association_half_of_the_gate_is_per_repository():
+    """`BrightBoost-Tech` is level 2 and deliberately not a collaborator on the harness
+    repository. That is an arrangement, not a misconfiguration: `is_authorised` takes the
+    association GitHub computed for the thread the comment is on, so the same handle is refused
+    here and honoured on the product repository, where it is a member.
+
+    Pinned because the obvious "fix" for the doctor warning is to invite them, which would
+    silently widen what they can steer.
+    """
+    trusted = load_trust(SHIPPED_TRUST_PATH)
+
+    assert trusted.level_of("brightboost-tech") == 2
+
+    # On a thread where GitHub reports no relationship: refused, whatever the level says.
+    assert is_authorised("BrightBoost-Tech", "NONE", trusted) is False
+    # On a thread where it is a member: honoured at its level.
+    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted) is True
+    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted, min_level=2) is True
+    # And still not the operator.
+    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted, min_level=3) is False

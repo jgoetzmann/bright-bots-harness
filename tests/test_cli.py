@@ -2479,17 +2479,27 @@ def test_doctor_a_stranded_trusted_handle_is_a_warning_not_an_outage(
     assert cli.main(["init"]) == 0
     capsys.readouterr()
 
+    # Compared with and without, rather than asserted as an absolute 0: `doctor` also probes
+    # binaries and disk, so a runner missing `claude` degrades for its own reasons. What this
+    # test is about is whether the STRANDED HANDLE changes the exit code, and the difference
+    # answers that on any machine. (The absolute form passed locally and failed on CI, which is
+    # the same class of mistake as testing something adjacent to the behaviour.)
+    monkeypatch.setattr(
+        cli, "_doctor_trust_access", lambda config, args, trusted, payload: ()
+    )
+    baseline = cli.main(["doctor"])
+    capsys.readouterr()
+
     monkeypatch.setattr(
         cli, "_doctor_trust_access", lambda config, args, trusted, payload: ("someone",)
     )
-
     code = cli.main(["doctor"])
     out = capsys.readouterr().out
 
-    assert code == 0, "a stranded handle must not make doctor exit non-zero"
+    assert code == baseline, "a stranded handle must not change doctor's exit code"
     assert "warnings (the harness still runs)" in out
     assert "@someone" in out and "no access" in out
-    assert "degraded:" not in out
+    assert "jgoetzmann/bright-bots-harness" in out or "no access to" in out
 
 
 def test_doctor_a_real_problem_still_degrades(tmp_path, monkeypatch, capsys):

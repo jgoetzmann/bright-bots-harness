@@ -427,16 +427,40 @@ access.
 
 Using a verb above your level is answered, not silent: the reply names the level it needed.
 
-### Latency
+### Latency, and how you know it heard you
 
 | Where | How fast |
 |---|---|
-| Harness repository | minutes — the comment wakes the workflow directly |
+| Harness repository | 👀 within seconds, then the answer in minutes |
 | Product repository | up to 3 hours on a weekday; a Saturday comment waits until Monday |
 
-The harness gets no events on the product repository — it is not a collaborator there and must not
-be. It reads its notifications on `feedback.yml`'s schedule (`41 */3 * * 1-5`). To skip the wait, run
-`feedback` from the Actions tab.
+**On the harness repository you get an answer twice.** Within a few seconds a 👀 reaction appears on
+your comment, and if anything you asked for takes more than a moment, a short comment says what it is
+doing and roughly how long:
+
+> **Working on it.**
+>
+> - `/harness ask` — cloning the product repository and reading it. About **a couple of minutes**.
+> - `/harness work` — opening the work item. About **under a minute**.
+
+That is `ack.yml`, and it exists because silence and thinking look identical from a thread — and
+silence is the one people act on, by commenting again or by concluding the thing is off. It runs
+before any work starts, takes no lock, installs nothing, and cannot spend. A comment of only fast
+verbs gets the reaction and no comment, because an acknowledgement that lands two seconds before the
+answer is just a second notification.
+
+It uses the same parser and the same trust gate as the real thing, so it cannot promise work that
+will not happen: a fenced block, an unknown verb or an untrusted commenter gets nothing.
+
+**On the product repository there is no reaction and no acknowledgement.** The harness gets no
+events there — it is not a collaborator and must not be. It reads its notifications on
+`feedback.yml`'s schedule (`41 */3 * * 1-5`). To skip the wait, run `feedback` from the Actions tab.
+
+**If a scheduled run never happens**, `watchdog.yml` notices within about four hours and starts one.
+That covers the case nothing else does: a run that *fails* files an ops issue and is retried, but a
+run that never *starts* does neither, because nothing fired. GitHub drops scheduled runs under load,
+and disables schedules outright on a repository with no pushes for 60 days — the watchdog tells those
+two apart and says which it found.
 
 ---
 
@@ -511,17 +535,26 @@ harness sync-fork       # fast-forward the fork from upstream; loud on divergenc
 harness init --labels   # create the nineteen labels
 ```
 
-### The remaining three
+### The remaining four
 
 ```bash
 harness setup --tier 2  # assess what a tier still needs and rewrite HUMAN.md with the checklist
 harness archive 4       # promote a review package from runs/ into packages/, for the record
 harness local-loop      # the container loop: dispatch, run, sleep — what the `bb` image runs
+harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 ```
 
 `setup` is the one to run when raising the tier: it reports each prerequisite, who has to satisfy it
 (you or the harness), and refuses to claim readiness the credential does not have. See
 [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`.
+
+`ack` is the one you will never type. It is what `ack.yml` calls to decide whether a comment deserves
+a "working on it", and it prints the text or nothing at all. It exists as a subcommand rather than as
+script inside the workflow so that it uses the *same* parser and the *same* trust gate as the sweep —
+a second copy of either would eventually disagree with the first, and the way you would find out is
+somebody being told the harness heard them when it did not. It never spends, never writes, and always
+exits 0: an acknowledgement that can fail the run it precedes is a worse bargain than no
+acknowledgement.
 
 ### Three kill switches, and what each one stops
 

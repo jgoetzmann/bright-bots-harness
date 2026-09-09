@@ -352,3 +352,151 @@ notification cursor over a feed that never arrived — advancing it would skip t
 `harness doctor` reports the missing scope as a warning, so the gap is visible before it is a
 silence. Adding `notifications` to the PAT closes it; without that, cold product-issue mentions are
 the only thing missed.
+
+## D65 — the second answer, and the run that never started
+
+Implemented 2026-09-09 on `feat/instant-ack-and-ops-retries`. Three changes, all about the same
+thing from different angles: **a thread cannot tell thinking from broken, and people act on the
+second reading.**
+
+**B293 — `ack.yml`, an answer within seconds.** A `/harness` comment on the harness repository
+already wakes `feedback.yml` on the event, but that workflow installs the package, runs `doctor`,
+syncs the fork and takes the `harness-ledger` lock — so its first useful output is minutes away, and
+can be much further if an `implement` run holds the lock. For all of those minutes the thread shows
+nothing. Now it shows a 👀 reaction immediately, and — when anything asked for takes more than a
+moment — one short comment naming each verb, what it is doing, and roughly how long.
+
+Four things make it worth having rather than noise:
+
+- **It takes no lock and installs nothing.** Not a first step of `feedback.yml`, because that job's
+  latency is exactly the problem. `harness-ledger` serialises every workflow that writes state, and
+  an acknowledgement that queues behind a twenty-minute implement run is not an acknowledgement. The
+  harness is stdlib-only, so `PYTHONPATH=.` replaces a twenty-second `pip install`.
+- **It reuses the parser and the trust gate**, via a `harness ack` subcommand rather than a script
+  in the workflow. A second copy of either would drift, and the way that surfaces is somebody being
+  told they were heard when they were not — on a public repository. A fenced block, an unknown verb,
+  an untrusted commenter or a wrong `author_association` all produce silence.
+- **Fast verbs get the reaction and no comment.** An acknowledgement that lands two seconds before
+  the answer has told the reader nothing and cost them a notification.
+- **It cannot spend and cannot fail the run.** Tier 0, fake backend, no secret beyond
+  `GITHUB_TOKEN`, and exit 0 on every path including a missing file.
+
+The comment body reaches Python through the environment, never through `${{ }}` inside a `run:`
+block: that substitution happens before bash sees the line, so a backtick in a stranger's comment
+would otherwise be a command on the runner.
+
+**B294 — `watchdog.yml`, for the run that never started.** A run that *fails* files a `kind:ops`
+issue and is retried. A run that never *starts* does neither, because nothing fired, and the only
+symptom is that comments on the product repository go unanswered — indistinguishable from nobody
+having commented. Every four hours, on a weekday, if no `feedback` run of any kind has started in
+six, the watchdog dispatches one.
+
+Three decisions inside it are worth the words:
+
+- **A failed run counts as proof of life.** It measures the *absence* of runs. `ops.yml` owns
+  failures, and two things re-dispatching the same workflow would fight.
+- **It does not sweep at weekends.** `feedback`'s cron is `1-5` deliberately and the documentation
+  says a Friday-evening comment waits for Monday. A watchdog that dispatched all weekend would
+  change that policy while looking like a bug fix — which is how policy changes get in.
+- **An issue only for a stoppage, not a gap.** One miss is a hiccup the dispatch already fixed, and
+  an issue per hiccup is how an ops list becomes noise nobody reads. The evidence for a stoppage is
+  different and specific: no run triggered by `schedule` for twelve hours. The watchdog's own
+  dispatches reset the first clock and never that one. The issue names both causes, because only one
+  self-corrects — GitHub disables schedules after 60 days without a push, and waiting for that to
+  recover is waiting forever.
+
+**Retries go from one to three attempts.** One was not enough: the failures that actually happen
+here are network and registry blips, and those cluster, so a single retry lands inside the same bad
+minute often enough to be no retry at all. The cap now counts `run_attempt` rather than a `retried`
+label on the ops issue — the label capped retries *per issue*, so one transient failure in August
+spent the retry for every later failure of that workflow until a human closed the issue, and nobody
+did. What did not change: a failure inside a model call or a gate still never retries at all. Those
+cost money and fail for reasons a retry cannot fix, so more attempts would only buy more spend on
+the same wrong answer.
+
+### The harness was already waking itself
+
+Found on the live inbox while building the above, not by a test: **four full `feedback` runs in
+twenty-seven seconds**, each triggered by a reply the harness had just posted.
+
+The cause is D64's reply pointer meeting `feedback.yml`'s trigger. Every reply now ends with
+"**You can also say:** `/harness status` · …", and the workflow wakes on
+`contains(github.event.comment.body, '/harness')`. So each reply woke another run — checkout,
+install, doctor, sync-fork, sweep — which correctly found nothing, because `commands_from` skips
+the machine account, and correctly posted nothing, having taken the `harness-ledger` lock to do it.
+Depth one rather than a loop, only because a run that posts nothing triggers nothing.
+
+`ack.yml` would have made it worse in the obvious way and in one that is worse than obvious: the
+acknowledgement's entire content is a *list* of `/harness` commands.
+
+**The fix is a marker, not a login test.** `gh.comment` appends `<!-- bright-bots-harness -->` to
+every body it posts, and both comment-driven workflows skip comments carrying it. A marker because
+a workflow `if:` cannot read `.harness/config.json` to learn the machine account's name, and
+because that account is an ordinary user rather than the `Bot` type GitHub would filter for us. An
+HTML comment renders as nothing, so it costs the reader nothing.
+
+Applied at the **transport** rather than at the three call sites, so a fourth added later cannot
+forget it — and because the site that most needed it, `deliver.handoff`, builds its body from a
+template and never touches `links`. `ack.yml` posts through `github-script` rather than through
+`gh.comment`, so `harness ack` marks its own output explicitly.
+
+`FakeGh.comment` marks too. A fake that did not would let the marker be deleted with a green
+suite, which is the failure mode this repository keeps finding.
+
+### What the adversarial pass on D65 found
+
+Two independent reviews. Eight things, and the two worst were mine to have caught.
+
+**The retry raise could have paid for a model call twice.** `reRunWorkflowRunFailedJobs` re-runs
+the whole **job**, and all three spending workflows are one job — so "did the failing *step*
+spend?" was the wrong question. `Commit state/ledger.json` runs *after* the spend and matches no
+model-or-gate pattern, so a denial list let it through: a lost push to `harness-state` meant a
+retry that reloaded the **pre-run** ledger, found the same comment unseen (B135's guard lives in
+`seen_comment_ids`, which reaches the branch only through that push), and paid for the same model
+call again — invisibly to `WEEKLY_CAP_USD`, because the ledger recording the first attempt was
+exactly what failed to save. Raising the cap from one to three would have made it twice.
+
+Now an **allow-list** of steps known to run before anything is spent, drawn from the real step
+names, with a test asserting that every step of all three workflows is classified one way or the
+other. A step added later fails the suite until somebody decides, rather than defaulting to
+"re-run a job that spends".
+
+**A comment-driven workflow checked out the pull request's code.** On
+`pull_request_review_comment` GitHub sets `GITHUB_REF` to `refs/pull/N/merge`, so a bare
+`actions/checkout` lands the *pull request's* tree — and both `ack.yml` and (pre-existing on main)
+`feedback.yml` then run that tree's `harness/` code. On a public repository that is a stranger's
+Python on the runner, and in `feedback.yml` it is a stranger's Python beside the machine account's
+PAT. Both now pin `ref` to the default branch. This one was live before this branch existed.
+
+The rest:
+
+- **A skipped run read as proof of life.** `status: completed` includes a run whose only job was
+  skipped, and `feedback.yml` creates one for *every* comment on the repository. So any comment
+  traffic inside a six-hour window convinced the watchdog the schedule was fine — precisely when
+  somebody is looking at it because it is not. Worse, the dead-schedule check sat *behind* that
+  gate, so it never ran. It is asked on every tick now, and skipped, cancelled, stale and
+  startup-failure runs no longer count.
+- **A queued dispatch was invisible**, so the watchdog would dispatch over its own pending run,
+  cancel it, and then read the cancelled corpse as success — keeping the sweep it was trying to
+  cause from ever running.
+- **`DEAD_HOURS` did not know about the weekend.** Friday 21:41 to Monday 00:41 is fifty-one hours
+  with nothing scheduled in them, so a twelve-hour threshold filed a false stoppage on any Monday
+  where the 00:41 run was late. Counted in weekday *slots* now.
+- **A quote-reply is a person, not the harness.** GitHub's quote-reply copies the source comment's
+  raw markdown, HTML comments included — so the marker introduced above dropped the most natural
+  way to answer the harness. The quoted form (`> <!-- ... -->`) is what tells them apart.
+- **`ack` promised work a halted harness will not do**, and offered `/harness status` as the way to
+  find out, which the same halt refuses. It checks both switches now and says which one is on.
+- **`ack` gated on membership, not on the verb's level**, so a level-1 asker would have been
+  promised twenty minutes of audit and then denied it in public.
+- **The per-comment concurrency key throttled nothing** — unique every time, so sixty comments
+  meant sixty parallel jobs, filling the account's allowance and queueing the spending workflows
+  behind the acknowledgement mechanism. Keyed per commenter now.
+- **`Say it` could turn somebody's comment red.** `createComment` 403s on a locked issue, a fork
+  pull request's read-only token, and the secondary content-creation limit.
+
+And one claim withdrawn: the watchdog **cannot** report GitHub's 60-day disablement, because that
+rule disables every schedule on the repository including the watchdog itself. The documentation
+said it would. The signal that actually survives is the weekly heartbeat comment going missing,
+which is what B144 built it for.
+

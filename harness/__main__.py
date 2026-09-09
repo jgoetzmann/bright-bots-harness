@@ -35,6 +35,7 @@ from harness.errors import (
     RateLimited,
     RepoHalted,
 )
+from harness.gh import mark_machine_written
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness import priority
@@ -220,6 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
     decompose.add_argument("issue", type=int, metavar="issue")
 
     sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
+
+    ack = sub.add_parser(
+        "ack", help="say 'working on it' for one comment, before the work starts"
+    )
+    ack.add_argument("--body-file", required=True, help="file holding the comment body")
+    ack.add_argument("--actor", required=True, help="the commenter's login")
+    ack.add_argument("--association", default="", help="GitHub author_association")
+    ack.add_argument("--repo", default="", help="repository the comment is on")
+    ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
 
     sub.add_parser(
         "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
@@ -1981,6 +1991,125 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
     return record, "", True
 
 
+def _ack_halt_reason(config) -> str:
+    """Why nothing is going to happen, or "" when something will.
+
+    Read from the checkout and the ledger the workflow has to hand, and never raised: a
+    diagnostic in front of the real thing must not fail in front of the real thing.
+    """
+    try:
+        if repo_halted(Path(".")):
+            return (
+                "**The harness is halted.** `.harness/HALT` is committed on the default branch, "
+                "which stops every workflow before it starts — so this command was read, and "
+                "nothing will run until that file is removed."
+            )
+    except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+        pass
+    try:
+        led = ledger_mod.Ledger.load(Path(config.ledger_path))
+        halt = led.halt_request()
+    except Exception:  # pragma: no cover - same
+        return ""
+    if not halt:
+        return ""
+    who = str(halt.get("actor") or "someone")
+    why = str(halt.get("reason") or "").strip()
+    return (
+        f"**The harness is halted** — by @{who}"
+        + (f": {why}" if why else "")
+        + ". Nothing will spend until `/harness resume`, so this command was read and will not "
+        "be acted on."
+    )
+
+
+def cmd_ack(args: argparse.Namespace) -> int:
+    """Decide what to say about one comment before any work starts (B293).
+
+    A separate command, and a separate workflow, because of what it is FOR. The sweep is the
+    thing that takes minutes -- checkout, install, doctor, sync-fork, dispatch, then the model
+    call itself -- and for all of those minutes a thread shows nothing at all. Silence and
+    thinking look identical from there, and silence is the one people act on: they comment
+    again, or they conclude the harness is off. This says which it is, in seconds.
+
+    Prints one JSON object: ``{"react": bool, "comment": str}``.
+
+    - ``react`` is "the sweep is going to act on this", which is worth a reaction even when it
+      is not worth a comment.
+    - ``comment`` is the acknowledgement, or "" when everything asked for is fast enough that
+      the answer beats the acknowledgement.
+
+    Both are decided with the SAME parser and the SAME trust gate the sweep uses, rather than a
+    second copy of either: a copy drifts, and the way that surfaces is somebody being told the
+    harness heard them when it did not, on a public repository.
+
+    Never spends, never writes, and never fails the workflow -- exit 0 on every path, because an
+    acknowledgement that can break the run it precedes is a worse bargain than no
+    acknowledgement.
+    """
+    def _say(react: bool = False, comment: str = "") -> int:
+        print(json.dumps({"react": bool(react), "comment": comment}))
+        return EXIT_OK
+
+    try:
+        body = Path(args.body_file).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        LOG.warning("ack: could not read %s: %s", args.body_file, exc)
+        return _say()
+
+    actor = str(args.actor or "").lstrip("@")
+    try:
+        config = _load(args)
+        trusted = trust_mod.load_trust(Path(config.trust_file))
+    except HarnessError as exc:
+        # No config, no trust file, nothing to say. Not an error: `ack` is an optional courtesy
+        # in front of the real thing, and the real thing does its own checking.
+        LOG.warning("ack: %s", exc)
+        return _say()
+
+    # The harness comments on the threads it watches, and every reply it writes carries a
+    # pointer that mentions `/harness`. Without this it would react to its own answers, on every
+    # thread, for ever. Checked first because it is the cheapest and the most embarrassing.
+    machine = discover_stage.machine_account(config)
+    if machine and actor.lower() == str(machine).lstrip("@").lower():
+        return _say()
+
+    # The same gate `keywords.authorise` applies, in the same order: a level in the trust file,
+    # AND an association GitHub vouches for. Acknowledging a comment the sweep will then ignore
+    # is the worst of both -- it tells an untrusted commenter they were heard, in public.
+    if not trust_mod.is_authorised(actor, str(args.association or ""), trusted):
+        return _say()
+
+    # Only the verbs this actor may actually give. The sweep applies `VERB_LEVEL` per verb after
+    # parsing and refuses the rest, so acknowledging all of them would promise a level-1 asker
+    # twenty minutes of audit and then deny it -- the exact failure this command exists to
+    # avoid, performed in public.
+    level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
+    verbs = [
+        verb for verb, _args, typed in keywords.parse_typed(body)
+        # The TYPED word's level when it has one of its own -- `reject` is level 3 and resolves
+        # to `stop`, which is level 2, so resolving before gating would over-promise.
+        if level >= keywords.VERB_LEVEL.get(typed or verb, keywords.VERB_LEVEL.get(verb, 3))
+    ]
+    if not verbs:
+        return _say()
+
+    # A halted harness is going to do none of this, and saying "about twenty minutes" while
+    # nothing will ever run is worse than saying nothing -- the more so because the reply's own
+    # escape hatch is `/harness status`, which the same halt refuses. Both switches: the
+    # committed one stops the workflows, the commanded one stops the spending.
+    stopped = _ack_halt_reason(config)
+    if stopped:
+        return _say(react=True, comment=mark_machine_written(stopped))
+
+    text = links.acknowledgement(verbs)
+    # Marked like everything else the harness writes. The workflow posts this through
+    # `github-script` rather than through `gh.comment`, so the transport does not mark it -- and
+    # an unmarked acknowledgement, whose whole content is a list of `/harness` commands, would
+    # wake `feedback.yml` and this workflow all over again.
+    return _say(react=True, comment=mark_machine_written(text) if text else "")
+
+
 def cmd_sweep(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
@@ -2370,6 +2499,7 @@ COMMANDS = {
     "revise": cmd_revise,
     "decompose": cmd_decompose,
     "sweep": cmd_sweep,
+    "ack": cmd_ack,
     "ledger": cmd_ledger,
     "relabel": cmd_relabel,
     "sync-fork": cmd_sync_fork,

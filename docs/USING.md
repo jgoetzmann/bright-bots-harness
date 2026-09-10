@@ -326,19 +326,24 @@ Full procedure, including the container: [OPERATIONS §8](OPERATIONS.md#8-how-to
 
 ---
 
-## Watching the spend
+## Watching the allowance
+
+**The dollars are not the metric.** Every `$` figure is an *estimate of API-equivalent cost*
+derived from token counts; nobody bills it. What runs out is the **utilization** of two windows
+the API reports on every call's headers — and that allowance is **shared with everything else this
+account does**, so it moves while the harness is asleep.
 
 ```bash
-harness ledger          # spend, usage, medians, rate-limit state, cursors
+harness ledger          # the subscription, the estimate, medians, rate-limit state, cursors
 harness ledger --json   # the whole ledger, including window.carry and window.usage raw
 harness status          # the queue by state, the remaining percentages, and anything in flight
 harness dispatch        # what would start now, and why not — starts nothing
 ```
 
-The block that matters is `usage:`. Its shape:
+The block that matters is `subscription:`. Its shape:
 
 ```
-usage:
+subscription (shared with everything else this account does):
   session (5h)  12.0%  stop at 70%  (58.0 to go)  resets 2026-09-04T18:00:00Z
   weekly  (7d)  49.0%  stop at 90%  (41.0 to go)  resets 2026-09-08T20:00:00Z
   observed at   2026-09-04T09:41:07Z
@@ -358,8 +363,10 @@ The tighter of the two wins. A stop is a **normal outcome**, not an incident: th
 If the block instead says:
 
 ```
-usage:
-  (never observed; the USD path governs - B114)
+subscription:
+  (not measured yet -- the signal rides on the headers of a real model call, so
+   until one has been made the dollar estimate is the only bound there is. B114:
+   no decision may DEPEND on the signal being present.)
 ```
 
 that is not an error. No real model call has yet reported utilization into this ledger — a fake backend, an older CLI, or a call that never reached inference. The dollar path governs on its own exactly as it did before the signal existed: `WEEKLY_CAP_USD` 400.00, `RESERVE_PCT` 10, `PER_CALL_CAP_USD` 3.00. Nothing anywhere in the harness *depends* on the usage number being present, which is why it can be missing without changing any decision.

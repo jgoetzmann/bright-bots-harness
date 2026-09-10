@@ -118,6 +118,7 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("ASK_CAP_USD", "ask_cap_usd"),
     ("ASK_MAX_PER_DAY", "ask_max_per_day"),
     ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
+    ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
 )
 
 # B147: an item left in a running state longer than this with no live run is reset.
@@ -918,7 +919,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines = _halt_lines(ctx.ledger)
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
-    lines.append("budget:")
+    # The subscription first, because it is the thing that actually runs out. The block under
+    # it is the harness's OWN accounting in budget units -- a different quantity that happens to
+    # also be a percentage, which is exactly why both now say which they are.
+    lines.extend(_usage_lines(ctx.ledger, config))
+    lines.append("internal allowance (budget units, not the subscription):")
     lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
     lines.append(f"  session remaining {budget['session_remaining_pct']:.2f}%")
     lines.append(f"  spendable         {budget['spendable_pct']:.2f}%")
@@ -1536,29 +1541,12 @@ def _usage_report(ctx, config, now) -> str:
         )
         lines.append("")
 
-    weekly = led.weekly_utilization()
-    session = led.session_utilization()
-    lines.append("**Usage**")
-    if weekly is None and session is None:
-        lines.append("- not observed yet — the signal arrives on the headers of a real call")
-    else:
-        if weekly is not None:
-            lines.append(
-                f"- weekly **{weekly * 100:.0f}%** of the {config.weekly_usage_stop_pct:.0f}% stop"
-            )
-        if session is not None:
-            lines.append(
-                f"- session **{session * 100:.0f}%** of the "
-                f"{config.session_usage_stop_pct:.0f}% stop"
-            )
-    # The ceiling the DISPATCHER actually spends against, not the raw cap: `RESERVE_PCT` is held
-    # back, so quoting the cap overstates what is available by exactly the reserve.
-    spent = float(led.window.get("spent_usd", 0.0) or 0.0)
-    ceiling = float(config.weekly_cap_usd) * (1.0 - float(config.reserve_pct) / 100.0)
-    lines.append(
-        f"- ${spent:.2f} of ${ceiling:.2f} spendable this window "
-        f"(${float(config.weekly_cap_usd):.2f} cap less {float(config.reserve_pct):.0f}% reserve)"
-    )
+    # Utilization first, and dollars in small print underneath. See `links.usage_headline`
+    # for why round that way: the dollar total is an estimate nobody bills, and it hides the
+    # fact that the allowance is shared with everything else this subscription does.
+    lines.extend(links.usage_headline(led, config))
+    lines.append("")
+    lines.append(links.spend_estimate(led, config))
     lines.append("")
 
     try:
@@ -1596,6 +1584,10 @@ def _usage_report(ctx, config, now) -> str:
             + ("; open now" if in_run_window(config, now) else "; closed now")
         )
         lines.append(f"- suggested work: {blocked or 'admitted'}")
+    # The other gate denominated in the allowance. Reported for the same reason: a maintainer
+    # whose audit was declined has to be able to find out why without reading the source.
+    audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config)
+    lines.append(f"- audits: {audit_blocked or 'admitted'}")
     return "\n".join(lines)
 
 
@@ -1981,6 +1973,13 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
         # it. Both ceilings mean the same thing here: stop, and let the next sweep retry.
         record["result"] = f"github rate ceiling reached: {exc}"
         return record, "", False
+    except BudgetExhausted as exc:
+        # NOT "that did not work". D3 is explicit that a usage stop is a normal outcome, like a
+        # closed run window -- the harness declining to spend the allowance you have left is the
+        # governor doing its job, and dressing it as a failure teaches people to read a working
+        # system as a broken one.
+        record["result"] = f"declined: {exc}"
+        return record, f"Not now — {exc}", True
     except HarnessError as exc:
         # Answered, not just recorded. A command that failed is the case where a person most
         # needs to hear something: recording it to stdout and saying nothing in the thread is
@@ -2099,6 +2098,18 @@ def cmd_ack(args: argparse.Namespace) -> int:
     # escape hatch is `/harness status`, which the same halt refuses. Both switches: the
     # committed one stops the workflows, the commanded one stops the spending.
     stopped = _ack_halt_reason(config)
+    if not stopped and "audit" in verbs:
+        # The same gate `stages/audit` applies at its entry. Without it the acknowledgement
+        # promises twenty minutes and the sweep then declines -- the exact failure this command
+        # exists to avoid, performed in public. Read-only and never raised: `ack` is a courtesy
+        # in front of the real thing, and the real thing checks for itself.
+        try:
+            led = ledger_mod.Ledger.load(Path(config.ledger_path))
+            refused = priority.admit("audit", store=None, ledger=led, config=config)
+        except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+            refused = None
+        if refused:
+            stopped = f"**Not now** — {refused}"
     if stopped:
         return _say(react=True, comment=mark_machine_written(stopped))
 
@@ -2188,12 +2199,19 @@ def _usage_lines(led, config) -> list[str]:
     """
     usage = (dict(led.window).get("usage") or {}) if led.window else {}
     if not usage:
-        return ["usage:", "  (never observed; the USD path governs - B114)"]
+        return [
+            "subscription:",
+            "  (not measured yet -- the signal rides on the headers of a real model call, so",
+            "   until one has been made the dollar estimate is the only bound there is. B114:",
+            "   no decision may DEPEND on the signal being present.)",
+        ]
     rows = [
         ("session (5h) ", "five_hour", float(config.session_usage_stop_pct)),
         ("weekly  (7d) ", "seven_day", float(config.weekly_usage_stop_pct)),
     ]
-    lines = ["usage:"]
+    # "subscription", not "usage": this is what runs out, and it is shared with everything else
+    # the same account does -- so it moves while the harness is asleep.
+    lines = ["subscription (shared with everything else this account does):"]
     for label, key, stop in rows:
         window = usage.get(key) or {}
         raw = window.get("utilization")
@@ -2322,7 +2340,11 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     lines.extend(_halt_lines(led))
     lines.append("window:")
     lines.append(f"  period_start        {window.get('period_start')}")
-    lines.append(f"  spent_usd           {float(window.get('spent_usd') or 0.0):.2f}")
+    # Named `spent_usd` in the JSON for compatibility; labelled for what it is in the text.
+    lines.append(
+        f"  est. api-equiv usd  {float(window.get('spent_usd') or 0.0):.2f}  "
+        "(estimated from tokens; nobody bills it)"
+    )
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
     lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
     lines.extend(_usage_lines(led, config))

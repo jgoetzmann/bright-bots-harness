@@ -329,6 +329,7 @@ def _env_text(tmp_path: Path) -> str:
             "ASK_CAP_USD=0.50",
             "ASK_MAX_PER_DAY=20",
             "SUGGEST_MIN_HEADROOM_PCT=50",
+            "AUDIT_MIN_HEADROOM_PCT=75",
             "HARNESS_GITHUB_TOKEN=",
             "ANTHROPIC_API_KEY=",
             "",

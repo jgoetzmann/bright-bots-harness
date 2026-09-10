@@ -71,6 +71,7 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("ASK_CAP_USD", "0.50"),
     ("ASK_MAX_PER_DAY", "20"),
     ("SUGGEST_MIN_HEADROOM_PCT", "50"),
+    ("AUDIT_MIN_HEADROOM_PCT", "75"),
     ("WEEKLY_USAGE_STOP_PCT", "90"),
     ("SESSION_USAGE_STOP_PCT", "70"),
     ("OVERRUN_PCT", "10"),
@@ -194,24 +195,32 @@ def test_B122_halt_is_checked_before_reserve(tmp_path):
 
 def test_B122_reserve_boundary_spent_equals_cap_times_one_minus_reserve(tmp_path):
     """B122 (§6.4 step 3): spent_usd == weekly_cap_usd*(1-reserve_pct/100) → empty plan, reason
-    exactly 'reserve'. 25.00 * 0.90 = 22.50."""
+    led by 'reserve'. 25.00 * 0.90 = 22.50.
+
+    The token is pinned as a PREFIX rather than the whole string: B295 appends the subscription
+    reading beside it, because "reserve" alone tells an operator a dollar estimate stopped them
+    and nothing about whether the thing that actually runs out is anywhere near its limit. The
+    arithmetic B122 froze is unchanged, and the sibling reason above already carried the same
+    suffix. Nothing outside the tests ever compared this string for equality.
+    """
     config = make_config(tmp_path)
     assert config.weekly_cap_usd == pytest.approx(25.0)
     assert config.reserve_pct == pytest.approx(10.0)
     result = run_plan(config, ledger_spent(22.50), cands(816))
     assert result.start == ()
-    assert result.reason == "reserve"
+    assert result.reason.startswith("reserve")
 
 
 def test_B122_reserve_when_spent_exceeds_the_boundary(tmp_path):
-    """B122 (§6.4 step 3): spend past the reserve line → empty plan, reason 'reserve'."""
+    """B122 (§6.4 step 3): spend past the reserve line → empty plan, reason led by 'reserve'."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(23.10), cands(816, 823))
     assert result.start == ()
-    assert result.reason == "reserve"
+    assert result.reason.startswith("reserve")
     data = json.loads(result.to_json())
     assert data["start"] == []
-    assert data["reason"] == "reserve"
+    assert data["reason"].startswith("reserve")
+
 
 
 def test_B122_just_below_reserve_is_not_reserve_but_estimate_skips(tmp_path):
@@ -219,7 +228,7 @@ def test_B122_just_below_reserve_is_not_reserve_but_estimate_skips(tmp_path):
     is instead skipped because its $2.50 static estimate exceeds the $0.50 remaining."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(22.00), cands(816))
-    assert result.reason != "reserve"
+    assert not result.reason.startswith("reserve")
     assert result.start == ()
     assert result.skipped == {"816": "estimate $2.50 exceeds remaining $0.50"}
 
@@ -677,7 +686,7 @@ def test_B209_the_carry_item_still_obeys_the_dollar_reserve(tmp_path):
     result = run_plan(config, ledger, cands(816), now=WED)
 
     assert result.start == ()
-    assert result.reason == "reserve"
+    assert result.reason.startswith("reserve")  # B295 appends the subscription reading
 
 
 # ---------------------------------------------------------------------------
@@ -751,7 +760,7 @@ def test_B210_the_run_window_is_checked_after_the_reserve(tmp_path):
     result = run_plan(config, usage_ledger(spent_usd=23.10), cands(816), now=WED)
 
     assert result.start == ()
-    assert result.reason == "reserve"
+    assert result.reason.startswith("reserve")  # B295 appends the subscription reading
 
 
 # ---------------------------------------------------------------------------

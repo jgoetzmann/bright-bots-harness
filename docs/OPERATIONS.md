@@ -451,9 +451,26 @@ end with `[skip ci]`. `main`'s copy is the initial ledger and what local mode st
 
 ## 13. Usage-aware governance
 
-Since Delivery 3 the harness watches the subscription's **own** utilization, not only the dollars
-it has counted. This section is what to read when the queue is full, nothing is halted, nothing is
-rate limited, and `harness dispatch` still starts nothing.
+**Read this first: the dollars are not the metric.** Every `$` figure the harness prints is an
+*estimate of API-equivalent cost*, derived from token counts. Nobody bills it. What actually runs
+out is the **utilization** of two windows the API reports on the headers of every call — five-hour
+and seven-day — and that is what every report now leads with.
+
+The first live run showed how far apart the two can be: one model call, **$0.28** estimated, and
+the seven-day window at **18%**. By the dollar figure the harness had used 0.08% of its allowance.
+By the real one, nearly a fifth of the week.
+
+And most of that 18% was not the harness. **The allowance is shared with everything else this
+account does** — the operator's own Claude Code sessions included — so it moves while the harness
+is asleep, and a dollar total hides that completely.
+
+The dollar estimate is kept for three things and no others: a sense of scale, the
+`--max-budget-usd` flag the runner really does enforce on a single call, and being the only bound
+that exists before a real call has ever been made (B114: no decision may *depend* on the signal
+being present).
+
+This section is what to read when the queue is full, nothing is halted, nothing is rate limited,
+and `harness dispatch` still starts nothing.
 
 ### 13.1 The signal
 

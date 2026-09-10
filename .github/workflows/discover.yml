@@ -186,6 +186,12 @@ jobs:
         # operator for the scheduler working as designed (D33). "outside run window (...)" is
         # deliberately NOT in the set: the window bounds implement.yml, whose own crons keep it,
         # and discovery is one cheap triage call that is not window-gated (D32).
+        #
+        # EVERY pattern here is a prefix match, and that is not tidiness. `halted` was once bare,
+        # so `halted by @someone` fell through to proceed=true and spent a discover call on a
+        # harness a human had just stopped. B295 did the same to `reserve` by appending the
+        # subscription reading to it. A reason gains detail; the token it starts with is the
+        # contract.
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
@@ -197,7 +203,7 @@ jobs:
           reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           case "$reason" in
-            "rate limited"*|halted*|reserve|"weekly usage "*|"session usage "*|"carry leeway "*)
+            "rate limited"*|halted*|reserve*|"weekly usage "*|"session usage "*|"carry leeway "*)
               echo "dispatcher says: ${reason}; discover will not spend this run"
               echo "proceed=false" >> "$GITHUB_OUTPUT" ;;
             "outside run window"*)

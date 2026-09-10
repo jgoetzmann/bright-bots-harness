@@ -48,6 +48,123 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("resume", "lift a halt"),
 )
 
+def usage_headline(ledger: Any, config: Any) -> list[str]:
+    """How much of the subscription is left, in the units the subscription is actually sold in.
+
+    The harness spent a delivery reporting dollars, and dollars are the wrong number. Nothing
+    bills them: the estimate is derived from token counts, and what actually runs out is the
+    utilization of two windows the API reports on the headers of every call — five-hour and
+    seven-day. The first live run made the gap plain. One model call, **$0.28** estimated, and
+    the seven-day window at **18%**: by the dollar figure the harness had used 0.08% of its
+    allowance, and by the real one, nearly a fifth of the week.
+
+    Most of that 18% was not the harness. **The allowance is shared with whatever else the
+    operator does with the same subscription**, which is the single most important fact about
+    reading these numbers and the one a dollar total hides completely.
+
+    Dollars are kept, below and in smaller print, for the three things they are still good for:
+    a sense of scale, the `--max-budget-usd` flag the runner really does enforce per call, and
+    being the only signal at all before a real call has ever been made.
+    """
+    lines = ["**Allowance**"]
+    weekly = _utilization(ledger, "seven_day")
+    session = _utilization(ledger, "five_hour")
+    weekly_stop = float(getattr(config, "weekly_usage_stop_pct", 90.0))
+    session_stop = float(getattr(config, "session_usage_stop_pct", 70.0))
+
+    if weekly is None and session is None:
+        lines.append(
+            "- **not measured yet** — the signal rides on the headers of a real model call, so "
+            "a run that has not made one has nothing to report. Until then the dollar estimate "
+            "below is all there is, and it is an estimate."
+        )
+    else:
+        for label, used, stop in (
+            ("this week", weekly, weekly_stop),
+            ("this session", session, session_stop),
+        ):
+            if used is None:
+                continue
+            left = stop - used
+            if left <= 0:
+                room = f"**at or past** the {stop:.0f}% stop — nothing will start"
+            elif left < 1:
+                # `{:.0f}` of 0.4 is "0", and "0 points before the stop" reads as stopped while
+                # work in fact continues -- the CLI, rendering one decimal, said "0.4 to go" on
+                # the same ledger. Below a point, say so rather than round to a claim.
+                room = f"**under a point** before the {stop:.0f}% stop"
+            else:
+                room = f"**{left:.0f} points** before the {stop:.0f}% stop"
+            lines.append(f"- {label}: **{used:.0f}% used**, {room}")
+        lines.append(
+            "- shared with whatever else this subscription is used for, so this moves when the "
+            "harness is doing nothing"
+        )
+    return lines
+
+
+def spend_estimate(ledger: Any, config: Any) -> str:
+    """The dollar line, said as the estimate it is."""
+    window = getattr(ledger, "window", {}) or {}
+    spent = float(window.get("spent_usd", 0.0) or 0.0)
+    calls = int(window.get("calls", 0) or 0)
+    cap = float(getattr(config, "weekly_cap_usd", 0.0) or 0.0)
+    reserve = float(getattr(config, "reserve_pct", 0.0) or 0.0)
+    ceiling = cap * (1.0 - reserve / 100.0)
+    return (
+        f"<sub>Rough scale: about **${spent:.2f}** of API-equivalent cost over {calls} "
+        f"call(s) this window, against a ${ceiling:,.0f} backstop (${cap:,.0f} less "
+        f"{reserve:.0f}% reserve). "
+        "Estimated from token counts — nobody bills it, and it is not what runs out.</sub>"
+    )
+
+
+#: The ledger accessor for each window. Going through these rather than reading
+#: `window["usage"]` directly is not style: `roll_window` moves `period_start` and zeroes the
+#: spend but deliberately LEAVES the last observation in place, and the accessors' staleness
+#: check is the only thing that stops last week's figure being reported as this week's.
+_LEDGER_ACCESSOR = {"seven_day": "weekly_utilization", "five_hour": "session_utilization"}
+
+
+def _utilization(ledger: Any, key: str) -> float | None:
+    """`key`'s utilization as a percentage, or None when it is unknown for THIS window.
+
+    Unknown covers three cases and they are all the same answer: never observed, not reported,
+    and observed before the window rolled. The third is the one that bites — a fresh week whose
+    ledger still carries Friday's 88% would otherwise read as "2 points before the stop" on a
+    week nothing has been spent in.
+    """
+    accessor = getattr(ledger, _LEDGER_ACCESSOR[key], None)
+    if callable(accessor):
+        fraction = accessor()
+        return None if fraction is None else float(fraction) * 100.0
+    # A ledger-shaped object without the accessors. Apply the same guard by hand rather than
+    # trusting the raw field, so a test double cannot be more permissive than the real thing.
+    return _raw_utilization(getattr(ledger, "window", {}) or {}, key)
+
+
+def _raw_utilization(window: Any, key: str) -> float | None:
+    """`_utilization`'s fallback: the same rule, applied to a plain window mapping."""
+    if not isinstance(window, dict):
+        return None
+    usage = window.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    observed_at, start = usage.get("observed_at"), window.get("period_start")
+    if observed_at and start and str(observed_at) < str(start):
+        return None  # ISO-8601 UTC sorts lexicographically, which is all this needs
+    reported = usage.get(key)
+    if not isinstance(reported, dict):
+        return None
+    raw = reported.get("utilization")
+    if raw is None:
+        return None
+    try:
+        return float(raw) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 #: Roughly how long each verb takes, and what it is doing while you wait.
 #:
 #: Only ever an ORDER OF MAGNITUDE. The point is not accuracy, it is the difference between

@@ -73,6 +73,7 @@ COMMENT_UPSTREAM=true
 ASK_CAP_USD=0.50
 ASK_MAX_PER_DAY=20
 SUGGEST_MIN_HEADROOM_PCT=50
+AUDIT_MIN_HEADROOM_PCT=75
 HARNESS_GITHUB_TOKEN=
 ANTHROPIC_API_KEY=
 """
@@ -2392,8 +2393,11 @@ def test_b221_ledger_says_so_plainly_when_usage_was_never_observed(tmp_path, mon
     assert cli.main(["ledger"]) == 0
 
     out = capsys.readouterr().out
-    assert "never observed" in out
-    assert "%" not in out.split("usage:")[1].split("observations:")[0]
+    assert "not measured yet" in out
+    # No number at all in that block. B295 renamed the heading from `usage:` to `subscription:`,
+    # because "usage" reads as a synonym for spend and this is the thing that actually runs out.
+    block = out.split("subscription:")[1].split("observations:")[0]
+    assert "%" not in block, f"no signal must not print as a figure: {block!r}"
 
 
 def test_b221_a_utilization_past_the_stop_reads_as_stopped(tmp_path, monkeypatch, capsys):

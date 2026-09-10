@@ -100,6 +100,7 @@ FIELD_KEYS: tuple[str, ...] = (
     "ASK_CAP_USD",
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
+    "AUDIT_MIN_HEADROOM_PCT",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
@@ -132,6 +133,7 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "ASK_CAP_USD",
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
+    "AUDIT_MIN_HEADROOM_PCT",
 )
 
 #: Where the override file lives, relative to the directory holding `.env`.
@@ -234,6 +236,7 @@ class Config:
     ask_cap_usd: float
     ask_max_per_day: int
     suggest_min_headroom_pct: float
+    audit_min_headroom_pct: float
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -625,6 +628,12 @@ def load_config(
     if ask_max_per_day < 0:
         raise ConfigError(f"ASK_MAX_PER_DAY must be 0 or more; got {ask_max_per_day}")
 
+    audit_min_headroom_pct = _require_float(values, "AUDIT_MIN_HEADROOM_PCT")
+    if not 0 <= audit_min_headroom_pct <= 100:
+        raise ConfigError(
+            "AUDIT_MIN_HEADROOM_PCT must be in [0, 100]; got "
+            f"{audit_min_headroom_pct}"
+        )
     suggest_min_headroom_pct = _require_float(values, "SUGGEST_MIN_HEADROOM_PCT")
     if not 0 <= suggest_min_headroom_pct <= 100:
         raise ConfigError(
@@ -693,6 +702,7 @@ def load_config(
         ask_cap_usd=ask_cap_usd,
         ask_max_per_day=ask_max_per_day,
         suggest_min_headroom_pct=suggest_min_headroom_pct,
+        audit_min_headroom_pct=audit_min_headroom_pct,
     )
     _LAST_CONFIG = config
     return config

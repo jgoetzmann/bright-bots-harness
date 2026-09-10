@@ -133,9 +133,22 @@ def headroom_pct(ledger: Any) -> float | None:
     None is not zero. An unobserved allowance is unknown, and treating unknown as "plenty left"
     is how a system spends a week it did not have.
     """
+    # Through the ledger's own accessor, which applies the staleness guard: `roll_window` moves
+    # `period_start` and zeroes the spend but LEAVES the last observation in place, so a raw read
+    # reports the previous week's figure on a week nothing has been spent in. That was tolerable
+    # while this only gated `suggested`; B295 made it the sole bound on `/harness audit`, where
+    # it would have refused every audit for a whole fresh window -- failing closed at exactly the
+    # moment there is the most room.
+    accessor = getattr(ledger, "weekly_utilization", None)
+    if callable(accessor):
+        fraction = accessor()
+        return None if fraction is None else float(fraction) * 100.0
     window = getattr(ledger, "window", {}) or {}
     usage = window.get("usage")
     if not isinstance(usage, dict):
+        return None
+    observed_at, start = usage.get("observed_at"), window.get("period_start")
+    if observed_at and start and str(observed_at) < str(start):
         return None
     # `seven_day` is what the ledger stores and what `runner/cli.py` reads off the response
     # headers -- `USAGE_WINDOWS` names the two windows and "weekly" is not one of them. Reading
@@ -160,12 +173,32 @@ def admit(
     ledger: Any,
     config: Any,
 ) -> str | None:
-    """None when a call of this class may proceed, else the reason it may not (B290).
+    """None when a call of this class may proceed, else the reason it may not (B290/B295).
 
-    Only `suggested` is ever refused here. Everything else was asked for by a person, and the
-    governor is what decides whether there is allowance for it — this function's job is to stop
-    the harness spending on its own ideas while somebody's actual request is waiting.
+    Two classes are refused here, and for different reasons.
+
+    `suggested` is work nobody asked for, so it waits for an empty queue and for headroom: the
+    harness must not spend on its own ideas while somebody's actual request is outstanding.
+
+    `audit` was asked for, but it is the one operation that can run for twenty minutes on a
+    single call, and it is bounded by a **dollar** cap — which on a subscription is a fiction.
+    What actually runs out is the seven-day utilization, and it is SHARED with everything else
+    this account does. So an audit needs room measured in the units that run out: starting a
+    twenty-minute read with a fifth of the week left is how the operator finds the allowance
+    gone the next time they need it themselves.
+
+    Everything else was asked for by a person and is bounded by the governor.
     """
+    if cls == "audit":
+        floor = float(getattr(config, "audit_min_headroom_pct", 75.0) or 0.0)
+        used = headroom_pct(ledger)
+        if used is not None and used >= floor:
+            return (
+                f"weekly subscription usage is {used:.0f}%, at or above the {floor:.0f}% ceiling "
+                "for an audit — it is the longest single call the harness makes, and the "
+                "allowance is shared. Ask again after the window resets, or narrow the lens"
+            )
+        return None
     if cls != "suggested":
         return None
 

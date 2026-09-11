@@ -413,7 +413,8 @@ It lifts **the calendar and nothing else**:
 
 Two things must hold, and **the second is invisible**: your handle must be in
 [`.harness/trust.txt`](../.harness/trust.txt) with a level, **and** GitHub must report you as
-`OWNER`, `MEMBER` or `COLLABORATOR` on **the repository you are commenting on**.
+`OWNER`, `MEMBER` or `COLLABORATOR` on **the repository you are commenting on** — or your line
+must vouch for your account (below).
 
 That second half is **per-repository**, which is more useful than it sounds: someone who is a member
 of `Bright-Bots-Initiative` but not of the harness repository can steer work where it lands —
@@ -423,9 +424,17 @@ threads (the inbox, proposal pull requests, work items) stay with the people who
 deliberate arrangement, not a misconfiguration, and `harness doctor` reports it as a warning rather
 than a problem.
 
+It has a trap: an organisation member whose membership is **private** is reported as
+`CONTRIBUTOR`, which is how `BrightBoost-Tech` reads on brightboost. For someone like that, or
+someone who must not have access to the harness repository (D30), the trust line ends
+`vouch:<id>` instead: their numeric account id, the `id` field of
+`GET https://api.github.com/users/<handle>`. A vouched line admits that one account on every
+repository whatever GitHub reports, refuses any other account using the name, and still caps the
+commands at the line's level (D68). `BrightBoost-Tech` is vouched.
+
 A comment failing either half is read, counted as denied, and ignored **with no reply**, so it looks
-exactly like the harness being asleep. `harness doctor` names anyone in the trust file who has no
-access.
+exactly like the harness being asleep. `harness doctor` names anyone in the trust file who has
+neither access nor a vouch, and lists every vouch.
 
 | Level | Who | Commands |
 |---|---|---|

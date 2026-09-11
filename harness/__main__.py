@@ -229,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     ack.add_argument("--body-file", required=True, help="file holding the comment body")
     ack.add_argument("--actor", required=True, help="the commenter's login")
     ack.add_argument("--association", default="", help="GitHub author_association")
+    ack.add_argument(
+        "--actor-id", default="", help="the commenter's numeric GitHub user id (D68)"
+    )
     ack.add_argument("--repo", default="", help="repository the comment is on")
     ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
 
@@ -752,19 +755,36 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if by_level:
         lines.append(f"    {by_level}")
     for bad in getattr(trusted, "malformed", ()):
-        # B269: a line that looks like a level and is not one grants nothing, and says so.
-        problems.append(f"trust file line is not a level and was refused: {bad!r}")
+        # B269: a line that looks like a level and is not one grants nothing, and says so. D68
+        # holds a vouch to the same rule -- a bad id, two ids, or a vouch with no handle.
+        what = (
+            "carries a vouch that is not one (D68)"
+            if trust_mod.VOUCH_WORD in bad.lower()
+            else "is not a level"
+        )
+        problems.append(f"trust file line {what} and was refused: {bad!r}")
     if getattr(trusted, "implicit", ()):  # B269: a level-less handle is level 1, never silently
         named = ", ".join(f"@{h}" for h in trusted.implicit)
         lines.append(
             f"    no level given for {named}; read as level {trust_mod.DEFAULT_LEVEL} "
             f"({trust_mod.LEVEL_NAMES[trust_mod.DEFAULT_LEVEL]})"
         )
+    vouched = dict(getattr(trusted, "vouched", {}) or {})
+    if vouched:
+        named = ", ".join(f"@{h} = account {i}" for h, i in sorted(vouched.items()))
+        lines.append(f"    vouched for one account (D68; association not required): {named}")
     # B131's other half. A trust-file line alone grants nothing: GitHub must ALSO report the
     # commenter as OWNER, MEMBER or COLLABORATOR. Nothing used to say so, and the failure is
     # silent from the commenter's side -- their comment is read, denied, and ignored, which
     # looks exactly like the harness being asleep.
-    stranded = _doctor_trust_access(config, args, trusted, payload)
+    #
+    # A vouched handle (D68) does not need that half, so "no access" is not a finding about it.
+    stranded = tuple(
+        h for h in _doctor_trust_access(config, args, trusted, payload) if h.lower() not in vouched
+    )
+    if "without_access" in payload["trust"]:
+        payload["trust"]["without_access"] = list(stranded)
+    warnings.extend(_doctor_vouches(config, args, trusted, payload))
     if stranded:
         named = ", ".join(f"@{h}" for h in stranded)
         # A WARNING, not a problem, and the difference is why there are two lists.
@@ -915,6 +935,57 @@ def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False
             "them; drop them at the next rotation (docs/OPERATIONS.md)"
         )
     return warnings
+
+
+def _doctor_vouches(config, args, trusted, payload) -> list[str]:
+    """D68: each vouched id against the account that holds the login today. Warnings only.
+
+    The vouch binds an account, not a name, so a login that has changed hands is already safe:
+    the new holder's id does not match and every comment of theirs is refused. What that leaves
+    is a person who renamed and is now silently refused under their new login -- which is worth
+    saying, and is never worth stopping the fleet over (#27): it stops one person's comments,
+    and everybody else's keep working. "I could not look" (tier 0's rate ceiling, a network
+    error) is not a finding and says nothing.
+    """
+    vouched = dict(getattr(trusted, "vouched", {}) or {})
+    report = {h: {"id": i, "checked": False} for h, i in sorted(vouched.items())}
+    payload["trust"]["vouched"] = report
+    if not vouched or config is None:
+        return []
+    import urllib.parse
+
+    try:
+        gh = _context(config, args, run_id="doctor").gh
+    except Exception:  # pragma: no cover - a check that cannot run must not break doctor
+        return []
+    found: list[str] = []
+    for handle, pinned in sorted(vouched.items()):
+        try:
+            data = gh.get(f"/users/{urllib.parse.quote(handle, safe='')}")
+        except GitHubError as exc:
+            if "returned 404 " not in str(exc):
+                continue
+            report[handle].update(checked=True, actual=None)
+            found.append(
+                f"trust.txt vouches for @{handle} (account {pinned}), but GitHub has no account "
+                "by that login now -- renamed or deleted. Nothing is admitted under that line "
+                "until it names the account's current login (D68)."
+            )
+            continue
+        except Exception:  # rate ceiling, network: not a finding
+            continue
+        actual = trust_mod.parse_user_id(data.get("id")) if isinstance(data, dict) else None
+        if actual is None:
+            continue
+        report[handle].update(checked=True, actual=actual)
+        if actual != pinned:
+            found.append(
+                f"trust.txt vouches for @{handle} as account {pinned}, but @{handle} is account "
+                f"{actual} today. The vouch binds the account, not the name, so whoever holds "
+                f"@{handle} now is refused. If the person renamed, put their new login on the "
+                "line; if the login changed hands, remove it (D68)."
+            )
+    return found
 
 
 def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:
@@ -2156,10 +2227,16 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if machine and actor.lower() == str(machine).lstrip("@").lower():
         return _say()
 
-    # The same gate `keywords.authorise` applies, in the same order: a level in the trust file,
-    # AND an association GitHub vouches for. Acknowledging a comment the sweep will then ignore
-    # is the worst of both -- it tells an untrusted commenter they were heard, in public.
-    if not trust_mod.is_authorised(actor, str(args.association or ""), trusted):
+    # The same gate `keywords.authorise` applies -- literally the same call, over the same
+    # comment shape the sweep reads from the REST API: a level in the trust file, AND either an
+    # association GitHub vouches for or the one account id the trust file vouches for (D68).
+    # Acknowledging a comment the sweep will then ignore is the worst of both -- it tells an
+    # untrusted commenter they were heard, in public.
+    as_comment = {
+        "user": {"login": actor, "id": getattr(args, "actor_id", "")},
+        "author_association": str(args.association or ""),
+    }
+    if not trust_mod.comment_authorised(as_comment, trusted):
         return _say()
 
     # Only the verbs this actor may actually give. The sweep applies `VERB_LEVEL` per verb after

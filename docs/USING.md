@@ -198,7 +198,7 @@ Red gates after a `revise` or `rebase` block the item and push nothing.
 Both of these must hold, or the comment is read and silently ignored (the denial is counted in the ledger, and the body never reaches a prompt — authorisation happens before parsing):
 
 1. The handle is in [`.harness/trust.txt`](../.harness/trust.txt) — currently `jgoetzmann` and `BrightBoost-Tech`. Adding one is a reviewed PR; the file is CODEOWNERS-protected and the harness cannot write it.
-2. GitHub reports the commenter's `author_association` as `OWNER`, `MEMBER` or `COLLABORATOR`. `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR` and `NONE` are refused.
+2. GitHub reports the commenter's `author_association` as `OWNER`, `MEMBER` or `COLLABORATOR`. `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR` and `NONE` are refused — unless the handle's line ends `vouch:<id>` and the comment comes from that exact account (its numeric GitHub user id), which stands in for the association on every repository (D68). `BrightBoost-Tech` is vouched this way; any other account using that login is refused, and the level still caps the verbs.
 
 ### Three parsing rules that bite
 

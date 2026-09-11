@@ -54,8 +54,9 @@ and a pinned gate sequence.
   `implement.yml` fails before spending and the container refuses to start.
 - **Commands come from a list you control.** A `/harness` command is honoured only from a
   handle in `.harness/trust.txt` whose `author_association` is OWNER, MEMBER or COLLABORATOR —
-  both, never either alone. Anyone else's comment is silently ignored and its body is never
-  even parsed.
+  both, never either alone — or whose line vouches for the commenter's exact GitHub account
+  id, which stands in for the association (D68). Anyone else's comment is silently ignored and
+  its body is never even parsed.
 
 It will not push to the product repository, file an issue there, publish a change under
 `.github/` anywhere, move the fork's default branch except to fast-forward it from upstream,

@@ -776,3 +776,89 @@ and human prerequisite 5; in `DELIVERY-2-REVIEW.md`, R3.8 ("inspect the PAT scop
 now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.md`'s summary of
 I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
 `workflow`, and I-15 is the harness's own check.
+
+## D68 / B320–B330 — vouch for an account, not a name
+
+Decided by the operator's delegate; implemented 2026-09-11 on
+`feat/vouched-trust-and-maintainer-docs`. B320–B339 are this branch's numbers.
+
+**The problem.** Nathan — GitHub login `BrightBoost-Tech`, numeric user id **193453438**
+(`GET /users/BrightBoost-Tech`) — maintains `Bright-Bots-Initiative/brightboost` and is level 2 in
+`.harness/trust.txt`. B131 requires a level **and** an `author_association` of OWNER, MEMBER or
+COLLABORATOR, and he had that association nowhere it mattered:
+
+- **Here**, he is deliberately not a collaborator. D30 stands: a write collaborator on a
+  personal-account repository can push a branch whose workflow runs with the Claude OAuth token
+  and the bot PAT in scope. Every comment of his on this repository was read, denied and ignored.
+- **On brightboost**, his organisation membership is private, so GitHub reports him as
+  CONTRIBUTOR: all 65 of his recent comments read that way. He does have push access there
+  (`GET /repos/Bright-Bots-Initiative/brightboost/assignees/BrightBoost-Tech` → 204), but the
+  association does not show it. So his commands there, gate-2 steering on delivery PRs included,
+  were very likely denied too, and revise's review filter kept his review feedback from the model.
+  The trust file's comment said GitHub reports him as a member there, and no read we can make
+  confirms it.
+
+**The decision.** Keep D30, so he still has no access to this repository, and let a trust line
+**vouch** for one exact account:
+
+```
+2 BrightBoost-Tech vouch:193453438
+```
+
+A comment passes the association half of the gate whatever its `author_association`, on every
+surface, when its `user.login` matches the handle **and** its `user.id` equals the vouched id.
+
+This isn't a weakening. The association was guarding a *name*: a login can be renamed away and
+claimed by somebody else, and a per-repository association was what said "this is still the person
+the line meant". An account id is immutable and never reused, so it says the same thing more
+exactly. A vouched handle held by any other account is **refused**, even when that account is an
+OWNER, which is stricter than B131 was.
+
+**What doesn't change:**
+- The level still caps the verbs. A vouched level-2 handle is refused `halt`, `resume` and `reject`
+  with "needs level 3; @BrightBoost-Tech is level 2", and a `--force` from it is dropped with the
+  same explanation.
+- A line without `vouch:` is B131 exactly.
+- `Identity.trust_file_ready()`'s placeholder rule is untouched.
+
+**The rules:**
+- **The token.** It is `vouch:<positive integer>`, at most one per line, and case-insensitive. A
+  token that starts with `vouch` but isn't exactly that refuses the **whole line**: `vouch:`,
+  `vouch:12x`, `vouch=…`, `vouch:0`, two vouches, or a vouch with no handle. The line grants
+  nothing and is recorded in `Trust.malformed`, and doctor names it the way B269 names a bad
+  level. Read as "no vouch", the line would still grant level 2 to anyone GitHub calls a member,
+  which isn't what its author meant either. Two lines vouching for *different* ids refuse the
+  handle outright.
+- **A missing or garbled id.** For a vouched handle, an absent, zero, non-numeric or boolean
+  `user.id` is unknown, and unknown never matches.
+- **One gate.** `trust.comment_authorised(comment, trusted)` reads `user.login`, `user.id` and
+  `author_association` from a REST payload and calls `is_authorised`, which gained a `user_id`
+  keyword. The sweep (`keywords.authorise`), `harness ack` and revise's review filter all go
+  through it. `tests/test_trust_vouch.py` B330 fails the build if any other module reads
+  `author_association` or calls `is_authorised` directly, so the rule can't be applied in one
+  place and forgotten in another.
+- **`ack.yml`** passes `github.event.comment.user.id` to `harness ack --actor-id` through the env
+  block. An ack run with no id, as from the previous workflow, fails closed: it stays silent for a
+  vouched handle.
+- **`harness doctor`** lists every vouch and drops vouched handles from the "no access" warning,
+  since having no access here is the point. When a client is available it checks each id against
+  `GET /users/<login>`. A different id, or a 404 (renamed or deleted), is a **warning** and never a
+  problem: a problem exits 3 and gates every spending workflow (#27), and a stale vouch stops one
+  person's comments, which it is already doing safely. A read that fails (the rate ceiling, the
+  network) says nothing.
+
+**A defect this turned up.** Revise's `_review_feedback` flattened `ctx.trusted` into a frozenset
+of lower-cased handles before filtering. That dropped the levels, which was harmless because a set
+grants level 1 and that is what the filter asks for. It would also have dropped every vouch: this
+was the exact place the rule could be taught to the sweep and forgotten. It passes the `Trust`
+itself now, and B328 checks it through the stage.
+
+**Two limits, recorded here and not fixed:**
+- **D53's "assign the bot" gesture only reaches threads the bot is already in.** `jgoetzmann-bot`
+  can't be assigned on a brightboost issue it hasn't commented on:
+  `GET /repos/Bright-Bots-Initiative/brightboost/assignees/jgoetzmann-bot` → 404, because GitHub
+  assigns only collaborators, organisation members and the thread's own participants.
+- **Plain PR review summaries aren't read by the sweep.** `keywords.sweep` reads issue comments
+  and inline review comments only (`keywords.py`, the `read()` helper in `sweep`), so a `/harness`
+  line typed into a review's summary box is never seen as a command. Revise does read review
+  bodies as feedback, through the same gate.

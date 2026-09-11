@@ -437,7 +437,8 @@ which is the point.
 
 Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries
 `author_association` OWNER, MEMBER, or COLLABORATOR — both, or it is silently ignored
-(B131, B132). Adding a handle is a reviewed PR to `.harness/trust.txt`.
+(B131, B132) — unless the line vouches for the commenter's account id (`vouch:<id>`, D68),
+which stands in for the association. Adding a handle is a reviewed PR to `.harness/trust.txt`.
 
 ## 12. Where the ledger actually lives (D28)
 

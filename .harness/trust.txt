@@ -1,6 +1,7 @@
 # .harness/trust.txt — who may command the harness, and how much (B269/D60).
 #
-# Format: `<level> <handle>`, one per line. '#' starts a comment. Case-insensitive.
+# Format: `<level> <handle>`, one per line, optionally followed by `vouch:<id>` (D68, below).
+# '#' starts a comment. Case-insensitive.
 # A handle with no level is read as level 1 and `harness doctor` names it — least privilege
 # on ambiguity, loudly, because a typo here must never silently grant power.
 #
@@ -11,32 +12,48 @@
 #   0  everyone else — the absence of a line. The comment is read, denied, and ignored.
 #
 # The level is only half the gate: GitHub must also report the commenter as OWNER, MEMBER or
-# COLLABORATOR on the repository the comment is on (B131). Neither half suffices alone.
+# COLLABORATOR on the repository the comment is on (B131). Neither half suffices alone — unless
+# the line vouches for one exact account, which takes the place of the association (D68).
 #
 # Changing this file requires a reviewed PR (see .github/CODEOWNERS).
 3 jgoetzmann
 
-# BrightBoost-Tech is level 2 and is deliberately NOT a collaborator here.
+# BrightBoost-Tech is level 2, and its line VOUCHES for one GitHub account (D68).
 #
-# The association half of the gate is per-repository, so this is not a mistake and does not need
-# fixing: its commands are ignored on THIS repository (the inbox, proposal pull requests, work
-# items) and work on `Bright-Bots-Initiative/brightboost`, where GitHub reports it as a member --
-# `fix`, `rebase`, `stop` and `ask` on product issues and delivery pull requests. That is the
-# intended split: it steers work on the product repository without operating the harness itself.
+# 193453438 is that account's numeric user id: `GET /users/BrightBoost-Tech` returns it. A
+# comment from the login BrightBoost-Tech whose `user.id` is 193453438 passes the association
+# half of the gate on every repository, whatever GitHub reports about it. Without the vouch its
+# commands were refused on both: it is deliberately NOT a collaborator here (D30 — a write
+# collaborator on a personal-account repository can push a branch whose workflow runs with the
+# Claude token and the bot PAT in scope), and on `Bright-Bots-Initiative/brightboost` its
+# organisation membership is private, so GitHub reports it as CONTRIBUTOR there.
 #
-# `harness doctor` names it as a warning for exactly this reason, and a warning does not stop the
-# harness. Do not invite it here to silence that line.
-2 BrightBoost-Tech
+# The association was guarding a NAME: a login can be renamed away and claimed by somebody
+# else. An account id is never reused, so the vouch guards that more tightly than the
+# association did — a different account holding this login is refused, whatever GitHub says
+# its association is. The level still caps what it may do: level 2 does not get `halt`,
+# `resume`, `reject` or `--force`.
+#
+# `harness doctor` lists the vouch and checks the id against GitHub; a mismatch is a warning.
+# The vouch is instead of repository access, not as well as it: do not invite this account.
+2 BrightBoost-Tech vouch:193453438
 
 # TO ADD A MAINTAINER, TWO THINGS. Both, or their comments are read, denied and ignored:
 #
 #   1. add one line here: the digit 2, a space, then their GitHub handle; and
-#   2. invite them to THIS repository, so GitHub reports them as a collaborator.
+#   2. EITHER invite them to THIS repository, so GitHub reports them as a collaborator,
+#      OR, if they must not have access here, end the line with `vouch:` and their numeric
+#      account id — the `id` field of `GET https://api.github.com/users/<handle>`. A vouch
+#      admits that one account on every repository and nobody else under that name (D68).
 #
 # The second is the half people forget, and it fails silently from their side -- a denied
 # comment looks exactly like the harness being asleep. `harness doctor` names anyone listed
-# here who has no access, which is the only way to see it without asking them to test it.
-# Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
+# here who has no access and no vouch, which is the only way to see it without asking them to
+# test it. Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
+#
+# A malformed vouch — `vouch:` with no id, anything but digits after it, two of them, or two
+# lines vouching for different ids — refuses the WHOLE line: it grants nothing, and `harness
+# doctor` names it. It is never read as "no vouch", which would grant something else.
 #
 # Do not park a fill-me-in name here first. `Identity.trust_file_ready()` refuses the WHOLE
 # file when a placeholder token survives anywhere in it, comments included, so a half-filled

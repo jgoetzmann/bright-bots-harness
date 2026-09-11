@@ -27,7 +27,7 @@ from harness.stages import data_block, load_prompt, run_model
 from harness.stages import deliver as deliver_mod
 from harness.stages import implement as implement_mod
 from harness.stages.propose import parse_work_package
-from harness.trust import is_authorised
+from harness.trust import Trust, comment_authorised
 
 __all__ = [
     "CONTINUE",
@@ -71,19 +71,17 @@ CONTINUE = "continue"
 # --------------------------------------------------------------------------------------------
 
 
-def _is_trusted(comment: Mapping[str, Any], trusted: frozenset[str]) -> bool:
-    """B131 over one review or review comment: ``trust.is_authorised`` is the only judge, so
-    narrowing ``trust.AUTHOR_ASSOCIATIONS`` narrows what reaches the model here too."""
-    user = comment.get("user") or {}
-    login = str(user.get("login") or "").strip() if isinstance(user, Mapping) else ""
-    association = str(comment.get("author_association") or "").strip().upper()
-    return bool(login) and is_authorised(login, association, trusted)
+def _is_trusted(comment: Mapping[str, Any], trusted: Trust | frozenset[str]) -> bool:
+    """B131 over one review or review comment: ``trust.comment_authorised`` is the only judge,
+    the same one the sweep uses -- so narrowing the association set, or vouching for an account
+    (D68), changes what reaches the model here in the same stroke."""
+    return comment_authorised(comment, trusted)
 
 
 def gather_review_feedback(
     reviews: Sequence[Mapping[str, Any]],
     comments: Sequence[Mapping[str, Any]],
-    trusted: frozenset[str],
+    trusted: Trust | frozenset[str],
 ) -> str:
     """Review bodies and comments from trusted actors only, with their anchors (B133)."""
     chunks: list[str] = []
@@ -609,8 +607,9 @@ def _review_feedback(ctx: Context, upstream: str, pr: dict | None) -> str:
     except (GitHubError, RateCeilingReached) as exc:
         ctx.record_decision(f"could not read reviews for #{number}: {exc}")
         return ""
-    trusted = frozenset(str(h).lower() for h in ctx.trusted)
-    return gather_review_feedback(reviews, comments, trusted)
+    # The Trust itself, not a set of its handles: flattening it dropped every vouch (D68), so
+    # a vouched maintainer's review was gated on an association GitHub never gives them.
+    return gather_review_feedback(reviews, comments, ctx.trusted)
 
 
 # --------------------------------------------------------------------------------------------

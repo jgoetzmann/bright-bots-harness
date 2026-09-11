@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from harness.errors import GitHubError
-from harness.trust import MAX_LEVEL, is_authorised
+from harness.trust import MAX_LEVEL, comment_authorised
 
 log = logging.getLogger(__name__)
 
@@ -152,18 +152,19 @@ def comment_id(comment: Mapping[str, Any]) -> str:
 
 
 def authorise(comment: Mapping[str, Any], trusted: Any, ledger: Ledger, *, min_level: int = 1) -> bool:
-    """The actor gate (B131, B132): login and association only; denial is a bare False.
+    """The actor gate (B131, B132): login, association and account id; denial is a bare False.
 
     B270 adds the level. The default is 1 -- "is this person in the file at all" -- because
     `command_from` runs this before it parses anything, and B273 requires that a level-0
     comment's body is never read. The verb's own level is checked after parsing.
+
+    The decision itself is `trust.comment_authorised`, the same call `harness ack` and revise's
+    review filter make, so a vouched line (D68) is honoured on every surface or on none.
     """
-    user = comment.get("user") or {}
-    login = str(user.get("login") or "")
-    association = str(comment.get("author_association") or "")
-    if is_authorised(login, association, trusted, min_level=min_level):
+    if comment_authorised(comment, trusted, min_level=min_level):
         return True
-    ledger.count_denied(login)
+    user = comment.get("user") or {}
+    ledger.count_denied(str((user.get("login") if isinstance(user, Mapping) else "") or ""))
     return False
 
 

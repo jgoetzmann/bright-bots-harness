@@ -443,6 +443,15 @@ is honoured only if **both** hold:
 Two independent checks because they fail differently: the trust file is your intent; the
 association is GitHub's assertion. Neither alone is enough.
 
+**One exception (D68).** A trust line may end `vouch:<id>`, the numeric GitHub user id of one
+account. For that handle the id takes the place of condition 2: a comment passes when its
+`user.id` is the vouched id, whatever its association, and is refused when it is not, whatever
+its association. The association was guarding a name, which can be renamed away and claimed by
+somebody else; an account id is never reused, so the vouch guards the same thing more exactly.
+The level still caps the verbs, and a malformed vouch refuses the whole line. Every surface —
+the sweep, `harness ack`, and revise's review filter — decides through the one function
+`trust.comment_authorised`.
+
 A command from anyone else is **silently ignored** (B132): no reply, no reaction, no log line
 that quotes the body. Replying would confirm the trigger exists and invite probing. The
 denial is counted in the ledger under the handle only. The body of an untrusted comment is

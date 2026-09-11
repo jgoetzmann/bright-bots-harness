@@ -147,7 +147,9 @@ is invisible from your side.
 
 1. Your handle is in [`.harness/trust.txt`](../.harness/trust.txt), with a level.
 2. GitHub reports you as `OWNER`, `MEMBER` or `COLLABORATOR` on the repository you commented on —
-   which in practice means **you have been invited to it**.
+   which in practice means **you have been invited to it** — or your trust-file line vouches for
+   your account (`vouch:` and your numeric GitHub user id), which stands in for this half on
+   every repository (D68). `BrightBoost-Tech` is vouched, so this half is already met for it.
 
 A comment that fails either half is read, counted as denied, and ignored. There is no reply,
 because replying to anyone who types `/harness` on a public repository is how a bot becomes a
@@ -158,15 +160,16 @@ So total silence means one of these, most likely first:
 1. **The kill switch is on.** If `.harness/HALT` exists on `main`, every spending workflow exits
    before it does anything — the run goes green and nothing happens. The weekly heartbeat says so
    in a banner at the top; that is the fastest way to check.
-2. **You are missing half the gate** — most often the invite, not the trust-file line.
+2. **You are missing half the gate** — most often the invite or the vouch, not the trust-file
+   line.
 3. **The sweep has not run yet.** On brightboost that is up to three hours, and over a weekend
    until Monday. See below.
 
 A verb you do not have the level for is *not* on this list: that one replies, and names the level
 it needed.
 
-`harness doctor` names anyone in the trust file who has no access, which is the only way to see
-that half without asking someone to test it for you.
+`harness doctor` names anyone in the trust file who has neither access nor a vouch, which is the
+only way to see that half without asking someone to test it for you.
 
 ## 8. Latency — why nothing happened yet
 

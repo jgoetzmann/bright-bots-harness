@@ -28,7 +28,7 @@ Five kinds of thing arrive. Four of them want something from you.
 
 Every item is one issue in this repo carrying exactly one `stage:*` label — a transition removes the previous one — and its thread is the event log: each transition posts a comment naming the stage, the new state, the cost of the last recorded call, and the reason.
 
-**To give it work, assign `@jgoetzmann-bot` to an issue on brightboost.** Nothing else is required: the sweep picks it up within three hours on a weekday and the first row above is what you will see. Everything else on this page is what to do once it has.
+**To give it work, assign `@jgoetzmann-bot` to an issue on brightboost** — one it has already commented on, because GitHub will not offer it as an assignee on any other (D68). On a fresh issue, comment `@jgoetzmann-bot /harness work` there, or `/harness work <link>` on the inbox issue. Either way the sweep picks it up within three hours on a weekday and the first row above is what you will see. Everything else on this page is what to do once it has.
 
 | Label | Means | Who moves it on |
 |---|---|---|
@@ -231,7 +231,7 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 
 ### Assigning the bot — how you queue work
 
-**Assign `@jgoetzmann-bot` to an issue on brightboost.** That is the whole gesture. `feedback.yml` sweeps for assigned issues every three hours on a weekday and opens a work item for each, so you do not have to touch this repository at all; it is idempotent, so an issue already queued is left alone. No model call — which issues are assigned is a fact, not a judgement.
+**Assign `@jgoetzmann-bot` to an issue on brightboost** that it has already commented on. GitHub offers an account as an assignee only when it is a collaborator, an organisation member or already in the thread, and on brightboost the bot is only ever the third (D68) — so on a fresh issue this gesture is not available; comment `@jgoetzmann-bot /harness work` there, or `/harness work <link>` on the inbox. `feedback.yml` sweeps for assigned issues every three hours on a weekday and opens a work item for each, so you do not have to touch this repository at all; it is idempotent, so an issue already queued is left alone. No model call — which issues are assigned is a fact, not a judgement.
 
 **The sweep applies no label filter.** `--mode assigned` queues every open issue assigned to the account, `intern-starter` and friends included. The exclusion for `intern-starter`, `large` and `architecture` lives in triage's candidate filter, which this mode does not call — so in triage an assigned issue survives the allowlist but those three labels still exclude it, while the sweep would queue it anyway. Treat the assignment itself as the decision: do not assign the bot to an issue you would not hand it.
 

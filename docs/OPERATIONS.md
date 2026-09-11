@@ -361,13 +361,16 @@ This is by design (B134), and it will look like a bug the first time.
   `feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency is up to `NOTIFY_POLL_HOURS`
   (three hours) on a weekday, and until Monday for a comment left on Saturday.
 
-So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on by about 17:41 Friday;
-at 20:00 Friday, by about 09:41 Monday. Review comments from trusted handles are picked up
-the same way and become `revise` items on the same schedule.
+So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on at about 15:41 Friday;
+at 20:00 Friday, at about 21:41 Friday; at 22:00 Friday, not until about 00:41 Monday — the
+51-hour worst case. A `/harness` line in an inline review comment is read the same way. A review
+is never a command by itself: its text reaches the model as feedback only once a
+`/harness revise` arrives, and a command typed in a review's summary box is not read at all (D68).
 
 To skip the wait: Actions → `feedback.yml` → Run workflow, or from your machine
-`harness sweep` followed by `harness dispatch`. The sweep spends nothing (B141); anything
-that needs a model call becomes an item the dispatcher starts on its own cadence.
+`harness sweep` followed by `harness dispatch`. Reading the notifications spends nothing (B141),
+but acting on what they carry can: `ask`, `audit`, `split`, `revise`, `rebase` and a re-proposal
+call the model from inside `harness sweep`, through the same budget and usage stops as any stage.
 
 A command is acted on once (B135). Editing a comment does not re-trigger it; post a new one.
 

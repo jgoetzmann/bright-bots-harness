@@ -1,4 +1,4 @@
-"""D68: a trust.txt line may vouch for one exact GitHub account (B320-B330).
+"""D68: a trust.txt line may vouch for one exact GitHub account (B320-B331).
 
 `2 BrightBoost-Tech vouch:193453438` -- a comment whose `user.login` is the handle AND whose
 `user.id` is the vouched id passes the association half of the gate, whatever GitHub reports,
@@ -227,6 +227,51 @@ def test_B325_a_vouch_with_no_handle_is_refused_rather_than_read_as_one():
 
     assert len(trusted) == 0
     assert trusted.malformed == (f"2 vouch:{NATHAN_ID}",)
+
+
+# --------------------------------------------------------------------------------------
+# B331 - a vouched handle's lines must agree; a bare line beside a vouch refuses both
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bare", [f"3 {NATHAN}", f"2 {NATHAN}", f"1 {NATHAN}", NATHAN])
+@pytest.mark.parametrize("vouched_first", [True, False])
+def test_B331_a_vouched_handle_named_again_without_the_vouch_is_refused_entirely(
+    bare, vouched_first
+):
+    """Merged, `3 x` and `2 x vouch:<id>` gave the vouched account level 3 with no association:
+    the level from one line and the association waiver from the other. Neither line grants that
+    alone -- the bare line needs OWNER/MEMBER/COLLABORATOR, the vouched one caps at 2. Which
+    account the operator meant is the question the vouch settles, so a disagreement about it
+    refuses every line naming the handle, through the sweep's own gate."""
+    vouched = f"2 {NATHAN} vouch:{NATHAN_ID}"
+    pair = [vouched, bare] if vouched_first else [bare, vouched]
+    trusted = parse_trust("3 jgoetzmann\n" + "\n".join(pair) + "\n")
+
+    assert NATHAN not in trusted
+    assert trusted.vouched_id(NATHAN) is None
+    assert trusted.malformed == tuple(pair)
+    assert trusted.conflicted == tuple(pair)
+    assert trusted.implicit == ()
+    assert trusted.level_of("jgoetzmann") == 3, "one refused handle does not poison the file"
+    for association in ("OWNER", "COLLABORATOR", "CONTRIBUTOR"):
+        for uid in (NATHAN_ID, OTHER_ID):
+            comment = rest_comment(
+                login=NATHAN, uid=uid, association=association, body="/harness halt"
+            )
+            heard = keywords.commands_from(
+                comment, surface="issue", number=4, trusted=trusted, ledger=fresh_ledger()
+            )
+            assert heard == [], (association, uid)
+
+
+def test_B331_lines_that_agree_about_the_vouch_still_merge_to_the_highest_level():
+    """The refusal is for disagreement, not repetition: the same vouch twice is one account."""
+    trusted = parse_trust(f"2 {NATHAN} vouch:{NATHAN_ID}\n3 {NATHAN} vouch:{NATHAN_ID}\n")
+
+    assert trusted.level_of(NATHAN) == 3
+    assert trusted.vouched_id(NATHAN) == NATHAN_ID
+    assert trusted.malformed == trusted.conflicted == ()
 
 
 # --------------------------------------------------------------------------------------
@@ -521,6 +566,29 @@ def test_B329_doctor_names_a_malformed_vouch_like_a_malformed_level(tmp_path, mo
     assert f"trust file line carries a vouch that is not one (D68) and was refused: {line!r}" in (
         payload["problems"]
     )
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        (f"3 {NATHAN}", f"2 {NATHAN} vouch:{NATHAN_ID}"),
+        (f"2 {NATHAN} vouch:{NATHAN_ID}", f"2 {NATHAN} vouch:{OTHER_ID}"),
+    ],
+)
+def test_B331_doctor_names_every_line_of_a_disagreement_as_one(tmp_path, monkeypatch, capsys, pair):
+    """Each line on its own is well formed, so "not a level" or "not a vouch" would send the
+    operator looking for a typo that is not there. The finding is the disagreement."""
+    code, out, payload = doctor(
+        tmp_path, monkeypatch, capsys, trust="3 jgoetzmann\n" + "\n".join(pair) + "\n"
+    )
+
+    assert code == 3
+    for line in pair:
+        assert (
+            "trust file line disagrees with another line about which account its handle is (D68)"
+            f" and was refused: {line!r}"
+        ) in payload["problems"]
+    assert not any("is not a level" in p for p in payload["problems"])
 
 
 # --------------------------------------------------------------------------------------

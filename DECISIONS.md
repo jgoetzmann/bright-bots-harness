@@ -779,6 +779,8 @@ I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notific
 
 ## D68 / B320–B330 — vouch for an account, not a name
 
+## D68 / B320–B331 — vouch for an account, not a name
+
 Decided by the operator's delegate; implemented 2026-09-11 on
 `feat/vouched-trust-and-maintainer-docs`. B320–B339 are this branch's numbers.
 
@@ -827,8 +829,14 @@ OWNER, which is stricter than B131 was.
   `vouch:12x`, `vouch=…`, `vouch:0`, two vouches, or a vouch with no handle. The line grants
   nothing and is recorded in `Trust.malformed`, and doctor names it the way B269 names a bad
   level. Read as "no vouch", the line would still grant level 2 to anyone GitHub calls a member,
-  which isn't what its author meant either. Two lines vouching for *different* ids refuse the
-  handle outright.
+  which isn't what its author meant either.
+- **A vouched handle's lines must agree (B331).** Two lines vouching for *different* ids, or a
+  vouched line beside a bare line for the same handle, refuse **every** line naming it; they go
+  to `Trust.malformed` and `Trust.conflicted`, and doctor names each as disagreeing about which
+  account the handle is. Merging them the way levels merge would grant what neither line does:
+  `3 x` beside `2 x vouch:1` gave account 1 level 3 with no association, the level from one line
+  and the waiver from the other. The same vouch on several lines is one account and still takes
+  the highest level.
 - **A missing or garbled id.** For a vouched handle, an absent, zero, non-numeric or boolean
   `user.id` is unknown, and unknown never matches.
 - **One gate.** `trust.comment_authorised(comment, trusted)` reads `user.login`, `user.id` and
@@ -862,3 +870,14 @@ itself now, and B328 checks it through the stage.
   and inline review comments only (`keywords.py`, the `read()` helper in `sweep`), so a `/harness`
   line typed into a review's summary box is never seen as a command. Revise does read review
   bodies as feedback, through the same gate.
+
+**What the adversarial review changed.** The mixed-line escalation above (B331) was found in
+review, not in the first cut. So were five places where the maintainer docs promised a gesture a
+vouched maintainer without access cannot make. FOR-MAINTAINERS told him to merge or close the
+gate-1 pull request, to commit `.harness/HALT` "without permission", to assign the bot on any
+issue, to put commands "in a normal review comment", and that `reject` means `stop`. The merge,
+the commit and `halt` are the operator's under D30. Assignment is limited as above. The summary
+box is not read. A typed `reject` is level 3. Each page now says so, and says what he can do
+instead: `/harness revise`, and `/harness stop`, which at level 2 parks even a proposal, since
+`proposed` has a `blocked` edge. COMMANDS' per-repository paragraph now applies only to unvouched
+lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Monday).

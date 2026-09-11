@@ -42,6 +42,11 @@ they are written in, so the same words on the wrong thread do nothing.
 `go` and `split` round out the twelve verbs; all of them are in the tables below, and
 `/harness-<verb>` works as well as `/harness <verb>`.
 
+**Assigning the bot works only on a brightboost issue it has already commented on.** GitHub offers
+an account as an assignee only when it is a collaborator, an organisation member or already in the
+thread, and there the bot is only ever the third (D68). On a fresh issue, `/harness work <link>`
+on the inbox is the route.
+
 ## Where the harness is reading
 
 It cannot answer where it cannot hear you, and the two repositories work differently.
@@ -61,8 +66,9 @@ Two consequences worth knowing:
 - **"Up to 3 hours" is a weekday figure.** The sweep's cron is `41 */3 * * 1-5`, so a comment left on
   brightboost after Friday evening waits until Monday morning — around **51 hours** at worst.
   `/harness status` prints the next scheduled sweep, so you never have to work it out.
-- **Silence is ambiguous.** A comment from someone outside `trust.txt`, or from someone not invited
-  to the repository, is read, counted as denied, and ignored **with no reply**. That looks exactly
+- **Silence is ambiguous.** A comment from someone outside `trust.txt`, or from someone neither
+  invited to the repository nor vouched for, is read, counted as denied, and ignored **with no
+  reply**. That looks exactly
   like the harness being asleep. `/harness status` from a trusted handle is the quickest way to tell
   the difference — if it answers, the harness is listening and the problem was your permissions.
 
@@ -294,6 +300,12 @@ goes `stage:needs-human` and only a trusted `/harness revise` restarts it.
 
 `/harness fix` is the same command under its old name.
 
+**Where on the pull request.** In the comment box at the foot of the Conversation tab, or as an
+inline comment on a line of the diff — **not** in the *Review changes* summary box. The sweep reads
+comments and inline review comments, never a review's summary, so a `/harness` line typed there is
+never seen and gets no reply (D68). On a delivery pull request, once a `revise` has arrived, the
+text of your reviews is read as feedback along with it. The same holds for `rebase` and `stop`.
+
 #### `rebase` — the same, after a conflict
 
 ```
@@ -416,13 +428,12 @@ Two things must hold, and **the second is invisible**: your handle must be in
 `OWNER`, `MEMBER` or `COLLABORATOR` on **the repository you are commenting on** — or your line
 must vouch for your account (below).
 
-That second half is **per-repository**, which is more useful than it sounds: someone who is a member
-of `Bright-Bots-Initiative` but not of the harness repository can steer work where it lands —
-`revise`, `rebase`, `stop`, `ask` on brightboost issues and delivery pull requests — while the
-harness's own
-threads (the inbox, proposal pull requests, work items) stay with the people who run it. That is a
-deliberate arrangement, not a misconfiguration, and `harness doctor` reports it as a warning rather
-than a problem.
+For a line **without** a vouch, that second half is **per-repository**: someone who is a public
+member of `Bright-Bots-Initiative` but not of the harness repository can steer work where it
+lands — `revise`, `rebase`, `stop`, `ask` on brightboost issues and delivery pull requests — while
+the harness's own threads (the inbox, proposal pull requests, work items) stay with the people who
+run it. For such a line that is a deliberate arrangement, not a misconfiguration, and
+`harness doctor` reports it as a warning rather than a problem.
 
 It has a trap: an organisation member whose membership is **private** is reported as
 `CONTRIBUTOR`, which is how `BrightBoost-Tech` reads on brightboost. For someone like that, or
@@ -430,7 +441,9 @@ someone who must not have access to the harness repository (D30), the trust line
 `vouch:<id>` instead: their numeric account id, the `id` field of
 `GET https://api.github.com/users/<handle>`. A vouched line admits that one account on every
 repository whatever GitHub reports, refuses any other account using the name, and still caps the
-commands at the line's level (D68). `BrightBoost-Tech` is vouched.
+commands at the line's level (D68). `BrightBoost-Tech` is vouched, so it is heard on both
+repositories — the inbox and proposal pull requests here as well as brightboost — and doctor does
+not warn about it.
 
 A comment failing either half is read, counted as denied, and ignored **with no reply**, so it looks
 exactly like the harness being asleep. `harness doctor` names anyone in the trust file who has
@@ -593,7 +606,9 @@ not stop the fleet, while the **comment** `/harness halt` does.
 
 **The strongest is the commit.** `.harness/HALT` runs before the job does anything at all, so it
 holds even if the ledger cannot be read. Any content. Deleting it resumes. One commit either way,
-from a phone, and you never need permission to use it.
+from a phone, for anyone with write access to the harness repository, and it needs nobody's
+permission. A maintainer has no such access (D30), so a maintainer's levers are `/harness stop` on
+the thing that looks wrong, which parks it, and asking the operator for the rest.
 
 > **Local mode caveat.** The commanded halt travels in `state/ledger.json`, which Actions runners
 > fetch from the `harness-state` branch. A container running `local-loop` against its own local

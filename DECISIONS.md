@@ -777,8 +777,6 @@ now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.
 I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
 `workflow`, and I-15 is the harness's own check.
 
-## D68 / B320–B330 — vouch for an account, not a name
-
 ## D68 / B320–B331 — vouch for an account, not a name
 
 Decided by the operator's delegate; implemented 2026-09-11 on

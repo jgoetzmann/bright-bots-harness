@@ -92,7 +92,7 @@ line. **Several may go in one comment, one per line.** These twelve are the whol
 | `halt` · `resume` | Anywhere | Stops the harness spending anything at all, and lifts it again |
 
 Six other words are understood, each meaning the verb it became: `fix` → `revise`, `reject` → `stop`,
-`queue` → `go`, `usage` → `status`.
+`queue` → `go`, `usage` → `status`, `ledger` → `status`, `help` → `status`.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the
 operator) everything, level 2 (maintainers) everything that queues or steers work, level 1
@@ -111,7 +111,8 @@ comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions 
 
 ## Giving it work
 
-**Comment on the inbox issue, or assign the bot.** Two gestures, either is enough.
+**Comment on the inbox issue.** That is the gesture; assigning the bot is a second one, with a
+narrow reach.
 
 `/harness work make the activity cards keyboard reachable` on the pinned inbox issue opens a work
 item and replies in-thread with a link to it. A pasted product-repository issue link does the same
@@ -121,8 +122,10 @@ is already subscribed to.
 
 **Or assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
 (D53), with one limit: GitHub offers the account as an assignee only on an issue it has already
-commented on (D68), so for a fresh issue the inbox, or `@jgoetzmann-bot /harness work` on the
-issue itself, is the route. `feedback.yml` sweeps for assigned issues every three hours on a
+commented on (D68), and nearly every such issue already has a work item, which the sweep leaves
+alone — so in practice it helps only where the bot answered without opening one, such as after an
+`ask`. Otherwise the inbox, or `@jgoetzmann-bot /harness work` on the issue itself, is the route.
+`feedback.yml` sweeps for assigned issues every three hours on a
 weekday, opens a work item for each one, and leaves alone any it has already queued. No label to
 invent, no Actions tab, no model call — which issues are assigned is a fact, not a judgement.
 
@@ -145,8 +148,9 @@ ranks whatever is already queued here, and only reaches for the product reposito
 anybody asked for is outstanding (an open delivery PR counts) and weekly usage is under
 `SUGGEST_MIN_HEADROOM_PCT` (50). There it takes only issues labelled `harness-ok`
 (`ALLOWLIST_LABEL`) — the pool, which maintainers fill or empty by labelling issues on the
-product repository — and queues at most `SUGGEST_MAX_PER_RUN` (5) a run as `via:suggested`. Each
-is proposed in the same run and, like everything else, built only after its proposal is merged.
+product repository — never one that has already had a work item (B332), and at most
+`SUGGEST_MAX_PER_RUN` (5) a run, as `via:suggested`. Each is proposed in the same run and, like
+everything else, built only after its proposal is merged.
 
 `implement.yml` takes an `issue` number to run now, bypassing the run window. Every spending
 workflow refuses to start while `.harness/HALT` exists on the default branch.
@@ -215,10 +219,11 @@ asked for is outstanding, and a delivery pull request awaiting review counts —
 open, no suggestion is made.
 
 The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
-(tue 20:00) UTC, and `implement.yml`'s crons follow that window. Two things start outside it:
+(tue 20:00) UTC, and `implement.yml`'s crons follow that window. Three things start outside it:
 `harness run --item N`, which is what a `workflow_dispatch` with an explicit issue number
-invokes, and an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway
-instead. Neither bypasses the usage stops. `discover.yml` is deliberately not window-gated —
+invokes; an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway instead; and
+an item forced with `--force` (level 3), which `implement.yml`'s next run starts — a gate-1 merge,
+the Tue 20:23 cron, or a dispatch. None of them bypasses the usage stops. `discover.yml` is deliberately not window-gated —
 one triage call is cheap — and stops only on a halt, a rate limit, the reserve, or a usage
 stop.
 

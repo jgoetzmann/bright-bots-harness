@@ -886,9 +886,15 @@ lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Mon
 - **`go` on a suggestion does not replace the merge.** It moves an unmerged `via:suggested`
   proposal to `approved`, but implement reads the work package from `runs/` or from the merged
   `proposals/<id>-*.md` (D46), and on Actions only the second can exist. The next in-window
-  implement run clones, installs and runs the baseline gates, then raises in `_read_spec` with the
-  item already `implementing`: a red run, repeated after B147's reconciliation, until the operator
-  merges. A sixth member of the `runs/` family. The docs say the merge is what builds a suggestion.
+  build clones, installs and runs the baseline gates, then raises in `_read_spec` with the item
+  already `implementing`: a red run, repeated after B147's reconciliation, until the operator
+  merges. That build is not only `implement.yml`'s: `feedback.yml`'s "Reconcile" step runs
+  `harness run` with no `--item`, which inside the window builds **every** approved item in one
+  loop, so the red run recurs on the three-hourly sweep too — and, since the loop catches only
+  usage stops, it ends the loop for the approved items after it. A sixth member of the `runs/`
+  family. After the merge `go` is useless as well: `implement.yml`'s `harness approve` has already
+  approved the item, green light or none. So the docs tell a maintainer not to `go` a suggestion,
+  and give the yes as a plain comment and the no as `/harness stop`.
 - **The green-light comment's "Assign me" does nothing** on an issue the harness has already
   suggested: `discover --mode assigned` skips a reference it already has. `/harness go` works.
 - **`_forced` replies that a forced item "starts on the next sweep".** The sweep's `harness run`
@@ -898,3 +904,39 @@ lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Mon
   `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request. Recorded
   because while brightboost#868 is open the first labelled batch yields nothing, and a maintainer
   labelling forty issues will ask why.
+
+**What the review of the maintainer page changed (B332).** One defect fixed in code, and the page
+corrected wherever it promised something that does not happen.
+
+- **Triage re-picked issues it already had (B332, fixed).** `_triage_product_repo` skipped
+  assigned, claimed and excluded-label issues, but not an issue that already had a work item: a
+  suggestion still waiting at gate 1, one a maintainer had parked with `stop`, one ended. A
+  suggested item does not hold the pool shut, and its proposal pull request is in this repository,
+  so nothing on brightboost claims the issue. If the ranking picked it again, `_ensure_item`
+  returned the old id, which took one of the five slots, and `discover.yml`'s
+  `harness propose <id>` then raised `IllegalTransition` in `_enter` — a red run and an ops issue,
+  and a maintainer's no undone by the next Sunday's ranking. Triage now reads the store once and
+  skips any issue whose `issue:<n>` ref it already holds, in any state; the product-repository
+  path runs only when nothing is `discovered`, so that is every known issue. Traced, not
+  reproduced live: whether it bit depended on the ranking.
+- **The page's corrections.** A maintainer cannot run a workflow, so "run `feedback` from the
+  Actions tab" became "post any `/harness` command on the inbox", whose run sweeps his
+  notifications too. `go` on a suggestion is harmful before the merge and useless after it, and
+  silence is not a no, since the merge builds a suggestion regardless; the yes is now a plain
+  comment and the no is `/harness stop`. The claim that one item is built per run and the window
+  holds six runs is gone (see the `go` note above). `stage:blocked` and `stage:needs-human` are
+  named as waiting on a person. A `--force` from level 2 still runs the rest of the command. A
+  halted harness still acks on this repository. An inbox answer can wait up to two hours behind a
+  build, because both take the `harness-ledger` lock. Assigning the bot helps only on an issue
+  where it answered without opening an item. "Asking twice is one item" is true only for the same
+  link, or the same words from the same account. USING's latency example matches the cron.
+  README lists all six aliases and all three ways to start outside the window. The command table's
+  dollar column is now relative weight (D66).
+- **Recorded, not fixed: a level-2 `stop` has nowhere to park four stages.** `discovered`,
+  `approved`, `blocked` and `needs-human` have no edge to `blocked`, so `_act_on_command` ends the
+  item (`abandoned`) and says so. A fresh `/harness work` is `discovered` until Sunday, so this is
+  the stop a maintainer is likeliest to make. Asking again with the same link, or the same words
+  from the same account, finds the ended item through `find_by_ref`, which scans closed issues too,
+  so `_GO_DEAD_ENDS`'s "`/harness work` opens a fresh item" holds only for a reworded request. The
+  docs say all of this. Adding `blocked` edges would change D1's state machine, and that change
+  deserves its own decision.

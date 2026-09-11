@@ -1893,8 +1893,20 @@ def _fork_slug() -> str:
     return str(data["FORK_REPO"])
 
 
+#: B312/D67: how a workflow names the fork. Not only the literal slug -- no workflow spells it,
+#: they all reach it through the `FORK_REPO` repository variable -- but that variable too, in
+#: every form a workflow uses it: `${{ vars.FORK_REPO }}`, `env.FORK_REPO`, `$FORK_REPO`,
+#: `${FORK_REPO}`. A check that knew only the literal inspected no real line and passed on
+#: anything the workflows actually do with the fork (B306 fixed the rot, not this).
+_FORK_VARIABLE = re.compile(r"(?:vars|env)\.FORK_REPO|\$\{?FORK_REPO\b")
+
+
+def _names_fork(line: str, fork: str) -> bool:
+    return fork in line or bool(_FORK_VARIABLE.search(line))
+
+
 def _pushes_github_to(line: str, fork: str) -> bool:
-    return fork in line and (
+    return _names_fork(line, fork) and (
         ("git push" in line and ".github" in line) or ".github/workflows" in line
     )
 
@@ -1904,20 +1916,34 @@ def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():
     path; the fork's default branch only ever moves by fast-forward.
 
     B306 / D67: this spelled the fork `brightboost-harness/brightboost`, a repository that does
-    not exist -- the live one is in `.harness/config.json` -- so the loop never matched and the
-    test passed unconditionally. The slug is read from there now, and the matcher is shown to
-    fire before it is trusted to stay quiet. Static only: it reads workflow YAML and does NOT
-    cover the runtime push path, which is `gh.push_branch`'s commit walk (B298)."""
+    not exist, so the loop never matched. B312/D67: reading the slug from config fixed the rot
+    but not the vacuity -- no workflow spells the fork literally either; they reach it through
+    the `FORK_REPO` variable, so a scan that knew only the slug still inspected no real line.
+    The matcher now counts that variable as naming the fork, this asserts the scan saw at least
+    one line that does, and the matcher is shown to fire on both spellings before it is trusted
+    to stay quiet. Static only: it reads workflow YAML and does NOT cover the runtime push path,
+    which is `gh.push_branch`'s commit walk (B298)."""
     fork = _fork_slug()
     assert re.fullmatch(r"[\w.-]+/[\w.-]+", fork), f"FORK_REPO is not an owner/name: {fork!r}"
     assert _pushes_github_to(f"git push https://github.com/{fork}.git HEAD:.github/x", fork)
+    assert _pushes_github_to('git push "https://x@github.com/${{ vars.FORK_REPO }}.git" '
+                             "HEAD:refs/heads/h -- .github/workflows/ci-cd.yml", fork)
     assert not _pushes_github_to(f"git push https://github.com/{fork}.git HEAD:main", fork)
+    assert not _pushes_github_to("git push https://github.com/${{ vars.FORK_REPO }}.git "
+                                 "HEAD:main", fork)
+    inspected = 0
     violations: list[str] = []
     for name in ALL_WORKFLOWS:
         for lineno, line in enumerate(_d2_workflow(name).splitlines(), start=1):
+            if _names_fork(line, fork):
+                inspected += 1
             if _pushes_github_to(line, fork):
                 violations.append(f"{name}:{lineno}")
     assert violations == [], "B105 violated: " + ", ".join(violations)
+    assert inspected > 0, (
+        "B105 inspected no workflow line that names the fork, so it proves nothing -- the "
+        "workflows reach the fork through the FORK_REPO variable, which the matcher must read"
+    )
 
 
 def test_b127_implement_yml_orders_halt_doctor_sync_fork_dispatch_then_work():

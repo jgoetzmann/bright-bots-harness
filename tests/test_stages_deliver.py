@@ -1624,19 +1624,55 @@ def test_b299_a_rebase_past_upstreams_own_workflow_commit_still_delivers(tmp_pat
 
 
 def test_b298_deliver_refuses_a_harness_commit_under_github_and_opens_nothing(tmp_path):
-    """B298: the other half of B299, and the proof the rig's guard is live -- a commit the
-    harness authored under `.github/` is refused at the push, and no pull request follows."""
+    """B298/B313: the other half of B299 -- a commit under `.github/` is refused and no pull
+    request follows. deliver's own author-blind check (B313) reads the branch above the commit
+    the rebase put it on and fires before the push, so the push guard never runs (`guarded`
+    stays empty); the commit here is the harness's own, so the push guard would refuse it too."""
     s = setup_deliver(tmp_path)
     _commit(s.repo, ".github/dependabot.yml", "version: 2\n", "chore: add dependabot",
             email=HARNESS_EMAIL)
 
-    with pytest.raises(GitHubError, match=r"\.github/dependabot\.yml"):
+    with pytest.raises(HarnessError, match=r"\.github/dependabot\.yml"):
         deliver(s.ctx, ITEM)
 
     assert s.gh.guarded == []
     assert s.gh.calls_named("create_pull") == []
     assert not any(e["method"] == "git push" for e in s.gh.sent)
     assert s.store.get_work_item(ITEM).state == "packaged"
+
+
+def test_b313_a_spoofed_author_commit_under_github_is_refused_at_deliver(tmp_path):
+    """B313/D67: the push guard's walk stops at the first commit a harness email did not author,
+    so a `.github/` commit the model signed as someone else would slip past it. deliver's
+    author-blind check reads every commit the push would send that upstream does not hold,
+    whoever authored it, and refuses this one before the push."""
+    s = setup_deliver(tmp_path)
+    _commit(s.repo, ".github/workflows/evil.yml", "on: push\n", "ci: sneak", email=SPOOFED_EMAIL)
+
+    with pytest.raises(HarnessError, match=r"\.github/workflows/evil\.yml"):
+        deliver(s.ctx, ITEM)
+
+    assert s.gh.guarded == [] and s.gh.calls_named("create_pull") == []
+    assert not any(e["method"] == "git push" for e in s.gh.sent)
+    assert s.store.get_work_item(ITEM).state == "packaged"
+
+
+def test_b312_a_handoff_refuses_a_clone_whose_history_is_substituted(tmp_path):
+    """B312/D67: a `refs/replace/` entry can show git a history its objects do not hold while
+    the push sends the real objects, so a check could read a `.github/` change as absent. The
+    handoff refuses to read a substituted clone at all and withholds the push, whatever the
+    branch appears to hold. The ref here is harmless; the refusal is on its presence."""
+    s = setup_handoff(tmp_path)
+    twin = _git("commit-tree", f"{s.base}^{{tree}}", "-m", "twin", cwd=s.repo)
+    _git("replace", s.base, twin, cwd=s.repo)
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert s.gh.calls_named("push_branch") == []
+    assert s.store.get_work_item(ITEM).state == "blocked"
+    assert "could not be read" in handoff_text(s)
+    decisions = (s.run_dir / "DECISIONS.md").read_text(encoding="utf-8")
+    assert "substituted" in decisions
 
 
 def test_b300_the_nested_conflict_revise_force_pushes_past_upstreams_workflow_commit(
@@ -1690,18 +1726,26 @@ def track_ci_workflow(s) -> None:
          cwd=s.repo)
 
 
-def assert_withheld(s, path: str) -> None:
-    """Hole A closed: no push at all, and everything else a handoff does still happens."""
+def assert_withheld(s, path: str, *, kept: bool = True) -> None:
+    """Hole A closed (B301): no push at all; the handoff still writes HANDOFF.md and comments,
+    but the item is blocked, not carried (B315), and `continue` is not offered -- in Actions
+    mode the clone does not outlive the run, so nothing could resume it. When there were commits
+    to keep, the withheld patch sits beside the note."""
     assert s.gh.calls_named("push_branch") == [], "the handoff pushed a .github change"
     assert not any(e["method"] == "git push" for e in s.gh.sent)
     text = handoff_text(s)
     assert path in text and "never publishes" in text
     assert "no write credential" not in text, "the note blamed the wrong thing"
-    assert NEXT_COMMAND in text
-    assert s.store.get_work_item(ITEM).state == "approved"
-    assert s.ctx.ledger.carry_issue() == ITEM
+    assert NEXT_COMMAND not in text, "a withheld handoff must not offer continue (B315)"
+    assert s.store.get_work_item(ITEM).state == "blocked"
+    assert s.ctx.ledger.carry_issue() != ITEM, "a blocked item is not carried"
     decisions = (s.run_dir / "DECISIONS.md").read_text(encoding="utf-8")
     assert "withheld the push" in decisions and path in decisions
+    patch = s.run_dir / "WITHHELD.patch"
+    if kept:
+        assert patch.is_file() and path in patch.read_text(encoding="utf-8")
+        assert "WITHHELD.patch" in text
+    return
 
 
 def test_b301_a_modified_workflow_is_committed_but_never_pushed(tmp_path):
@@ -1744,14 +1788,29 @@ def test_b301_a_commit_the_model_signed_with_another_name_is_withheld(tmp_path):
     assert_withheld(s, CI_WORKFLOW)
 
 
-def test_b301_when_the_fork_point_cannot_be_found_the_push_is_withheld(tmp_path):
-    """B301: failing closed. Without `origin/main` the author-blind half cannot run, and a
-    handoff that cannot check does not publish."""
+def test_b301_when_the_fork_main_cannot_be_fetched_the_push_is_withheld(tmp_path):
+    """B301/B314: failing closed. The author-blind half fetches the fork's `main` at check time
+    -- so a moved local ref cannot mislead it (B314) -- and when that fetch fails it cannot run,
+    so a handoff that cannot check does not publish and blocks the item."""
     s = setup_handoff(tmp_path)
-    _git("update-ref", "-d", "refs/remotes/origin/main", cwd=s.repo)
+    _git("remote", "set-url", "origin", str(tmp_path / "does-not-exist.git"), cwd=s.repo)
 
     handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
 
     assert s.gh.calls_named("push_branch") == []
-    assert "fork's main is unknown" in handoff_text(s)
-    assert s.store.get_work_item(ITEM).state == "approved"
+    assert "fork's main could not be fetched" in handoff_text(s)
+    assert s.store.get_work_item(ITEM).state == "blocked"
+
+
+def test_b314_a_moved_origin_main_ref_does_not_hide_a_withheld_change(tmp_path):
+    """B314/D67: the model can `git update-ref refs/remotes/origin/main HEAD` to move the fork
+    point onto its own `.github/` commit; a check that read that local ref would come back
+    clean. The handoff fetches the fork's real `main` into a ref of its own, so the moved
+    tracking ref changes nothing and the change is still withheld."""
+    s = setup_handoff(tmp_path)
+    _commit(s.repo, CI_WORKFLOW, CI_WORKFLOW_TEXT, "ci: sneak", email=SPOOFED_EMAIL)
+    _git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=s.repo)
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert_withheld(s, CI_WORKFLOW)

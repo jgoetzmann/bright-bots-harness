@@ -600,7 +600,7 @@ The rest:
   the same reason the accessors do.
 
 
-## D67 / B296–B311 — the token carries `workflow`; the harness guards `.github/` itself
+## D67 / B296–B315 — the token carries `workflow`; the harness guards `.github/` itself
 
 Implemented 2026-09-11 on `fix/workflow-scope-hardening`, from a design handed off on 2026-09-10
 (untracked, in `.handoffs/`).
@@ -655,10 +655,12 @@ than it read:
    runner, under `--dry-run` too, and refuses when git cannot answer. It takes no `base`: nothing
    for a caller to get wrong. `push_ref` stays outside it on purpose — its one caller relays
    upstream's own `main` to the fork, fast-forward only.
-4. **Hole A closed (B301).** `deliver._push_handoff` withholds the push — only the push; HANDOFF.md,
-   the comment, the parked item and the carry all still happen, and the note says why — when the
-   branch carries a `.github/` path by the walk *or* by the author-blind diff from where it left
-   the fork's `main`. When either cannot be answered, it withholds.
+4. **Hole A closed (B301, B315).** `deliver._push_handoff` withholds the push — only the push;
+   HANDOFF.md and the comment still happen — when the branch carries a `.github/` path by the walk
+   *or* by the author-blind check against the fork's `main`. When either cannot be answered, it
+   withholds. The item is then blocked, not carried, and the withheld commits are kept as
+   `WITHHELD.patch` beside the note (B315), because in Actions mode the clone does not outlive the
+   run and `continue` would find no branch to resume.
 5. **Hole B closed (B302, B303).** `revise` fixes its base before the model runs. A resumed item is
    judged from its fork point, because nothing it carries was ever checked. And it walks the branch
    before shipping, so a `.github/` commit the branch already carries blocks the item with the
@@ -674,20 +676,39 @@ than it read:
 8. **B105 de-vacuumed (B306):** the fork slug comes from `.harness/config.json`. **The delivery PR
    body and the prompts say what is true (B307).** **The I-15 invariant is widened (B308)** to one
    path set, defined in `clone.py`, read by implement, gh, deliver and revise.
+9. **The spoof and clone-ref substitution, closed (B312, B313, B314).** The walk trusts the author
+   field, and a commit the model made under any name it likes stops the walk before it. So the two
+   pushes that send a branch — `deliver` and the handoff — do not rely on the walk alone: each also
+   reads every commit the push would send that upstream does not already hold, whoever authored it,
+   and refuses any `.github/` path (B313). `deliver` reads from `FETCH_HEAD`, the commit `_rebase`
+   just put the branch on; the handoff fetches the fork's `main` at check time (B314), so a model
+   that ran `git update-ref refs/remotes/origin/main HEAD` onto its own commit cannot move the
+   anchor the check reads. And every guard-side git read — the walk, B64's diffs, the author-blind
+   checks — begins with `git --no-replace-objects -c core.commitGraph=false` and refuses a clone
+   carrying a `refs/replace/` ref, a grafts file or a shallow history (B312): those show git a
+   history the clone's files claim but its objects do not hold, while a push sends the real objects
+   either way.
 
 **Where this departs from the handoff, and why.**
 
 - **The cap refuses.** The handoff said to record a walk that hits its 100-commit cap. A guard that
   is now the only layer should not publish commits it has not read, and no real branch comes near
   100.
-- **Author spoofing.** The walk's stop rule trusts the author field, and the model can commit under
-  any name — plausibly, since a harness clone has no `user.email` and the model must pick one. So
-  every check that follows a model call is author-blind: implement's B64 diffs from a fixed base
-  (unchanged), revise's from the tip it gave the model, a resumed item's from its fork point, and
-  the handoff adds the diff from the fork's `main`. The walk is the backstop for commits the
-  harness wrote, which is what reaches the push. A model that rewrote the clone's refs could still
-  mislead the handoff's diff; that, like a model rewriting `.git/config` to redirect a push, is
-  beyond what a check inside the clone can promise.
+- **Author spoofing, and clone-ref substitution.** The walk's stop rule trusts the author field,
+  and the model can commit under any name — plausibly, since a harness clone has no `user.email`
+  and the model must pick one. So every check that follows a model call is author-blind: implement's
+  B64 diffs from a fixed base (unchanged), revise's from the tip it gave the model, a resumed item's
+  from its fork point, and — the point on which this diverges from the handoff — both pushes that
+  send a branch add an author-blind read of every commit over an anchor the model cannot move (B313,
+  B314, item 9 above). An earlier draft conceded that "a model that rewrote the clone's refs could
+  still mislead the handoff's diff … is beyond what a check inside the clone can promise"; an
+  adversarial pass showed that was not so. A `refs/replace/` entry, a grafts file or a shallow file
+  each rewrite what git *reads* without changing what a push *sends*; the checks now read with
+  `--no-replace-objects -c core.commitGraph=false` and refuse a clone that carries any of the three
+  (B312), and the handoff's anchor is fetched from the fork at check time rather than read from a
+  ref in the clone. What remains outside any in-clone check is the transport itself — a model that
+  rewrote `.git/config` to point `origin` elsewhere, or replaced the `git` binary — which is a
+  property of the runner, not of a diff.
 - **`doctor` never "warns that `workflow` is absent"** (handoff §9.3): the rotation came first. The
   check proves itself by reporting all three scopes and warning on none.
 - **`packager.py` and `prompts/` are corrected here**, not left to the documentation pass. The PR
@@ -720,6 +741,32 @@ B310 is the drift guard. No live document may say the token lacks a scope doctor
 credit GitHub with I-15, or put `.github/` in a list a reviewer need not check. Its matcher is
 tested against the sentences corrected here, so it cannot pass vacuously the way B105 did. B311
 holds every passage that says which scopes to grant to exactly `EXPECTED_TOKEN_SCOPES`.
+
+**The adversarial pass (B312–B315).** Three independent reviews of the branch found the guard
+thinner than it read, and this closes each real finding:
+
+- The walk and B64's diffs ran plain `git diff`/`git log`, which honour `refs/replace/` and
+  the commit-graph and grafts caches — files the model can write with Bash to show a check a
+  history the push does not send. Every guard-side read now uses `clone.GUARD_GIT`
+  (`--no-replace-objects -c core.commitGraph=false`) and refuses a clone carrying a
+  `refs/replace/` ref, a grafts file or a shallow history (`clone.substituted_history`, B312),
+  in Python and in the watchdog.
+- The walk stops at the first non-harness author, so a `.github/` commit the model signs as
+  someone else, or one the model committed itself, would pass the push guard. `deliver` and the
+  handoff each add an author-blind read of the commits the push would send that upstream does
+  not hold (`clone.protected_paths_above`, B313), anchored on a ref the model cannot move — the
+  rebase's `FETCH_HEAD` for deliver, the fork's `main` fetched at check time for the handoff
+  (B314). The handoff's earlier anchor, `refs/remotes/origin/main`, was a ref in the clone the
+  model could move onto its own commit.
+- A withheld handoff previously parked the item `approved` with a carry and told a person to
+  resume it with `continue`, but in Actions mode the clone does not survive the run and the
+  branch never reached the fork, so the resume would fail and the evidence was gone. A withheld
+  handoff now blocks the item and writes the withheld commits as `WITHHELD.patch` in
+  `runs/item-<n>/`, which the run artifact keeps (B315).
+- B105 read the fork by its literal slug, which no workflow spells — they reach the fork
+  through the `FORK_REPO` repository variable — so the scan still inspected no real line even
+  after B306. It now counts that variable as naming the fork and asserts it saw at least one
+  line that does.
 
 **Frozen documents, read as amended.** `docs/delivery/` is not edited in place. Read these as
 amended by D67: in `DELIVERY-2-HANDOFF.md`, §5.2 ("one classic PAT, scope `public_repo` only"),

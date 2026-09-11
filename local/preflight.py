@@ -383,7 +383,10 @@ def _bare_force_lines(body: str, comment: str) -> list[str]:
     return out
 
 
-WALK_NAMES = ("PROTECTED_PUSH_PATHS", "HARNESS_AUTHOR_EMAILS", "PROTECTED_SCAN_COMMITS")
+WALK_NAMES = (
+    "PROTECTED_PUSH_PATHS", "HARNESS_AUTHOR_EMAILS", "PROTECTED_SCAN_COMMITS",
+    "SUBSTITUTION_PROBES",
+)
 
 
 def _clone_walk() -> tuple[dict[str, object], list[str]]:
@@ -452,6 +455,14 @@ def check_publishers_agree() -> None:
               f"bare force push, against gh.push_branch's rule: {bare}")
         python_side, flags = _clone_walk()
         ps_side = _watchdog_walk(body)
+        # B312: the watchdog asks git the same three questions before it walks, or a clone
+        # whose history is substituted shows its walk commits the push does not send.
+        walk_body = re.search(r"^function Get-UnpublishablePaths.*?^\}", body, re.M | re.S)
+        probes = python_side.get("SUBSTITUTION_PROBES")
+        ps_side["SUBSTITUTION_PROBES"] = (
+            tuple(p for p in probes if walk_body and p in walk_body.group(0))
+            if isinstance(probes, tuple) else None
+        )
         for name in WALK_NAMES:
             ps, py = ps_side.get(name), python_side.get(name)
             same = ps is not None and py is not None and (

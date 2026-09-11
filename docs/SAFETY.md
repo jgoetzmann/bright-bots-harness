@@ -284,15 +284,28 @@ over one path set, all of `.github/` (workflows, composite actions, `dependabot.
   It asks which commits the harness wrote, not what the branch differs by from a recorded
   base, so a rebase onto an upstream that changed its own CI still delivers (B299, B300). It
   runs under `--dry-run` too, and refuses when git cannot answer.
-- **Before anything is committed**, `_reject_forbidden_diff` in `stages/implement.py` (B64)
-  blocks a diff that touches `.github/`, and the subtler cases no path check can see: a
-  disabled check or a raised timeout in a file outside `.github/`. `revise` fixes its diff base
-  before the model runs, so a commit the model makes itself is still inside the diff
-  (B302, B303).
+- **The model holds `Bash`**, so a commit it makes carries whatever author it names — the
+  walk's stop-at-first-non-harness rule would pass it. So `deliver` also runs an
+  author-blind check before its push: every commit the push would send that upstream does not
+  already hold, whoever authored it, read from `FETCH_HEAD` (the commit the rebase just put
+  the branch on), refusing on any `.github/` path (B313). A handoff does the same against the
+  fork's `main`, fetched at check time so a moved local ref cannot mislead it (B314).
+- **Before implement or revise commits its work**, `_reject_forbidden_diff` in
+  `stages/implement.py` (B64) blocks a diff that touches `.github/`, and the subtler cases no
+  path check can see: a disabled check or a raised timeout in a file outside `.github/`.
+  `revise` fixes its diff base before the model runs, so a commit the model makes itself is
+  still inside the diff (B302, B303). A handoff, by contrast, commits interrupted work
+  unchecked (its job is to lose nothing) and withholds the push instead.
 - **A handoff** commits the interrupted work but withholds the push, and says why, when the
-  branch carries a `.github/` path (B301).
+  branch carries a `.github/` path; the item is then blocked, not carried, and the withheld
+  commits are kept beside the note (B301, B315).
+- **Every guard-side read is replace-proof.** The walk, B64's diffs and the author-blind
+  checks all begin with `git --no-replace-objects -c core.commitGraph=false`, so a
+  `refs/replace/` entry or a stale commit-graph cannot show a check a history the push does
+  not send; a clone carrying a `refs/replace/` ref, a grafts file or a shallow history is
+  refused rather than read (B312).
 - **In local mode** `local/watchdog-bb.ps1`, the only publisher there, runs the same walk with
-  the same prefix and author emails before it pushes (B304).
+  the same prefix, author emails and substitution checks before it pushes (B304, B312).
 
 There is deliberately no second copy of the path set: `implement.py`, `deliver.py`,
 `revise.py` and `gh.py` all read the one in `clone.py`, and `tests/test_invariants.py` fails

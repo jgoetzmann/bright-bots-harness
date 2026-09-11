@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from harness import commitmsg, gates, prettier
-from harness.clone import Lease, PROTECTED_PUSH_PATHS, normalise_repo_path, protected_paths_in
+from harness.clone import (
+    GUARD_GIT,
+    Lease,
+    PROTECTED_PUSH_PATHS,
+    normalise_repo_path,
+    protected_paths_in,
+)
 from harness.collision import claimed_issue_numbers
 from harness.config import Config
 from harness.context import Context
@@ -441,7 +447,10 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
     """Added and removed lines of the working diff, plus every line of each untracked file."""
     added: list[str] = []
     removed: list[str] = []
-    code, out, _ = gates.run_command(["git", "diff", "--unified=0", lease.base_sha], lease.path)
+    # B312/D67: `GUARD_GIT`, so a `refs/replace/` entry for the base cannot hide what was added.
+    code, out, _ = gates.run_command(
+        [*GUARD_GIT, "diff", "--unified=0", lease.base_sha], lease.path
+    )
     if code == 0:
         for line in out.splitlines():
             if line.startswith("+++") or line.startswith("---"):
@@ -452,7 +461,7 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
                 removed.append(line[1:])
 
     code, out, _ = gates.run_command(
-        ["git", "ls-files", "--others", "--exclude-standard"], lease.path
+        [*GUARD_GIT, "ls-files", "--others", "--exclude-standard"], lease.path
     )
     if code == 0:
         for rel in out.splitlines():

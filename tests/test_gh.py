@@ -553,8 +553,13 @@ def _pushed(client) -> list[dict]:
 
 
 def _recorder(calls: list, code: int = 0, err: str = ""):
+    """A git runner that records every argv. When it succeeds it answers B312's history probe
+    as a full, ungrafted clone does -- git always prints both answers -- and everything else
+    with nothing, so a fake cannot pass the probe by printing what production never prints."""
     def run(argv, cwd=None):
         calls.append(list(argv))
+        if code == 0 and "--is-shallow-repository" in argv:
+            return (0, "false\n.git/info/grafts\n", "")
         return (code, "", err)
 
     return run
@@ -677,9 +682,11 @@ def test_b297_a_root_commit_lists_its_paths(tmp_path):
 
 
 def test_b297_a_merge_commit_carries_the_paths_it_brought_in(tmp_path):
-    """B297 (handoff 8, test 13): a merge the harness made. `--first-parent` never visits the
-    side branch's commit, and plain `git log` shows a merge no paths at all -- so without
-    `--diff-merges=first-parent` this `.github/` change would pass in silence."""
+    """B297 (handoff 8, test 13): a merge the harness made brings a `.github/` change in on its
+    first-parent diff, and the walk sees it. Plain `git log` shows a merge no paths at all; on
+    git 2.31 and later `--first-parent` alone already gives a merge its first-parent diff, so
+    `--diff-merges=first-parent` is redundant there and kept for older git and for the reader --
+    this asserts the property (the walk sees the path), not the flag that is one way to get it."""
     from harness.clone import walk_harness_commits
 
     repo = _repo(tmp_path)
@@ -778,8 +785,11 @@ def test_b298_push_branch_walks_through_the_injected_runner_before_it_pushes(tmp
     client.push_branch(tmp_path,"harness/fix-1-x", remote_repo="o/fork",
                        git_runner=_recorder(calls))
 
-    assert [("log" in argv, "push" in argv) for argv in calls] == [(True, False), (False, True)]
-    assert "--first-parent" in calls[0] and calls[0][-2:] == ["harness/fix-1-x", "--"]
+    # B312's two history probes, then the walk, then the push -- nothing leaves first.
+    assert [argv[1] for argv in calls[:2]] == ["for-each-ref", "rev-parse"]
+    assert [("log" in argv, "push" in argv) for argv in calls[2:]] == [(True, False),
+                                                                        (False, True)]
+    assert "--first-parent" in calls[2] and calls[2][-2:] == ["harness/fix-1-x", "--"]
 
 
 def test_b298_a_walk_git_cannot_run_refuses_the_push(tmp_path):
@@ -820,6 +830,23 @@ def test_b298_a_dry_run_over_a_real_clone_still_refuses(tmp_path):
         client.push_branch(repo, "main", remote_repo="o/fork")
 
     assert client.sent == []
+
+
+def test_b312_the_push_guard_refuses_a_clone_with_a_replace_ref(tmp_path):
+    """B312/D67: a `refs/replace/` entry maps the harness's `.github/` commit to a replacement
+    whose tree lacks it, so the walk sees a clean history -- but the push sends the real
+    objects. The guard refuses to read a substituted clone rather than walk the wrong one."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    real = _commit(repo, HARNESS, {".github/workflows/ci.yml": "on: push\n"}, "ci: sneak")
+    twin = _git(repo, "commit-tree", f"{real}~1^{{tree}}", "-p", f"{real}~1", "-m", "twin")
+    _git(repo, "replace", real, twin)
+    client = _guard_client(tmp_path, dry_run=False)
+
+    with pytest.raises(GitHubError, match="substituted"):
+        client.push_branch(repo, "main", remote_repo="o/fork")
+
+    assert _pushed(client) == []
 
 
 def test_b305_token_scopes_reads_x_oauth_scopes_on_an_unconditional_request(tmp_path):

@@ -71,6 +71,9 @@ class Trust:
     malformed: tuple[str, ...] = ()
     #: D68: handle -> the one numeric account id its line vouches for.
     vouched: Mapping[str, int] = field(default_factory=dict)
+    #: D68: the lines of a handle refused because they disagree about the vouch -- two ids, or
+    #: a vouched line beside a bare one. Each is in :attr:`malformed` too; this says why.
+    conflicted: tuple[str, ...] = ()
 
     def __contains__(self, handle: object) -> bool:
         return normalise_handle(str(handle)) in self.levels
@@ -130,13 +133,18 @@ def parse_trust(text: str) -> Trust:
 
     D68 adds the vouch, under the same rule. A token beginning ``vouch`` must be exactly
     ``vouch:<positive integer>``, and a line may carry one; anything else refuses the whole
-    line. A handle vouched for two DIFFERENT ids is refused entirely -- every line naming it --
-    because which account the operator meant is exactly the question the vouch exists to settle.
+    line. A vouched handle is refused entirely -- every line naming it -- when those lines do
+    not all carry the same vouch: two DIFFERENT ids, or one line vouching and another naming the
+    handle bare. Which account the operator meant is exactly the question the vouch exists to
+    settle, and merging the lines would answer it with a grant neither line makes alone:
+    ``3 x`` with ``2 x vouch:1`` would otherwise give account 1 level 3 with no association.
     """
     levels: dict[str, int] = {}
     implicit: list[str] = []
     malformed: list[str] = []
-    vouches: dict[str, list[tuple[int, str]]] = {}
+    conflicted: list[str] = []
+    # Every accepted line, per handle: the id it vouches for (None for a bare line), and itself.
+    lines_of: dict[str, list[tuple[int | None, str]]] = {}
     for raw_line in text.splitlines():
         entry = raw_line.split("#", 1)[0].strip()
         if not entry or "<" in entry or ">" in entry:
@@ -171,22 +179,28 @@ def parse_trust(text: str) -> Trust:
             continue
         if not explicit:
             implicit.append(handle)
-        # A handle listed twice keeps the highest level it was given.
+        # A handle listed twice keeps the highest level it was given -- when its lines agree
+        # about the vouch, which the loop below settles.
         levels[handle] = max(level, levels.get(handle, 0))
-        if pinned is not None:
-            vouches.setdefault(handle, []).append((pinned, entry))
+        lines_of.setdefault(handle, []).append((pinned, entry))
     vouched: dict[str, int] = {}
-    for handle, pins in vouches.items():
-        if len({pin for pin, _entry in pins}) == 1:
-            vouched[handle] = pins[0][0]
+    for handle, lines in lines_of.items():
+        pins = {pin for pin, _entry in lines}
+        if len(pins) == 1:
+            (only,) = pins
+            if only is not None:
+                vouched[handle] = only
             continue
         levels.pop(handle, None)
-        malformed.extend(entry for _pin, entry in pins)
+        refused = [entry for _pin, entry in lines]
+        malformed.extend(refused)
+        conflicted.extend(refused)
     return Trust(
         levels=levels,
         implicit=tuple(sorted(set(implicit) & set(levels))),
         malformed=tuple(malformed),
         vouched=vouched,
+        conflicted=tuple(conflicted),
     )
 
 

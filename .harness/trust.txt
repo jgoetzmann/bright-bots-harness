@@ -51,9 +51,14 @@
 # here who has no access and no vouch, which is the only way to see it without asking them to
 # test it. Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
 #
-# A malformed vouch — `vouch:` with no id, anything but digits after it, two of them, or two
-# lines vouching for different ids — refuses the WHOLE line: it grants nothing, and `harness
-# doctor` names it. It is never read as "no vouch", which would grant something else.
+# A malformed vouch — `vouch:` with no id, anything but digits after it, or two of them —
+# refuses the WHOLE line: it grants nothing, and `harness doctor` names it. It is never read as
+# "no vouch", which would grant something else.
+#
+# Every line naming a vouched handle must carry the same vouch. Two different ids, or a vouched
+# line beside a bare one for the same handle, refuse EVERY line naming it: `3 x` beside
+# `2 x vouch:1` would otherwise give account 1 level 3 with no association, which neither line
+# grants alone. To change a vouched handle's level, change its one line.
 #
 # Do not park a fill-me-in name here first. `Identity.trust_file_ready()` refuses the WHOLE
 # file when a placeholder token survives anywhere in it, comments included, so a half-filled

@@ -754,14 +754,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(f"  trust file: {len(trusted)} handle(s) ({trust_path})")
     if by_level:
         lines.append(f"    {by_level}")
+    conflicted = set(getattr(trusted, "conflicted", ()) or ())
     for bad in getattr(trusted, "malformed", ()):
         # B269: a line that looks like a level and is not one grants nothing, and says so. D68
-        # holds a vouch to the same rule -- a bad id, two ids, or a vouch with no handle.
-        what = (
-            "carries a vouch that is not one (D68)"
-            if trust_mod.VOUCH_WORD in bad.lower()
-            else "is not a level"
-        )
+        # holds a vouch to the same rule -- a bad id, a vouch with no handle, or lines naming
+        # one handle that disagree about which account it is.
+        if bad in conflicted:
+            what = "disagrees with another line about which account its handle is (D68)"
+        elif trust_mod.VOUCH_WORD in bad.lower():
+            what = "carries a vouch that is not one (D68)"
+        else:
+            what = "is not a level"
         problems.append(f"trust file line {what} and was refused: {bad!r}")
     if getattr(trusted, "implicit", ()):  # B269: a level-less handle is level 1, never silently
         named = ", ".join(f"@{h}" for h in trusted.implicit)
@@ -1983,7 +1986,7 @@ def _act_on_command(ctx, config, cmd) -> str:
         elif "blocked" in legal:
             target = "blocked"
         elif "abandoned" in legal:
-            # Nowhere to park it: `discovered` and `proposed` have no `blocked` edge. Ending it
+            # Nowhere to park it: `discovered` has no `blocked` edge (`proposed` does). Ending it
             # is the only thing left, so say that it was terminal rather than pretending.
             target = "abandoned"
         else:

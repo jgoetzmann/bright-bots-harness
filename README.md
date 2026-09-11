@@ -120,9 +120,11 @@ inbox is polled rather than waited for, because a notification only arrives on a
 is already subscribed to.
 
 **Or assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
-(D53): `feedback.yml` sweeps for assigned issues every three hours on a weekday, opens a work
-item for each one, and leaves alone any it has already queued. No label to invent, no Actions
-tab, no model call — which issues are assigned is a fact, not a judgement.
+(D53), with one limit: GitHub offers the account as an assignee only on an issue it has already
+commented on (D68), so for a fresh issue the inbox, or `@jgoetzmann-bot /harness work` on the
+issue itself, is the route. `feedback.yml` sweeps for assigned issues every three hours on a
+weekday, opens a work item for each one, and leaves alone any it has already queued. No label to
+invent, no Actions tab, no model call — which issues are assigned is a fact, not a judgement.
 
 The sweep only queues. The proposal comes from the next `discover` run, which ranks the queue
 and proposes every item in it — so an assigned issue becomes a proposal on the Sunday cron

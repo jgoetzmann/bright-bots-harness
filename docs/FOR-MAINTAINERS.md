@@ -38,8 +38,11 @@ naming that issue by hand:
 Within one sweep, a work item opens as its own issue and a reply lands in the inbox thread with a
 link to it. Asking twice is one item, not two.
 
-**Or assign `@jgoetzmann-bot` to a brightboost issue.** That is the same gesture in the place you
-already work, and it needs no comment at all.
+**Or assign `@jgoetzmann-bot` to a brightboost issue it has already commented on.** That is the
+same gesture in the place you already work, and it needs no comment. It works only there: GitHub
+offers an account in the Assignees box when it is a collaborator, an organisation member or already
+in the thread, and on brightboost the bot is only ever the third (D68). On a fresh issue, use the
+inbox or the comment below.
 
 **Or comment on the brightboost issue itself**, addressing the bot:
 
@@ -62,9 +65,15 @@ both are labelled in orange so you can find them by scanning:
 to touch, and how a reviewer will know it worked. No code has been written yet and nothing has been
 spent on writing any.
 
-- Merge it → the plan is approved and implementation starts.
-- Close it → rejected. Nothing further is attempted.
+- Merge it → the plan is approved and implementation starts. **The merge is Jack's.** You have
+  no access to the harness repository, by design (D30, D68), so you can neither merge nor close
+  the pull request. If the plan is right, say so on it; a comment without `/harness` is for
+  people, and Jack reads it.
 - Comment `/harness revise <what is wrong>` → it rewrites the plan with your note as the brief.
+- Comment `/harness stop` → it closes the pull request and parks the item. Parked, not ended:
+  `/harness go` puts it back in the queue for a fresh proposal.
+- A proposal nobody asked for (`via:suggested`) is the exception: `/harness go` on it is the
+  green light, and that one is yours to give.
 
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the real diff
 and every gate's output in the body. Read it like any other contributor's PR.
@@ -74,7 +83,12 @@ and every gate's output in the body. Read it like any other contributor's PR.
 - `/harness rebase` → same, after a conflict.
 - `/harness stop` → close it and stand down.
 
-All of those go **on the pull request**, as a normal review comment. `revise` and `stop` are the
+All of those go **on the pull request**: in the comment box at the foot of the Conversation tab, or
+as an inline comment on a line of the diff. **Not in the *Review changes* summary box.** The harness
+never reads that box for commands, so a `/harness` line typed there gets no reply (D68). Once a
+`/harness revise` has arrived on a delivery pull request, it does read your reviews as feedback.
+
+`revise` and `stop` are the
 same two verbs you use at gate 1 — the pull request you are standing on says whether "redo it" means
 rewrite the plan or rewrite the code, so there is no second word to remember.
 
@@ -121,13 +135,14 @@ proposals nobody approved: an audit produces a *list*, and you choose which line
 halted, whether the run window is open, and when the next sweep is.
 
 There are twelve verbs in all, and every reply the harness sends points at the rest of them. Six
-other words are understood too: `fix`, `reject`, `queue` and `usage` mean `revise`, `stop`, `go`
-and `status`, and so do `ledger` and `help` — if you are not sure, `/harness help` is a real
-thing to type.
+other words are understood too: `fix`, `queue` and `usage` mean `revise`, `go` and `status`, and
+so do `ledger` and `help` — if you are not sure, `/harness help` is a real thing to type. The
+sixth, `reject`, is the operator's terminal form of `stop`: it needs level 3, so from you it is
+refused with a reply saying so. Your `stop` parks instead, which `/harness go` undoes.
 
 ## 6. What you cannot do, and why
 
-`halt`, `resume` and `--force` are level 3 (Jack only).
+`halt`, `resume`, `reject` and `--force` are level 3 (Jack only).
 
 `--force` starts work now instead of at the next run window. The window — Monday 08:00 to Tuesday
 20:00 UTC — is the main thing standing between an enthusiastic week and an exhausted allowance.
@@ -182,10 +197,13 @@ ask Jack, or run `feedback` from the Actions tab.
 
 ## 9. If something looks wrong
 
-**To stop everything:** commit a file called `.harness/HALT` on `main`. Any content. Every spending
-workflow then exits before the dispatcher and before a single token. Deleting the file resumes.
-One commit either way, doable from a phone. You do not need permission and you will not break
-anything by using it.
+**To stop one thing:** `/harness stop` on its pull request or work item. At your level that parks
+it, reversibly, and that is enough to keep anything out of brightboost.
+
+**To stop everything, ask Jack.** Both fleet-wide switches are his. `/harness halt` is level 3.
+The other is a commit of `.harness/HALT` on the harness repository's `main`, and that needs write
+access you do not have, by design (D30). A pull request adding the file from a fork does nothing
+until Jack merges it, because `.harness/` is protected.
 
 **A pull request that looks wrong** is just a pull request. Close it.
 

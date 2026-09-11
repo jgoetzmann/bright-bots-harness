@@ -354,11 +354,16 @@ answered by any of the three routes in §3. The base commit named in section 1 e
 upstream — that is B105/B106 — so `git checkout <BASE>` in a plain upstream clone works
 without touching the fork at all.
 
-Three things the PR cannot do, so a reviewer need not check for them: it cannot be merged,
-approved, or have a review dismissed by the harness (I-12); it cannot contain a change under
-`.github/**` (I-15 — the token lacks the `workflow` scope and GitHub refuses the push); and
-its evidence cannot come from a widened gate, because the sequence that produced it is pinned
-by hash (`.harness/PIN`) and a mismatch stops the harness before it spends.
+Two things the PR cannot do, so a reviewer need not check for them: it cannot be merged,
+approved, or have a review dismissed by the harness (I-12); and its evidence cannot come from
+a widened gate, because the sequence that produced it is pinned by hash (`.harness/PIN`) and a
+mismatch stops the harness before it spends.
+
+One thing it should not do, which a reviewer should still check: carry a change under
+`.github/` (I-15). The harness refuses to push any commit of its own that touches `.github/`,
+but since D67 that refusal is its only guard — the token carries the `workflow` scope, so
+GitHub would accept the push. A delivery PR whose file list shows anything under `.github/`
+is a harness bug: do not merge it.
 
 Feedback on the PR — a failing check, a merge conflict, or a review comment from a trusted
 handle — becomes one bounded `revise` cycle that re-runs the **complete** gate sequence and

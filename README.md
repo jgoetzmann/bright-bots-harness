@@ -28,10 +28,13 @@ and a pinned gate sequence.
 
 - **It never merges.** No merge, approve, or dismiss endpoint exists in the code (I-12). Both
   gates are load-bearing because the code that would bypass them is absent.
-- **One GitHub credential, scoped small.** A classic PAT with `public_repo` and nothing else,
-  on a machine account that owns the fork and is not a collaborator on the product repository.
-  No `workflow` scope, so GitHub itself rejects any push touching `.github/workflows/` (I-15).
-  The only other secret is the subscription token the `claude` CLI authenticates with.
+- **One GitHub credential, scoped small.** A classic PAT with `public_repo`, `notifications`
+  and `workflow` and nothing else, on a machine account that owns the fork and is not a
+  collaborator on the product repository. `workflow` is there so the fork can fast-forward past
+  upstream's own CI changes (D67), which means GitHub no longer refuses a push touching
+  `.github/` — the harness does, itself: it will not push a commit of its own that touches
+  `.github/` (I-15). `harness doctor` reads the token's real scopes before every spending run
+  and warns if they drift. The only other secret is the subscription token the `claude` CLI authenticates with.
 - **One door for that credential.** `harness/gh.py` is the only module that sends an
   `Authorization` header and the only one that can read the token (I-9, I-11); the `gh` CLI is
   banned outright (I-2′). Below `PERMISSION_TIER=2` no request carries a token at all — and 0
@@ -54,9 +57,10 @@ and a pinned gate sequence.
   both, never either alone. Anyone else's comment is silently ignored and its body is never
   even parsed.
 
-It will not push to the product repository, file an issue there, edit `.github/**` anywhere,
-move the fork's default branch except to fast-forward it from upstream, write a file outside
-its own roots, or ask you for any access beyond `public_repo` on its own account.
+It will not push to the product repository, file an issue there, publish a change under
+`.github/` anywhere, move the fork's default branch except to fast-forward it from upstream,
+write a file outside its own roots, or ask you for any access beyond `public_repo`,
+`notifications` and `workflow` on its own account.
 [docs/SAFETY.md](docs/SAFETY.md) states each guarantee with the command that checks it.
 
 ## The repositories

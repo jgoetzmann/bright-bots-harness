@@ -342,8 +342,9 @@ them can come back quietly.
 ### And what the first live run found
 
 Running the sweep against the live repository — the first time it had ever got that far — the
-notifications call returned **403, "Missing the `notifications` scope."** I-15 gives the machine PAT
-`public_repo` and nothing else, so the correctly-configured token is refused there. The exception
+notifications call returned **403, "Missing the `notifications` scope."** The machine PAT then held
+`public_repo` and nothing else, so the token as configured was refused there. (It has since gained
+`notifications`, the fix below, and `workflow`, D67.) The exception
 came out of `sweep` and took the **inbox commands it had already collected** with it: the surface
 used by people who have read no documentation, lost because a feed nobody sees was refused.
 
@@ -599,7 +600,7 @@ The rest:
   the same reason the accessors do.
 
 
-## D67 / B296–B308 — the token carries `workflow`; the harness guards `.github/` itself
+## D67 / B296–B311 — the token carries `workflow`; the harness guards `.github/` itself
 
 Implemented 2026-09-11 on `fix/workflow-scope-hardening`, from a design handed off on 2026-09-10
 (untracked, in `.handoffs/`).
@@ -696,10 +697,35 @@ than it read:
   `FULLSEND_FORBIDDEN_PATHS` keeps `.github/workflows/`: it routes a proposal to the parallel
   prompt and is not a safety check.
 
-**Not done here.** The documents that still say the token lacks `workflow`, or that I-15 is
-enforced by GitHub, belong to the documentation pass that follows. They are `README.md`,
-`docs/SAFETY.md` (whose I-15 section should now name the shared predicate), `docs/USING.md`,
-`docs/PACKAGE-FORMAT.md`, `docs/PROPOSALS.md`, `.env.example`, `harness/identity.py` (and so
-`HUMAN.md`), the `continue-on-error` rationale in `feedback.yml`, and `docs/OPERATIONS.md`'s
-rotation runbook, which as written would revert this decision at the next rotation. That pass
-should add a drift test that no live document claims the token lacks a scope it carries.
+**The documentation pass (B309–B311).** Every live statement that the token lacks `workflow`,
+that I-15 is enforced by GitHub or "twice", or that a reviewer need not check for a `.github/`
+change now says what is true:
+
+- `docs/SAFETY.md`: I-15 names the shared predicate and says plainly that it is enforced once,
+  by the harness's own code, with doctor's scope report in place of the capability half. The
+  scope table, the operations table and the never-ask list follow.
+- `docs/USING.md` and `docs/PACKAGE-FORMAT.md`: a `.github/` change moves out of "you need not
+  check" and into "still check".
+- `docs/OPERATIONS.md`: the rotation runbook names all three scopes and says that leaving
+  `workflow` off only stalls the fork.
+- Also corrected: `README.md`, `docs/PROPOSALS.md`, `.env.example` and the `continue-on-error`
+  rationale in `feedback.yml`.
+- `harness/identity.py` and the `HUMAN.md` it generates (B309). `HUMAN.md` was re-rendered from
+  the statuses it already recorded, with no network call, so only the scope lines changed.
+- The delivery PR body (B307) states only the check that is enforced, the refusal to push.
+  "Rejected before it is committed" overclaimed: a handoff commits interrupted work and
+  withholds only the push. `prompts/system.md` changed with it, and `.harness/PIN` is rewritten.
+
+B310 is the drift guard. No live document may say the token lacks a scope doctor expects,
+credit GitHub with I-15, or put `.github/` in a list a reviewer need not check. Its matcher is
+tested against the sentences corrected here, so it cannot pass vacuously the way B105 did. B311
+holds every passage that says which scopes to grant to exactly `EXPECTED_TOKEN_SCOPES`.
+
+**Frozen documents, read as amended.** `docs/delivery/` is not edited in place. Read these as
+amended by D67: in `DELIVERY-2-HANDOFF.md`, §5.2 ("one classic PAT, scope `public_repo` only"),
+the I-15 row of the invariant table ("the token has no `workflow` scope — GitHub rejects it")
+and human prerequisite 5; in `DELIVERY-2-REVIEW.md`, R3.8 ("inspect the PAT scopes") and R5.3
+("classic, `public_repo` only; no `workflow`"), both of which `harness doctor`'s scope report
+now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.md`'s summary of
+I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
+`workflow`, and I-15 is the harness's own check.

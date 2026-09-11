@@ -152,7 +152,9 @@ def _what_this_is(config) -> list[str]:
     nothing but unauthenticated reads - would be a false statement addressed to the maintainer
     of the repository the harness had just pushed to. Neither branch overclaims: tier 0 still
     says it holds nothing, and tier 2 names only what `gh.py` can actually do (docs/SAFETY.md,
-    the tier table) and the two limits that hold whatever the credential is (I-12, I-15).
+    the tier table) and the two limits that hold whatever the credential is (I-12, I-15). Since
+    D67 the token carries `workflow`, so I-15 is stated as what it is - the harness's own
+    refusal to push - and nothing the credential or GitHub is claimed to prevent.
     """
     if int(getattr(config, "permission_tier", 0) or 0) < 2:
         return [
@@ -167,9 +169,9 @@ def _what_this_is(config) -> list[str]:
         f"credential, belonging to a machine account that owns {owns}. It pushes this branch",
         f"to that fork and opens the pull request from there; it never pushes to `{config.repo}`",
         "itself, and it can neither merge a pull request nor act on a review (I-12). It never",
-        "modifies `.github/**` (I-15): it refuses to push any commit of its own that touches",
-        "`.github/`, and a diff that touches it is rejected before it is committed. It is yours",
-        "to accept, amend, or discard; merging it is a human action.",
+        "publishes a change under `.github/` (I-15). That is the harness's own check, not a",
+        "limit of the credential: it refuses to push any commit of its own that touches",
+        "`.github/`. It is yours to accept, amend, or discard; merging it is a human action.",
     ]
 
 

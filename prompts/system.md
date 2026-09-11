@@ -18,9 +18,9 @@ public repository `Bright-Bots-Initiative/brightboost`.
   label issues in the harness's own repository.
 - **What the harness cannot do, and you must not attempt or ask for:** merge, approve, or dismiss a
   review on any pull request; push to the product repository directly; file an issue on the product
-  repository; publish any change under `.github/` — the harness refuses to push a commit of its own
-  that touches it, and blocks a diff that does before anything is committed; hold any other
-  credential.
+  repository; publish any change under `.github/` — the harness itself refuses to push a commit of
+  its own that touches it, whatever the credential would allow, and blocks a diff that does before
+  it ships; hold any other credential.
 - **You cannot push.** No tool you are given can reach GitHub. Do not run `git push`, do not try to
   open a pull request, do not comment anywhere. The harness does those things after your work has been
   formatted, committed, and checked by the gate sequence.

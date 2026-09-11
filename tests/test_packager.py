@@ -826,7 +826,7 @@ def test_readme_at_tier_0_still_says_it_holds_no_credentials_and_cannot_push(bui
 def test_readme_at_tier_2_drops_the_tier_0_claim_and_names_the_push(state):
     """At tier 2 the harness does hold a credential and does push, so the README says so -
     naming the fork it pushes to, and the two limits that hold anyway: it cannot merge,
-    approve or dismiss a review (I-12), and it cannot modify `.github/**` (I-15)."""
+    approve or dismiss a review (I-12), and it never publishes a change under `.github/` (I-15)."""
     ctx = _tier2_context(state)
     package = Path(packager.build(ctx, state.item_id, state.lease))
     readme = (package / "README.md").read_text(encoding="utf-8")
@@ -843,7 +843,7 @@ def test_readme_at_tier_2_drops_the_tier_0_claim_and_names_the_push(state):
     # from an endpoint, so the prose says the same thing in words that pass both.
     assert "neither merge a pull request nor act on a review (I-12)" in readme
     assert "dismiss" not in readme
-    assert "`.github/**` (I-15" in readme
+    assert "`.github/` (I-15" in readme
     assert "merging it is a human action" in readme
 
 
@@ -851,13 +851,18 @@ def test_b307_the_tier_2_readme_says_what_stops_a_github_change_now(state):
     """B307 / D67: `deliver` republishes this README as the body of every delivery pull request
     (B108), so it is where a brightboost reviewer is told what this bot can do. Since D67 the
     token carries `workflow`; saying it does not would be false, addressed to the people
-    deciding whether to trust the change. What stops a `.github/` change is the harness."""
+    deciding whether to trust the change. What stops a `.github/` change is the harness, and the
+    body states only that check: not a credential limit, and not a pre-commit rejection a
+    handoff (which commits interrupted work and withholds only the push, B301) does not make."""
     tier2 = Path(packager.build(_tier2_context(state), state.item_id, state.lease))
     flat = " ".join((tier2 / "README.md").read_text(encoding="utf-8").split())
 
     assert "no `workflow` scope" not in flat and "carries no `workflow`" not in flat
+    assert "never publishes a change under `.github/` (I-15)" in flat
+    assert "the harness's own check, not a limit of the credential" in flat
     assert "refuses to push any commit of its own that touches `.github/`" in flat
-    assert "`.github/**` (I-15" in flat
+    assert "rejected before it is committed" not in flat
+    assert "modifies `.github/**`" not in flat
 
 
 def test_readme_at_tier_2_changes_nothing_else_in_the_package(state):

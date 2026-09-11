@@ -7,8 +7,11 @@ repository?**
 The short answer for Delivery 1 was *nothing*. The short answer for Delivery 2 is: **it can
 open a pull request against your repository from a fork it owns, and that is all.** It
 cannot push to your repository, cannot merge anything, cannot approve or dismiss a review,
-cannot file an issue on your repository, and cannot touch a CI workflow anywhere — the last
-one because GitHub itself rejects the push, not because the harness has been asked not to.
+cannot file an issue on your repository, and will not publish a change to a CI workflow — or
+anything else under `.github/` — anywhere. That last one is the harness's own check, in code:
+since D67 its token carries GitHub's `workflow` scope, so that its fork can keep up with your
+CI changes, which means GitHub would accept such a push. The harness refuses it before it is
+sent (I-15).
 Everything it delivers arrives as an ordinary PR from `jgoetzmann-bot:harness/…`, and
 nothing lands without a human merging it.
 
@@ -49,8 +52,8 @@ the harness's write roots, and read once at startup.
   into `proposals/` here that you merge or close.
 
 Nothing else. No merge, no review approval, no review dismissal, no branch on the product
-repository, no issue on the product repository, no edit to `.github/**` anywhere, and no
-change to the fork's default branch other than a fast-forward from upstream.
+repository, no issue on the product repository, no change under `.github/` published
+anywhere, and no change to the fork's default branch other than a fast-forward from upstream.
 
 ---
 
@@ -267,17 +270,43 @@ nowhere else. The issue-create method takes no repository argument at all; it al
 
 ### I-15 — No push may modify `.github/**`
 
-**Guarantees:** the harness cannot edit CI to go green, anywhere, and this is enforced twice
-by two things that fail differently. The classic PAT has no `workflow` scope, so GitHub
-rejects any push touching `.github/workflows/` — a capability guarantee the harness cannot
-argue with. And `_reject_forbidden_diff` in `stages/implement.py` (B64, unchanged from
-Delivery 1) blocks the subtler cases a token scope cannot see: a disabled check or a raised
-timeout in a file outside `.github/`. There is deliberately no third copy of this check in
-`deliver.py`; divergent copies of a safety check are worse than one.
+**Guarantees:** the harness cannot edit CI to go green, anywhere. Until D67 two things that
+fail differently enforced this: the PAT's missing `workflow` scope, and B64. The scope is now
+granted — without it `harness sync-fork` cannot fast-forward the fork past upstream's own
+workflow commits, and nothing can be delivered — so GitHub would accept a push that touches
+`.github/workflows/`. **I-15 is now enforced once, by the harness's own code.** One predicate
+over one path set, all of `.github/` (workflows, composite actions, `dependabot.yml`,
+`CODEOWNERS`), is defined in `harness/clone.py` (`PROTECTED_PUSH_PATHS`,
+`protected_paths_in`, `walk_harness_commits`), and every place that asks reads it:
 
-**Verify (R3.8):** inspect the PAT in the machine account's settings — classic, `public_repo`
-only, no `workflow`; then `pytest tests/test_stages.py -k B64 -q` selects four or more tests
-and passes.
+- **Before every push**, `gh.push_branch` walks the branch from its tip over the commits the
+  harness authored and refuses if any of them touches `.github/`, deletions included (B298).
+  It asks which commits the harness wrote, not what the branch differs by from a recorded
+  base, so a rebase onto an upstream that changed its own CI still delivers (B299, B300). It
+  runs under `--dry-run` too, and refuses when git cannot answer.
+- **Before anything is committed**, `_reject_forbidden_diff` in `stages/implement.py` (B64)
+  blocks a diff that touches `.github/`, and the subtler cases no path check can see: a
+  disabled check or a raised timeout in a file outside `.github/`. `revise` fixes its diff base
+  before the model runs, so a commit the model makes itself is still inside the diff
+  (B302, B303).
+- **A handoff** commits the interrupted work but withholds the push, and says why, when the
+  branch carries a `.github/` path (B301).
+- **In local mode** `local/watchdog-bb.ps1`, the only publisher there, runs the same walk with
+  the same prefix and author emails before it pushes (B304).
+
+There is deliberately no second copy of the path set: `implement.py`, `deliver.py`,
+`revise.py` and `gh.py` all read the one in `clone.py`, and `tests/test_invariants.py` fails
+the build if that changes (B308); the PowerShell copy is held to it by `local/preflight.py`
+and by a test that runs both walks over the same branch. Divergent copies of a safety check
+are worse than one — and with GitHub no longer behind it, this check is the only one. What
+replaces the capability half is detection: `harness doctor` reads the token's real scopes
+before every spending run and warns when they differ from `public_repo`, `notifications`,
+`workflow` (B305).
+
+**Verify (R3.8, as amended by D67):** `pytest tests/test_stages.py -k B64 -q` selects four or
+more tests and passes; `pytest tests/test_gh.py tests/test_stages_deliver.py -k "B298 or B299
+or B301" -q` passes; and `harness doctor` prints
+`token scopes: notifications, public_repo, workflow` with no scope warning.
 
 ### I-16 — No module above the store branches on execution mode
 
@@ -332,7 +361,8 @@ terms permit one machine account alongside a personal account. The account:
 - **owns the fork** `<machine-account>/brightboost`. Not you. PRs are then unambiguously
   attributable to automation, the whole audit trail filters by author, and revoking it is
   one action on your side rather than a conversation about someone's account.
-- holds one classic PAT, scope **`public_repo` only**.
+- holds one classic PAT, scopes **`public_repo`, `notifications` and `workflow`**, nothing
+  else (D67).
 - has **no** write access to the product repository and is **not** a collaborator on it.
   Verify: product repo → Settings → Collaborators — the machine account is absent (R5.5).
 
@@ -349,12 +379,15 @@ which is the point.
 | Scope | Granted | Why |
 |---|---|---|
 | `public_repo` | **yes** | push to the fork, open PRs, comment, create issues here |
-| `workflow` | **no** | its absence is invariant I-15 — GitHub rejects any push touching `.github/workflows/` |
+| `notifications` | **yes** | read the notifications feed, so a mention on a product issue the machine account has never touched is seen |
+| `workflow` | **yes**, since D67 | fast-forward the fork past upstream's own `.github/workflows/` commits; without it `harness sync-fork` is refused and nothing can be delivered. It also means GitHub no longer refuses a harness push touching `.github/` — I-15 is the harness's own check now |
 | `repo` (private) | no | there are no private repositories involved |
-| `admin:*`, `delete_repo`, `write:org`, anything else | no | |
+| `admin:*`, `delete_repo`, `write:org`, anything else | no | `harness doctor` warns if one appears |
 
-Verify (R5.3): the machine account → Settings → Developer settings → Personal access tokens →
-Tokens (classic) — exactly one token, exactly one scope.
+Verify (R5.3, as amended by D67): `harness doctor` reads the scopes off the token before every
+spending run, prints `token scopes: notifications, public_repo, workflow`, and warns on a
+missing or extra one. By hand: the machine account → Settings → Developer settings → Personal
+access tokens → Tokens (classic) — exactly one token, exactly those three scopes.
 
 ### What the token may and may not do (handoff §5.3)
 
@@ -367,7 +400,7 @@ Tokens (classic) — exactly one token, exactly one scope.
 | Create issues in **this** repository | yes | `decompose.py`, `ops.yml` |
 | Create issues in the product repository | **no** | I-14 |
 | Merge, approve, or dismiss any review | **no** | I-12 |
-| Push to `.github/**` anywhere | **no** | I-15, enforced by GitHub |
+| Push to `.github/**` anywhere | **no** | I-15, the harness's own check before every push (`gh.push_branch`; the watchdog in local mode) — since D67 GitHub would accept it |
 | Push to the product repository directly | **no** | not a collaborator |
 | Modify the fork's default branch | **no**, except fast-forward from upstream | B105; `sync-fork` fails loudly on anything else |
 | Force-push a branch a human has pushed to | **no** | B139; the item becomes `needs-human` |
@@ -415,7 +448,7 @@ account not in the file — nothing whatsoever happens.
 
 - Production credentials of any kind
 - Organization administration
-- The `workflow` scope, or any scope beyond `public_repo`
+- Any classic scope beyond `public_repo`, `notifications` and `workflow`
 - A fine-grained token with `Workflows` or `Administration` permission
 - Collaborator access to `brightboost` for the machine account
 - Branch-protection changes, or an exception to them
@@ -439,7 +472,7 @@ recorded as pre-existing, is not attributed to the change, and is never used to 
 loosening anything.
 
 No gate may be widened, skipped, given a longer timeout, or marked `continue-on-error` to
-reach green. No diff may touch `.github/workflows/`, add `continue-on-error`, add a `.skip(`,
+reach green. No diff may touch anything under `.github/`, add `continue-on-error`, add a `.skip(`,
 or raise a timeout; such a diff is rejected and the item is marked `blocked`. A red the
 harness cannot fix honestly is a blocked item, not a passed one — and `EVIDENCE.md` in the
 package (and, in Delivery 2, in the body of the delivery PR) carries the verbatim output with

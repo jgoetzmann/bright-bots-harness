@@ -416,6 +416,34 @@ def test_B258_triage_queues_at_most_suggest_max_per_run(tmp_path):
     assert len(produced) == 1
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("proposing", "proposed"),  # waiting at gate 1: silence is not a withdrawal
+        ("proposing", "proposed", "blocked"),  # a maintainer's `/harness stop` parked it
+        ("abandoned",),  # ended for good
+    ],
+)
+def test_B332_triage_never_suggests_an_issue_that_already_has_a_work_item(tmp_path, path):
+    """B332: an issue with a work item in any state is not a candidate again. Before this, the
+    ranking could pick it, `_ensure_item` handed back the old id, and discover.yml ran
+    `harness propose <id>` on an item `_enter` refuses -- a red run, an ops issue, a spent
+    slot, and a parked suggestion put back in front of the person who stopped it."""
+    rig = triage_rig(tmp_path, issues=(gh_issue(101), gh_issue(102)))
+    earlier = rig.store.create_work_item(
+        kind="issue", external_ref="issue:101", title="suggested last week", via="suggested"
+    )
+    for state in path:
+        rig.store.transition(earlier, state, reason="test")
+
+    produced = discover(rig.ctx, mode="triage", target=None, lens=None)
+
+    assert earlier not in produced
+    assert rig.store.get_work_item(earlier).state == path[-1]
+    # The rest of the pool is still drawn from: only the known issue drops out.
+    assert [rig.store.get_work_item(n).external_ref for n in produced] == ["issue:102"]
+
+
 def test_B258_a_suggested_item_is_labelled_via_suggested(tmp_path):
     rig = triage_rig(tmp_path, issues=(gh_issue(101),))
 

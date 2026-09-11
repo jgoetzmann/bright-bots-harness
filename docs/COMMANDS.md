@@ -25,15 +25,15 @@ use the harness.
 Ten things, and the place you say each one. **Where matters**: most commands act on the thread
 they are written in, so the same words on the wrong thread do nothing.
 
-| I want to… | Say | Where | Costs |
+| I want to… | Say | Where | Weight |
 |---|---|---|---|
 | give it a job in words | `/harness work <what>` | the **inbox** issue | — |
-| give it a specific ticket | `/harness work <link>` · or **assign the bot** | the inbox, or **that product issue** | — |
-| ask about the codebase | `/harness ask <question>` | **anywhere it reads** | cents |
-| survey for problems | `/harness audit <lens>` | an issue **here** | up to $20 |
+| give it a specific ticket | `/harness work <link>` | the inbox, or **that product issue** | — |
+| ask about the codebase | `/harness ask <question>` | **anywhere it reads** | the lightest call |
+| survey for problems | `/harness audit <lens>` | an issue **here** | the heaviest call; refused once the week is 75% used |
 | turn a finding into work | `/harness promote <n>` | **that audit issue** | — |
-| change a plan before code | `/harness revise <notes>` | the **proposal PR** | ~$0.50, a fresh `propose` |
-| change the code after it | `/harness revise <notes>` · `/harness rebase` | the **delivery PR** | ~$1.00, a `revise` cycle |
+| change a plan before code | `/harness revise <notes>` | the **proposal PR** | one fresh `propose` call |
+| change the code after it | `/harness revise <notes>` · `/harness rebase` | the **delivery PR** | one `revise` cycle |
 | stop one thing | `/harness stop` | either PR | — |
 | see what is going on | `/harness status` | **anywhere it reads** | — |
 | stop everything | `/harness halt` | **anywhere it reads** | — |
@@ -42,10 +42,12 @@ they are written in, so the same words on the wrong thread do nothing.
 `go` and `split` round out the twelve verbs; all of them are in the tables below, and
 `/harness-<verb>` works as well as `/harness <verb>`.
 
-**Assigning the bot works only on a brightboost issue it has already commented on.** GitHub offers
-an account as an assignee only when it is a collaborator, an organisation member or already in the
-thread, and there the bot is only ever the third (D68). On a fresh issue, `/harness work <link>`
-on the inbox is the route.
+**Assigning the bot is a way in on paper, and rarely in practice.** GitHub offers an account as an
+assignee only when it is a collaborator, an organisation member or already in the thread, and on
+brightboost the bot is only ever the third (D68). Nearly every issue it has commented on already
+has a work item, which the assigned sweep leaves alone, so assignment helps only where the bot
+answered without opening one — after an `ask`, say. `/harness work <link>` on the inbox is the
+route.
 
 ## Where the harness is reading
 
@@ -91,15 +93,18 @@ for is outstanding — a delivery pull request awaiting review counts — weekly
 `SUGGEST_MIN_HEADROOM_PCT` (50), and the issue carries `ALLOWLIST_LABEL` (`harness-ok`). That label
 is **the pool**: a maintainer adds it to a brightboost issue, or takes it off, on brightboost
 itself, with no command. Even in the pool, an issue assigned to someone else, claimed by a branch
-or open pull request, or labelled `intern-starter`, `large` or `architecture` is skipped. It
-queues at most `SUGGEST_MAX_PER_RUN` (5) per run.
+or open pull request, labelled `intern-starter`, `large` or `architecture`, or that has ever had a
+work item in any state (B332) is skipped. It queues at most `SUGGEST_MAX_PER_RUN` (5) per run.
 
 Be clear about what the green light does and does not gate: the **proposal is written first**, and
 *then* the harness comments on the unassigned issue saying it has a plan, has not started the
 implementation, and will not without a green light. So a suggestion costs one `propose` call before
-anybody is asked. `/harness go` is the maintainer's yes to the expensive half, but a suggestion is
-built only once the operator has merged its proposal at gate 1, because the plan implement reads is
-the merged file. Ignoring the comment is a complete answer.
+anybody is asked. What builds it is the operator's merge at gate 1, because the plan implement
+reads is the merged file — and `implement.yml` approves a merged proposal whether or not anybody
+said yes, so ignoring the comment is **not** a no. A maintainer's yes is a plain comment on the
+proposal pull request; a no is `/harness stop` there, which parks the item, and B332 keeps the
+issue from being suggested again. `/harness go` is no yes at all while D68's defect stands (see
+`go`, below).
 
 **Then, for every route alike**, one model call turns the item into a *work package*: the diagnosis,
 the approach, the exact files it intends to touch, the behaviours it will add, and how a reviewer
@@ -199,8 +204,9 @@ through a Wednesday request end to end.
 /harness work https://github.com/Bright-Bots-Initiative/brightboost/issues/633
 ```
 
-Same, but tracking that issue — identical to `discover --mode directed --target 633`. **Asking twice
-is one item, never two.** A bare `#633` works too, but only when it is the *whole* argument:
+Same, but tracking that issue — identical to `discover --mode directed --target 633`. **The same
+link twice is one item, never two**, whoever sends it; a sentence is the same item only when the
+same person sends the same words. A bare `#633` works too, but only when it is the *whole* argument:
 `fix 3 of the cards` is a sentence, not a pointer to issue 3.
 
 **Where:** the pinned inbox issue, or the product issue itself (mention the bot there — see below).
@@ -343,9 +349,16 @@ Level 2 is enough to keep something out of a product repository, which is what a
 needs; ending a work item for good stays with the operator. `/harness reject` is the old spelling
 of the level-3 version and still needs level 3.
 
-One state is not a choice: an item with a delivery pull request open cannot be dropped
-(`shipped → abandoned` is refused on purpose), so it parks at whichever level you are — it is
-*stopped for a decision*, not discarded.
+Two exceptions, one each way, because the state machine decides where an item *can* go:
+
+- **An item with a delivery pull request open cannot be dropped** (`shipped → abandoned` is refused
+  on purpose), so it parks at whichever level you are — it is *stopped for a decision*, not
+  discarded.
+- **Four stages have nowhere to park**, so `stop` there ends the item at level 2 as well:
+  `stage:queued`, `stage:ready`, `stage:blocked` and `stage:needs-human` have no edge to `blocked`.
+  The reply says it ended the item. Asking again with the same link, or the same person using the
+  same words, finds the ended item rather than opening a new one. A fresh `/harness work` sits in
+  `stage:queued` until Sunday, so this is the likeliest `stop` a maintainer makes.
 
 #### `go` — proceed with this
 
@@ -355,12 +368,13 @@ One state is not a choice: an item with a delivery pull request open cannot be d
 
 Means one thing to say and two things to do, and **where the item already is** decides which:
 
-- a **suggestion** waiting for a green light becomes approved. When the queue is empty and the week
-  has budget, the harness may propose work nobody asked for; it comments saying so and waits.
-  Ignoring that comment is a complete answer. `go` is the maintainer's yes, but it does not replace
-  the operator's merge: until the proposal is merged there is no plan on `main` to build from, and
-  an implement run that picks the item up fails looking for one (D68). Assigning the bot to an
-  issue it has already suggested does nothing further.
+- a **suggestion** waiting for a green light becomes approved — and that is a defect, not a
+  feature, so **do not use `go` on a suggestion**. Until the operator merges the proposal there is
+  no plan on `main` to build from, and every build run inside the window — `implement`'s and the
+  three-hourly sweep's — fails looking for one until the merge (D68). After the merge
+  `implement.yml` has already approved it and `go` only says so. A maintainer's yes is a plain
+  comment on the proposal pull request; a no is `/harness stop`. Assigning the bot to an issue it
+  has already suggested does nothing further.
 - an item that was **stopped or blocked** picks up where it left off. If code had already been
   written it returns to `stage:ready` on the branch it already has; if not, it goes back to
   `stage:queued`. This is how you undo a `stop`.
@@ -417,8 +431,9 @@ in total — see [the table below](#three-kill-switches-and-what-each-one-stops)
 
 Exempts the item from the run window (Mon 08:00 → Tue 20:00 UTC). Recorded on the item and in the
 ledger and named in the reply, so "why did this run on a Thursday" has an answer in the issue. The
-exemption is honoured by `implement`'s next run — a gate-1 merge starts one, or the operator
-dispatches it — not by the three-hourly sweep, whatever the reply's "next sweep" says (D68). It
+exemption is honoured by `implement`'s next run — a gate-1 merge starts one, so does the Tue
+20:23 UTC cron, or the operator dispatches it — not by the three-hourly sweep, whatever the
+reply's "next sweep" says (D68). It
 proposes nothing sooner: a forced `/harness work` still waits for `discover` and for the merge.
 
 **Level 3 only.** Below that the flag is ignored, the command still stands, and the reply says why it
@@ -476,7 +491,7 @@ Using a verb above your level is answered, not silent: the reply names the level
 
 | Where | How fast |
 |---|---|
-| Harness repository | 👀 within seconds, then the answer in minutes |
+| Harness repository | 👀 within seconds, then the answer in minutes — up to two hours while a build holds the shared lock |
 | Product repository | up to 3 hours on a weekday; a Saturday comment waits until Monday |
 
 **On the harness repository you get an answer twice.** Within a few seconds a 👀 reaction appears on
@@ -499,7 +514,10 @@ will not happen: a fenced block, an unknown verb or an untrusted commenter gets 
 
 **On the product repository there is no reaction and no acknowledgement.** The harness gets no
 events there — it is not a collaborator and must not be. It reads its notifications on
-`feedback.yml`'s schedule (`41 */3 * * 1-5`). To skip the wait, run `feedback` from the Actions tab.
+`feedback.yml`'s schedule (`41 */3 * * 1-5`). To skip the wait, post any `/harness` command on the
+inbox — `/harness status` will do. That wakes the same job, and its sweep reads the notifications
+on the way, so a maintainer with no access to this repository has the lever too. The operator can
+also run `feedback` from the Actions tab.
 
 **If a scheduled run never happens**, `watchdog.yml` notices within about four hours and starts one.
 That covers the case nothing else does: a run that *fails* files an ops issue and is retried, but a
@@ -622,7 +640,8 @@ not stop the fleet, while the **comment** `/harness halt` does.
 holds even if the ledger cannot be read. Any content. Deleting it resumes. One commit either way,
 from a phone, for anyone with write access to the harness repository, and it needs nobody's
 permission. A maintainer has no such access (D30), so a maintainer's levers are `/harness stop` on
-the thing that looks wrong, which parks it, and asking the operator for the rest.
+the thing that looks wrong, which parks it (or, on a queued or ready item, ends it), and asking the
+operator for the rest.
 
 > **Local mode caveat.** The commanded halt travels in `state/ledger.json`, which Actions runners
 > fetch from the `harness-state` branch. A container running `local-loop` against its own local
@@ -657,7 +676,8 @@ deliberately no `kind:harness`: the harness never works on its own repository, s
 does not exist and must not be nameable.
 
 **`via:`** — `assigned` · `requested` · `suggested` · `audit`. `via:suggested` means **nobody asked
-for this**; ignoring it is a complete answer.
+for this**. Ignoring one is not a no — the operator's merge builds it regardless — so a no is
+`/harness stop` on its proposal pull request.
 
 Every transition posts a comment on the issue naming the stage, the workflow run, the cost and the
 new state. **The issue thread is the log.**

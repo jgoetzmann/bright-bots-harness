@@ -36,14 +36,9 @@ naming that issue by hand:
 ```
 
 Within one sweep, a work item opens as its own issue and a reply lands in the inbox thread with a
-link to it. Asking twice is one item, not two. That **queues** it; §9 says when it becomes a plan,
-and when code.
-
-**Or assign `@jgoetzmann-bot` to a brightboost issue it has already commented on.** That is the
-same gesture in the place you already work, and it needs no comment. It works only there: GitHub
-offers an account in the Assignees box when it is a collaborator, an organisation member or already
-in the thread, and on brightboost the bot is only ever the third (D68). On a fresh issue, use the
-inbox or the comment below.
+link to it. Asking again in the same words, or with the same link, finds that item rather than
+opening a second; a reworded request is a new one. That **queues** it; §9 says when it becomes a
+plan, and when code.
 
 **Or comment on the brightboost issue itself**, addressing the bot:
 
@@ -56,25 +51,32 @@ brightboost by reading its notifications, and it is not subscribed to an issue i
 so the mention is the only thing that makes the thread visible to it at all. On *this* repository
 you do not need it.
 
+Assigning `@jgoetzmann-bot` to a brightboost issue is a third way in on paper, and almost never in
+practice. GitHub offers the bot as an assignee only on an issue it has already commented on (D68),
+and nearly every such issue already has a work item, which assignment then leaves alone. It helps
+only where the bot answered you without opening one — after an `ask`, say.
+
 ## 3. Your two moves
 
-Everything else the harness does is bookkeeping. There are exactly two moments it needs you, and
-both are labelled in orange so you can find them by scanning:
+Everything else the harness does is bookkeeping. In the normal course there are two moments it
+needs you, and both are labelled in orange so you can find them by scanning (§4 names the two red
+stages that also wait on a person).
 
 **`stage:needs-approval` — gate 1.** A pull request in the harness repository adding
 `proposals/<id>-<slug>.md`. That file is a *plan*: the diagnosis, the approach, the files it intends
 to touch, and how a reviewer will know it worked. No code has been written yet and nothing has been
 spent on writing any.
 
-- Merge it → the plan is approved and implementation starts. **The merge is Jack's.** You have
-  no access to the harness repository, by design (D30, D68), so you can neither merge nor close
-  the pull request. If the plan is right, say so on it; a comment without `/harness` is for
-  people, and Jack reads it.
+- Merge it → the plan is approved, and it is built in the next run window (§9). **The merge is
+  Jack's.** You have no access to the harness repository, by design (D30, D68), so you can neither
+  merge nor close the pull request. If the plan is right, say so on it; a comment without
+  `/harness` is for people, and Jack reads it.
 - Comment `/harness revise <what is wrong>` → it rewrites the plan with your note as the brief.
 - Comment `/harness stop` → it closes the pull request and parks the item. Parked, not ended:
   `/harness go` puts it back in the queue for a fresh proposal.
-- A proposal nobody asked for (`via:suggested`, §5) is the one place your word is asked for:
-  `/harness go` on it is your yes. It is still built only after Jack merges it — see §5.
+- A proposal nobody asked for (`via:suggested`, §5) is where your view matters most. Say yes in a
+  plain comment on it, or no with `/harness stop`. **Do not type `/harness go` on one** — §5 says
+  why.
 
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the real diff
 and every gate's output in the body. Read it like any other contributor's PR.
@@ -103,11 +105,20 @@ Three label families, because one flat list cannot answer three different questi
 | `kind:` | `product` (work) · `audit` (a findings report) · `ops` (a failed run) |
 | `via:` | how it got here: `assigned` · `requested` · `suggested` · `audit` |
 
-Two stages are loud on purpose — **`needs-approval`** and **`needs-review`** are the only ones
-waiting on a person. Everything else is the harness's own move and you can ignore it.
+Two stages are orange on purpose — **`needs-approval`** and **`needs-review`** are the gates, and
+they wait on a person. Two more are red, and they wait on one too:
+
+- **`stage:blocked`** — stopped, and needs a decision. Anything you parked with `stop` is here, and
+  so is an item whose gates went red in a way the harness could not honestly fix. `/harness go`
+  sends it round again; if you do not know why it stopped, ask Jack.
+- **`stage:needs-human`** — a delivery pull request has used its three rounds of revision. Only
+  `/harness revise <notes>` on that delivery pull request restarts it.
+
+Everything else is the harness's own move and you can ignore it.
 
 `via:suggested` is worth knowing: it means **nobody asked for this**. The harness picked it from
-the pool in §5, and it says so in the issue. Ignoring one is a complete answer.
+the pool in §5, and it says so in the issue. Ignoring one is *not* a no — Jack's merge builds it
+whether or not you said anything — so §5 says how to answer.
 
 ## 5. The pool — what it may pick up unasked
 
@@ -128,16 +139,26 @@ even then suggests nothing unless both of these hold:
 
 Then one model call ranks the pool and **at most five** (`SUGGEST_MAX_PER_RUN`) become work items.
 A labelled issue is skipped if it is assigned to anyone but the bot, if a branch or open pull
-request already names it, or if it carries `intern-starter`, `large` or `architecture` — those
-three beat the label.
+request already names it, if it carries `intern-starter`, `large` or `architecture` — those
+three beat the label — or if it has ever had a work item, in any state. So a suggestion you turned
+down is not offered again the next Sunday.
 
 Each suggestion is proposed in the same run, and the harness comments once on its brightboost
-issue saying it has a plan and has not started. `/harness go` there is your yes; ignoring it is a
-complete no. Either way **nothing is built until Jack merges the proposal at gate 1** — the plan
-the build reads is the merged file, so a `go` before his merge only moves the item to
-`stage:ready`, and the next build run fails looking for a plan that is not there yet (D68). Say
-`go`, and tell him. The comment also says "Assign me"; on an issue it has already suggested,
-assigning does nothing more — use `/harness go`.
+issue saying it has a plan and has not started. **Nothing is built until Jack merges the proposal
+at gate 1, and his merge is what builds it** — whether or not you answered. Silence is not a no.
+
+- **Yes:** say so in a plain comment on the proposal pull request, without `/harness`, or tell
+  Jack. **Do not type `/harness go`**, even though the comment invites it. Before his merge it moves
+  the item to `stage:ready` with no merged plan to build from, and every build run in the window
+  fails looking for one until he merges (D68). After his merge the item is already approved, and
+  `go` only says so.
+- **No:** `/harness stop` on the proposal pull request. That closes it and parks the item
+  (`stage:blocked`), and the issue is not suggested again. The same command on the brightboost
+  issue parks the item but leaves the pull request open, so the pull request is the better place.
+  Taking `harness-ok` off keeps an issue out of later pools; it does not withdraw a proposal that
+  is already open.
+
+The comment also says "Assign me"; on an issue it has already suggested, assigning does nothing.
 
 ## 6. The rest of the vocabulary
 
@@ -150,13 +171,13 @@ addressing the bot, and in any capitalisation your phone gives you. `/harness-as
 | `/harness ask <question>` | anywhere | reads brightboost and answers, in the thread. **Changes nothing at all** |
 | `/harness audit <lens>` | an issue in the harness repo | reads brightboost through one lens and opens **one** findings issue. Creates no work |
 | `/harness promote 3` · `promote all` | on that audit issue | turns findings into work items |
-| `/harness go` | a suggestion, or a parked item | green-lights it, or puts it back in the queue |
+| `/harness go` | a parked item | puts it back in the queue. Not on a suggestion (§5) |
 | `/harness split` | a work item | breaks it into sub-issues |
-| `/harness status` | anywhere | spend, queue, and when the next thing happens |
+| `/harness status` | anywhere | usage, queue, and when the next thing happens |
 
-`ask` is the cheap one and the one to start with. It costs cents, changes nothing, and is the
-fastest way to find out whether the thing understands the codebase — ask it something you already
-know the answer to.
+`ask` is the one to start with. It is the lightest call the harness makes, changes nothing, and is
+the fastest way to find out whether the thing understands the codebase — ask it something you
+already know the answer to.
 
 `audit` and `promote` are deliberately two steps. One sentence from you must not become eight
 proposals nobody approved: an audit produces a *list*, and you choose which lines become work.
@@ -168,7 +189,8 @@ There are twelve verbs in all, and every reply the harness sends points at the r
 other words are understood too: `fix`, `queue` and `usage` mean `revise`, `go` and `status`, and
 so do `ledger` and `help` — if you are not sure, `/harness help` is a real thing to type. The
 sixth, `reject`, is the operator's terminal form of `stop`: it needs level 3, so from you it is
-refused with a reply saying so. Your `stop` parks instead, which `/harness go` undoes.
+refused with a reply saying so. Your `stop` parks instead wherever there is somewhere to park —
+§10 names the stages where there is not.
 
 ## 7. What you cannot do, and why
 
@@ -182,8 +204,9 @@ subscription.
 `halt` stops the harness spending anything at all until it is resumed, which is why it sits at
 the same level as the switch that starts work early.
 
-If you use one anyway, nothing happens and you get a reply saying which level it needed. Refusals
-are answered, never silent.
+If you use `halt`, `resume` or `reject` anyway, nothing happens and you get a reply saying which
+level it needed. A `--force` from you is dropped, the rest of the command still happens — the item
+is queued and waits for the window — and the reply says so. Refusals are answered, never silent.
 
 ## 8. If you comment and *nothing at all* happens
 
@@ -200,15 +223,19 @@ A comment that fails either half is read, counted as denied, and ignored. There 
 because replying to anyone who types `/harness` on a public repository is how a bot becomes a
 nuisance.
 
-So total silence means one of these, most likely first:
+So silence means one of these, most likely first:
 
 1. **The kill switch is on.** If `.harness/HALT` exists on `main`, every spending workflow exits
    before it does anything — the run goes green and nothing happens. The weekly heartbeat says so
-   in a banner at the top; that is the fastest way to check.
+   in a banner at the top; that is the fastest way to check. On the harness repository your
+   comment still gets its 👀 (that job does not check the switch), and then nothing follows.
 2. **You are missing half the gate** — most often the invite or the vouch, not the trust-file
    line.
-3. **The sweep has not run yet.** On brightboost that is up to three hours, and over a weekend
-   until Monday. See §9.
+3. **It never saw the comment.** A `/harness` line in a review's *Review changes* summary box is
+   never read (§3), and a comment on a brightboost issue the bot has never touched is invisible
+   without the `@jgoetzmann-bot` mention (§2).
+4. **The sweep has not run yet.** On brightboost that is up to three hours, and over a weekend
+   until Monday. §9 says how to skip the wait.
 
 A verb you do not have the level for is *not* on this list: that one replies, and names the level
 it needed.
@@ -219,10 +246,14 @@ only way to see that half without asking someone to test it for you.
 ## 9. How long one request takes
 
 **Being heard.** On the **harness repository**, a comment wakes the job directly: a 👀 within
-seconds, the answer in minutes. On **brightboost**, the harness gets no events — it is not a
-collaborator there, and it must not be — so it reads its notifications every three hours on
-weekdays (00:41, 03:41 … 21:41 UTC). A comment left after Friday 21:41 waits until Monday 00:41.
-That is the design, not a fault. To skip the wait, ask Jack, or run `feedback` from the Actions tab.
+seconds, the answer in minutes. The exception is while a build is running — normally Monday and
+Tuesday — because builds and replies take turns on one lock, so the answer can wait up to two hours
+for the build to finish; the 👀 still comes at once. On **brightboost**, the harness gets no events
+— it is not a collaborator there, and it must not be — so it reads its notifications every three
+hours on weekdays (00:41, 03:41 … 21:41 UTC). A comment left after Friday 21:41 waits until Monday
+00:41. That is the design, not a fault. To skip the wait, post any `/harness` command on the inbox
+— `/harness status` will do. That wakes the same job, and it reads your brightboost notifications
+on the way.
 
 **Then five steps, and only the first is quick:**
 
@@ -234,7 +265,9 @@ That is the design, not a fault. To skip the wait, ask Jack, or run `feedback` f
 | 4. The code | only inside the run window, **Monday 08:00 to Tuesday 20:00 UTC**. A merge inside it is built straight away; a merge outside it waits for Monday 08:17. Only Jack can make it sooner (`--force`, or starting the build by hand) |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
-One item is built per run and the window holds six scheduled runs, so a busy week queues.
+Each scheduled build run starts one item, and while the window is open the three-hourly sweep also
+builds everything approved, one after another. So the window is not a fixed number of slots: what
+limits a busy week is the week's subscription usage.
 
 **A Wednesday request, worst case, nothing stopped and nothing ahead of it:** queued on Wednesday,
 planned Sunday morning, built Monday morning if Jack has merged the plan by then — **five days** to
@@ -243,8 +276,19 @@ a delivery pull request. If his merge misses Tuesday 20:00, the build waits for 
 
 ## 10. If something looks wrong
 
-**To stop one thing:** `/harness stop` on its pull request or work item. At your level that parks
-it, reversibly, and that is enough to keep anything out of brightboost.
+**To stop one thing:** `/harness stop` on its pull request or work item. Either way that keeps it
+out of brightboost; how final it is depends on where the item is.
+
+- On a proposal or delivery pull request, and on anything `stage:planning`, `stage:building`,
+  `stage:packaged` or `stage:revising`, it **parks** the item in `stage:blocked`, and `/harness go`
+  puts it back.
+- On an item that is `stage:queued` or `stage:ready`, or already `stage:blocked` or
+  `stage:needs-human`, there is nowhere to park it, so it **ends it for good** — at your level as
+  at Jack's — and the reply says so. Asking again in the same words, or with the same link, finds
+  the ended item rather than opening a new one.
+
+A fresh `/harness work` sits in `stage:queued` until Sunday, so that is the stop you are most likely
+to make. If you only want it later rather than never, tell Jack instead.
 
 **To stop everything, ask Jack.** Both fleet-wide switches are his. `/harness halt` is level 3.
 The other is a commit of `.harness/HALT` on the harness repository's `main`, and that needs write
@@ -253,8 +297,9 @@ until Jack merges it, because `.harness/` is protected.
 
 **A pull request that looks wrong** is just a pull request. Close it.
 
-**Anything stranger** — a stuck item, a run that keeps failing, spend that looks off —
-[OPERATIONS.md](OPERATIONS.md) has the diagnosis order, and §8 is how to stop everything.
+**Anything stranger** — a stuck item, a run that keeps failing, usage that looks off —
+[OPERATIONS.md](OPERATIONS.md) has the diagnosis order, and the top of this section is how to stop
+everything.
 
 ## 11. What is not yet true
 

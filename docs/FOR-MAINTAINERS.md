@@ -132,8 +132,8 @@ even then suggests nothing unless both of these hold:
 
 - **Nothing anybody asked for is still open.** Any requested, assigned or promoted item that is
   queued, being planned or built, or waiting at either gate holds the pool shut — and that
-  includes a delivery pull request waiting for your review. While brightboost#868 waits on you,
-  it alone keeps the pool shut.
+  includes a delivery pull request waiting for your review. brightboost#868 does not count: its
+  work item is closed and predates the `stage:` labels, so the pool is open now.
 - **The week has room.** Subscription usage under 50% for the week (`SUGGEST_MIN_HEADROOM_PCT`).
   The back half is kept for work somebody asked for.
 

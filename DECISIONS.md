@@ -901,9 +901,12 @@ lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Mon
   honours only the run window and the carry; the dispatcher plan that honours `--force` runs in
   `implement.yml` (its crons, a gate-1 merge, or a dispatch). COMMANDS says so.
 - **A delivery pull request awaiting review shuts the `harness-ok` pool**, because `shipped` is in
-  `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request. Recorded
-  because while brightboost#868 is open the first labelled batch yields nothing, and a maintainer
-  labelling forty issues will ask why.
+  `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request.
+  brightboost#868 does not: its work item (#4) is closed and carries only the legacy
+  `harness:packaged` label, and `list_work_items` filters on the `stage:` label, so the first
+  labelled batch is eligible on the next Sunday run. Recorded, not fixed: `_issues` reads
+  `state=all`, so a *closed* work item left wearing an outstanding `stage:` label would hold the
+  pool shut indefinitely. None does today (searched 2026-09-11).
 
 **What the review of the maintainer page changed (B332).** One defect fixed in code, and the page
 corrected wherever it promised something that does not happen.

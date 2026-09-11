@@ -215,8 +215,8 @@ report it, not to retry.
 
 **The pool.** `harness-ok` now exists on the product repository, and a first batch of about forty
 issues, mostly `pod: build`, is being labelled. Triage draws from it only when nothing anybody
-asked for is outstanding, and a delivery pull request awaiting review counts — so while #868 is
-open, no suggestion is made.
+asked for is outstanding, and a delivery pull request awaiting review counts. #868 does not hold
+it shut: its work item is closed and predates the `stage:` labels.
 
 The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
 (tue 20:00) UTC, and `implement.yml`'s crons follow that window. Three things start outside it:

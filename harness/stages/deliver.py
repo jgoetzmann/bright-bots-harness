@@ -652,17 +652,25 @@ def build_handoff_body(
     pushed: bool,
     committed: bool,
     now_iso: str,
+    withheld: Sequence[str] = (),
 ) -> str:
     """B213: everything the next run (or a human) needs, and nothing that needs a credential.
 
     Pure: the caller gathers the pieces, this renders them. The last section is the exact
-    command that picks the work up again.
+    command that picks the work up again. ``withheld`` names the `.github/` paths that kept
+    the branch off the fork (B301), so the note does not blame a missing credential.
     """
-    push_note = (
-        f"pushed to `{fork}`"
-        if pushed
-        else "not pushed - no write credential, so the branch exists only in the clone"
-    )
+    if pushed:
+        push_note = f"pushed to `{fork}`"
+    elif withheld:
+        push_note = (
+            "not pushed - withheld for "
+            + ", ".join(f"`{item}`" for item in list(withheld)[:5])
+            + "; the harness never publishes a change under `.github/` (I-15, D67), so a "
+            "person has to look at the clone"
+        )
+    else:
+        push_note = "not pushed - no write credential, so the branch exists only in the clone"
     parts: list[str] = [
         f"# Handoff - item {item_id}",
         "",
@@ -749,8 +757,9 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
 
     # 1. Nothing the model already wrote may be lost to a usage stop.
     committed = _commit_wip(ctx, clone, reason)
-    # 2. B212: to the fork, only with a credential, and never with force.
-    pushed = _push_handoff(ctx, clone, branch, fork)
+    # 2. B212: to the fork, only with a credential, and never with force. B301/D67: and never
+    #    carrying anything under `.github/` -- the push is withheld, the rest of this goes on.
+    pushed, withheld = _push_handoff(ctx, clone, branch, fork)
 
     gates_label, gate_lines = _gate_summary(run_dir)
     body = redact.redact(
@@ -770,6 +779,7 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             pushed=pushed,
             committed=committed,
             now_iso=now_iso,
+            withheld=withheld,
         )
     )
     path = run_dir / HANDOFF_NAME
@@ -826,17 +836,68 @@ def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:
     return True
 
 
-def _push_handoff(ctx: Context, clone: Path, branch: str, fork: str) -> bool:
-    """B212: the carried branch goes to the fork, never upstream, and never with force."""
+def _push_handoff(ctx: Context, clone: Path, branch: str, fork: str) -> tuple[bool, list[str]]:
+    """B212: the carried branch goes to the fork, never upstream, and never with force.
+
+    B301/D67: and never with a change under `.github/`. Only the push is withheld -- HANDOFF.md,
+    the comment and the parked item all still happen -- and the paths come back so the note can
+    say why. `push_branch` would refuse most of it too; this names the paths first, and also
+    sees what the push guard's walk cannot (`_unpublishable`). Returns ``(pushed, withheld)``.
+    """
     if not ctx.gh.can_write or not branch:
-        return False
+        return False, []
+    held = _unpublishable(ctx, clone, branch)
+    if held:
+        ctx.record_decision(
+            f"handoff withheld the push of {branch} for {', '.join(held[:10])}; the harness "
+            "never publishes a change under .github/ (I-15, D67), so the work stays in "
+            f"{clone} for a person to look at"
+        )
+        return False, held
     try:
         ctx.gh.push_branch(clone, branch, remote_repo=fork, force=False)
     except HarnessError as exc:
         ctx.record_decision(f"handoff could not push {branch} to {fork}: {exc}")
-        return False
+        return False, []
     ctx.record_decision(f"handoff pushed {branch} to {fork} (never upstream, never forced)")
-    return True
+    return True, []
+
+
+def _unpublishable(ctx: Context, clone: Path, branch: str) -> list[str]:
+    """B301: the `.github/` paths the carried branch holds; a placeholder when it cannot tell.
+
+    A handoff is the one push that follows a model call no check has seen -- the usage stop
+    lands inside the call, before implement's B64 -- so it asks two questions. The push guard's
+    own commit walk, which stops at the first commit a harness email did not author. And,
+    because the model holds Bash and a commit it makes carries whatever name it gives, the
+    author-blind one: every path between where the branch left the fork's `main` and its tip.
+    That diff is safe here and nowhere later: a carried branch has not been rebased since it
+    was cut or re-acquired from the fork. When either question cannot be answered, the push is
+    withheld: a false alarm costs one withheld push, a miss publishes a workflow change.
+    """
+    try:
+        walk = clone_mod.walk_harness_commits(clone, branch, gates.run_command)
+    except HarnessError as exc:
+        ctx.record_decision(f"handoff could not walk the commits on {branch}: {exc}")
+        return ["(the branch's commits could not be read)"]
+    held = [path for _sha, path in walk.protected()]
+    if walk.capped:
+        held.append(f"(over {clone_mod.PROTECTED_SCAN_COMMITS} harness commits, unchecked)")
+    code, out, _ = gates.run_command(
+        ["git", "merge-base", branch, "refs/remotes/origin/main"], clone
+    )
+    fork_point = out.strip() if code == 0 else ""
+    if not fork_point:
+        return sorted(set(held)) + ["(where the branch left the fork's main is unknown)"]
+    code, out, _ = gates.run_command(
+        ["git", "--no-replace-objects", "-c", "core.quotepath=off", "diff", "--name-only",
+         "--no-renames", fork_point, branch, "--"],
+        clone,
+    )
+    if code != 0:
+        return sorted(set(held)) + ["(the branch's diff could not be read)"]
+    held.extend(clone_mod.protected_paths_in(out.splitlines()))
+    return sorted(set(held))
 
 
 def _gate_summary(run_dir: Path) -> tuple[str, list[str]]:

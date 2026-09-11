@@ -17,8 +17,8 @@ from typing import Any, Callable, Sequence
 from harness import __version__
 from harness import redact
 from harness.clock import Clock, iso
-from harness.clone import HOOKS_OFF
-from harness.errors import GitHubError, RateCeilingReached, TierViolation
+from harness.clone import HOOKS_OFF, PROTECTED_SCAN_COMMITS, walk_harness_commits
+from harness.errors import CloneError, GitHubError, RateCeilingReached, TierViolation
 from harness.gates import run_command
 from harness.store import Store
 
@@ -614,14 +614,57 @@ class GitHubClient(GitHubReadOnly):
         force: bool = False,
         git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
     ) -> None:
-        """Push a work branch to the fork. ``force`` uses ``--force-with-lease``, never ``-f``."""
+        """Push a work branch to the fork. ``force`` uses ``--force-with-lease``, never ``-f``.
+
+        B298/D67: nothing leaves until `_refuse_protected_commits` has walked the commits the
+        harness authored on the branch and found none under `.github/`. It is the last check
+        before the network and the one every push path shares, so it runs under ``dry_run``
+        too -- a dry run over a real clone reports the refusal it would make -- and it refuses
+        when git cannot answer. It takes no base: a rebase moves any recorded base, and a
+        parameter is something a caller can get wrong.
+        """
         self._require_write("push_branch")
+        run = git_runner if git_runner is not None else run_command
+        self._refuse_protected_commits(Path(clone), str(branch), run)
         self._git_push(
             Path(clone),
             str(branch),
             remote_repo=remote_repo,
             force=bool(force),
             git_runner=git_runner,
+        )
+
+    def _refuse_protected_commits(
+        self, cwd: Path, branch: str, run: Callable[[list[str], Path], tuple[int, str, str]]
+    ) -> None:
+        """B298: raise unless every commit the harness authored at the top of ``branch`` stays
+        out of `.github/` (I-15, D67). Upstream's commits below them are relayed untouched."""
+        try:
+            walk = walk_harness_commits(cwd, branch, run)
+        except CloneError as exc:
+            raise GitHubError(
+                f"refusing to push {branch}: the commits the harness authored on it could not "
+                f"be listed, so none of them was checked (D67): {exc}"
+            ) from exc
+        hits = walk.protected()
+        if hits:
+            sha, path = hits[0]
+            more = f" and {len(hits) - 1} other path(s)" if len(hits) > 1 else ""
+            raise GitHubError(
+                f"refusing to push {branch}: harness commit {sha[:12]} touches {path}{more}; "
+                "the harness never publishes a change under .github/ (I-15, D67)"
+            )
+        if walk.capped:
+            raise GitHubError(
+                f"refusing to push {branch}: its top {PROTECTED_SCAN_COMMITS} commits are all "
+                "the harness's, and the walk stops there, so the ones below it were never "
+                "checked (D67)"
+            )
+        log.info(
+            "push guard: %d harness commit(s) on %s, none under .github/ (stopped at %s)",
+            len(walk.commits),
+            branch,
+            walk.stopped_at[:12] or "the root",
         )
 
     def push_ref(
@@ -632,7 +675,15 @@ class GitHubClient(GitHubReadOnly):
         remote_repo: str,
         git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
     ) -> None:
-        """Fast-forward-only push of one refspec (used by ``clone.sync_fork``). No force path."""
+        """Fast-forward-only push of one refspec (used by ``clone.sync_fork``). No force path.
+
+        Deliberately outside the D67 commit walk. Its one caller hands it
+        ``clone.FORK_SYNC_REFSPEC`` -- upstream's own ``main`` onto the fork's, fast-forward
+        only -- and that history is upstream's, its ``ci-cd.yml`` commits included, which is
+        exactly what the ``workflow`` scope was granted to relay. ``force=False`` and the
+        fast-forward check in ``sync_fork`` are its guard; the harness's own work goes through
+        `push_branch`.
+        """
         self._require_write("push_ref")
         self._git_push(
             Path(repo_path),
@@ -736,6 +787,35 @@ class GitHubClient(GitHubReadOnly):
         if not isinstance(data, dict):
             raise GitHubError("expected an object from /user, got a list")
         return data
+
+    def token_scopes(self) -> tuple[str, ...] | None:
+        """The classic token's scopes, from ``X-OAuth-Scopes`` on ``GET /user`` (B305/D67).
+
+        ``None`` when GitHub sends no such header -- a fine-grained token, or no token at all
+        -- which means "cannot tell", never "no scopes". Unconditional on purpose: it bypasses
+        the ETag cache, because a 304 replayed from it is no source for a credential's scopes.
+        """
+        url = self._url("/user")
+        self._check_ceiling(url)
+        headers = {"User-Agent": USER_AGENT, "Accept": ACCEPT}
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            response = self._opener(request)
+        except urllib.error.HTTPError as exc:
+            code = int(getattr(exc, "code", 0) or 0)
+            self.store.record_api_call(url, code, False)
+            self._raise_for_status(url, code, _body_text(exc), getattr(exc, "headers", None))
+        status = int(getattr(response, "status", 200) or 200)
+        response_headers = getattr(response, "headers", None)
+        text = _body_text(response)
+        _close(response)
+        self.store.record_api_call(url, status, False)
+        if status >= 400:
+            self._raise_for_status(url, status, text, response_headers)
+        raw = _header(response_headers, "X-OAuth-Scopes")
+        if raw is None:
+            return None
+        return tuple(sorted({scope.strip() for scope in raw.split(",") if scope.strip()}))
 
 
 #: GitHub's own limits: 60 requests an hour unauthenticated, 5000 authenticated. The `.env`

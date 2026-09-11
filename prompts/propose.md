@@ -113,7 +113,8 @@ What belongs in each:
 
 ## Constraints on the plan you propose
 
-- No path under `.github/workflows/` may appear in `## Touched paths`, ever.
+- No path under `.github/` may appear in `## Touched paths`, ever: the harness never publishes a
+  change there, so a package that needs one is a package a person has to carry.
 - No gate may be widened, skipped, given a longer timeout, or marked `continue-on-error`.
 - Nothing touching `prisma/`, `migrations/`, or `backend/scripts/predeploy*` unless the issue is
   squarely about that path and you say so explicitly under `## Risks`.

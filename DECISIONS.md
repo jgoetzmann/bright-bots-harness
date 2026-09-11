@@ -597,3 +597,109 @@ The rest:
   report that goes out unprompted, and B144's alarm channel — still led with dollars and quoted the
   raw cap rather than the cap less the reserve. Both fixed; the heartbeat drops a stale reading for
   the same reason the accessors do.
+
+
+## D67 / B296–B308 — the token carries `workflow`; the harness guards `.github/` itself
+
+Implemented 2026-09-11 on `fix/workflow-scope-hardening`, from a design handed off on 2026-09-10
+(untracked, in `.handoffs/`).
+
+**The grant.** `harness sync-fork` failed on every run from the moment brightboost changed
+`.github/workflows/ci-cd.yml`: GitHub will not let a token without the classic `workflow` scope
+create or update a workflow file, and fast-forwarding the fork past upstream's own commit is exactly
+that. The fork sat five commits behind with nothing unique to it, and `implement.yml` and
+`discover.yml` hard-fail on a stale fork — correctly — so nothing could be delivered. Of the three
+ways out (fast-forward by hand whenever upstream touches CI, re-fork, grant the scope) the operator
+chose the scope, told plainly that it gives up half of I-15. The machine PAT now carries
+`public_repo`, `notifications` and `workflow`; the operator confirmed it on 2026-09-11, and
+sync-fork has succeeded on every run since 2026-09-10 16:40Z. The plan was harden first, then
+rotate. The rotation came first, so this lands into a window in which the credential was already
+permissive and the code had not caught up.
+
+**What that took away.** I-15 was "enforced twice by two things that fail differently": the missing
+scope, a capability guarantee, and B64. The first is gone, and a survey found the second thinner
+than it read:
+
+- **Hole A.** `handoff` committed `git add -A` over the whole tree and pushed it with no B64 check
+  at all. A usage stop landing while the model had a workflow open published it; the missing scope
+  was the only thing in the way.
+- **Hole B.** `revise` read its diff base *after* the model call. The model holds Bash; a commit it
+  made itself became the tip, the diff came back empty, and every arm of B64 passed a change nobody
+  had looked at.
+- B105's static test spelled the fork `brightboost-harness/brightboost`, which does not exist, and
+  passed unconditionally.
+- Nothing read the token's real scopes.
+- `local/watchdog-bb.ps1`, local mode's only publisher, pushes with the same PAT and checked no path.
+
+**What replaces it.** One predicate, moved to the boundary.
+
+1. **One path set, widened (B296).** `clone.PROTECTED_PUSH_PATHS = ("/.github/",)`, with
+   `normalise_repo_path` (moved from `implement._normalise`, now also stripping git's C-quote) and
+   `protected_paths_in`. All of `.github/`, not only workflows: composite actions, `dependabot.yml`
+   and `CODEOWNERS` steer CI and review too, and GitHub's scope only ever gated workflow files. B64
+   reads it — `implement.FORBIDDEN_DIFF_PATHS` is the same object. The operator accepted the cost:
+   the harness can never be asked to change anything under `.github/` on brightboost; it refuses,
+   and a person carries it.
+2. **Commit-authorship-scoped, not diff-range-scoped (B297).** `clone.walk_harness_commits` walks
+   the branch from its tip (`git log --first-parent --diff-merges=first-parent --name-only
+   --no-renames`) and stops at the first commit a harness email did not author. It asks which
+   commits the harness wrote and what is in them — not what the branch changes against a recorded
+   base. **Why:** the first design diffed from `lease.base_sha`, and `deliver` pushes after
+   rebasing onto upstream, so that diff reports every path upstream changed since — `ci-cd.yml`,
+   the very file the scope was granted for. It would have refused every delivery from the day of
+   the grant, and the suite would have shipped it green, because no deliver test moved upstream
+   before the rebase (B299 and B300 do now). A rebase rewrites the committer and keeps the author,
+   so upstream's commits keep upstream's authors and the walk stops at the first of them.
+3. **The backstop (B298).** `gh.push_branch` runs the walk before every push, through the injected
+   runner, under `--dry-run` too, and refuses when git cannot answer. It takes no `base`: nothing
+   for a caller to get wrong. `push_ref` stays outside it on purpose — its one caller relays
+   upstream's own `main` to the fork, fast-forward only.
+4. **Hole A closed (B301).** `deliver._push_handoff` withholds the push — only the push; HANDOFF.md,
+   the comment, the parked item and the carry all still happen, and the note says why — when the
+   branch carries a `.github/` path by the walk *or* by the author-blind diff from where it left
+   the fork's `main`. When either cannot be answered, it withholds.
+5. **Hole B closed (B302, B303).** `revise` fixes its base before the model runs. A resumed item is
+   judged from its fork point, because nothing it carries was ever checked. And it walks the branch
+   before shipping, so a `.github/` commit the branch already carries blocks the item with the
+   clone kept, rather than failing at the push.
+6. **The local publisher (B304).** `Get-UnpublishablePaths` in the watchdog runs the same `git log`
+   with the same prefix, emails and cap, before its push. `local/preflight.py` and
+   `tests/test_local_mode.py` hold the two together, and one test runs the PowerShell function over
+   the same fixture branch as the Python walk.
+7. **Doctor reads the scopes (B305).** `X-OAuth-Scopes` from an unconditional `GET /user`, reported
+   on every run against the expected set: `public_repo`, `notifications`, `workflow`. A missing
+   one, any other, or no header at all (a fine-grained token) is a **warning, never a problem**: a
+   problem exits 3 and stops the fleet (#27).
+8. **B105 de-vacuumed (B306):** the fork slug comes from `.harness/config.json`. **The delivery PR
+   body and the prompts say what is true (B307).** **The I-15 invariant is widened (B308)** to one
+   path set, defined in `clone.py`, read by implement, gh, deliver and revise.
+
+**Where this departs from the handoff, and why.**
+
+- **The cap refuses.** The handoff said to record a walk that hits its 100-commit cap. A guard that
+  is now the only layer should not publish commits it has not read, and no real branch comes near
+  100.
+- **Author spoofing.** The walk's stop rule trusts the author field, and the model can commit under
+  any name — plausibly, since a harness clone has no `user.email` and the model must pick one. So
+  every check that follows a model call is author-blind: implement's B64 diffs from a fixed base
+  (unchanged), revise's from the tip it gave the model, a resumed item's from its fork point, and
+  the handoff adds the diff from the fork's `main`. The walk is the backstop for commits the
+  harness wrote, which is what reaches the push. A model that rewrote the clone's refs could still
+  mislead the handoff's diff; that, like a model rewriting `.git/config` to redirect a push, is
+  beyond what a check inside the clone can promise.
+- **`doctor` never "warns that `workflow` is absent"** (handoff §9.3): the rotation came first. The
+  check proves itself by reporting all three scopes and warning on none.
+- **`packager.py` and `prompts/` are corrected here**, not left to the documentation pass. The PR
+  body told every brightboost reviewer the token had no `workflow` scope, and the prompts told the
+  model the rule was `.github/workflows/` when the guard blocks all of `.github/` — a prompt
+  narrower than its check wastes a run. `.harness/PIN` is rewritten for both. F4's
+  `FULLSEND_FORBIDDEN_PATHS` keeps `.github/workflows/`: it routes a proposal to the parallel
+  prompt and is not a safety check.
+
+**Not done here.** The documents that still say the token lacks `workflow`, or that I-15 is
+enforced by GitHub, belong to the documentation pass that follows. They are `README.md`,
+`docs/SAFETY.md` (whose I-15 section should now name the shared predicate), `docs/USING.md`,
+`docs/PACKAGE-FORMAT.md`, `docs/PROPOSALS.md`, `.env.example`, `harness/identity.py` (and so
+`HUMAN.md`), the `continue-on-error` rationale in `feedback.yml`, and `docs/OPERATIONS.md`'s
+rotation runbook, which as written would revert this decision at the next rotation. That pass
+should add a drift test that no live document claims the token lacks a scope it carries.

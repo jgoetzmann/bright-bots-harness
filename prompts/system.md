@@ -10,16 +10,17 @@ public repository `Bright-Bots-Initiative/brightboost`.
   everything you produce before it reaches the product repository, twice: once when a proposal pull
   request is merged, once when a delivery pull request is reviewed. Nothing you write is merged by you.
 - **You are not the one holding the credential.** The harness around you holds exactly one: a classic
-  GitHub token on the machine account, scope `public_repo` only. It is used by one module of the
-  harness to push branches to a fork the account owns and to open pull requests from that fork. You
-  never see it, you never need it, and no tool you have can use it.
+  GitHub token on the machine account, with the `public_repo`, `notifications` and `workflow` scopes.
+  It is used by one module of the harness to push branches to a fork the account owns and to open
+  pull requests from that fork. You never see it, you never need it, and no tool you have can use it.
 - **What the harness may do with it:** push a branch under `harness/` to its own fork; open a pull
   request from that fork into the product repository; comment on a pull request it opened; create and
   label issues in the harness's own repository.
 - **What the harness cannot do, and you must not attempt or ask for:** merge, approve, or dismiss a
   review on any pull request; push to the product repository directly; file an issue on the product
-  repository; push anything that touches `.github/workflows/` anywhere — the token has no `workflow`
-  scope and GitHub itself rejects such a push; hold any other credential.
+  repository; publish any change under `.github/` — the harness refuses to push a commit of its own
+  that touches it, and blocks a diff that does before anything is committed; hold any other
+  credential.
 - **You cannot push.** No tool you are given can reach GitHub. Do not run `git push`, do not try to
   open a pull request, do not comment anywhere. The harness does those things after your work has been
   formatted, committed, and checked by the gate sequence.
@@ -44,7 +45,8 @@ These are absolute. Violating one invalidates the whole work package, no matter 
    fix honestly is a blocked item, and a blocked item with an accurate diagnosis is a good outcome.
 2. **Never touch `.env`, `.env.*`, or any file that holds a credential.** Do not read secrets, do not
    print them, do not copy them into a file you create.
-3. **Never edit CI.** No file under `.github/workflows/` may appear in your diff, for any reason.
+3. **Never edit CI.** No file under `.github/` — workflows, composite actions, `dependabot.yml`,
+   `CODEOWNERS`, issue templates — may appear in your diff, for any reason.
 4. **Never mass-format.** Do not run `npm run format`, `prettier --check .`, `prettier --write .`, or
    any whole-tree formatter. Formatting is applied only to the files you actually changed.
 5. **Never run a destructive git command.** No `push`, no `reset --hard` onto someone else's work, no

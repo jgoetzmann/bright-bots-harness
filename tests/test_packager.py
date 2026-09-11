@@ -847,6 +847,19 @@ def test_readme_at_tier_2_drops_the_tier_0_claim_and_names_the_push(state):
     assert "merging it is a human action" in readme
 
 
+def test_b307_the_tier_2_readme_says_what_stops_a_github_change_now(state):
+    """B307 / D67: `deliver` republishes this README as the body of every delivery pull request
+    (B108), so it is where a brightboost reviewer is told what this bot can do. Since D67 the
+    token carries `workflow`; saying it does not would be false, addressed to the people
+    deciding whether to trust the change. What stops a `.github/` change is the harness."""
+    tier2 = Path(packager.build(_tier2_context(state), state.item_id, state.lease))
+    flat = " ".join((tier2 / "README.md").read_text(encoding="utf-8").split())
+
+    assert "no `workflow` scope" not in flat and "carries no `workflow`" not in flat
+    assert "refuses to push any commit of its own that touches `.github/`" in flat
+    assert "`.github/**` (I-15" in flat
+
+
 def test_readme_at_tier_2_changes_nothing_else_in_the_package(state):
     """Only the paragraph moves. The §7.2 listing, the manifest and the verification steps a
     reviewer follows are identical at both tiers."""

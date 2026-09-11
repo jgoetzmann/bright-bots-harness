@@ -507,8 +507,17 @@ class FakeGh:
         return {"content": {"path": path}, "commit": {"sha": "c" * 40}}
 
     def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
+        from harness.gh import GitHubClient
+
         self._record("push_branch", clone=str(clone), branch=branch, remote_repo=remote_repo,
                      force=bool(force))
+        if not self.can_write:  # `_require_write` comes first in production, so it does here
+            self._write("git push", f"https://github.com/{remote_repo}.git {branch}", {})
+        # D67: the production push guard itself, walking the real clone, so this fake is no
+        # more permissive than `gh.push_branch` (see test_stages_deliver.FakeGh.push_branch).
+        GitHubClient(UPSTREAM, None, None, 0, token="guard", dry_run=True).push_branch(
+            clone, branch, remote_repo=remote_repo, force=force, git_runner=git_runner
+        )
         self._write("git push", f"https://github.com/{remote_repo}.git {branch}",
                     {"force": bool(force), "clone": str(clone)})
 
@@ -862,6 +871,125 @@ def test_B139_force_push_targets_only_the_fork_and_only_a_harness_branch(tmp_pat
     for c in pushes(s.gh):
         assert c["remote_repo"] == FORK
         assert c.get("branch", "harness/").startswith("harness/")
+
+
+# --------------------------------------------------------------------------------------
+# B302 / B303 (D67) - hole B: what the model commits itself is checked like anything else
+# --------------------------------------------------------------------------------------
+class CommittingRunner:
+    """The model committing its own work with Bash, under whatever name it chooses."""
+
+    def __init__(self, inner, repo: Path, files: dict[str, str], email: str) -> None:
+        self.inner = inner
+        self.repo = repo
+        self.files = files
+        self.email = email
+
+    def run(self, request):
+        if request.stage == "revise":
+            for rel, text in self.files.items():
+                _w(self.repo / rel, text)
+            _git("add", "-A", cwd=self.repo)
+            _git("-c", f"user.email={self.email}", "-c", "user.name=model", "commit", "-q",
+                 "-m", "fix: as asked", cwd=self.repo)
+        return self.inner.run(request)
+
+
+def model_commits(s, files: dict[str, str], *, email: str = "harness@localhost") -> None:
+    s.runner.inner = CommittingRunner(s.runner.inner, s.repo, files, email)
+
+
+def assert_blocked_unpushed(s, needle: str) -> None:
+    assert s.store.get_work_item(ITEM).state == "blocked"
+    assert pushes(s.gh) == [] and not any(e["method"] == "git push" for e in s.gh.sent)
+    assert any(keep for _lease, keep in s.clones.released), "the clone must be kept"
+    decisions = (s.config.runs_dir / f"item-{ITEM}" / "DECISIONS.md").read_text(encoding="utf-8")
+    assert needle in decisions
+
+
+def test_b302_a_workflow_edit_the_model_commits_itself_blocks_the_item(tmp_path, monkeypatch):
+    """B302 / D67 (handoff 8, test 5): hole B. The model commits a `.github/workflows/` edit
+    with its own Bash. Read after the call, the tip WAS that commit and the diff came back
+    empty; read before it, the commit is the diff. Blocked, clone kept, nothing pushed."""
+    s = setup_revise(tmp_path, monkeypatch)
+    model_commits(s, {".github/workflows/ci-cd.yml": "on: push\n"})
+
+    with pytest.raises(HarnessError, match="forbidden diff"):
+        revise(s.ctx, ITEM, source="ci")
+
+    assert_blocked_unpushed(s, ".github/workflows/ci-cd.yml")
+
+
+def test_b302_a_committed_continue_on_error_blocks_the_item_too(tmp_path, monkeypatch):
+    """B302 (handoff 8, test 6): the same shape, but what the model commits is
+    `continue-on-error: true` outside `.github/` -- hole B is closed for every arm of B64, not
+    only the path one."""
+    s = setup_revise(tmp_path, monkeypatch)
+    model_commits(s, {"scripts/ci/check.yml": "steps:\n  - run: npm test\n"
+                                               "    continue-on-error: true\n"})
+
+    with pytest.raises(HarnessError, match="continue-on-error"):
+        revise(s.ctx, ITEM, source="ci")
+
+    assert_blocked_unpushed(s, "continue-on-error")
+
+
+def test_b302_whose_name_the_model_commits_under_does_not_matter(tmp_path, monkeypatch):
+    """B302: the diff is author-blind. A commit the model signs as someone else ends the commit
+    walk before it, so the diff from the tip the model was given is what catches it."""
+    s = setup_revise(tmp_path, monkeypatch)
+    model_commits(s, {".github/CODEOWNERS": "* @mallory\n"}, email="mallory@example.com")
+
+    with pytest.raises(HarnessError, match="forbidden diff"):
+        revise(s.ctx, ITEM, source="ci")
+
+    assert_blocked_unpushed(s, ".github/CODEOWNERS")
+
+
+def test_b302_a_resumed_item_is_checked_from_its_fork_point(tmp_path, monkeypatch):
+    """B302: `continue` judges the whole carried branch, not the tip it was handed. A usage stop
+    lands inside a model call -- before implement's own B64 -- so nothing the branch carries was
+    ever checked, whoever authored it."""
+    s = setup_continue(tmp_path, monkeypatch)
+    _commit(s.repo, "src/flaky.test.ts", "it.skip('flaky', () => {});\n", "test: park it",
+            email="model@example.com")
+
+    with pytest.raises(HarnessError, match="skipped test"):
+        revise(s.ctx, ITEM, source="continue")
+
+    assert s.store.get_work_item(ITEM).state == "blocked"
+    assert pushes(s.gh) == []
+
+
+def test_b303_a_github_commit_the_branch_already_carries_blocks_before_the_push(
+    tmp_path, monkeypatch, quiet_implement
+):
+    """B303 / D67: a harness commit under `.github/` already on the branch -- carried in by a
+    handoff, or pushed before D67 widened the set -- sits below the tip the model was given, so
+    the diff cannot see it. The walk can, and the item stops here with its clone kept."""
+    s = setup_revise(tmp_path, monkeypatch)
+    _commit(s.repo, ".github/dependabot.yml", "version: 2\n", "chore: deps",
+            email=HARNESS_EMAIL)
+    _commit(s.repo, "src/pages/Dashboard.tsx", "export const Dashboard = () => null;\n",
+            "fix: tip", email=HARNESS_EMAIL)
+
+    with pytest.raises(HarnessError, match="dependabot"):
+        revise(s.ctx, ITEM, source="ci")
+
+    assert_blocked_unpushed(s, ".github/dependabot.yml")
+
+
+def test_b303_a_clean_branch_passes_the_walk_and_is_pushed(tmp_path, monkeypatch,
+                                                           quiet_implement):
+    """B303: the walk is not a new way to fail -- a branch of harness commits outside
+    `.github/` over upstream's history is pushed, and the decision says the walk ran."""
+    s = setup_revise(tmp_path, monkeypatch)
+
+    revise(s.ctx, ITEM, source="ci")
+
+    assert len(s.gh.calls_named("push_branch")) == 1
+    decisions = (s.config.runs_dir / f"item-{ITEM}" / "DECISIONS.md").read_text(encoding="utf-8")
+    assert "commit walk passed" in decisions
 
 
 # --------------------------------------------------------------------------------------

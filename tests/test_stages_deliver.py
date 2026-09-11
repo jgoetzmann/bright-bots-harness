@@ -173,9 +173,12 @@ def make_sync_repos(tmp_path: Path):
     return SimpleNamespace(work=work, upstream=upstream, fork=fork, u0=u0)
 
 
-def advance_upstream(r, message="feat: upstream moves on") -> str:
-    sha = _commit(r.work, "src/app.ts", f"export const v = '{message}';\n", message,
-                  email=DEV_EMAIL)
+def advance_upstream(r, message="feat: upstream moves on", *, path="src/app.ts",
+                     content=None) -> str:
+    """One commit a person authored, pushed to `r.upstream`'s main. `path`/`content` let a test
+    move a file other than `src/app.ts` -- upstream's own CI workflow, for D67."""
+    text = content if content is not None else f"export const v = '{message}';\n"
+    sha = _commit(r.work, path, text, message, email=DEV_EMAIL)
     _git("push", "-q", str(r.upstream), "main:refs/heads/main", cwd=r.work)
     return sha
 
@@ -253,6 +256,8 @@ class FakeGh:
         self.sent: list[dict] = []
         self.calls: list[dict] = []
         self.refused: list[str] = []
+        #: Branches the production push guard walked and passed (D67).
+        self.guarded: list[str] = []
         self.repos: dict[str, dict[int, dict]] = {repo: {}, self_repo: {}}
         self.comments: dict[tuple[str, int], list[dict]] = {}
         self.events: dict[tuple[str, int], list[dict]] = {}
@@ -564,6 +569,16 @@ class FakeGh:
     def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
         self._record("push_branch", clone=str(clone), branch=branch, remote_repo=remote_repo,
                      force=bool(force))
+        if not self.can_write:  # `_require_write` comes first in production, so it does here
+            self._write("git push", f"https://github.com/{remote_repo}.git {branch}", {})
+        # D67: the production guard itself, not a copy of it. A fake that pushed whatever it
+        # was handed would let the guard be deleted with this suite green -- the failure
+        # FakeGh.comment once had with the machine marker. A dry-run client walks the real
+        # clone exactly as `gh.push_branch` does and sends nothing.
+        GitHubClient(UPSTREAM, None, None, 0, token="guard", dry_run=True).push_branch(
+            clone, branch, remote_repo=remote_repo, force=force, git_runner=git_runner
+        )
+        self.guarded.append(str(branch))
         self._write("git push", f"https://github.com/{remote_repo}.git {branch}",
                     {"force": bool(force), "clone": str(clone)})
 
@@ -615,7 +630,8 @@ def write_fixtures(dir_: Path) -> Path:
             "session_id": "sess-1", "exit_code": 0, "transcript": [], "error": None,
             "reset_at": None}
     for stage, text in (("package", "packaged"), ("implement", "done"),
-                        ("diagnose_gate_failure", "guard the selector")):
+                        ("diagnose_gate_failure", "guard the selector"),
+                        ("revise", "resolved the conflict in favour of both sides")):
         _w(dir_ / f"{stage}.json", json.dumps({"ok": True, "text": text, **base}))
     return dir_
 
@@ -1541,3 +1557,201 @@ def test_b234_an_empty_trust_file_does_not_produce_a_dangling_mention(tmp_path):
 
     assert "Review requested from nobody (the trust file is empty)." in body
     assert "@." not in body
+
+
+# --------------------------------------------------------------------------------------
+# B298-B300 (D67) - a rebase past upstream's own workflow commit still delivers
+# --------------------------------------------------------------------------------------
+CI_WORKFLOW = ".github/workflows/ci-cd.yml"
+CI_WORKFLOW_TEXT = "name: ci-cd\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+UPSTREAM_DASHBOARD = "export const Dashboard = () => <h1>{user.displayName}</h1>;\n"
+RESOLVED_DASHBOARD = "export const Dashboard = () => <h1>{user?.displayName ?? 'Guest'}</h1>;\n"
+
+
+def advance_rig_upstream(tmp_path: Path, path: str, content: str, message: str) -> str:
+    """Move the deliver rig's upstream forward by one commit a person wrote.
+
+    `make_work_repo` points both `origin` and `upstream` at `fork-origin.git` and never moved
+    it, so `_rebase` was a no-op in every deliver test -- which is how a guard that diffed the
+    branch against its recorded base would have shipped green while refusing every real
+    delivery (handoff 6.0). This drives `advance_upstream` against that bare repository.
+    """
+    r = SimpleNamespace(work=tmp_path / "upstream-author", upstream=tmp_path / "fork-origin.git")
+    if not r.work.exists():
+        _git("clone", "-q", str(r.upstream), str(r.work), cwd=tmp_path)
+    return advance_upstream(r, message, path=path, content=content)
+
+
+class ResolvingRunner:
+    """The model's half of a conflict: on the revise call it writes the resolution into the
+    clone, as the real model does with its Edit tool, and then replays the canned result."""
+
+    def __init__(self, inner, repo: Path) -> None:
+        self.inner = inner
+        self.repo = repo
+
+    def run(self, request):
+        if request.stage == "revise":
+            _w(self.repo / "src" / "pages" / "Dashboard.tsx", RESOLVED_DASHBOARD)
+        return self.inner.run(request)
+
+
+def test_b299_a_rebase_past_upstreams_own_workflow_commit_still_delivers(tmp_path):
+    """B299 / D67 (handoff 8, test 1): upstream changes `.github/workflows/ci-cd.yml` after the
+    branch's base, the harness's commit touches only `src/`, and deliver rebases and pushes.
+
+    The rejected design diffed the branch against the recorded base, which after the rebase
+    reports every path upstream changed -- this workflow among them -- and would have refused
+    every delivery from the day the scope was granted. The walk stops at upstream's author."""
+    s = setup_deliver(tmp_path)
+    ci_sha = advance_rig_upstream(tmp_path, CI_WORKFLOW, CI_WORKFLOW_TEXT,
+                                  "ci: build on every push")
+
+    url = deliver(s.ctx, ITEM)
+
+    assert url and s.store.get_work_item(ITEM).state == "shipped"
+    (pushed,) = s.gh.calls_named("push_branch")
+    assert pushed["branch"] == BRANCH and pushed["remote_repo"] == FORK
+    assert s.gh.guarded == [BRANCH], "the production guard never walked the branch"
+    # The rebase really happened, and upstream's workflow commit rides along untouched.
+    _git("merge-base", "--is-ancestor", ci_sha, BRANCH, cwd=s.repo)
+    assert CI_WORKFLOW in _git("show", "--name-only", "--format=", ci_sha, cwd=s.repo)
+    assert _git("log", "-1", "--format=%ae", BRANCH, cwd=s.repo) == HARNESS_EMAIL
+    assert _git("log", "-1", "--format=%H", f"{BRANCH}~1", cwd=s.repo) == ci_sha
+    # The trap, pinned: diffed from the recorded base, this branch "changes" upstream's workflow,
+    # so the rejected base-diff guard would have refused the push that just succeeded.
+    assert CI_WORKFLOW in _git("diff", "--name-only", s.base, BRANCH, cwd=s.repo).splitlines()
+
+
+def test_b298_deliver_refuses_a_harness_commit_under_github_and_opens_nothing(tmp_path):
+    """B298: the other half of B299, and the proof the rig's guard is live -- a commit the
+    harness authored under `.github/` is refused at the push, and no pull request follows."""
+    s = setup_deliver(tmp_path)
+    _commit(s.repo, ".github/dependabot.yml", "version: 2\n", "chore: add dependabot",
+            email=HARNESS_EMAIL)
+
+    with pytest.raises(GitHubError, match=r"\.github/dependabot\.yml"):
+        deliver(s.ctx, ITEM)
+
+    assert s.gh.guarded == []
+    assert s.gh.calls_named("create_pull") == []
+    assert not any(e["method"] == "git push" for e in s.gh.sent)
+    assert s.store.get_work_item(ITEM).state == "packaged"
+
+
+def test_b300_the_nested_conflict_revise_force_pushes_past_upstreams_workflow_commit(
+    tmp_path, monkeypatch
+):
+    """B300 / D67 (handoff 8, test 2): the same through the path that force-pushes. The rebase
+    conflicts, deliver nests `revise(source="conflict")`, the model resolves, the rebase
+    continues, and `_gate_and_ship` force-pushes a branch that now sits on upstream's workflow
+    commit; the nested deliver then opens the pull request."""
+    from harness.gates import GateResult
+    from harness.stages import implement as implement_mod
+
+    s = setup_deliver(tmp_path)
+    ci_sha = advance_rig_upstream(tmp_path, CI_WORKFLOW, CI_WORKFLOW_TEXT,
+                                  "ci: build on every push")
+    advance_rig_upstream(tmp_path, "src/pages/Dashboard.tsx", UPSTREAM_DASHBOARD,
+                         "refactor(dashboard): show the display name")
+    s.runner.inner = ResolvingRunner(s.runner.inner, s.repo)
+    green = [GateResult(name=n, argv=tuple(n.split()), exit_code=0, stdout_tail="",
+                        stderr_tail="") for n in ("npm run lint", "npm run build")]
+    monkeypatch.setattr(implement_mod, "GATE_RUNNER",
+                        lambda clone, *, baseline, runner=None: list(green))
+
+    url = deliver(s.ctx, ITEM)
+
+    assert [r.stage for r in s.runner.requests] == ["revise"], "the rebase did not conflict"
+    (pushed,) = s.gh.calls_named("push_branch")
+    assert pushed["force"] is True and pushed["branch"] == BRANCH
+    assert s.gh.guarded == [BRANCH]
+    assert url and s.store.get_work_item(ITEM).state == "shipped"
+    _git("merge-base", "--is-ancestor", ci_sha, BRANCH, cwd=s.repo)
+    shown = _git("show", f"{BRANCH}:src/pages/Dashboard.tsx", cwd=s.repo)
+    assert shown == RESOLVED_DASHBOARD.strip()
+    assert _git("log", "-1", "--format=%ae", BRANCH, cwd=s.repo) == HARNESS_EMAIL
+
+
+# --------------------------------------------------------------------------------------
+# B301 (D67) - a handoff never publishes a change under .github/ (hole A)
+# --------------------------------------------------------------------------------------
+SPOOFED_EMAIL = "claude@example.com"
+
+
+def track_ci_workflow(s) -> None:
+    """Give the rig's `main` a tracked `.github/workflows/ci-cd.yml`, as brightboost's has, and
+    replay the harness's branch onto it, so the model has a workflow to modify."""
+    _git("checkout", "-q", "main", cwd=s.repo)
+    _commit(s.repo, CI_WORKFLOW, CI_WORKFLOW_TEXT, "ci: add the pipeline", email=DEV_EMAIL)
+    _git("push", "-q", "origin", "main:refs/heads/main", cwd=s.repo)
+    _git("checkout", "-q", BRANCH, cwd=s.repo)
+    _git("-c", "user.email=ci@example.com", "-c", "user.name=ci", "rebase", "-q", "main",
+         cwd=s.repo)
+
+
+def assert_withheld(s, path: str) -> None:
+    """Hole A closed: no push at all, and everything else a handoff does still happens."""
+    assert s.gh.calls_named("push_branch") == [], "the handoff pushed a .github change"
+    assert not any(e["method"] == "git push" for e in s.gh.sent)
+    text = handoff_text(s)
+    assert path in text and "never publishes" in text
+    assert "no write credential" not in text, "the note blamed the wrong thing"
+    assert NEXT_COMMAND in text
+    assert s.store.get_work_item(ITEM).state == "approved"
+    assert s.ctx.ledger.carry_issue() == ITEM
+    decisions = (s.run_dir / "DECISIONS.md").read_text(encoding="utf-8")
+    assert "withheld the push" in decisions and path in decisions
+
+
+def test_b301_a_modified_workflow_is_committed_but_never_pushed(tmp_path):
+    """B301 (handoff 8, test 3): a usage stop lands while the model has the CI workflow open.
+    The wip commit is made -- nothing is lost -- and nothing is pushed; HANDOFF.md says why,
+    and the item is parked and carried exactly as any other handoff."""
+    s = setup_handoff(tmp_path)
+    track_ci_workflow(s)
+    _w(s.repo / CI_WORKFLOW, CI_WORKFLOW_TEXT + "    continue-on-error: true\n")
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert _git("log", "-1", "--format=%s", cwd=s.repo) == f"wip: handoff ({HANDOFF_REASON})"
+    assert CI_WORKFLOW in _git("show", "--name-only", "--format=", "HEAD", cwd=s.repo)
+    assert_withheld(s, CI_WORKFLOW)
+
+
+def test_b301_a_new_untracked_github_file_is_withheld_too(tmp_path):
+    """B301 (handoff 8, test 4): a new, untracked `.github/dependabot.yml` -- the widened prefix,
+    reached through `git add -A` of a file git has never seen."""
+    s = setup_handoff(tmp_path)
+    _w(s.repo / ".github" / "dependabot.yml", "version: 2\n")
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    shown = _git("show", "--name-only", "--format=", "HEAD", cwd=s.repo)
+    assert ".github/dependabot.yml" in shown
+    assert_withheld(s, ".github/dependabot.yml")
+
+
+def test_b301_a_commit_the_model_signed_with_another_name_is_withheld(tmp_path):
+    """B301: the model holds Bash, and a commit it makes carries whatever author it gives. The
+    push guard's walk stops at the first commit a harness email did not write, so on its own it
+    would pass this one; the handoff's author-blind diff from the fork's main does not."""
+    s = setup_handoff(tmp_path)
+    _commit(s.repo, CI_WORKFLOW, CI_WORKFLOW_TEXT, "ci: tidy", email=SPOOFED_EMAIL)
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert_withheld(s, CI_WORKFLOW)
+
+
+def test_b301_when_the_fork_point_cannot_be_found_the_push_is_withheld(tmp_path):
+    """B301: failing closed. Without `origin/main` the author-blind half cannot run, and a
+    handoff that cannot check does not publish."""
+    s = setup_handoff(tmp_path)
+    _git("update-ref", "-d", "refs/remotes/origin/main", cwd=s.repo)
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert s.gh.calls_named("push_branch") == []
+    assert "fork's main is unknown" in handoff_text(s)
+    assert s.store.get_work_item(ITEM).state == "approved"

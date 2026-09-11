@@ -782,12 +782,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "to steer the harness's own threads too."
         )
     # The other half of "can it hear anybody". `sweep` finds product-repository comments by
-    # reading the notifications feed, which needs a scope of its own -- and I-15 gives the
-    # machine PAT `public_repo` and nothing else, so the correctly-configured token is refused.
-    # A warning, not a problem: the inbox is polled directly and keeps working without it.
+    # reading the notifications feed, which needs the `notifications` scope; a token without it
+    # is refused. A warning, not a problem: the inbox is polled directly and keeps working.
     feed = _doctor_notifications(config, args, payload)
     if feed:
         warnings.append(feed)
+    # B305/D67: what the token actually holds, against what it is expected to hold.
+    warnings.extend(_doctor_token_scopes(config, args, payload, feed_unreadable=bool(feed)))
+    scopes = payload.get("token_scopes") or {}
+    if scopes.get("checked"):
+        lines.append(
+            "  token scopes: "
+            + (", ".join(scopes["granted"]) or "(none)")
+            + f" (expected {', '.join(scopes['expected'])})"
+        )
     payload["warnings"] = list(warnings)
     if warnings:
         lines.append("warnings (the harness still runs):")
@@ -832,6 +840,81 @@ def _doctor_notifications(config, args, payload) -> str:
         return ""
     payload["notifications"] = {"readable": True}
     return ""
+
+
+#: B305/D67: the classic scopes the machine PAT is expected to carry, each with what goes wrong
+#: without it. Doctor reports what is granted and warns -- never degrades -- when one of these is
+#: missing or when anything else is present.
+EXPECTED_TOKEN_SCOPES: dict[str, str] = {
+    "public_repo": "it cannot push to the fork or open a pull request, and nothing is delivered",
+    "notifications": (
+        "the notifications feed is closed to it, and a mention on a product issue the machine "
+        "account has never touched goes unseen"
+    ),
+    "workflow": (
+        "`harness sync-fork` cannot fast-forward the fork past an upstream commit that changes "
+        "`.github/workflows/`, so the fork falls behind and nothing can be delivered"
+    ),
+}
+
+
+def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False) -> list[str]:
+    """B305: the machine PAT's real scopes, read off `X-OAuth-Scopes`; the warnings to file.
+
+    D67 granted `workflow`, which took away the capability half of I-15 -- GitHub no longer
+    refuses a push that edits a workflow -- so what the token holds is checked before every
+    spending run instead of eyeballed once at a rotation. Nothing else would notice it acquire
+    `delete_repo` or `admin:org`. Warnings only: a problem exits 3, `feedback.yml` and
+    `implement.yml` gate on doctor under `set -e`, and a diagnostic filed as a problem took the
+    fleet down within an hour of go-live (#27).
+    """
+    payload["token_scopes"] = {"checked": False}
+    if config is None or getattr(config, "permission_tier", 0) < 2:
+        return []  # tier 0 holds no token; "I could not check" is not a finding
+    try:
+        ctx = _context(config, args, run_id="doctor")
+        if not ctx.gh.can_write:
+            return []
+        scopes = ctx.gh.token_scopes()
+    except HarnessError as exc:
+        payload["token_scopes"] = {"checked": False, "error": str(exc)[:200]}
+        return [f"could not read the machine PAT's scopes, so none was checked: {exc}"[:400]]
+    except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+        return []
+    expected = sorted(EXPECTED_TOKEN_SCOPES)
+    if scopes is None:
+        payload["token_scopes"] = {"checked": False, "error": "no X-OAuth-Scopes header"}
+        return [
+            "GitHub sent no X-OAuth-Scopes header for the machine PAT, which is what a "
+            "fine-grained token does, so doctor cannot confirm it holds "
+            + ", ".join(f"`{s}`" for s in expected)
+            + " and nothing more (D67 expects a classic token)"
+        ]
+    missing = [scope for scope in expected if scope not in scopes]
+    extra = sorted(set(scopes) - set(expected))
+    payload["token_scopes"] = {
+        "checked": True,
+        "granted": list(scopes),
+        "expected": expected,
+        "missing": missing,
+        "unexpected": extra,
+    }
+    warnings = [
+        f"the machine PAT lacks the `{scope}` scope, so {EXPECTED_TOKEN_SCOPES[scope]}"
+        for scope in missing
+        # The feed probe has already said so, and what still works without it.
+        if not (scope == "notifications" and feed_unreadable)
+    ]
+    if extra:
+        warnings.append(
+            "the machine PAT carries "
+            + ", ".join(f"`{s}`" for s in extra)
+            + " beyond the expected "
+            + ", ".join(f"`{s}`" for s in expected)
+            + ". Nothing the harness does needs them, and a leaked token is worth more with "
+            "them; drop them at the next rotation (docs/OPERATIONS.md)"
+        )
+    return warnings
 
 
 def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:

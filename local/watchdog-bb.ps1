@@ -79,10 +79,52 @@ function Container-UptimeSeconds {
     } catch { return 0 }
 }
 
+# D67 / B304: the walk gh.push_branch makes before every push, mirrored for this publisher.
+# Granting the machine PAT the `workflow` scope took away GitHub's own refusal of a push that
+# edits a workflow, and this process pushes with that PAT: a guard that lived only in Python would
+# leave local mode the unguarded half. The same `git log` (clone.harness_walk_argv) and the same
+# rule: walk from the tip, stop at the first commit a harness email did not author - upstream's
+# commits, relayed by a rebase, keep their authors - and refuse if any commit above that touches
+# .github/. Past the cap it refuses rather than pass the rest unchecked. harness/clone.py holds
+# the Python half of every value below; local/preflight.py and tests/test_local_mode.py hold the
+# two together. Returns one line per reason to refuse; nothing means the push may go.
+function Get-UnpublishablePaths([string]$Clone, [string]$Ref) {
+    $HarnessEmails = @("harness@brightboost-harness", "harness@localhost")
+    $ProtectedPrefix = "/.github/"
+    $ScanCommits = 100
+    $rs = [string][char]30
+    $us = [string][char]31
+    $lines = @(& git -C $Clone --no-replace-objects -c core.quotepath=off log "--format=%x1e%H%x1f%ae" --name-only --no-renames --first-parent "--diff-merges=first-parent" -n ($ScanCommits + 1) $Ref -- 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @("git log $Ref failed (exit $LASTEXITCODE), so no commit was checked") }
+    $found = @()
+    $walked = 0
+    $sha = ""
+    foreach ($raw in $lines) {
+        $line = "$raw"
+        if ($line.StartsWith($rs)) {
+            $fields = $line.Substring(1).Split($us)
+            $email = ""
+            if ($fields.Count -gt 1) { $email = $fields[1].Trim().ToLowerInvariant() }
+            if ($HarnessEmails -notcontains $email) { break }
+            if ($walked -ge $ScanCommits) { $found += "the top $ScanCommits commits are all the harness's, so the ones below were never checked"; break }
+            $walked++
+            $sha = $fields[0].Trim()
+            continue
+        }
+        $p = $line.Replace([string][char]92, "/").Trim().Trim([char]96).Trim().Trim('"')
+        if (-not $p) { continue }
+        while ($p.StartsWith("./")) { $p = $p.Substring(2) }
+        $p = "/" + $p.TrimStart("/")
+        if ($p.Contains($ProtectedPrefix)) { $found += "harness commit $($sha.Substring(0, [math]::Min(12, $sha.Length))) touches $($p.Substring(1))" }
+    }
+    return $found
+}
+
 # Host-side push (P5). The loop's deliver stage cannot publish - it holds no GitHub credential - so
 # it leaves the branch in its clone and writes runs/<item>/DELIVER.json. This pushes such a branch
 # to the fork with the host's HARNESS_GITHUB_TOKEN under the rules gh.push_branch follows: only
-# branches under harness/, only when the tip author is the harness identity (B139), the token
+# branches under harness/, only when the tip author is the harness identity (B139), only when no
+# commit the harness authored touches .github/ (D67, Get-UnpublishablePaths above), the token
 # never in a URL, an argv or a log line (it travels as GIT_CONFIG_* environment), and NEVER a bare
 # --force: a lease, so a commit a human pushed to the same fork branch between two passes is not
 # silently discarded. The lease must carry an explicit expected sha here - `--force-with-lease`
@@ -138,6 +180,11 @@ function Push-Delivered {
         $author = "$(& git -C $clone log -1 --format=%ae 2>&1)".Trim()
         if ($author -ne "harness@brightboost-harness") {
             Write-Host "$(Stamp) $($dir.Name): refusing to push $branch - tip author is '$author', not the harness (B139)"; continue
+        }
+        # D67 / B304: nothing under .github/ leaves this host either - the push goes as HEAD.
+        $held = @(Get-UnpublishablePaths $clone "HEAD")
+        if ($held.Count -gt 0) {
+            Write-Host "$(Stamp) $($dir.Name): refusing to push $branch - $($held -join '; ') (I-15, D67)"; continue
         }
         $url = "https://github.com/$remote.git"
         $basic = ""

@@ -9,7 +9,7 @@ import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from harness.clock import Clock
 from harness.errors import CloneError, ForkDiverged, PreflightFailed
@@ -99,6 +99,139 @@ def long_path(path: Path | str) -> str:
 #: `core.hooksPath` for a harness clone: a path that holds no hooks, so none can fire (B229).
 #: A directory that does not exist is what git itself documents for turning hooks off.
 HOOKS_OFF = "no-hooks"
+
+
+# -- what the harness never publishes (D67, I-15, B64) ---------------------------------------
+
+#: The path prefixes no harness commit may carry to a remote (B296/D67). Matched against
+#: `normalise_repo_path`, which prepends "/", so `.github/x` at the top of the tree matches and
+#: `docs/github-setup.md` does not. All of `.github/`, not only its workflows: composite
+#: actions, `dependabot.yml` and `CODEOWNERS` steer CI and review as surely as a workflow does,
+#: and since D67 granted the machine PAT `workflow`, nothing at GitHub's end stops any of them.
+#: The one definition: B64 (`implement.FORBIDDEN_DIFF_PATHS`), the push guard in `gh.py`, the
+#: handoff in `deliver.py` and revise all read it; `local/watchdog-bb.ps1` spells the same
+#: prefix and `local/preflight.py` holds the two together (B304).
+PROTECTED_PUSH_PATHS: tuple[str, ...] = ("/.github/",)
+
+#: B139/D67: the author emails the harness writes. The first is `deliver.GIT_IDENTITY`'s, used
+#: by the rebase; the second is what `implement.COMMIT` writes and cannot change.
+HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harness@localhost")
+
+#: B297: how many commits the walk takes from a branch tip. A walk that takes this many
+#: harness commits without reaching anyone else's refuses rather than pass the rest unchecked;
+#: a real branch carries a handful.
+PROTECTED_SCAN_COMMITS = 100
+
+#: `git log`'s record and field separators for the walk (ASCII RS and US). Git C-quotes every
+#: path holding a control character, so neither can appear on a path line, and no filename can
+#: forge the start of a commit record.
+_RECORD = chr(30)
+_FIELD = chr(31)
+
+
+def normalise_repo_path(path: str) -> str:
+    """A repository path in the one form the protected-path match reads (B64, B296).
+
+    Moved from `implement._normalise`. Backslashes become slashes, a `./` prefix goes, and a
+    leading "/" is prepended, which is what makes a top-level `.github/` match and keeps
+    `src/dotgithub/` from matching. D67 added the quote strip: git C-quotes a path that holds a
+    double quote, a backslash or a control character, and the opening quote must not carry
+    such a path past the match.
+    """
+    text = str(path).replace(SEP, "/").strip().strip("`").strip().strip('"')
+    while text.startswith("./"):
+        text = text[2:]
+    return "/" + text.lstrip("/")
+
+
+def protected_paths_in(paths: Iterable[str]) -> list[str]:
+    """The paths in ``paths`` no harness commit may publish, in the order given (B296)."""
+    return [
+        str(path)
+        for path in paths
+        if str(path).strip()
+        and any(marker in normalise_repo_path(path) for marker in PROTECTED_PUSH_PATHS)
+    ]
+
+
+@dataclass(frozen=True)
+class HarnessCommit:
+    """One commit the walk attributed to the harness: its sha, author email and paths."""
+
+    sha: str
+    email: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CommitWalk:
+    """What `walk_harness_commits` found at the top of a ref (B297).
+
+    ``commits`` is the harness's run of commits from the tip, newest first. ``stopped_at`` is
+    the first commit someone else authored -- where the mainline begins -- or "" when the walk
+    reached the root. ``capped`` means it took `PROTECTED_SCAN_COMMITS` harness commits and
+    there were more, so it cannot vouch for the ref.
+    """
+
+    commits: tuple[HarnessCommit, ...]
+    stopped_at: str
+    capped: bool
+
+    def protected(self) -> list[tuple[str, str]]:
+        """``(sha, path)`` for every protected path a harness commit touches, tip first."""
+        return [(c.sha, path) for c in self.commits for path in protected_paths_in(c.paths)]
+
+
+def harness_walk_argv(ref: str) -> list[str]:
+    """The one `git log` the walk runs; `local/watchdog-bb.ps1` runs the same (B304).
+
+    `--name-only --no-renames` lists a rename as the delete and the add it is, and lists a
+    deletion at all (D42: removing a workflow is not milder than editing one). `--first-parent`
+    with `--diff-merges=first-parent` gives a merge commit the paths it brought in, where plain
+    `git log` shows a merge none. `--no-replace-objects`, so a `refs/replace/` entry cannot show
+    the walk a different commit from the one the push sends; `core.quotepath=off`, so a
+    non-ASCII path arrives as itself. One more than the cap, to tell "the cap" from "past it".
+    """
+    return [
+        "git", "--no-replace-objects", "-c", "core.quotepath=off", "log",
+        "--format=%x1e%H%x1f%ae", "--name-only", "--no-renames", "--first-parent",
+        "--diff-merges=first-parent", "-n", str(PROTECTED_SCAN_COMMITS + 1), ref, "--",
+    ]
+
+
+def parse_harness_walk(out: str) -> CommitWalk:
+    """Read `harness_walk_argv`'s output, stopping at the first commit a harness email did not
+    author (B297). Case is folded: a case-variant of a harness email keeps the walk going and
+    is checked, because stopping early is the direction that checks less."""
+    commits: list[HarnessCommit] = []
+    for record in out.split(_RECORD)[1:]:
+        lines = record.splitlines()
+        sha, _sep, email = (lines[0] if lines else "").partition(_FIELD)
+        sha, email = sha.strip(), email.strip()
+        if email.lower() not in HARNESS_AUTHOR_EMAILS:
+            return CommitWalk(tuple(commits), sha, False)
+        if len(commits) >= PROTECTED_SCAN_COMMITS:
+            return CommitWalk(tuple(commits), "", True)
+        paths = tuple(line.strip() for line in lines[1:] if line.strip())
+        commits.append(HarnessCommit(sha, email, paths))
+    return CommitWalk(tuple(commits), "", False)
+
+
+def walk_harness_commits(cwd: Path | str, ref: str, run: GitRunner | None = None) -> CommitWalk:
+    """B297/D67: the commits the harness authored at the top of ``ref``, and what they touch.
+
+    Not "what does this branch change against a recorded base": after `deliver._rebase` that
+    base differs from the branch by everything upstream merged since -- upstream's own
+    `.github/workflows/ci-cd.yml` included -- and a guard asking it would refuse every delivery
+    (D67). The question is which commits the harness wrote. A rebase rewrites the committer and
+    keeps the author, so upstream's commits keep upstream's authors and the walk stops at the
+    first of them. Raises `CloneError` when git fails: a walk that did not run checked nothing.
+    """
+    runner = run if run is not None else run_command
+    code, out, err = runner(harness_walk_argv(ref), Path(cwd))
+    if code != 0:
+        raise CloneError(f"git log {ref} failed ({code}): {(err or out).strip()[-500:]}")
+    return parse_harness_walk(out)
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:

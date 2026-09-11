@@ -166,10 +166,10 @@ def _what_this_is(config) -> list[str]:
         "A change proposed by an automated harness running at permission tier 2. It holds one",
         f"credential, belonging to a machine account that owns {owns}. It pushes this branch",
         f"to that fork and opens the pull request from there; it never pushes to `{config.repo}`",
-        "itself, and it can neither merge a pull request nor act on a review (I-12). It cannot",
-        "modify `.github/**` (I-15: the token carries no `workflow` scope, and a diff that",
-        "touches CI is rejected before it is committed). It is yours to accept, amend, or",
-        "discard; merging it is a human action.",
+        "itself, and it can neither merge a pull request nor act on a review (I-12). It never",
+        "modifies `.github/**` (I-15): it refuses to push any commit of its own that touches",
+        "`.github/`, and a diff that touches it is rejected before it is committed. It is yours",
+        "to accept, amend, or discard; merging it is a human action.",
     ]
 
 

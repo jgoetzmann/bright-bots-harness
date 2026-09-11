@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from harness import commitmsg, gates, prettier
-from harness.clone import Lease
+from harness.clone import Lease, PROTECTED_PUSH_PATHS, normalise_repo_path, protected_paths_in
 from harness.collision import claimed_issue_numbers
 from harness.config import Config
 from harness.context import Context
@@ -59,8 +59,10 @@ FULLSEND_FORBIDDEN_PATHS = (
     "/.github/workflows/",
 )
 
-#: Paths no harness diff may ever contain (B64).
-FORBIDDEN_DIFF_PATHS = ("/.github/workflows/",)
+#: Paths no harness diff may ever contain (B64). D67: the one set, defined beside the push
+#: guard in `clone.py` and widened there from `.github/workflows/` to all of `.github/`; the
+#: name stays because B64 and its documents cite it.
+FORBIDDEN_DIFF_PATHS = PROTECTED_PUSH_PATHS
 
 #: Substrings that, when *added* by the diff, widen or disable a check (B64).
 FORBIDDEN_ADDITIONS = (
@@ -137,11 +139,9 @@ FULLSEND_REASONS = {
 }
 
 
-def _normalise(path: str) -> str:
-    text = str(path).replace("\\", "/").strip().strip("`").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    return "/" + text.lstrip("/")
+#: D67: moved to `clone.normalise_repo_path`, beside the path set it serves; kept by this name
+#: for `_fullsend_forbidden` and anything that imported it from here.
+_normalise = normalise_repo_path
 
 
 def _fullsend_forbidden(path: str) -> bool:
@@ -399,12 +399,15 @@ def _guarded_changed_paths(ctx: Context, lease: Lease) -> list[str]:
 def _reject_forbidden_diff(
     ctx: Context, item_id: int, lease: Lease, changed: Sequence[str]
 ) -> None:
-    """B64. A diff that widens a check is rejected whole; the item is blocked."""
-    violations: list[str] = []
-    for path in changed:
-        text = _normalise(path)
-        if any(marker in text for marker in FORBIDDEN_DIFF_PATHS):
-            violations.append(f"{path} is a CI workflow and may never be modified")
+    """B64. A diff that widens a check is rejected whole; the item is blocked.
+
+    D67: the path arm asks `clone.protected_paths_in`, the predicate the push guard uses too,
+    so the two cannot drift apart -- the whole of `.github/`, deletions included (D42).
+    """
+    violations: list[str] = [
+        f"{path} is under .github/, which steers CI and review, and may never be modified"
+        for path in protected_paths_in(changed)
+    ]
 
     added, removed = DIFF_LINES(lease, changed)
     for needle, description in FORBIDDEN_ADDITIONS:
@@ -423,7 +426,7 @@ def _reject_forbidden_diff(
 
     if not violations:
         ctx.record_decision(
-            "forbidden-diff check passed: no CI workflow touched, no check disabled, "
+            "forbidden-diff check passed: nothing under .github/ touched, no check disabled, "
             "no timeout raised"
         )
         return

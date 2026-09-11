@@ -31,8 +31,8 @@ Rank highest the candidates that are:
    landing first.
 
 Rank lowest, or drop entirely, anything that needs a product decision, needs organization access,
-touches `prisma/`, `migrations/`, `backend/scripts/predeploy*`, or `.github/workflows/`, or whose
-correct behaviour cannot be settled from the repository alone.
+touches `prisma/`, `migrations/`, `backend/scripts/predeploy*`, or anything under `.github/`, or
+whose correct behaviour cannot be settled from the repository alone.
 
 ## Output format
 

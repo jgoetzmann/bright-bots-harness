@@ -412,7 +412,7 @@ def test_b229_the_push_turns_hooks_off_on_the_command_line(tmp_path):
     client = GitHubClient(
         "o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, self_repo="me/self"
     )
-    client.push_ref(Path("."), "main:refs/heads/main", remote_repo="o/n", git_runner=runner)
+    client.push_ref(tmp_path,"main:refs/heads/main", remote_repo="o/n", git_runner=runner)
 
     argv = calls[0]
     assert f"core.hooksPath={HOOKS_OFF}" in argv
@@ -495,3 +495,351 @@ def test_b231_build_client_uses_the_tier_aware_ceiling(tmp_path, monkeypatch):
     client = gh_mod.build_client(config, store, clock)
 
     assert client.ceiling_per_hour == gh_mod.AUTHENTICATED_CEILING_PER_HOUR
+
+
+# --------------------------------------------------------------------------------------
+# B296-B298 (D67) - one protected path set, the commit walk, and the push guard built on it
+# --------------------------------------------------------------------------------------
+GUARD_TOKEN = "ghp_" + "FAKE0" * 8
+HARNESS = "harness@brightboost-harness"
+WIP = "harness@localhost"
+DEV = "dev@example.com"
+CI = ".github/workflows/ci-cd.yml"
+
+
+def _git(repo, *args: str) -> str:
+    import subprocess
+
+    argv = ["git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args]
+    done = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True)
+    assert done.returncode == 0, f"{argv}: {done.stderr}"
+    return done.stdout.strip()
+
+
+def _repo(tmp_path):
+    repo = tmp_path / "clone"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    return repo
+
+
+def _commit(repo, email: str, files: dict, message: str = "change") -> str:
+    """One commit authored by `email`; a `None` value deletes that path."""
+    for rel, text in files.items():
+        if text is None:
+            _git(repo, "rm", "-q", rel)
+            continue
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", f"user.email={email}", "-c", "user.name=someone", "commit", "-q",
+         "--allow-empty", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _guard_client(tmp_path, *, dry_run=True, token=GUARD_TOKEN, opener=None):
+    from harness.gh import GitHubClient
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "guard.db", clock)
+    store.migrate()
+    return GitHubClient("o/r", store, clock, 50, token=token, self_repo="me/self",
+                        dry_run=dry_run, opener=opener)
+
+
+def _pushed(client) -> list[dict]:
+    return [entry for entry in client.sent if entry["method"] == "git push"]
+
+
+def _recorder(calls: list, code: int = 0, err: str = ""):
+    def run(argv, cwd=None):
+        calls.append(list(argv))
+        return (code, "", err)
+
+    return run
+
+
+@pytest.mark.parametrize("path", [
+    CI, ".github/CODEOWNERS", ".github/dependabot.yml", ".github/ISSUE_TEMPLATE/bug.md",
+    ".github/actions/setup/action.yml", "./.github/CODEOWNERS", "`.github/dependabot.yml`",
+    '".github/workflows/a\\"b.yml"', ".github\\workflows\\win.yml",
+    "packages/app/.github/workflows/x.yml",
+])
+def test_b296_every_path_under_github_is_protected(path):
+    """B296 / D67 (handoff 8, test 7): all of `.github/`, not only its workflows -- composite
+    actions, dependabot and CODEOWNERS steer CI and review too -- in every spelling a path can
+    reach the check in, git's C-quoted form included."""
+    from harness.clone import protected_paths_in
+
+    assert protected_paths_in([path]) == [path]
+
+
+@pytest.mark.parametrize("path", [
+    "docs/github-setup.md", "src/github/client.ts", "src/dotgithub/x.yml", ".githubrc",
+    "github/workflows/x.yml", "", "   ",
+])
+def test_b296_a_path_that_only_mentions_github_is_not_protected(path):
+    from harness.clone import protected_paths_in
+
+    assert protected_paths_in([path]) == []
+
+
+def test_b296_the_one_set_is_all_of_github_and_b64_reads_it():
+    from harness import clone
+    from harness.stages import implement
+
+    assert clone.PROTECTED_PUSH_PATHS == ("/.github/",)
+    assert implement.FORBIDDEN_DIFF_PATHS is clone.PROTECTED_PUSH_PATHS
+
+
+def test_b297_the_walk_stops_at_the_first_commit_the_harness_did_not_author(tmp_path):
+    """B297 (handoff 8, test 9): [upstream commit touching .github/] then [harness commit
+    touching src/]. The walk takes the harness's commit and stops at upstream's author, so
+    upstream's own workflow change is relayed, not refused."""
+    from harness.clone import walk_harness_commits
+
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    upstream = _commit(repo, DEV, {CI: "on: push\n"}, "ci: pipeline")
+    mine = _commit(repo, HARNESS, {"src/app.ts": "export {};\n"}, "fix: thing")
+
+    walk = walk_harness_commits(repo, "HEAD")
+
+    assert [c.sha for c in walk.commits] == [mine]
+    assert walk.commits[0].paths == ("src/app.ts",)
+    assert walk.stopped_at == upstream and not walk.capped and walk.protected() == []
+    client = _guard_client(tmp_path)
+    client.push_branch(repo, "main", remote_repo="o/fork")
+    assert len(_pushed(client)) == 1
+
+
+def test_b298_a_harness_commit_under_github_is_refused_by_sha_and_path(tmp_path):
+    """B298 (handoff 8, test 10): [harness src/] then [harness .github/]. Refused; the error
+    names the commit and the path, and nothing is recorded as pushed."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _commit(repo, HARNESS, {"src/app.ts": "export {};\n"}, "fix: thing")
+    bad = _commit(repo, WIP, {CI: "on: push\n"}, "wip: handoff")
+    client = _guard_client(tmp_path)
+
+    with pytest.raises(GitHubError) as caught:
+        client.push_branch(repo, "main", remote_repo="o/fork")
+
+    assert bad[:12] in str(caught.value) and CI in str(caught.value)
+    assert _pushed(client) == []
+
+
+def test_b298_a_github_change_below_the_tip_is_refused_too(tmp_path):
+    """B298: every harness commit above the mainline is checked, not only the tip."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    bad = _commit(repo, HARNESS, {".github/dependabot.yml": "version: 2\n"}, "chore: deps")
+    _commit(repo, HARNESS, {"src/app.ts": "export {};\n"}, "fix: thing")
+
+    with pytest.raises(GitHubError, match=bad[:12]):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b297_a_human_commit_on_top_ends_the_walk_where_b139_takes_over(tmp_path):
+    """B297 (handoff 8, test 11): [harness commits] then [a human's commit]. The walk stops at
+    once -- that commit is its author's to have pushed -- and B139 is what refuses to
+    force-push over it. They agree on the one fact they share: the tip is not the harness's."""
+    from harness.clone import HARNESS_AUTHOR_EMAILS, Lease, walk_harness_commits
+    from harness.stages.revise import tip_author_email
+
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _commit(repo, HARNESS, {".github/dependabot.yml": "version: 2\n"}, "chore: deps")
+    human = _commit(repo, "jack@example.com", {"src/app.ts": "export {};\n"}, "fix: by hand")
+
+    walk = walk_harness_commits(repo, "HEAD")
+
+    assert walk.commits == () and walk.stopped_at == human
+    lease = Lease(run_id="r", path=repo, base_sha="", branch="main")
+    assert tip_author_email(lease) not in HARNESS_AUTHOR_EMAILS
+
+
+def test_b297_a_root_commit_lists_its_paths(tmp_path):
+    """B297 (handoff 8, test 12): `git diff-tree` prints nothing for a root commit without
+    `--root`; the walk's `git log --name-only` has no such gap."""
+    from harness.clone import walk_harness_commits
+
+    repo = _repo(tmp_path)
+    root = _commit(repo, HARNESS, {".github/CODEOWNERS": "* @x\n", "src/a.ts": "x\n"}, "feat: all")
+
+    walk = walk_harness_commits(repo, "HEAD")
+
+    assert walk.commits[0].sha == root and walk.stopped_at == ""
+    assert set(walk.commits[0].paths) == {".github/CODEOWNERS", "src/a.ts"}
+    with pytest.raises(GitHubError, match="CODEOWNERS"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b297_a_merge_commit_carries_the_paths_it_brought_in(tmp_path):
+    """B297 (handoff 8, test 13): a merge the harness made. `--first-parent` never visits the
+    side branch's commit, and plain `git log` shows a merge no paths at all -- so without
+    `--diff-merges=first-parent` this `.github/` change would pass in silence."""
+    from harness.clone import walk_harness_commits
+
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, HARNESS, {".github/dependabot.yml": "version: 2\n"}, "chore: deps")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, HARNESS, {"src/app.ts": "export {};\n"}, "fix: thing")
+    _git(repo, "-c", f"user.email={HARNESS}", "-c", "user.name=h", "merge", "-q", "--no-ff",
+         "-m", "chore: bring in side", "side")
+
+    walk = walk_harness_commits(repo, "HEAD")
+
+    assert ".github/dependabot.yml" in walk.commits[0].paths
+    with pytest.raises(GitHubError, match="dependabot"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b297_past_the_cap_the_walk_refuses_rather_than_truncates(tmp_path, monkeypatch):
+    """B297 (handoff 8, test 14): a walk that takes the cap's worth of harness commits and finds
+    more cannot vouch for the ones below, so the push is refused, not cut short in silence.
+    The cap is 100; three runs the same code in a fraction of the commits."""
+    from harness import clone
+
+    assert clone.PROTECTED_SCAN_COMMITS == 100
+    monkeypatch.setattr(clone, "PROTECTED_SCAN_COMMITS", 3)
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    for n in range(3):
+        _commit(repo, HARNESS, {f"src/{n}.ts": "x\n"}, f"fix: {n}")
+    assert not clone.walk_harness_commits(repo, "HEAD").capped, "exactly the cap is vouched for"
+    _commit(repo, HARNESS, {"src/3.ts": "x\n"}, "fix: 3")
+
+    walk = clone.walk_harness_commits(repo, "HEAD")
+
+    assert walk.capped and len(walk.commits) == 3 and walk.protected() == []
+    with pytest.raises(GitHubError, match="never checked"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+@pytest.mark.parametrize("change", ["delete", "rename"])
+def test_b297_deleting_or_moving_a_workflow_is_refused(tmp_path, change):
+    """B297 (handoff 8, test 8): D42's bug at the new layer. Deleting a workflow is not milder
+    than editing one, and `--no-renames` lists a move as the deletion it is."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {CI: "on: push\n"}, "ci: pipeline")
+    if change == "delete":
+        _commit(repo, HARNESS, {CI: None}, "chore: drop the pipeline")
+    else:
+        (repo / "docs").mkdir()
+        _git(repo, "mv", CI, "docs/ci-cd.yml")
+        _commit(repo, HARNESS, {}, "docs: park the pipeline")
+
+    with pytest.raises(GitHubError, match="ci-cd"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b297_a_non_ascii_workflow_name_is_still_seen(tmp_path):
+    """B297: `core.quotepath=off`, plus the quote strip, so git's escaping cannot hide one."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _commit(repo, HARNESS, {".github/workflows/déploiement.yml": "on: push\n"}, "ci: fr")
+
+    with pytest.raises(GitHubError, match="workflows"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b297_a_case_variant_of_a_harness_email_is_still_walked(tmp_path):
+    """B297: stopping early is the direction that checks less, so case is folded."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _commit(repo, "Harness@LocalHost", {".github/CODEOWNERS": "* @x\n"}, "chore: owners")
+
+    with pytest.raises(GitHubError, match="CODEOWNERS"):
+        _guard_client(tmp_path).push_branch(repo, "main", remote_repo="o/fork")
+
+
+def test_b298_push_ref_still_makes_exactly_one_git_call(tmp_path):
+    """B298 (handoff 8, test 15): `push_ref` -- sync-fork's relay of upstream's own main -- is
+    outside the walk, so it is still exactly one git call, and that call is the push."""
+    calls: list = []
+    client = _guard_client(tmp_path, dry_run=False)
+
+    client.push_ref(tmp_path,"upstream/main:refs/heads/main", remote_repo="o/fork",
+                    git_runner=_recorder(calls))
+
+    assert len(calls) == 1 and "push" in calls[0]
+
+
+def test_b298_push_branch_walks_through_the_injected_runner_before_it_pushes(tmp_path):
+    """B298 (handoff 8, test 16): the check runs through `git_runner`, not `run_command`, and
+    before the push; the fake sees both argvs, the walk first."""
+    calls: list = []
+    client = _guard_client(tmp_path, dry_run=False)
+
+    client.push_branch(tmp_path,"harness/fix-1-x", remote_repo="o/fork",
+                       git_runner=_recorder(calls))
+
+    assert [("log" in argv, "push" in argv) for argv in calls] == [(True, False), (False, True)]
+    assert "--first-parent" in calls[0] and calls[0][-2:] == ["harness/fix-1-x", "--"]
+
+
+def test_b298_a_walk_git_cannot_run_refuses_the_push(tmp_path):
+    """B298 (handoff 8, test 17): exit 128, no `.git` -- the walk checked nothing, so the push
+    is refused. It fails closed."""
+    calls: list = []
+    client = _guard_client(tmp_path, dry_run=False)
+
+    with pytest.raises(GitHubError, match="could not be listed"):
+        client.push_branch(tmp_path,"harness/fix-1-x", remote_repo="o/fork",
+                           git_runner=_recorder(calls, 128, "fatal: not a git repository"))
+
+    assert len(calls) == 1 and "push" not in calls[0]
+    assert _pushed(client) == []
+
+
+def test_b298_without_a_token_the_walk_never_runs(tmp_path):
+    """B298 (handoff 8, test 18): `_require_write` still comes first; no subprocess at all."""
+    from harness.errors import TierViolation
+
+    calls: list = []
+    client = _guard_client(tmp_path, token="")
+
+    with pytest.raises(TierViolation):
+        client.push_branch(tmp_path,"b", remote_repo="o/fork", git_runner=_recorder(calls))
+
+    assert calls == []
+
+
+def test_b298_a_dry_run_over_a_real_clone_still_refuses(tmp_path):
+    """B298 (handoff 8, test 19): a dry run reports the refusal it would make."""
+    repo = _repo(tmp_path)
+    _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
+    _commit(repo, HARNESS, {".github/dependabot.yml": "version: 2\n"}, "chore: deps")
+    client = _guard_client(tmp_path, dry_run=True)
+
+    with pytest.raises(GitHubError, match="dependabot"):
+        client.push_branch(repo, "main", remote_repo="o/fork")
+
+    assert client.sent == []
+
+
+def test_b305_token_scopes_reads_x_oauth_scopes_on_an_unconditional_request(tmp_path):
+    """B305: the scopes come off `X-OAuth-Scopes`, on a request that carries the token and no
+    `If-None-Match` -- a 304 replayed from the cache is no source for a credential's scopes."""
+    opener = FakeOpener(FakeResponse(
+        {"login": "bot"}, headers={"X-OAuth-Scopes": "workflow, public_repo,notifications"}
+    ))
+    client = _guard_client(tmp_path, opener=opener)
+    client.store.cache_put(f"{API}/user", 'W/"cached"', json.dumps({"login": "bot"}))
+
+    assert client.token_scopes() == ("notifications", "public_repo", "workflow")
+
+    request = opener.requests[0]
+    assert header_value(request, "If-None-Match") is None
+    assert header_value(request, "Authorization") == f"token {GUARD_TOKEN}"
+
+
+def test_b305_no_scopes_header_means_cannot_tell(tmp_path):
+    """B305: a fine-grained token sends no `X-OAuth-Scopes`; that is "unknown", not "none"."""
+    opener = FakeOpener(FakeResponse({"login": "bot"}))
+
+    assert _guard_client(tmp_path, opener=opener).token_scopes() is None

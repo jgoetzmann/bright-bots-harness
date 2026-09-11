@@ -383,6 +383,52 @@ def _bare_force_lines(body: str, comment: str) -> list[str]:
     return out
 
 
+WALK_NAMES = ("PROTECTED_PUSH_PATHS", "HARNESS_AUTHOR_EMAILS", "PROTECTED_SCAN_COMMITS")
+
+
+def _clone_walk() -> tuple[dict[str, object], list[str]]:
+    """harness/clone.py's half of the D67 commit walk: the three constants, and the flags of the
+    one `git log` it runs (``harness_walk_argv``). Parsed with ``ast``, never imported - this
+    script runs outside the package."""
+    src = ROOT / "harness" / "clone.py"
+    if not src.exists():
+        return {}, []
+    values: dict[str, object] = {}
+    flags: list[str] = []
+    for node in ast.walk(ast.parse(src.read_text(encoding="utf-8", errors="replace"))):
+        target = None
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in WALK_NAMES and node.value is not None:
+            try:
+                values[target.id] = ast.literal_eval(node.value)
+            except ValueError:
+                pass
+        if isinstance(node, ast.FunctionDef) and node.name == "harness_walk_argv":
+            returns = [sub.value for sub in ast.walk(node) if isinstance(sub, ast.Return)]
+            for value in returns:  # the argv literal only - never the docstring
+                for sub in ast.walk(value) if value is not None else ():
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        if sub.value.startswith("-") or "=" in sub.value:
+                            flags.append(sub.value)
+    return values, flags
+
+
+def _watchdog_walk(body: str) -> dict[str, object]:
+    """The same three values as the watchdog's Get-UnpublishablePaths spells them."""
+    emails = re.search(r"\$HarnessEmails\s*=\s*@\(([^)]*)\)", body)
+    prefix = re.search(r'\$ProtectedPrefix\s*=\s*"([^"]*)"', body)
+    scan = re.search(r"\$ScanCommits\s*=\s*(\d+)", body)
+    return {
+        "HARNESS_AUTHOR_EMAILS": tuple(re.findall(r'"([^"]+)"', emails.group(1)))
+        if emails else None,
+        "PROTECTED_PUSH_PATHS": (prefix.group(1),) if prefix else None,
+        "PROTECTED_SCAN_COMMITS": int(scan.group(1)) if scan else None,
+    }
+
+
 def check_publishers_agree() -> None:
     """local/watchdog-bb.ps1 is the ONLY publisher in local mode (P5); harness/gh.py is the one in
     Actions mode. gh.push_branch documents "``force`` uses ``--force-with-lease``, never ``-f``"
@@ -392,13 +438,36 @@ def check_publishers_agree() -> None:
 
     The lease must also carry an explicit expected sha. A bare `--force-with-lease` reads a
     remote-TRACKING ref; the watchdog pushes to a URL, which has none, and git then refuses every
-    push with "stale info" - verified against a local bare repository."""
+    push with "stale info" - verified against a local bare repository.
+
+    D67: since the machine PAT carries `workflow`, GitHub no longer refuses a push that edits a
+    workflow, so both publishers walk the commits the harness authored and refuse `.github/`.
+    The watchdog's walk must name the same path prefix, author emails and cap as clone.py, run
+    the same `git log`, and run before its push; otherwise local mode is the unguarded half."""
     wd = LOCAL / "watchdog-bb.ps1"
     if wd.exists():
         body = wd.read_text(encoding="utf-8", errors="replace")
         bare = _bare_force_lines(body, "#")
         check(not bare, "watchdog pushes with a lease", "no bare --force",
               f"bare force push, against gh.push_branch's rule: {bare}")
+        python_side, flags = _clone_walk()
+        ps_side = _watchdog_walk(body)
+        for name in WALK_NAMES:
+            ps, py = ps_side.get(name), python_side.get(name)
+            same = ps is not None and py is not None and (
+                sorted(ps) == sorted(py) if isinstance(py, tuple) else ps == py
+            )
+            check(same, f"walk agrees: {name.lower()}", repr(ps),
+                  f"watchdog {ps!r}, harness/clone.py {py!r} (D67)")
+        code_text = "\n".join(ln for ln in body.splitlines() if not ln.strip().startswith("#"))
+        missing = [flag for flag in flags if flag not in code_text]
+        check(bool(flags) and not missing, "walk runs clone.py's git log", f"{len(flags)} flags",
+              f"the watchdog's git log lacks {missing or 'every flag'} (clone.harness_walk_argv)")
+        walk_at = code_text.find("Get-UnpublishablePaths $clone")
+        push_at = code_text.find('push "--force-with-lease')
+        check(0 <= walk_at < push_at, "watchdog walks before it pushes",
+              "Get-UnpublishablePaths precedes the push",
+              "the watchdog can push without the D67 commit walk")
         check("--force-with-lease=" in body, "watchdog lease is explicit",
               "--force-with-lease=<ref>:<sha>",
               "a bare --force-with-lease has no tracking ref when pushing to a URL, so every "

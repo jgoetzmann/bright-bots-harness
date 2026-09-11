@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
+from harness import clone as clone_mod
 from harness import gates, redact
 from harness.clone import Lease
 from harness.context import Context
@@ -56,7 +57,8 @@ FAILING_CONCLUSIONS: tuple[str, ...] = (
 
 #: B139: the branch tip must carry one of these author emails to be force-pushed. The second
 #: is what Delivery 1's ``implement.COMMIT`` writes and cannot be changed (do-not-touch).
-HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harness@localhost")
+#: D67: defined once in `clone.py`, where the push guard's commit walk reads the same pair.
+HARNESS_AUTHOR_EMAILS: tuple[str, ...] = clone_mod.HARNESS_AUTHOR_EMAILS
 
 #: B215: the fourth source. Not a revision of a delivered branch at all - it resumes an item
 #: that a usage stop handed off mid-flight (``deliver.handoff``), from ``approved`` back into
@@ -352,6 +354,16 @@ def _revise_leased(
         feedback=data_block(f"{source} feedback", feedback[:MAX_FEEDBACK_CHARS]),
         spec_text=spec_text,
     )
+    # The model's edits are the diff against the tip it was GIVEN, not against the old base:
+    # after a rebase the old base also differs by everything upstream merged since. B302/D67
+    # (hole B): so that tip is read BEFORE the call. Read after it, as it once was, the tip is
+    # any commit the model made itself with Bash, the diff comes back empty, and every arm of
+    # B64 -- `.github/`, `continue-on-error`, `.skip(`, the timeout -- passes a change nobody
+    # looked at, whoever the model said authored it. A resumed item (B215) is judged from its
+    # fork point instead: a usage stop lands inside a model call, before implement's own B64,
+    # so nothing the branch carries was ever checked.
+    given = deliver_mod._tip_sha(lease) or lease.base_sha
+    base = lease.base_sha if source == CONTINUE else given
     result = run_model(
         ctx,
         stage="revise",
@@ -370,15 +382,13 @@ def _revise_leased(
         )
         raise RunnerError(f"revise call failed for item {item_id}: {result.error or 'unknown'}")
 
-    # The model's edits are the diff against the tip it was given, not against the old base:
-    # after a rebase the old base also differs by everything upstream merged since.
-    tip = deliver_mod._tip_sha(lease) or lease.base_sha
-    check_lease = dataclasses.replace(lease, base_sha=tip)
+    check_lease = dataclasses.replace(lease, base_sha=base)
     changed = list(implement_mod.CHANGED_PATHS(check_lease.path, check_lease.base_sha))
     ctx.record_decision(
         f"revise ({source}) changed paths: " + (", ".join(changed) if changed else "(none)")
     )
     implement_mod._reject_forbidden_diff(ctx, item_id, check_lease, changed)  # B64, one copy
+    _refuse_unpublishable_commits(ctx, item_id, lease)  # B303: and what the branch carries
 
     if conflicted:
         _continue_rebase(ctx, item_id, lease)
@@ -612,6 +622,39 @@ def tip_author_email(lease: Lease) -> str:
     """``git log -1 --format=%ae`` — who authored the branch tip (B139)."""
     code, out, _ = gates.run_command(["git", "log", "-1", "--format=%ae"], lease.path)
     return out.strip() if code == 0 else ""
+
+
+def _refuse_unpublishable_commits(ctx: Context, item_id: int, lease: Lease) -> None:
+    """B303/D67: block, clone kept, when a commit the harness authored on this branch touches
+    `.github/` -- one carried in from a handoff, or pushed before D67 widened the path set.
+
+    The diff check above sees what changed since the tip the model was given; this sees what
+    the branch already holds, so the item stops here, locally and inspectable, rather than at
+    the push. The same walk `gh.push_branch` makes, over HEAD, which mid-rebase is the replayed
+    branch rather than the not-yet-moved branch ref.
+    """
+    try:
+        walk = clone_mod.walk_harness_commits(lease.path, "HEAD", gates.run_command)
+    except HarnessError as exc:
+        reason = f"the harness's commits on {lease.branch} could not be listed ({exc})"
+    else:
+        hits = walk.protected()
+        if not hits and not walk.capped:
+            ctx.record_decision(
+                f"commit walk passed: {len(walk.commits)} harness commit(s) on {lease.branch}, "
+                "none under .github/ (D67)"
+            )
+            return
+        reason = (
+            "harness commits on the branch touch .github/: "
+            + ", ".join(f"{path} ({sha[:12]})" for sha, path in hits[:10])
+            if hits
+            else f"the top {clone_mod.PROTECTED_SCAN_COMMITS} commits are all the harness's, "
+            "so the ones below were never checked"
+        )
+    ctx.record_decision(f"forbidden-diff check rejected the branch: {reason}")
+    implement_mod._block(ctx, item_id, lease, f"forbidden diff: {reason}")
+    raise HarnessError(f"item {item_id} blocked: forbidden diff: {reason}")
 
 
 def _continue_rebase(ctx: Context, item_id: int, lease: Lease) -> None:

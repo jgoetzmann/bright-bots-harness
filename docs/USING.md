@@ -20,7 +20,7 @@ Five kinds of thing arrive. Four of them want something from you.
 
 | What arrives | Where | What you do |
 |---|---|---|
-| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run. Relabel or comment `/harness stop` if you disagree with the pick |
+| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run — Sunday 07:17 UTC, unless you dispatch one sooner. Relabel or comment `/harness stop` if you disagree with the pick |
 | A PR adding `proposals/<issue>-<slug>.md` | this repo | **Gate 1.** Merge it to approve. Close it to withhold approval. This is the cheapest place to disagree |
 | A PR from a `jgoetzmann-bot:harness/…` branch | the product repo | **Gate 2.** Review it and merge, or steer it with a `/harness` comment. The harness cannot merge it |
 | A comment on issue #2, every Monday ~09:05 UTC | this repo | Skim it. It carries the queue depth per label, the last observed subscription usage, the last successful run of each workflow, and how far the fork has drifted from upstream. **Its absence is the alarm** |
@@ -256,14 +256,14 @@ gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
 
 That yields an issue here labelled `stage:queued`, then a proposal PR against this repo. Gate 1 is then yours.
 
-### Triage, and why it usually finds nothing
+### Triage, and the `harness-ok` pool
 
-`mode: triage` (the default) has two halves, and the order matters:
+`mode: triage` (the default, and what the Sunday 07:17 UTC schedule runs) has two halves, and the order matters:
 
-- If **anything** here is already `stage:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first.
-- Only when the local queue is empty does it look at brightboost. There it drops issues assigned to **someone other than the machine account**, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture` — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`). An issue assigned to `@jgoetzmann-bot` survives and needs no allowlist label.
+- If **anything** here is already `stage:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first, and the same run proposes each.
+- Otherwise it may **suggest**, but only when nothing anybody asked for is outstanding — no requested, assigned or promoted item queued, planning, approved, building, packaged, revising, or waiting at either gate (`priority.OUTSTANDING_STATES`) — and weekly subscription usage is under `SUGGEST_MIN_HEADROOM_PCT` (50), or has never been observed. An open delivery PR counts as outstanding, so while brightboost#868 awaits review nothing is suggested. When both hold, it looks at brightboost and drops issues assigned to **someone other than the machine account**, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture` — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`). An issue assigned to `@jgoetzmann-bot` survives and needs no allowlist label.
 
-No brightboost issue carries `harness-ok` and none is expected to, so plain triage on an empty queue finds nothing and makes no model call. That is the filter working, not a fault — assignment is the route that replaced the label. `ignore_allowlist: true` drops that one filter for a run; the other three still apply.
+`harness-ok` is **the pool**: the issues a maintainer has marked as fair game, by adding the label on brightboost. No command is involved, and removing the label takes an issue back out. The label exists, and a first batch of about forty issues, mostly `pod: build`, is being labelled. One model call ranks what survives, at most `SUGGEST_MAX_PER_RUN` (5) become `via:suggested` items, and the same run proposes each and comments once on its brightboost issue asking for a green light. **Every suggestion still waits for gate 1.** `/harness go` records a maintainer's yes, but implement builds from the merged proposal file, so nothing is built until you merge it — a `go` on an unmerged suggestion only leaves the next build run failing to find its plan (D68). A shut or empty pool makes no model call. `ignore_allowlist: true` drops the label filter for a run; the other three still apply.
 
 ```bash
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \

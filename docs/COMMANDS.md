@@ -85,17 +85,21 @@ Work reaches the queue four ways, and **three of the four are somebody asking**:
 
 The fourth is the harness's own idea, and it is fenced:
 
-**`via:suggested`** — weekly discovery, and the only route the harness starts by itself. Three
-conditions, all required: nothing anybody asked for is outstanding, weekly usage is under
-`SUGGEST_MIN_HEADROOM_PCT` (50), and the issue carries `ALLOWLIST_LABEL` (`harness-ok`) — which
-nothing on brightboost does today, so in practice this route finds nothing unless someone passes
-`ignore_allowlist`. It queues at most `SUGGEST_MAX_PER_RUN` (5).
+**`via:suggested`** — weekly discovery (`discover`'s Sunday 07:17 UTC run, in triage mode), and
+the only route the harness starts by itself. Three conditions, all required: nothing anybody asked
+for is outstanding — a delivery pull request awaiting review counts — weekly usage is under
+`SUGGEST_MIN_HEADROOM_PCT` (50), and the issue carries `ALLOWLIST_LABEL` (`harness-ok`). That label
+is **the pool**: a maintainer adds it to a brightboost issue, or takes it off, on brightboost
+itself, with no command. Even in the pool, an issue assigned to someone else, claimed by a branch
+or open pull request, or labelled `intern-starter`, `large` or `architecture` is skipped. It
+queues at most `SUGGEST_MAX_PER_RUN` (5) per run.
 
 Be clear about what the green light does and does not gate: the **proposal is written first**, and
 *then* the harness comments on the unassigned issue saying it has a plan, has not started the
 implementation, and will not without a green light. So a suggestion costs one `propose` call before
-anybody is asked. `/harness go` gates the expensive half — the implement run — not the cheap one.
-Ignoring the comment is a complete answer.
+anybody is asked. `/harness go` is the maintainer's yes to the expensive half, but a suggestion is
+built only once the operator has merged its proposal at gate 1, because the plan implement reads is
+the merged file. Ignoring the comment is a complete answer.
 
 **Then, for every route alike**, one model call turns the item into a *work package*: the diagnosis,
 the approach, the exact files it intends to touch, the behaviours it will add, and how a reviewer
@@ -186,6 +190,10 @@ already carries only gives them a way to be wrong.
 ```
 
 Opens an issue in the harness repository, queued, and replies in the thread with a link to it.
+**It only queues.** The plan comes from the next `discover` run — Sunday 07:17 UTC, unless the
+operator dispatches one sooner — and the code from the first run-window `implement` run after the
+proposal is merged. [FOR-MAINTAINERS.md §9](FOR-MAINTAINERS.md#9-how-long-one-request-takes) walks
+through a Wednesday request end to end.
 
 ```
 /harness work https://github.com/Bright-Bots-Initiative/brightboost/issues/633
@@ -348,8 +356,11 @@ One state is not a choice: an item with a delivery pull request open cannot be d
 Means one thing to say and two things to do, and **where the item already is** decides which:
 
 - a **suggestion** waiting for a green light becomes approved. When the queue is empty and the week
-  has budget, the harness may propose work nobody asked for; it comments saying so and waits. `go`
-  is the only thing that releases it — ignoring that comment is a complete answer.
+  has budget, the harness may propose work nobody asked for; it comments saying so and waits.
+  Ignoring that comment is a complete answer. `go` is the maintainer's yes, but it does not replace
+  the operator's merge: until the proposal is merged there is no plan on `main` to build from, and
+  an implement run that picks the item up fails looking for one (D68). Assigning the bot to an
+  issue it has already suggested does nothing further.
 - an item that was **stopped or blocked** picks up where it left off. If code had already been
   written it returns to `stage:ready` on the branch it already has; if not, it goes back to
   `stage:queued`. This is how you undo a `stop`.
@@ -358,7 +369,7 @@ Means one thing to say and two things to do, and **where the item already is** d
 
 **`go` is not a way past gate 1.** On an ordinary proposal it says so and changes nothing: merging
 the proposal pull request is what approves that. The green light above applies only to work the
-harness suggested on its own, which is the case nobody can merge on your behalf.
+harness suggested on its own, and even there the merge is what lets it be built.
 
 Already approved, or already queued, is a no-op that says so. `/harness queue` is the old name.
 
@@ -404,8 +415,11 @@ in total — see [the table below](#three-kill-switches-and-what-each-one-stops)
 /harness go --force
 ```
 
-Starts the work now instead of waiting for the run window (Mon 08:00 → Tue 20:00 UTC). Recorded on
-the item and named in the reply, so "why did this run on a Thursday" has an answer in the issue.
+Exempts the item from the run window (Mon 08:00 → Tue 20:00 UTC). Recorded on the item and in the
+ledger and named in the reply, so "why did this run on a Thursday" has an answer in the issue. The
+exemption is honoured by `implement`'s next run — a gate-1 merge starts one, or the operator
+dispatches it — not by the three-hourly sweep, whatever the reply's "next sweep" says (D68). It
+proposes nothing sooner: a forced `/harness work` still waits for `discover` and for the merge.
 
 **Level 3 only.** Below that the flag is ignored, the command still stands, and the reply says why it
 will wait — the request itself is untouched.
@@ -539,8 +553,8 @@ harness discover --mode audit --lens "accessibility in src/components"
 `triage` reaches the product repository **only** when nothing anybody asked for is outstanding, and
 weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50) — or has never been observed, which is not
 treated as "no headroom". Even then it still requires `ALLOWLIST_LABEL` (`harness-ok`) on the issue
-unless you pass `--ignore-allowlist`, and nothing on the product repository carries that label
-today. Assignment and `/harness work` are the routes that work.
+unless you pass `--ignore-allowlist`: that label is the pool maintainers fill on the product
+repository. At most `SUGGEST_MAX_PER_RUN` (5) are queued per run.
 
 ### Moving one item
 

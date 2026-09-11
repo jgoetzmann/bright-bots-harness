@@ -881,3 +881,20 @@ box is not read. A typed `reject` is level 3. Each page now says so, and says wh
 instead: `/harness revise`, and `/harness stop`, which at level 2 parks even a proposal, since
 `proposed` has a `blocked` edge. COMMANDS' per-repository paragraph now applies only to unvouched
 lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Monday).
+
+**Found while bringing the maintainer page to 2026-09-11, recorded and not fixed:**
+- **`go` on a suggestion does not replace the merge.** It moves an unmerged `via:suggested`
+  proposal to `approved`, but implement reads the work package from `runs/` or from the merged
+  `proposals/<id>-*.md` (D46), and on Actions only the second can exist. The next in-window
+  implement run clones, installs and runs the baseline gates, then raises in `_read_spec` with the
+  item already `implementing`: a red run, repeated after B147's reconciliation, until the operator
+  merges. A sixth member of the `runs/` family. The docs say the merge is what builds a suggestion.
+- **The green-light comment's "Assign me" does nothing** on an issue the harness has already
+  suggested: `discover --mode assigned` skips a reference it already has. `/harness go` works.
+- **`_forced` replies that a forced item "starts on the next sweep".** The sweep's `harness run`
+  honours only the run window and the carry; the dispatcher plan that honours `--force` runs in
+  `implement.yml` (its crons, a gate-1 merge, or a dispatch). COMMANDS says so.
+- **A delivery pull request awaiting review shuts the `harness-ok` pool**, because `shipped` is in
+  `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request. Recorded
+  because while brightboost#868 is open the first labelled batch yields nothing, and a maintainer
+  labelling forty issues will ask why.

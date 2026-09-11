@@ -141,10 +141,12 @@ The other two routes are for when you want a specific thing now, from the Action
 product-repository issue number, required by `directed`), `lens` and `ignore_allowlist`.
 Directed mode queues one named ticket and proposes it in the same run, skipping every triage
 filter — naming a target is you asserting the judgement those filters exist to make. Triage
-ranks whatever is already queued here, and only reaches for the product repository when that
-queue is empty; there it still requires the `harness-ok` label (`ALLOWLIST_LABEL`), which
-nothing carries, so triage on an empty queue finds nothing. That is the filter working, not a
-fault — assignment is the route that replaced it.
+ranks whatever is already queued here, and only reaches for the product repository when nothing
+anybody asked for is outstanding (an open delivery PR counts) and weekly usage is under
+`SUGGEST_MIN_HEADROOM_PCT` (50). There it takes only issues labelled `harness-ok`
+(`ALLOWLIST_LABEL`) — the pool, which maintainers fill or empty by labelling issues on the
+product repository — and queues at most `SUGGEST_MAX_PER_RUN` (5) a run as `via:suggested`. Each
+is proposed in the same run and, like everything else, built only after its proposal is merged.
 
 `implement.yml` takes an `issue` number to run now, bypassing the run window. Every spending
 workflow refuses to start while `.harness/HALT` exists on the default branch.
@@ -183,28 +185,34 @@ subcommands.
 
 ## Current status
 
-**Delivery 4 is merged and the kill switch is off.** The spending workflows run. The environment
-is ready: the nineteen labels exist, the request inbox is
+**As of 2026-09-11: live, the kill switch off, one delivery waiting at gate 2.** The spending
+workflows run. The nineteen labels exist, the request inbox is
 [#19](https://github.com/jgoetzmann/bright-bots-harness/issues/19) and pinned, and
-`.harness/config.json` points at it.
+`.harness/config.json` points at it. To stop everything again: commit a file at `.harness/HALT`.
 
-What has **not** happened is a live run of anything Delivery 4 added.
-[docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) is the order to find that out
-in — eighteen steps, the first six of which cost nothing at all because a pasted link goes through
-directed discovery and makes no model call.
+**It has been all the way through once, and that delivery is still open.** Actions mode at
+`PERMISSION_TIER=2`, queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product
+issue #633) went from directed discovery through a proposal pull request, gate 1, implement,
+package and delivery, and on 2026-09-04 opened
+**[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**
+— the first and so far only pull request the harness has put on the product repository. All
+seven gates were green on the runner. `proposals/4-chore-activities-delete-orphaned-sequenc.md`
+is the file gate 1 merged. It is waiting for a maintainer's review: gate 2 is the only thing
+standing between that branch and `main`, which is the whole point, and nothing about it is
+automatic.
 
-To stop everything again: commit a file at `.harness/HALT`.
+**What has run live since, and what has not.** On the inbox, `ask`, `status` and `go`
+(2026-09-09/10). Never yet: `audit`, `promote`, `split`, a `revise` on a delivery pull request, a
+suggestion drawn from the `harness-ok` pool, and any command from the vouched maintainer account
+(D68, 2026-09-11). [docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) is the
+order to find those out in. A first `revise` on #868 may block on a gate that was already red
+upstream — the `revise` baseline gap under *Known gaps* below — and the right response is to
+report it, not to retry.
 
-**It has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
-queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product issue #633) went
-from directed discovery through a proposal pull request, gate 1, implement, package and
-delivery, and opened **[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**
-— the first pull request the harness has ever put on the product repository. All seven gates
-were green on the runner. `proposals/4-chore-activities-delete-orphaned-sequenc.md` is the
-file gate 1 merged.
-
-Gate 2 is now the only thing standing between that branch and `main`, which is the whole
-point. Nothing about it is automatic and nothing about it will be.
+**The pool.** `harness-ok` now exists on the product repository, and a first batch of about forty
+issues, mostly `pod: build`, is being labelled. Triage draws from it only when nothing anybody
+asked for is outstanding, and a delivery pull request awaiting review counts — so while #868 is
+open, no suggestion is made.
 
 The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
 (tue 20:00) UTC, and `implement.yml`'s crons follow that window. Two things start outside it:
@@ -239,7 +247,9 @@ whole (D52). 40,542 characters of evidence render as 1,157.
 Actions runs: `revise`'s baseline-red lookup, `item.package_path`, `HANDOFF.md`, `sweep`'s
 shared run directory, and `heartbeat.yml`'s ledger fetch. Each is described in `DECISIONS.md`
 under the Delivery 3 acceptance section, with the reason it needs its own durable source
-chosen deliberately rather than a fix in the same change. `HUMAN.md` **overstates what is
+chosen deliberately rather than a fix in the same change. D68 records a sixth: `/harness go` on
+a suggestion whose proposal is not yet merged approves an item that implement has no plan for,
+so a suggestion is built only after the merge. `HUMAN.md` **overstates what is
 left, and regenerating it does not help** — `harness setup --tier 2` reproduces the committed
 file byte for byte. Several of its prerequisites are hardcoded unsatisfied because nothing the
 harness can reach proves them: whether Actions is enabled on the fork, whether a repository

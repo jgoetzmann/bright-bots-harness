@@ -323,23 +323,28 @@ def test_b269_a_malformed_level_line_is_refused_and_recorded(tmp_path):
     assert trusted.level_of("jgoetzmann") == 3, "one bad line does not poison the file"
 
 
-def test_the_association_half_of_the_gate_is_per_repository():
+def test_the_shipped_maintainer_is_heard_by_account_id_not_by_association():
     """`BrightBoost-Tech` is level 2 and deliberately not a collaborator on the harness
-    repository. That is an arrangement, not a misconfiguration: `is_authorised` takes the
-    association GitHub computed for the thread the comment is on, so the same handle is refused
-    here and honoured on the product repository, where it is a member.
+    repository (D30). Until D68 that meant its commands were refused here -- and, because its
+    organisation membership on the product repository is private and GitHub reports it as
+    CONTRIBUTOR there, refused there too. The shipped line now vouches for its account id, so
+    the id decides for it rather than the association.
 
-    Pinned because the obvious "fix" for the doctor warning is to invite them, which would
-    silently widen what they can steer.
+    Pinned because the obvious "fix" for a refused maintainer is to invite them, which is the
+    access D30 exists to refuse.
     """
     trusted = load_trust(SHIPPED_TRUST_PATH)
 
     assert trusted.level_of("brightboost-tech") == 2
+    assert trusted.vouched_id("brightboost-tech") == 193453438
 
-    # On a thread where GitHub reports no relationship: refused, whatever the level says.
-    assert is_authorised("BrightBoost-Tech", "NONE", trusted) is False
-    # On a thread where it is a member: honoured at its level.
-    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted) is True
-    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted, min_level=2) is True
+    # The vouched account: honoured whatever GitHub reports its association as.
+    for association in ("NONE", "CONTRIBUTOR", "MEMBER"):
+        assert is_authorised("BrightBoost-Tech", association, trusted, user_id=193453438) is True
+    # Without the id, or with any other account's, refused -- whatever the association.
+    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted) is False
+    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted, user_id=1) is False
     # And still not the operator.
-    assert is_authorised("BrightBoost-Tech", "MEMBER", trusted, min_level=3) is False
+    assert is_authorised(
+        "BrightBoost-Tech", "NONE", trusted, min_level=3, user_id=193453438
+    ) is False

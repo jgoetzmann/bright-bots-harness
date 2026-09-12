@@ -776,3 +776,377 @@ and human prerequisite 5; in `DELIVERY-2-REVIEW.md`, R3.8 ("inspect the PAT scop
 now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.md`'s summary of
 I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
 `workflow`, and I-15 is the harness's own check.
+
+## D68 / B320–B331 — vouch for an account, not a name
+
+Decided by the operator's delegate; implemented 2026-09-11 on
+`feat/vouched-trust-and-maintainer-docs`. B320–B339 are this branch's numbers.
+
+**The problem.** Nathan — GitHub login `BrightBoost-Tech`, numeric user id **193453438**
+(`GET /users/BrightBoost-Tech`) — maintains `Bright-Bots-Initiative/brightboost` and is level 2 in
+`.harness/trust.txt`. B131 requires a level **and** an `author_association` of OWNER, MEMBER or
+COLLABORATOR, and he had that association nowhere it mattered:
+
+- **Here**, he is deliberately not a collaborator. D30 stands: a write collaborator on a
+  personal-account repository can push a branch whose workflow runs with the Claude OAuth token
+  and the bot PAT in scope. Every comment of his on this repository was read, denied and ignored.
+- **On brightboost**, his organisation membership is private, so GitHub reports him as
+  CONTRIBUTOR: all 65 of his recent comments read that way. He does have push access there
+  (`GET /repos/Bright-Bots-Initiative/brightboost/assignees/BrightBoost-Tech` → 204), but the
+  association does not show it. So his commands there, gate-2 steering on delivery PRs included,
+  were very likely denied too, and revise's review filter kept his review feedback from the model.
+  The trust file's comment said GitHub reports him as a member there, and no read we can make
+  confirms it.
+
+**The decision.** Keep D30, so he still has no access to this repository, and let a trust line
+**vouch** for one exact account:
+
+```
+2 BrightBoost-Tech vouch:193453438
+```
+
+A comment passes the association half of the gate whatever its `author_association`, on every
+surface, when its `user.login` matches the handle **and** its `user.id` equals the vouched id.
+
+This isn't a weakening. The association was guarding a *name*: a login can be renamed away and
+claimed by somebody else, and a per-repository association was what said "this is still the person
+the line meant". An account id is immutable and never reused, so it says the same thing more
+exactly. A vouched handle held by any other account is **refused**, even when that account is an
+OWNER, which is stricter than B131 was.
+
+**What doesn't change:**
+- The level still caps the verbs. A vouched level-2 handle is refused `halt`, `resume` and `reject`
+  with "needs level 3; @BrightBoost-Tech is level 2", and a `--force` from it is dropped with the
+  same explanation.
+- A line without `vouch:` is B131 exactly.
+- `Identity.trust_file_ready()`'s placeholder rule is untouched.
+
+**The rules:**
+- **The token.** It is `vouch:<positive integer>`, at most one per line, and case-insensitive. A
+  token that starts with `vouch` but isn't exactly that refuses the **whole line**: `vouch:`,
+  `vouch:12x`, `vouch=…`, `vouch:0`, two vouches, or a vouch with no handle. The line grants
+  nothing and is recorded in `Trust.malformed`, and doctor names it the way B269 names a bad
+  level. Read as "no vouch", the line would still grant level 2 to anyone GitHub calls a member,
+  which isn't what its author meant either.
+- **A vouched handle's lines must agree (B331).** Two lines vouching for *different* ids, or a
+  vouched line beside a bare line for the same handle, refuse **every** line naming it; they go
+  to `Trust.malformed` and `Trust.conflicted`, and doctor names each as disagreeing about which
+  account the handle is. Merging them the way levels merge would grant what neither line does:
+  `3 x` beside `2 x vouch:1` gave account 1 level 3 with no association, the level from one line
+  and the waiver from the other. The same vouch on several lines is one account and still takes
+  the highest level.
+- **A missing or garbled id.** For a vouched handle, an absent, zero, non-numeric or boolean
+  `user.id` is unknown, and unknown never matches.
+- **One gate.** `trust.comment_authorised(comment, trusted)` reads `user.login`, `user.id` and
+  `author_association` from a REST payload and calls `is_authorised`, which gained a `user_id`
+  keyword. The sweep (`keywords.authorise`), `harness ack` and revise's review filter all go
+  through it. `tests/test_trust_vouch.py` B330 fails the build if any other module reads
+  `author_association` or calls `is_authorised` directly, so the rule can't be applied in one
+  place and forgotten in another.
+- **`ack.yml`** passes `github.event.comment.user.id` to `harness ack --actor-id` through the env
+  block. An ack run with no id, as from the previous workflow, fails closed: it stays silent for a
+  vouched handle.
+- **`harness doctor`** lists every vouch and drops vouched handles from the "no access" warning,
+  since having no access here is the point. When a client is available it checks each id against
+  `GET /users/<login>`. A different id, or a 404 (renamed or deleted), is a **warning** and never a
+  problem: a problem exits 3 and gates every spending workflow (#27), and a stale vouch stops one
+  person's comments, which it is already doing safely. A read that fails (the rate ceiling, the
+  network) says nothing.
+
+**A defect this turned up.** Revise's `_review_feedback` flattened `ctx.trusted` into a frozenset
+of lower-cased handles before filtering. That dropped the levels, which was harmless because a set
+grants level 1 and that is what the filter asks for. It would also have dropped every vouch: this
+was the exact place the rule could be taught to the sweep and forgotten. It passes the `Trust`
+itself now, and B328 checks it through the stage.
+
+**Two limits, recorded here and not fixed:**
+- **D53's "assign the bot" gesture only reaches threads the bot is already in.** `jgoetzmann-bot`
+  can't be assigned on a brightboost issue it hasn't commented on:
+  `GET /repos/Bright-Bots-Initiative/brightboost/assignees/jgoetzmann-bot` → 404, because GitHub
+  assigns only collaborators, organisation members and the thread's own participants.
+- **Plain PR review summaries aren't read by the sweep.** `keywords.sweep` reads issue comments
+  and inline review comments only (`keywords.py`, the `read()` helper in `sweep`), so a `/harness`
+  line typed into a review's summary box is never seen as a command. Revise does read review
+  bodies as feedback, through the same gate.
+
+**What the adversarial review changed.** The mixed-line escalation above (B331) was found in
+review, not in the first cut. So were five places where the maintainer docs promised a gesture a
+vouched maintainer without access cannot make. FOR-MAINTAINERS told him to merge or close the
+gate-1 pull request, to commit `.harness/HALT` "without permission", to assign the bot on any
+issue, to put commands "in a normal review comment", and that `reject` means `stop`. The merge,
+the commit and `halt` are the operator's under D30. Assignment is limited as above. The summary
+box is not read. A typed `reject` is level 3. Each page now says so, and says what he can do
+instead: `/harness revise`, and `/harness stop`, which at level 2 parks even a proposal, since
+`proposed` has a `blocked` edge. COMMANDS' per-repository paragraph now applies only to unvouched
+lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Monday).
+
+**Found while bringing the maintainer page to 2026-09-11, recorded and not fixed:**
+- **`go` on a suggestion does not replace the merge.** It moves an unmerged `via:suggested`
+  proposal to `approved`, but implement reads the work package from `runs/` or from the merged
+  `proposals/<id>-*.md` (D46), and on Actions only the second can exist. The next in-window
+  build clones, installs and runs the baseline gates, then raises in `_read_spec` with the item
+  already `implementing`: a red run, repeated after B147's reconciliation, until the operator
+  merges. That build is not only `implement.yml`'s: `feedback.yml`'s "Reconcile" step runs
+  `harness run` with no `--item`, which inside the window builds **every** approved item in one
+  loop, so the red run recurs on the three-hourly sweep too — and, since the loop catches only
+  usage stops, it ends the loop for the approved items after it. A sixth member of the `runs/`
+  family. After the merge `go` is useless as well: `implement.yml`'s `harness approve` has already
+  approved the item, green light or none. So the docs tell a maintainer not to `go` a suggestion,
+  and give the yes as a plain comment and the no as `/harness stop`.
+- **The green-light comment's "Assign me" does nothing** on an issue the harness has already
+  suggested: `discover --mode assigned` skips a reference it already has. `/harness go` works.
+- **`_forced` replies that a forced item "starts on the next sweep".** The sweep's `harness run`
+  honours only the run window and the carry; the dispatcher plan that honours `--force` runs in
+  `implement.yml` (its crons, a gate-1 merge, or a dispatch). COMMANDS says so.
+- **A delivery pull request awaiting review shuts the `harness-ok` pool**, because `shipped` is in
+  `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request.
+  brightboost#868 does not: its work item (#4) is closed and carries only the legacy
+  `harness:packaged` label, and `list_work_items` filters on the `stage:` label, so the first
+  labelled batch is eligible on the next Sunday run. Recorded, not fixed: `_issues` reads
+  `state=all`, so a *closed* work item left wearing an outstanding `stage:` label would hold the
+  pool shut indefinitely. None does today (searched 2026-09-11).
+
+**What the review of the maintainer page changed (B332).** One defect fixed in code, and the page
+corrected wherever it promised something that does not happen.
+
+- **Triage re-picked issues it already had (B332, fixed).** `_triage_product_repo` skipped
+  assigned, claimed and excluded-label issues, but not an issue that already had a work item: a
+  suggestion still waiting at gate 1, one a maintainer had parked with `stop`, one ended. A
+  suggested item does not hold the pool shut, and its proposal pull request is in this repository,
+  so nothing on brightboost claims the issue. If the ranking picked it again, `_ensure_item`
+  returned the old id, which took one of the five slots, and `discover.yml`'s
+  `harness propose <id>` then raised `IllegalTransition` in `_enter` — a red run and an ops issue,
+  and a maintainer's no undone by the next Sunday's ranking. Triage now reads the store once and
+  skips any issue whose `issue:<n>` ref it already holds, in any state; the product-repository
+  path runs only when nothing is `discovered`, so that is every known issue. Traced, not
+  reproduced live: whether it bit depended on the ranking.
+- **The page's corrections.** A maintainer cannot run a workflow, so "run `feedback` from the
+  Actions tab" became "post any `/harness` command on the inbox", whose run sweeps his
+  notifications too. `go` on a suggestion is harmful before the merge and useless after it, and
+  silence is not a no, since the merge builds a suggestion regardless; the yes is now a plain
+  comment and the no is `/harness stop`. The claim that one item is built per run and the window
+  holds six runs is gone (see the `go` note above). `stage:blocked` and `stage:needs-human` are
+  named as waiting on a person. A `--force` from level 2 still runs the rest of the command. A
+  halted harness still acks on this repository. An inbox answer can wait up to two hours behind a
+  build, because both take the `harness-ledger` lock. Assigning the bot helps only on an issue
+  where it answered without opening an item. "Asking twice is one item" is true only for the same
+  link, or the same words from the same account. USING's latency example matches the cron.
+  README lists all six aliases and all three ways to start outside the window. The command table's
+  dollar column is now relative weight (D66).
+- **Recorded, not fixed: a level-2 `stop` has nowhere to park four stages.** `discovered`,
+  `approved`, `blocked` and `needs-human` have no edge to `blocked`, so `_act_on_command` ends the
+  item (`abandoned`) and says so. A fresh `/harness work` is `discovered` until Sunday, so this is
+  the stop a maintainer is likeliest to make. Asking again with the same link, or the same words
+  from the same account, finds the ended item through `find_by_ref`, which scans closed issues too,
+  so `_GO_DEAD_ENDS`'s "`/harness work` opens a fresh item" holds only for a reworded request. The
+  docs say all of this. Adding `blocked` edges would change D1's state machine, and that change
+  deserves its own decision.
+
+## D69 / B340–B352 — the trust file is the boundary, so one line must work everywhere
+
+Decided by the operator's delegate; implemented 2026-09-12 on `feat/trust-tiers`, stacked on D68.
+The brief was "figure out the trust system — multiple tiers, and only I will be adding people to it
+manually, so that should be good." Read as: **the hand-curated file IS the security boundary**,
+because only the operator can change it and only through a CODEOWNERS-reviewed pull request. Every
+decision below follows from taking that seriously.
+
+**The tiers are right; keep them.** Tabulated from `keywords.VERB_LEVEL`, level 3 is
+`halt`/`resume`/`reject`, level 2 the eight steering verbs, level 1 `ask`/`status`, and level 0 the
+absence of a line. Nothing is added, removed or renumbered. Level 1 looks empty in the shipped file
+but is load-bearing: it is `DEFAULT_LEVEL`, the least-privilege reading of a line that omits its
+level, so a typo falls to asking rather than to steering. Splitting `status` (free) from `ask`
+(spends) into a fourth tier was rejected — it would renumber the file the operator hand-edits,
+which is the one thing that must stay stable across a manual workflow, and would demote the only
+verb the "asker" tier is named for.
+
+What was actually wrong was legibility, in two ways the code contradicted:
+
+- **Level 1 is not free.** `ask` clones the product repository and calls the model
+  (`stages/ask.py`); `status` costs nothing. Both pages that described the tier said "changes no
+  state", which is true, and implied "costs nothing", which is not.
+- **The 2/3 line is partly fictional.** In `discovered`, `approved`, `blocked` and `needs-human` a
+  level-2 `stop` ends the item for good, because none has an edge to `blocked` — the authority
+  `reject` was reserved for (recorded under D68 and unchanged here).
+
+Both are properties to display, not tiers to add. The table is now built by `trust.tier_table()`
+from the verb→level mapping **passed in as a parameter** — `keywords` imports `trust`, so reaching
+back for `VERB_LEVEL` inside `trust.py` would be the import cycle `links._who` already sidesteps by
+hand — and `tests/test_docs_drift.py` checks COMMANDS.md, README.md and `.harness/trust.txt`'s own
+header against it in both directions (B351). The drift had already happened: the trust file said
+level 1 was "`ask` only" and README said "`ask` alone", both wrong since `status` joined it, while
+COMMANDS.md was right precisely because a test read it.
+
+*Deviation from the plan, recorded:* the table was to carry a "spends" column generated from code.
+It does not. That would have meant a new per-verb cost constant in `keywords.py`, and the claim it
+encodes is not derivable from `VERB_LEVEL`, so the table would have asserted something the drift
+test could not actually check — the failure mode this section exists to remove. The table stays a
+pure function of `VERB_LEVEL`; the spending fact is stated in prose next to `ask`'s existing cap.
+
+**The vouched line is now the ordinary way to add anyone.** D68 introduced `vouch:<id>` as the
+workaround for one account. D69 makes it the documented default, and a bare line the special case
+for somebody already invited:
+
+```
+2 their-github-login vouch:their-numeric-account-id
+```
+
+One line, one file, one reviewed PR, and it works on **every** surface — this repository and the
+product repository — with no invitation and no silent denial. The association route is kept exactly
+as B131 defined it for unvouched handles, so an invited collaborator still needs no id.
+
+This is not a weakening, and the direction matters: the association guards a **name**, which can be
+renamed away and claimed by somebody else, and it is granted per-repository and is invisible from
+the commenter's side. An account id is immutable and never reused. A vouched line therefore admits
+one account everywhere and refuses any other account holding that login **even when GitHub calls it
+OWNER** — stricter on identity than what it replaces — while granting no repository access at all,
+so D30 stands untouched. Rejected: inviting every maintainer as a collaborator (breaks D30, since a
+write collaborator on a personal-account repository can push a branch whose workflow runs with the
+Claude token and the bot PAT in scope); dropping the association route (would force an id on people
+for whom the invite already works, and would change B131); and resolving logins to ids at runtime (a
+network read on the hot path of every comment, failing open or closed unpredictably).
+
+**Anything that would grant less than it says is now refused outright.** All five were found by
+probing the shipped parser, not by reading it:
+
+- `2 nathan 193453438` — the id pasted with the keyword left off — parsed to a plain level-2 line
+  with no vouch and nothing in `malformed`. It looked right, vouched for nobody, and granted
+  nothing anywhere he was not already a collaborator. Only tokens beginning `vouch` were ever
+  inspected; **every** token after the handle is now read, and one the gate does not understand
+  refuses the whole line.
+- `2 Jack Goetzmann` silently registered the handle `jack`.
+- `2 nathan@example.com` and `2 nathan,` registered literally and could never match a login —
+  refused for ever, silently. A handle must now be GitHub-login-shaped.
+- `2 <NEW_MAINTAINER>` vanished entirely: no entry in `malformed`, `implicit` or anywhere else, so
+  `doctor` could not name it, while the same line failed `Identity.trust_file_ready()` for a reason
+  nothing connected back to it. Placeholders are now recorded in `Trust.skipped`.
+- `3 jack` beside `1 jack` silently kept level 3, so a line added to **demote** somebody did
+  nothing. The merge is unchanged (B269 pins it); the duplication is now recorded and named.
+
+Each refusal takes the whole line, for D68's reason: read as something smaller, the line still
+grants a level, which is not what its author meant either. Fail-closed is unchanged throughout.
+
+**`harness trust`, which prints and never writes.** `trust line <login> --level N` resolves the
+account id from the public API and prints the exact line on stdout with what it grants on stderr,
+so it can be copied without editing. `trust show` prints the file as the gate reads it: who, at
+what level, by which route, and every entry being refused. Neither writes: `.harness/` is outside
+the write roots on purpose (B143) so the harness cannot change its own trust list, and the review
+is the boundary. Two details are deliberate — `--level` is **required**, because defaulting
+somebody's authority is exactly the silent misgrant this work removes; and a failed id lookup
+prints **no line at all** and exits non-zero, because an unvouched line is precisely the entry that
+gets silently denied, so emitting one after failing to look the account up would manufacture the
+defect the command exists to prevent. It lives in `__main__.py` plus the existing `trust.py`, so
+`SPEC_PACKAGE_FILES` and `D2_PACKAGE_FILES` are untouched; the refusal logic sits in `trust.py`
+because B330 fails the build if any other module decides who is heard.
+
+**A refused trust line now warns instead of stopping the fleet.** It was a `doctor` *problem*,
+which exits 3 — and `doctor` gates discover.yml, feedback.yml and implement.yml under `set -e`. So
+one typo in a hand-edited file stopped everything, which is precisely the failure #27 fixed once
+before, when a stranded-access diagnostic took the fleet down within an hour of go-live. The line
+already grants nothing at the gate, so the fleet-wide stop bought no safety it did not already
+have. The loudness moved to review time, where the operator is standing: the suite fails any pull
+request whose `.harness/trust.txt` carries a refused, skipped or duplicated entry (B350). `doctor`
+also now names placeholders and duplicates, and always says which handles depend on the association
+half — including saying "could not check" out loud at tier 0, where that read needs push access and
+printing nothing at all read as "checked, nobody is stranded".
+
+**A defect this turned up.** `store/__init__.py` loads a whole `Trust` and `store/github.py` then
+did `tuple(trusted)`, discarding the levels. `links._who` falls back to "level 2+" for anything but
+a `Trust`, so every work item and proposal pull request the harness opened showed a number while
+replies — which pass `ctx.trusted` — named the handles. The footer exists so a reader of a public
+thread can see whether their own comment would be honoured without first learning what a level is.
+Invisible in tests because the fakes pass a `Trust`, which is the boundary class of defect CLAUDE.md
+warns about; B352 checks it through the store.
+
+**Recorded, not fixed.** `stages/deliver.py` requests review from every handle in the file,
+including level-1 askers, and a refusal — the normal case for a vouched non-collaborator — is
+swallowed into `ctx.record_decision`, so it is in the run record and never surfaced to the person
+expecting a review request. Pre-existing, documented under D54, and out of scope here.
+
+### D69 adversarial pass — B353–B358
+
+Two independent reviews of the commit above, with "the tests pass" ruled out as evidence (the
+standing practice on every harness PR). Eleven findings, nine distinct; each was re-probed against
+the shipped code before anything was touched, and each turned out to be another way the first cut
+still ended in the one failure D69 exists to remove — a line, or a command, that grants nothing
+while looking finished.
+
+**A login that begins `vouch` is a login (B353).** `parse_trust` refused any handle whose first five
+letters were `vouch`. That is a rule about a substring where every other rule here is about a shape,
+and `vouch`, `vouched`, `vouchio` and `voucherifyio` are all registered GitHub accounts:
+`2 vouched vouch:57787098` granted nothing, and `refusals()` then reported "carries a vouch that is
+not one", blaming the one half of the line that was perfect. `harness trust line vouched --level 2`
+printed that refused line with every appearance of success. The branch is **deleted**, not narrowed:
+the case it existed for — `2 vouch:193453438`, a vouch with no handle in front of it — contains a
+colon and is refused by `_HANDLE_RE`, the rule that knows what a login is. *Rejected:* replacing it
+with a shape test on the handle slot. A second rule about the handle is exactly how the first one
+came to be wrong, and `_HANDLE_RE` already decides that question. `refusals()` now asks whether the
+handle is a login **before** it looks for the word `vouch` anywhere in the line, so the half that is
+broken is the half that is named.
+
+**The level column is ASCII digits, or it is not a level (B354).** `str.isdigit()` is true for digits
+that are not ASCII, and the parser hardened the handle column to ASCII while leaving the column
+beside it as it was. Two live defects, both probed: an Arabic-Indic three satisfied `int()` and
+granted **operator** level with nothing recorded as malformed — from a character `_HANDLE_RE` would
+have refused outright — and a superscript two raised `ValueError`, which `load_trust` did not catch,
+so it escaped into `build_context`: every command, and `doctor`, which gates discover.yml,
+feedback.yml and implement.yml under `set -e`. A hand-edited file could therefore stop the fleet by
+crashing it, which is worse than the *problem*-to-*warning* move above was meant to make impossible.
+Fixed with `token.isascii() and token.isdigit()`, and `load_trust` now returns an empty `Trust`
+rather than raising, whatever the parser does. *Rejected:* the suggested `_DIGITS_RE.fullmatch`,
+which caps at twenty digits — a 21-digit first token would then fall through to the handle path,
+where it is login-shaped, and be granted level 1 in silence. The rule to add was ASCII-ness, and
+only that.
+
+**A vouch names an account that can author a comment, or it names nobody (B355).** `trust line`
+accepted whatever `GET /users/<login>` returned and never read `type`. An organisation resolves to a
+perfectly good id, and the id a vouch is checked against is `comment.user.id` — the account that
+typed — so such a line parses, reads as vouched in `trust show`, passes `doctor`'s id check, and
+admits nobody anywhere for ever. `dependabot` (id 27347476) and `vouch` (45102943) are both
+Organization accounts; the command would have printed a line for either. It now refuses, and
+`doctor` names a non-person vouch already committed. Only a type GitHub actually returned is refused:
+an absent `type` is unknown, and unknown is not evidence — a payload change must not stop the
+operator adding anybody. *Rejected as unreachable:* the same finding's concern about Bot accounts. A
+bot's login carries `[bot]`, which `_HANDLE_RE` refuses, so no bot can be in the file at all.
+
+**The helper runs where the file is edited (B356).** `trust show` went through `_load`, and
+`trust line` built a whole `Context` — store, governor, ledger, clone manager, write guard — to make
+one unauthenticated `GET /users/<login>`. So the two commands written to make the manual step easy
+both failed in a fresh checkout (`error: no .env file at .env`), and the lookup created `harness.db`
+on a page that says it writes nothing. `gh.public_reader()` is the fix: an unauthenticated
+`GitHubReadOnly` over a store that neither caches nor meters, because the trailing-hour meter exists
+to keep the *fleet* inside the shared ceiling and lives in the database the fleet shares — GitHub's
+own 403 still arrives as `RateCeilingReached`. `trust show` falls back to `.harness/trust.txt` and
+says so when there is no configuration. The transport stays inside `gh.py`, which I-2′ requires.
+*Rejected:* keeping the `Context` and falling back to a public read when it cannot be built. Two
+paths, and the one that runs on a provisioned machine is not the one that matters. The B347 test
+that pinned "a startup failure is not a lookup failure" is replaced rather than kept: there is no
+startup left to fail, and the tests now assert the stronger property — every `trust` test fails if a
+`Context` is built at all.
+
+**It never prints a line the gate refuses (B357).** The B353 defect was visible from the outside the
+whole time: the command printed a line and the parser refused it. `trust line` now parses its own
+output and prints nothing unless the result is exactly the grant it promised — the one assertion
+that would have caught B353 without anybody thinking of the word `vouch`.
+
+**One definition of an unfinished line (B358).** The trust file's header warns that a placeholder
+fails `Identity.trust_file_ready()` and takes the real handles down with it; the check tested for two
+literal spellings of the placeholder this repository shipped with, so `2 <NEW_MAINTAINER>` passed it
+while being refused by the gate. It now reads `Trust.skipped` — the parser's definition, which is why
+that field was added — and counts accepted handles rather than non-comment lines, since a refused
+line is not a handle. The two legacy spellings stay: `NATHAN_HANDLE` without its brackets is not a
+placeholder by the parser's definition.
+
+**Three documentation drifts, and a page nobody updated.** README said `harness trust line` "writes"
+the line for you — it prints; that it *cannot* write is B143 and the whole design — and called level
+1 "trusted", a word that in this codebase means "in the trust file at all", which is levels 1 to 3,
+while the code, the CLI and every other page call it "asker". B351's drift tests now check each
+level's **name** against `trust.LEVEL_NAMES` on all three pages as well as its verbs, and the trust
+file's header pattern is built from `LEVEL_NAMES`, so a tier renamed in code and not in the file
+fails the build. docs/OPERATIONS.md — the page most likely to be open while adding somebody — still
+led with the association gate and mentioned neither new command; it now leads with the vouched line
+and lists both. COMMANDS.md's "Neither form writes anything" was true of `.harness/` and false of the
+database, and is now true as written.
+
+Nothing here changes the gate: the level cap per verb, fail-closed on a malformed line, B131 for
+unvouched handles, and "no new access to the repository for anybody" are all exactly as D69 left
+them. What changed is that four more kinds of line, and two commands, stopped failing quietly.

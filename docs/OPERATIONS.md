@@ -361,13 +361,16 @@ This is by design (B134), and it will look like a bug the first time.
   `feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency is up to `NOTIFY_POLL_HOURS`
   (three hours) on a weekday, and until Monday for a comment left on Saturday.
 
-So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on by about 17:41 Friday;
-at 20:00 Friday, by about 09:41 Monday. Review comments from trusted handles are picked up
-the same way and become `revise` items on the same schedule.
+So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on at about 15:41 Friday;
+at 20:00 Friday, at about 21:41 Friday; at 22:00 Friday, not until about 00:41 Monday — the
+51-hour worst case. A `/harness` line in an inline review comment is read the same way. A review
+is never a command by itself: its text reaches the model as feedback only once a
+`/harness revise` arrives, and a command typed in a review's summary box is not read at all (D68).
 
 To skip the wait: Actions → `feedback.yml` → Run workflow, or from your machine
-`harness sweep` followed by `harness dispatch`. The sweep spends nothing (B141); anything
-that needs a model call becomes an item the dispatcher starts on its own cadence.
+`harness sweep` followed by `harness dispatch`. Reading the notifications spends nothing (B141),
+but acting on what they carry can: `ask`, `audit`, `split`, `revise`, `rebase` and a re-proposal
+call the model from inside `harness sweep`, through the same budget and usage stops as any stage.
 
 A command is acted on once (B135). Editing a comment does not re-trigger it; post a new one.
 
@@ -434,10 +437,26 @@ which is the point.
 | Un-block an item | relabel it `stage:ready` (or `stage:queued` for a fresh proposal) |
 | Wake a `stage:needs-human` item | comment `/harness revise` from a trusted account; nothing else touches it |
 | Create the twelve labels | `harness init --labels` (idempotent; a no-op message without a token) |
+| Add somebody to the trust file | `harness trust line <login> --level 2`, paste the line it prints into `.harness/trust.txt`, open a PR |
+| See who is trusted, and what is being refused | `harness trust show` |
 
-Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries
-`author_association` OWNER, MEMBER, or COLLABORATOR — both, or it is silently ignored
-(B131, B132). Adding a handle is a reviewed PR to `.harness/trust.txt`.
+Every command is honoured only from a handle in `.harness/trust.txt`, at a level the verb reaches,
+**and** confirmed by GitHub — both halves, or it is read, denied and ignored with no reply (B131,
+B132). The ordinary way to add somebody is one vouched line (D69):
+
+```
+2 their-github-login vouch:their-numeric-account-id
+```
+
+`harness trust line <login> --level 2` prints exactly that, account id and all; `harness trust show`
+prints the file as the gate reads it, including every line being refused. Neither writes anything,
+and neither needs a working `.env` — you paste the line into `.harness/trust.txt` and open a pull
+request, and that review is the whole security boundary. The vouch pins the line to one account, so
+it works on **every** repository with no invitation and gives no repository access to anybody (D30).
+
+A line **without** a vouch is the other half of B131: it needs GitHub to report the commenter as
+OWNER, MEMBER or COLLABORATOR on the repository the comment is on — in practice an invitation. That
+route still works and needs no id, so use it for somebody who is already a collaborator here.
 
 ## 12. Where the ledger actually lives (D28)
 

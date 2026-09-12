@@ -559,3 +559,158 @@ def test_b311_every_scope_instruction_names_exactly_what_doctor_expects(doc, sta
     named = set(re.findall(r"`([a-z_:]+)`", passage)) & CLASSIC_SCOPES
 
     assert named == set(_carried()), f"{doc} names {sorted(named)} for the token's scopes"
+
+
+# --------------------------------------------------------------------------------------
+# D69 / B351 — the tier table is a function of keywords.VERB_LEVEL, wherever it is written
+# --------------------------------------------------------------------------------------
+#
+# The drift had already happened and only the tested page escaped it: `.harness/trust.txt` said
+# level 1 was "`ask` only" and README said "`ask` alone", while VERB_LEVEL gives level 1 both
+# `ask` and `status`. COMMANDS.md was right precisely because a test read it. The trust file's
+# own header is the first thing anybody reads before editing it, so it is the worst page of the
+# three to leave unchecked.
+
+
+def _tiers() -> dict[int, set[str]]:
+    """What each level may give, from the gate's own table."""
+    from harness.keywords import VERB_LEVEL
+    from harness.trust import tier_table
+
+    return {tier.level: set(tier.verbs) for tier in tier_table(VERB_LEVEL)}
+
+
+def _verbs_in(text: str, *, backticked: bool) -> set[str]:
+    """The verbs a passage names, ignoring every word that is not one."""
+    from harness.keywords import VERB_LEVEL
+
+    found = re.findall(r"`([^`]+)`", text) if backticked else re.findall(r"[a-z]+", text)
+    return {word for word in found if word in VERB_LEVEL}
+
+
+def _commands_md_level_rows() -> dict[int, str]:
+    rows = {
+        int(m.group(1)): m.group(3)
+        for m in re.finditer(r"^\|\s*\*\*(\d)\*\*\s*\|([^|]*)\|([^|]*)\|", _commands_md(), re.M)
+    }
+    assert set(rows) >= {1, 2, 3}, f"COMMANDS.md's level table is missing rows: {sorted(rows)}"
+    return rows
+
+
+def _commands_md_level_names() -> dict[int, str]:
+    return {
+        int(m.group(1)): m.group(2).strip()
+        for m in re.finditer(r"^\|\s*\*\*(\d)\*\*\s*\|([^|]*)\|([^|]*)\|", _commands_md(), re.M)
+    }
+
+
+def _trust_file_level_rows() -> dict[int, tuple[str, str]]:
+    """``(name, verbs)`` per level, from the header an operator reads while editing the file.
+
+    The names in the pattern come from `trust.LEVEL_NAMES` rather than being spelled here, so a
+    tier renamed in code and not in the file stops matching and the assertion below says so.
+    """
+    from harness.trust import LEVEL_NAMES
+
+    names = "|".join(re.escape(LEVEL_NAMES[level]) for level in (1, 2, 3))
+    rows: dict[int, tuple[str, str]] = {}
+    for line in _read(".harness/trust.txt").splitlines():
+        match = re.match(rf"^#\s+([123])\s+({names})\s+(.*)$", line)
+        if match:
+            rows[int(match.group(1))] = (match.group(2), match.group(3))
+    assert set(rows) == {1, 2, 3}, (
+        ".harness/trust.txt's level table is missing rows, or calls a level something "
+        f"`trust.LEVEL_NAMES` does not: {rows}"
+    )
+    return rows
+
+
+def _readme_level_spans() -> dict[int, str]:
+    text = _read("README.md")
+    start = text.index("Who may give which is set by level in")
+    paragraph = text[start:text.index("\n\n", start)]
+    marks = list(re.finditer(r"level (\d)", paragraph))
+    spans = {
+        int(mark.group(1)): paragraph[
+            mark.end():(marks[i + 1].start() if i + 1 < len(marks) else len(paragraph))
+        ]
+        for i, mark in enumerate(marks)
+    }
+    assert set(spans) >= {1, 2, 3}, f"README names no per-level verbs: {sorted(spans)}"
+    return spans
+
+
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_b351_the_commands_md_level_table_names_exactly_its_levels_verbs(level):
+    """Both directions. A verb missing from its row is a capability nobody is told they have;
+    a verb in the wrong row sends somebody to type a command that will be refused."""
+    named = _verbs_in(_commands_md_level_rows()[level], backticked=True)
+
+    assert named == _tiers()[level], (
+        f"COMMANDS.md's level-{level} row names {sorted(named)}; VERB_LEVEL says "
+        f"{sorted(_tiers()[level])}"
+    )
+
+
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_b351_the_trust_file_header_names_exactly_its_levels_verbs(level):
+    """The header an operator reads while adding somebody. It said level 1 was `ask` only."""
+    named = _verbs_in(_trust_file_level_rows()[level][1], backticked=False)
+
+    assert named == _tiers()[level], (
+        f".harness/trust.txt's level-{level} line names {sorted(named)}; VERB_LEVEL says "
+        f"{sorted(_tiers()[level])}"
+    )
+
+
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_b351_readme_names_exactly_each_levels_verbs(level):
+    """README said level 1 was "`ask` alone", which has been wrong since `status` joined it."""
+    named = _verbs_in(_readme_level_spans()[level], backticked=True)
+
+    assert named == _tiers()[level], (
+        f"README's level-{level} clause names {sorted(named)}; VERB_LEVEL says "
+        f"{sorted(_tiers()[level])}"
+    )
+
+
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_b351_every_page_calls_a_level_by_the_name_the_code_gives_it(level):
+    """A level's NAME is as much of the table as its verbs, and comes from the same source:
+    `harness trust show` and `harness doctor` both render `trust.LEVEL_NAMES`. README called
+    level 1 "trusted" -- a word that in this codebase means "in the trust file at all", which
+    is levels 1 to 3 -- while the code, the CLI and every other page called it "asker"."""
+    from harness.trust import LEVEL_NAMES
+
+    name = LEVEL_NAMES[level]
+
+    assert _commands_md_level_names()[level] == name
+    assert name in _readme_level_spans()[level], f"README does not call level {level} {name!r}"
+    assert _trust_file_level_rows()[level][0] == name
+
+
+def test_b351_the_matcher_would_notice_the_drift_it_was_written_for():
+    """A drift guard whose matcher never fires passes for ever (B105's did, until D67). These
+    are the sentences this change corrected, and a row that has lost a verb."""
+    from harness.trust import LEVEL_NAMES
+
+    assert _verbs_in("level 1 (trusted) `ask` alone", backticked=True) == {"ask"}
+    assert _verbs_in("1  asker       ask only", backticked=False) == {"ask"}
+    assert _verbs_in("`ask` and `status`", backticked=True) == {"ask", "status"}
+    assert _tiers()[1] == {"ask", "status"}, "level 1 is both verbs, which is the whole point"
+    # README's own words for level 1, before and after. The first is what the name check has
+    # to reject, or it is a check that cannot fail.
+    assert LEVEL_NAMES[1] not in " (trusted) `ask` and `status`, level 0"
+    assert LEVEL_NAMES[1] in " (asker) `ask` and `status`, level 0"
+
+
+def test_b351_every_verb_lands_in_exactly_one_tier():
+    """The table cannot quietly lose one: `harness trust show` and three documents are all
+    generated from it, so a verb absent here is a verb absent from every page at once."""
+    from harness.keywords import VERB_LEVEL
+
+    tiers = _tiers()
+    placed = [verb for verbs in tiers.values() for verb in verbs]
+
+    assert sorted(placed) == sorted(VERB_LEVEL), "a verb is in no tier, or in two"
+    assert tiers[0] == set(), "level 0 is the absence of a line and gives no verb"

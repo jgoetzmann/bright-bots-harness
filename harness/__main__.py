@@ -35,7 +35,7 @@ from harness.errors import (
     RateLimited,
     RepoHalted,
 )
-from harness.gh import mark_machine_written
+from harness.gh import mark_machine_written, public_reader
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness import priority
@@ -68,6 +68,17 @@ LOG = logging.getLogger("harness")
 WHICH = shutil.which
 RUN = subprocess.run
 SLEEP = time.sleep
+#: D69: the unauthenticated client `harness trust line` resolves an account id with. One public
+#: GET, so it is built here and not from a `Context`: the command has to run in whatever
+#: checkout the operator is editing the trust file in, with no `.env` and no database.
+PUBLIC_READER = public_reader
+
+#: The `TRUST_FILE` default from `.env.example`, for reading that file with no configuration.
+DEFAULT_TRUST_FILE = Path(".harness") / "trust.txt"
+
+#: `user.type` for a person. Only a person authors a comment, so only a person's account id can
+#: ever equal the `comment.user.id` a vouch is checked against (D69).
+ACCOUNT_TYPE_PERSON = "User"
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -229,8 +240,34 @@ def build_parser() -> argparse.ArgumentParser:
     ack.add_argument("--body-file", required=True, help="file holding the comment body")
     ack.add_argument("--actor", required=True, help="the commenter's login")
     ack.add_argument("--association", default="", help="GitHub author_association")
+    ack.add_argument(
+        "--actor-id", default="", help="the commenter's numeric GitHub user id (D68)"
+    )
     ack.add_argument("--repo", default="", help="repository the comment is on")
     ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
+
+    # D69: the manual step made hard to get wrong. It prints; it never writes `.harness/`,
+    # which is outside the write roots on purpose (B143) so the harness cannot change its own
+    # trust list. What it produces is text a human commits through a reviewed pull request.
+    trust_cmd = sub.add_parser(
+        "trust", help="print the trust.txt line for a login, or the current file interpreted"
+    )
+    trust_sub = trust_cmd.add_subparsers(dest="trust_action", metavar="ACTION")
+    trust_line = trust_sub.add_parser("line", help="the exact line to paste, for one login")
+    trust_line.add_argument("login", help="the person's GitHub login")
+    trust_line.add_argument(
+        "--level",
+        required=True,
+        metavar="N",
+        help="1 asker, 2 maintainer, 3 operator (the name works too); required on purpose",
+    )
+    trust_line.add_argument(
+        "--no-vouch",
+        action="store_true",
+        dest="no_vouch",
+        help="the association route, for somebody already invited to this repository",
+    )
+    trust_sub.add_parser("show", help="the trust file as the gate reads it")
 
     sub.add_parser(
         "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
@@ -694,7 +731,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if repo_halt_present:
         problems.append(f".harness/HALT present under {root}")
     pin_state = _doctor_pin(root, problems)
-    trust_path = config.trust_file if config is not None else root / ".harness" / "trust.txt"
+    trust_path = config.trust_file if config is not None else root / DEFAULT_TRUST_FILE
     trusted = load_trust(Path(trust_path))
 
     payload = {
@@ -751,20 +788,65 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     lines.append(f"  trust file: {len(trusted)} handle(s) ({trust_path})")
     if by_level:
         lines.append(f"    {by_level}")
-    for bad in getattr(trusted, "malformed", ()):
-        # B269: a line that looks like a level and is not one grants nothing, and says so.
-        problems.append(f"trust file line is not a level and was refused: {bad!r}")
+    for bad, what in trust_mod.refusals(trusted):
+        # B269/D68/D69: every line that grants nothing is named, with the reason of its own
+        # that says which fix it needs -- a level to correct, a placeholder to finish, a handle
+        # that is not a login, a token the gate does not read, or two lines to make one.
+        #
+        # A WARNING, not a problem. The refusal itself is unchanged: the parser grants nothing
+        # either way, so fail-closed is untouched. But a problem exits 3, and `doctor` gates
+        # discover.yml, feedback.yml and implement.yml under `set -e`, so one typo in a
+        # hand-edited file stopped the entire fleet -- the failure #27 already fixed once, for
+        # the stranded-access diagnostic. The loudness moved to review time instead, where the
+        # operator is standing: the suite fails the pull request that would ship such a line.
+        warnings.append(f"trust file line {what} and was refused: {bad!r}")
+    for repeated in getattr(trusted, "duplicated", ()):
+        warnings.append(
+            f"@{repeated} is named by more than one line in the trust file. The highest level "
+            "wins, so a line added to LOWER it does nothing at all -- change its one line "
+            "instead."
+        )
     if getattr(trusted, "implicit", ()):  # B269: a level-less handle is level 1, never silently
         named = ", ".join(f"@{h}" for h in trusted.implicit)
         lines.append(
             f"    no level given for {named}; read as level {trust_mod.DEFAULT_LEVEL} "
             f"({trust_mod.LEVEL_NAMES[trust_mod.DEFAULT_LEVEL]})"
         )
+    vouched = dict(getattr(trusted, "vouched", {}) or {})
+    if vouched:
+        named = ", ".join(f"@{h} = account {i}" for h, i in sorted(vouched.items()))
+        lines.append(f"    vouched for one account (D68; association not required): {named}")
+    # D69: which handles still depend on the association half, said on every run rather than
+    # only when something is wrong. It is the half nobody can see -- their comment is read,
+    # denied and ignored, which looks exactly like the harness being asleep -- so the report
+    # written to make it visible must not go quiet about who it applies to.
+    association_route = sorted(h for h in trusted.levels if h not in vouched)
+    payload["trust"]["association_route"] = association_route
+    if association_route:
+        named = ", ".join(f"@{h}" for h in association_route)
+        lines.append(
+            f"    heard only where GitHub reports them OWNER/MEMBER/COLLABORATOR: {named}"
+        )
     # B131's other half. A trust-file line alone grants nothing: GitHub must ALSO report the
     # commenter as OWNER, MEMBER or COLLABORATOR. Nothing used to say so, and the failure is
     # silent from the commenter's side -- their comment is read, denied, and ignored, which
     # looks exactly like the harness being asleep.
-    stranded = _doctor_trust_access(config, args, trusted, payload)
+    #
+    # A vouched handle (D68) does not need that half, so "no access" is not a finding about it.
+    stranded = tuple(
+        h for h in _doctor_trust_access(config, args, trusted, payload) if h.lower() not in vouched
+    )
+    if "without_access" in payload["trust"]:
+        payload["trust"]["without_access"] = list(stranded)
+    if association_route and not payload["trust"].get("access_checked"):
+        # D69: "I could not look" said out loud. The collaborators endpoint needs push access,
+        # so tier 0 can never answer -- and printing nothing at all read as "checked, nobody is
+        # stranded", which is the opposite of what was known.
+        lines.append(
+            "    could not check who has access here (that read needs push access), so the "
+            "association half above is unverified"
+        )
+    warnings.extend(_doctor_vouches(config, args, trusted, payload))
     if stranded:
         named = ", ".join(f"@{h}" for h in stranded)
         # A WARNING, not a problem, and the difference is why there are two lists.
@@ -915,6 +997,68 @@ def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False
             "them; drop them at the next rotation (docs/OPERATIONS.md)"
         )
     return warnings
+
+
+def _doctor_vouches(config, args, trusted, payload) -> list[str]:
+    """D68: each vouched id against the account that holds the login today. Warnings only.
+
+    The vouch binds an account, not a name, so a login that has changed hands is already safe:
+    the new holder's id does not match and every comment of theirs is refused. What that leaves
+    is a person who renamed and is now silently refused under their new login -- which is worth
+    saying, and is never worth stopping the fleet over (#27): it stops one person's comments,
+    and everybody else's keep working. "I could not look" (tier 0's rate ceiling, a network
+    error) is not a finding and says nothing.
+    """
+    vouched = dict(getattr(trusted, "vouched", {}) or {})
+    report = {h: {"id": i, "checked": False} for h, i in sorted(vouched.items())}
+    payload["trust"]["vouched"] = report
+    if not vouched or config is None:
+        return []
+    import urllib.parse
+
+    try:
+        gh = _context(config, args, run_id="doctor").gh
+    except Exception:  # pragma: no cover - a check that cannot run must not break doctor
+        return []
+    found: list[str] = []
+    for handle, pinned in sorted(vouched.items()):
+        try:
+            data = gh.get(f"/users/{urllib.parse.quote(handle, safe='')}")
+        except GitHubError as exc:
+            if "returned 404 " not in str(exc):
+                continue
+            report[handle].update(checked=True, actual=None)
+            found.append(
+                f"trust.txt vouches for @{handle} (account {pinned}), but GitHub has no account "
+                "by that login now -- renamed or deleted. Nothing is admitted under that line "
+                "until it names the account's current login (D68)."
+            )
+            continue
+        except Exception:  # rate ceiling, network: not a finding
+            continue
+        actual = trust_mod.parse_user_id(data.get("id")) if isinstance(data, dict) else None
+        kind = str((data.get("type") if isinstance(data, dict) else "") or "").strip()
+        if actual is None:
+            continue
+        report[handle].update(checked=True, actual=actual, type=kind or None)
+        if actual != pinned:
+            found.append(
+                f"trust.txt vouches for @{handle} as account {pinned}, but @{handle} is account "
+                f"{actual} today. The vouch binds the account, not the name, so whoever holds "
+                f"@{handle} now is refused. If the person renamed, put their new login on the "
+                "line; if the login changed hands, remove it (D68)."
+            )
+        elif kind and kind != ACCOUNT_TYPE_PERSON:
+            # D69: the id is right and the line still admits nobody. `harness trust line` now
+            # refuses to print such a line, but a line committed before that check -- or by
+            # hand -- would otherwise read as healthy everywhere: it parses, `trust show` calls
+            # it vouched, and the id matches the account it names.
+            found.append(
+                f"trust.txt vouches for @{handle} as account {pinned}, which GitHub reports as "
+                f"a {kind} account rather than a person. Only a person authors a comment, so "
+                "nothing is ever admitted under that line and nobody is told (D69)."
+            )
+    return found
 
 
 def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:
@@ -1912,7 +2056,7 @@ def _act_on_command(ctx, config, cmd) -> str:
         elif "blocked" in legal:
             target = "blocked"
         elif "abandoned" in legal:
-            # Nowhere to park it: `discovered` and `proposed` have no `blocked` edge. Ending it
+            # Nowhere to park it: `discovered` has no `blocked` edge (`proposed` does). Ending it
             # is the only thing left, so say that it was terminal rather than pretending.
             target = "abandoned"
         else:
@@ -2156,10 +2300,16 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if machine and actor.lower() == str(machine).lstrip("@").lower():
         return _say()
 
-    # The same gate `keywords.authorise` applies, in the same order: a level in the trust file,
-    # AND an association GitHub vouches for. Acknowledging a comment the sweep will then ignore
-    # is the worst of both -- it tells an untrusted commenter they were heard, in public.
-    if not trust_mod.is_authorised(actor, str(args.association or ""), trusted):
+    # The same gate `keywords.authorise` applies -- literally the same call, over the same
+    # comment shape the sweep reads from the REST API: a level in the trust file, AND either an
+    # association GitHub vouches for or the one account id the trust file vouches for (D68).
+    # Acknowledging a comment the sweep will then ignore is the worst of both -- it tells an
+    # untrusted commenter they were heard, in public.
+    as_comment = {
+        "user": {"login": actor, "id": getattr(args, "actor_id", "")},
+        "author_association": str(args.association or ""),
+    }
+    if not trust_mod.comment_authorised(as_comment, trusted):
         return _say()
 
     # Only the verbs this actor may actually give. The sweep applies `VERB_LEVEL` per verb after
@@ -2586,6 +2736,251 @@ def cmd_local_loop(args: argparse.Namespace) -> int:
             _write_heartbeat(work)
 
 
+def _trust_level(value: object) -> int:
+    """``2``, or ``maintainer``. Raises rather than defaulting: see `cmd_trust`."""
+    text = str(value or "").strip().lower()
+    # ASCII digits only: `str.isdigit()` is true for a superscript two, which then raises out of
+    # `int()` as an unhandled ValueError rather than as the sentence below.
+    if text.isascii() and text.isdigit() and 1 <= int(text) <= trust_mod.MAX_LEVEL:
+        return int(text)
+    for level, name in trust_mod.LEVEL_NAMES.items():
+        if level and name == text:
+            return int(level)
+    named = ", ".join(
+        f"{lvl} {trust_mod.LEVEL_NAMES[lvl]}" for lvl in range(1, trust_mod.MAX_LEVEL + 1)
+    )
+    raise HarnessError(f"--level must be one of: {named}; got {value!r}")
+
+
+def _trust_grants(level: int) -> str:
+    """What `level` may actually give, read off the gate's own table."""
+    verbs = [
+        verb
+        for tier in trust_mod.tier_table(keywords.VERB_LEVEL)
+        if tier.level and tier.level <= level
+        for verb in tier.verbs
+    ]
+    return ", ".join(f"/harness {verb}" for verb in sorted(verbs)) or "nothing"
+
+
+def _gate_accepts(line: str, handle: str, level: int, account: int | None = None) -> bool:
+    """True when `parse_trust` reads `line` back as exactly the grant it was printed to make.
+
+    The command's whole value is that its output can be pasted unedited, so it checks that
+    output against the parser rather than trusting the two to agree. They did not: a login
+    beginning `vouch` was refused by a rule about the handle's first five letters, and this
+    printed that refused line with every appearance of success.
+    """
+    trusted = trust_mod.parse_trust(line)
+    return trusted.level_of(handle) == level and trusted.vouched_id(handle) == account
+
+
+def _refuse_own_line(line: str) -> int:
+    """Print nothing to stdout when the gate would not honour what we were about to print."""
+    print(
+        f"refusing to print {line!r}: the gate does not read it back as the grant it was meant "
+        "to be, and a line that looks finished and admits nobody is worse than no line at all. "
+        "That is a harness bug rather than anything you typed; please report it.",
+        file=sys.stderr,
+    )
+    return EXIT_ERROR
+
+
+def _trust_line(args: argparse.Namespace) -> int:
+    """The one line to paste, on stdout; what it means, on stderr.
+
+    Split that way so the output can be copied without editing, which is the whole point: the
+    line has to be exactly right, and retyping an account id is how it stops being.
+
+    It reads no configuration and opens no database. The lookup is a single unauthenticated
+    GET, and binding it to a whole `Context` -- store, governor, ledger, write guard -- meant
+    the command written to make adding somebody easy could not run in a checkout nobody had
+    provisioned, and created `harness.db` on a page that says it writes nothing.
+    """
+    raw = str(getattr(args, "login", "") or "").strip().lstrip("@")
+    level = _trust_level(getattr(args, "level", ""))
+    if not trust_mod.handle_shaped(raw):
+        print(
+            f"{raw!r} is not a GitHub login (letters, digits and hyphens), so no line was "
+            "printed: a handle of that shape can never match a commenter and would be refused "
+            "for ever, silently.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    name = trust_mod.LEVEL_NAMES.get(level, str(level))
+    if getattr(args, "no_vouch", False):
+        bare = f"{level} {raw}"
+        if not _gate_accepts(bare, raw, level):
+            return _refuse_own_line(bare)
+        print(bare)
+        print(
+            f"Level {level} ({name}): {_trust_grants(level)}.\n"
+            f"This is the association route: it works only where GitHub reports @{raw} as "
+            "OWNER, MEMBER or COLLABORATOR, which in practice means inviting them to the "
+            "repository they comment on. If they must not have access here (D30), drop "
+            "--no-vouch and this will vouch for their account id instead.",
+            file=sys.stderr,
+        )
+        return EXIT_OK
+
+    import urllib.parse
+
+    refusal = (
+        "No line printed. An unvouched line is exactly the entry that gets silently denied, "
+        "so printing one after a failure would hand you a line that looks finished and grants "
+        "nothing off this repository. Try again, or use --no-vouch deliberately if they are a "
+        "collaborator here."
+    )
+    try:
+        # No Config, no Store, no Context. Building one to make this read meant every way a
+        # machine can be unprovisioned became a way to fail to add somebody: in a fresh
+        # checkout the command answered "could not start up to look @x up: no .env file at
+        # .env" and never asked GitHub anything at all.
+        data = PUBLIC_READER().get(f"/users/{urllib.parse.quote(raw, safe='')}")
+    except Exception as exc:  # noqa: BLE001 - any failure to read means the same thing
+        print(f"could not resolve @{raw}'s account id: {exc}", file=sys.stderr)
+        print(refusal, file=sys.stderr)
+        return EXIT_ERROR
+
+    account = trust_mod.parse_user_id(data.get("id")) if isinstance(data, dict) else None
+    if account is None:
+        print(
+            f"GitHub returned no usable account id for @{raw}, so no line was printed.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    login = str((data.get("login") if isinstance(data, dict) else "") or raw)
+    kind = str((data.get("type") if isinstance(data, dict) else "") or "").strip()
+    if kind and kind != ACCOUNT_TYPE_PERSON:
+        # An organisation resolves to a perfectly good account id, and a vouch for it can never
+        # match: the id a vouch is checked against is `comment.user.id`, the account that
+        # TYPED, and an organisation types nothing. Such a line parses, reads as healthy in
+        # `trust show`, and passes doctor's id check -- while admitting nobody, anywhere, for
+        # ever. That is the silent denial this command exists to prevent, manufactured by the
+        # command itself. Only a type GitHub actually returned is refused; an absent one is
+        # unknown, and unknown is not evidence of anything.
+        print(
+            f"GitHub says @{login} is not a person: that login is a {kind} account, so no "
+            f"line was printed. Only a person authors a comment, so a vouch for account "
+            f"{account} could never match one and the line would be refused everywhere, "
+            "silently. If you meant a person, check the login.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    vouched = f"{level} {login} vouch:{account}"
+    if not _gate_accepts(vouched, login, level, account):
+        return _refuse_own_line(vouched)
+    print(vouched)
+    print(
+        f"Level {level} ({name}): {_trust_grants(level)}.\n"
+        f"The vouch pins this line to account {account} — @{login} as GitHub knows them "
+        "today. That account is heard on every repository whatever its association, and any "
+        "other account holding this login is refused, so it needs no invitation and gets no "
+        "access to this repository.\n"
+        "Paste it into .harness/trust.txt and open a pull request: the file is "
+        "CODEOWNERS-protected, and the harness cannot write it (B143). The next sweep reads "
+        "it fresh — no restart, no secret.",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def _trust_show(args: argparse.Namespace) -> int:
+    """The trust file as the gate reads it: who, at what level, by which route, and what is
+    being refused without anybody being told.
+
+    It reads one local text file, so it asks for no more than that: with no usable `.env` it
+    falls back to the documented default path and says so, rather than exiting with a
+    complaint about configuration. The moment somebody wants this report is while editing that
+    file, in whatever checkout it happens to be in front of them.
+    """
+    note = ""
+    try:
+        path = Path(_load(args).trust_file)
+    except Exception as exc:  # noqa: BLE001 - one text file must not need a whole configuration
+        path = _repo_root(args) / DEFAULT_TRUST_FILE
+        note = f"no configuration was read ({exc}), so this is the default path"
+    trusted = load_trust(path)
+    entries = trust_mod.describe(trusted)
+    refused = trust_mod.refusals(trusted)
+    table = trust_mod.tier_table(keywords.VERB_LEVEL)
+
+    payload = {
+        "path": str(path),
+        "note": note or None,
+        "handles": len(trusted),
+        "entries": [
+            {
+                "handle": e.handle,
+                "level": e.level,
+                "level_name": e.level_name,
+                "route": e.route,
+                "vouched_id": e.vouched_id,
+            }
+            for e in entries
+        ],
+        "refused": [{"line": line, "why": why} for line, why in refused],
+        "duplicated": list(trusted.duplicated),
+        "tiers": [
+            {"level": t.level, "name": t.name, "verbs": list(t.verbs)} for t in table
+        ],
+    }
+
+    lines = [f"{path} — {len(trusted)} handle(s)"]
+    if note:
+        lines.append(f"  ({note})")
+    for entry in entries:
+        if entry.route == "vouch":
+            how = f"vouched for account {entry.vouched_id}; heard on every repository"
+        else:
+            how = (
+                "heard only where GitHub reports them OWNER, MEMBER or COLLABORATOR "
+                "(the association half — invisible from their side)"
+            )
+        lines.append(f"  {entry.level} {entry.level_name:<10} @{entry.handle} — {how}")
+    if not entries:
+        lines.append("  (nobody: every /harness command is read, denied and ignored)")
+    for handle in trusted.duplicated:
+        lines.append(
+            f"  ! @{handle} is named by more than one line; the highest level wins, so a line "
+            "added to lower it does nothing"
+        )
+    if refused:
+        lines.append("")
+        lines.append("refused — these grant nothing, and nobody is told:")
+        for line, why in refused:
+            lines.append(f"  ! {line!r} {why}")
+    lines.append("")
+    lines.append("what each level may give:")
+    for tier in table:
+        verbs = ", ".join(f"/harness {v}" for v in tier.verbs) or "nothing"
+        lines.append(f"  {tier.level} {tier.name:<10} {verbs}")
+    lines.append(
+        "  (level 0 is the absence of a line: the comment is read, denied and ignored)"
+    )
+
+    _emit(payload, "\n".join(lines), args)
+    return EXIT_OK
+
+
+def cmd_trust(args: argparse.Namespace) -> int:
+    """D69: turn a login into the exact line to commit, or read the current file back.
+
+    It never writes. `.harness/` is deliberately outside the write roots (B143) so the harness
+    cannot change its own trust list; the security boundary is that only the operator can, and
+    only through a reviewed pull request. This just makes the line hard to get wrong.
+
+    `--level` is required rather than defaulted, which is the one place worth costing a
+    keystroke: defaulting somebody's authority is exactly the silent misgrant the rest of this
+    work exists to remove.
+    """
+    if (getattr(args, "trust_action", "") or "show") == "line":
+        return _trust_line(args)
+    return _trust_show(args)
+
+
 COMMANDS = {
     "init": cmd_init,
     "doctor": cmd_doctor,
@@ -2605,6 +3000,7 @@ COMMANDS = {
     "decompose": cmd_decompose,
     "sweep": cmd_sweep,
     "ack": cmd_ack,
+    "trust": cmd_trust,
     "ledger": cmd_ledger,
     "relabel": cmd_relabel,
     "sync-fork": cmd_sync_fork,

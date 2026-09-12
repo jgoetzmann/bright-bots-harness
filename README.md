@@ -54,8 +54,9 @@ and a pinned gate sequence.
   `implement.yml` fails before spending and the container refuses to start.
 - **Commands come from a list you control.** A `/harness` command is honoured only from a
   handle in `.harness/trust.txt` whose `author_association` is OWNER, MEMBER or COLLABORATOR —
-  both, never either alone. Anyone else's comment is silently ignored and its body is never
-  even parsed.
+  both, never either alone — or whose line vouches for the commenter's exact GitHub account
+  id, which stands in for the association (D68). Anyone else's comment is silently ignored and
+  its body is never even parsed.
 
 It will not push to the product repository, file an issue there, publish a change under
 `.github/` anywhere, move the fork's default branch except to fast-forward it from upstream,
@@ -91,12 +92,14 @@ line. **Several may go in one comment, one per line.** These twelve are the whol
 | `halt` · `resume` | Anywhere | Stops the harness spending anything at all, and lifts it again |
 
 Six other words are understood, each meaning the verb it became: `fix` → `revise`, `reject` → `stop`,
-`queue` → `go`, `usage` → `status`.
+`queue` → `go`, `usage` → `status`, `ledger` → `status`, `help` → `status`.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the
-operator) everything, level 2 (maintainers) everything that queues or steers work, level 1
-(trusted) `ask` alone, level 0 nothing — a level-0 comment body is never even parsed. A refusal is
-answered rather than silent, naming the level the verb needed.
+operator) adds `halt`, `resume` and `reject`, level 2 (maintainers) `audit`, `go`, `promote`,
+`rebase`, `revise`, `split`, `stop` and `work`, level 1 (asker) `ask` and `status`, level 0
+nothing — a level-0 comment body is never even parsed. A refusal is
+answered rather than silent, naming the level the verb needed. Adding somebody is one reviewed
+line in that file, which `harness trust line` prints for you.
 
 Append `--force` to start something now rather than at the next run window. Level 3 only, and it
 lifts **the calendar and nothing else**: the kill switch, both usage stops, every USD cap and both
@@ -110,7 +113,8 @@ comment left on Saturday. To skip the wait, run `feedback.yml` from the Actions 
 
 ## Giving it work
 
-**Comment on the inbox issue, or assign the bot.** Two gestures, either is enough.
+**Comment on the inbox issue.** That is the gesture; assigning the bot is a second one, with a
+narrow reach.
 
 `/harness work make the activity cards keyboard reachable` on the pinned inbox issue opens a work
 item and replies in-thread with a link to it. A pasted product-repository issue link does the same
@@ -119,9 +123,13 @@ inbox is polled rather than waited for, because a notification only arrives on a
 is already subscribed to.
 
 **Or assign `@jgoetzmann-bot` to an issue on the product repository.** That is the whole gesture
-(D53): `feedback.yml` sweeps for assigned issues every three hours on a weekday, opens a work
-item for each one, and leaves alone any it has already queued. No label to invent, no Actions
-tab, no model call — which issues are assigned is a fact, not a judgement.
+(D53), with one limit: GitHub offers the account as an assignee only on an issue it has already
+commented on (D68), and nearly every such issue already has a work item, which the sweep leaves
+alone — so in practice it helps only where the bot answered without opening one, such as after an
+`ask`. Otherwise the inbox, or `@jgoetzmann-bot /harness work` on the issue itself, is the route.
+`feedback.yml` sweeps for assigned issues every three hours on a
+weekday, opens a work item for each one, and leaves alone any it has already queued. No label to
+invent, no Actions tab, no model call — which issues are assigned is a fact, not a judgement.
 
 The sweep only queues. The proposal comes from the next `discover` run, which ranks the queue
 and proposes every item in it — so an assigned issue becomes a proposal on the Sunday cron
@@ -138,10 +146,13 @@ The other two routes are for when you want a specific thing now, from the Action
 product-repository issue number, required by `directed`), `lens` and `ignore_allowlist`.
 Directed mode queues one named ticket and proposes it in the same run, skipping every triage
 filter — naming a target is you asserting the judgement those filters exist to make. Triage
-ranks whatever is already queued here, and only reaches for the product repository when that
-queue is empty; there it still requires the `harness-ok` label (`ALLOWLIST_LABEL`), which
-nothing carries, so triage on an empty queue finds nothing. That is the filter working, not a
-fault — assignment is the route that replaced it.
+ranks whatever is already queued here, and only reaches for the product repository when nothing
+anybody asked for is outstanding (an open delivery PR counts) and weekly usage is under
+`SUGGEST_MIN_HEADROOM_PCT` (50). There it takes only issues labelled `harness-ok`
+(`ALLOWLIST_LABEL`) — the pool, which maintainers fill or empty by labelling issues on the
+product repository — never one that has already had a work item (B332), and at most
+`SUGGEST_MAX_PER_RUN` (5) a run, as `via:suggested`. Each is proposed in the same run and, like
+everything else, built only after its proposal is merged.
 
 `implement.yml` takes an `issue` number to run now, bypassing the run window. Every spending
 workflow refuses to start while `.harness/HALT` exists on the default branch.
@@ -180,34 +191,41 @@ subcommands.
 
 ## Current status
 
-**Delivery 4 is merged and the kill switch is off.** The spending workflows run. The environment
-is ready: the nineteen labels exist, the request inbox is
+**As of 2026-09-11: live, the kill switch off, one delivery waiting at gate 2.** The spending
+workflows run. The nineteen labels exist, the request inbox is
 [#19](https://github.com/jgoetzmann/bright-bots-harness/issues/19) and pinned, and
-`.harness/config.json` points at it.
+`.harness/config.json` points at it. To stop everything again: commit a file at `.harness/HALT`.
 
-What has **not** happened is a live run of anything Delivery 4 added.
-[docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) is the order to find that out
-in — eighteen steps, the first six of which cost nothing at all because a pasted link goes through
-directed discovery and makes no model call.
+**It has been all the way through once, and that delivery is still open.** Actions mode at
+`PERMISSION_TIER=2`, queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product
+issue #633) went from directed discovery through a proposal pull request, gate 1, implement,
+package and delivery, and on 2026-09-04 opened
+**[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**
+— the first and so far only pull request the harness has put on the product repository. All
+seven gates were green on the runner. `proposals/4-chore-activities-delete-orphaned-sequenc.md`
+is the file gate 1 merged. It is waiting for a maintainer's review: gate 2 is the only thing
+standing between that branch and `main`, which is the whole point, and nothing about it is
+automatic.
 
-To stop everything again: commit a file at `.harness/HALT`.
+**What has run live since, and what has not.** On the inbox, `ask`, `status` and `go`
+(2026-09-09/10). Never yet: `audit`, `promote`, `split`, a `revise` on a delivery pull request, a
+suggestion drawn from the `harness-ok` pool, and any command from the vouched maintainer account
+(D68, 2026-09-11). [docs/delivery/LIVE-TRIAL-PLAN.md](docs/delivery/LIVE-TRIAL-PLAN.md) is the
+order to find those out in. A first `revise` on #868 may block on a gate that was already red
+upstream — the `revise` baseline gap under *Known gaps* below — and the right response is to
+report it, not to retry.
 
-**It has been all the way through once.** Actions mode at `PERMISSION_TIER=2`,
-queue in GitHub issues, ledger on the `harness-state` branch. Item 4 (product issue #633) went
-from directed discovery through a proposal pull request, gate 1, implement, package and
-delivery, and opened **[`Bright-Bots-Initiative/brightboost#868`](https://github.com/Bright-Bots-Initiative/brightboost/pull/868)**
-— the first pull request the harness has ever put on the product repository. All seven gates
-were green on the runner. `proposals/4-chore-activities-delete-orphaned-sequenc.md` is the
-file gate 1 merged.
-
-Gate 2 is now the only thing standing between that branch and `main`, which is the whole
-point. Nothing about it is automatic and nothing about it will be.
+**The pool.** `harness-ok` now exists on the product repository, and a first batch of about forty
+issues, mostly `pod: build`, is being labelled. Triage draws from it only when nothing anybody
+asked for is outstanding, and a delivery pull request awaiting review counts. #868 does not hold
+it shut: its work item is closed and predates the `stage:` labels.
 
 The dispatcher plans no new item outside `RUN_WINDOW_START` (mon 08:00) to `RUN_WINDOW_END`
-(tue 20:00) UTC, and `implement.yml`'s crons follow that window. Two things start outside it:
+(tue 20:00) UTC, and `implement.yml`'s crons follow that window. Three things start outside it:
 `harness run --item N`, which is what a `workflow_dispatch` with an explicit issue number
-invokes, and an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway
-instead. Neither bypasses the usage stops. `discover.yml` is deliberately not window-gated —
+invokes; an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway instead; and
+an item forced with `--force` (level 3), which `implement.yml`'s next run starts — a gate-1 merge,
+the Tue 20:23 cron, or a dispatch. None of them bypasses the usage stops. `discover.yml` is deliberately not window-gated —
 one triage call is cheap — and stops only on a halt, a rate limit, the reserve, or a usage
 stop.
 
@@ -236,7 +254,9 @@ whole (D52). 40,542 characters of evidence render as 1,157.
 Actions runs: `revise`'s baseline-red lookup, `item.package_path`, `HANDOFF.md`, `sweep`'s
 shared run directory, and `heartbeat.yml`'s ledger fetch. Each is described in `DECISIONS.md`
 under the Delivery 3 acceptance section, with the reason it needs its own durable source
-chosen deliberately rather than a fix in the same change. `HUMAN.md` **overstates what is
+chosen deliberately rather than a fix in the same change. D68 records a sixth: `/harness go` on
+a suggestion whose proposal is not yet merged approves an item that implement has no plan for,
+so a suggestion is built only after the merge. `HUMAN.md` **overstates what is
 left, and regenerating it does not help** — `harness setup --tier 2` reproduces the committed
 file byte for byte. Several of its prerequisites are hardcoded unsatisfied because nothing the
 harness can reach proves them: whether Actions is enabled on the fork, whether a repository

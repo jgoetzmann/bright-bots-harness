@@ -1,44 +1,67 @@
-# .harness/trust.txt — who may command the harness, and how much (B269/D60).
+# .harness/trust.txt — who may command the harness, and how much (B269/D60, D69).
 #
-# Format: `<level> <handle>`, one per line. '#' starts a comment. Case-insensitive.
-# A handle with no level is read as level 1 and `harness doctor` names it — least privilege
-# on ambiguity, loudly, because a typo here must never silently grant power.
+# TO ADD SOMEBODY, ONE LINE. It works on every repository, needs no invitation, and gives
+# nobody any access to anything:
 #
-#   3  operator    everything, including `reject`, the one verb that ends a work item
-#   2  maintainer  create and steer: work, queue, audit, promote, go, revise, fix, rebase,
-#                  split, stop
-#   1  asker       `ask` only; changes no state
+#     2 their-github-login vouch:their-numeric-account-id
+#
+# `harness trust line <login> --level 2` prints that line for you, account id and all. Paste it
+# below and open a pull request — this file is CODEOWNERS-protected, and the harness cannot
+# write it (B143), so a reviewed PR is the only way in and is the whole security boundary. The
+# next sweep reads the file fresh: no restart, no secret, nothing to redeploy.
+#
+# The id is the `id` field of `GET https://api.github.com/users/<login>`. It pins the line to
+# ONE account: that account is heard wherever it comments, whatever GitHub reports about it,
+# and any OTHER account holding the same login is refused (D68). It must be a PERSON: an
+# organisation has an account id too and never authors a comment, so vouching for one admits
+# nobody at all. `harness trust line` refuses to print such a line and `harness doctor` names
+# one already here.
+#
+# Format: `<level> <handle>`, optionally followed by `vouch:<id>`. One per line. '#' starts a
+# comment. Case-insensitive.
+#
+# What each level may give. This table is checked against `keywords.VERB_LEVEL` by
+# `tests/test_docs_drift.py`, so it cannot drift from what the gate enforces:
+#
+#   3  operator    halt, resume, reject — and everything below
+#   2  maintainer  audit, go, promote, rebase, revise, split, stop, work
+#   1  asker       ask, status
 #   0  everyone else — the absence of a line. The comment is read, denied, and ignored.
 #
-# The level is only half the gate: GitHub must also report the commenter as OWNER, MEMBER or
-# COLLABORATOR on the repository the comment is on (B131). Neither half suffices alone.
+# Level 1 is not "free": `ask` reads the product repository and spends a model call (bounded by
+# ASK_CAP_USD); `status` costs nothing. Level 2 is not merely "can't halt": in the four stages
+# with nowhere to park an item, its `stop` ends that item for good. docs/COMMANDS.md has both.
 #
-# Changing this file requires a reviewed PR (see .github/CODEOWNERS).
+# WITHOUT a vouch, a line still needs GitHub to report the commenter as OWNER, MEMBER or
+# COLLABORATOR on the repository the comment is on (B131) — in practice, an invitation. That
+# route still works and needs no id, so use it for somebody who is already a collaborator. It
+# is per-repository and invisible from the commenter's side, which is why the vouched form
+# above is the one to reach for.
+#
+# A line that would grant nothing is never quietly read as something smaller. The WHOLE line is
+# refused, and `harness doctor` names it, when:
+#   - the level is not 1, 2 or 3;
+#   - the handle is not a GitHub login — letters, digits and hyphens only, so no email
+#     addresses, no trailing commas, no two-word names;
+#   - anything follows the handle except one well-formed `vouch:<id>`. In particular a bare
+#     account id with the keyword left off looks right, reads as a plain line, and vouches for
+#     nobody;
+#   - two lines naming one handle disagree about which account it is (D68).
+#
+# `harness trust show` prints this file exactly as the gate reads it, including every entry
+# that is being refused and every handle that still depends on the association half.
+#
+# Do not park a fill-me-in name here. ANY `<...>` placeholder is skipped (doctor names it), and
+# `Identity.trust_file_ready()` fails the WHOLE file while one is present, taking the real
+# handles down with it — it reads the same parser this gate does, so the two agree about what
+# an unfinished line is. Add the line when you have the handle.
 3 jgoetzmann
 
-# BrightBoost-Tech is level 2 and is deliberately NOT a collaborator here.
-#
-# The association half of the gate is per-repository, so this is not a mistake and does not need
-# fixing: its commands are ignored on THIS repository (the inbox, proposal pull requests, work
-# items) and work on `Bright-Bots-Initiative/brightboost`, where GitHub reports it as a member --
-# `fix`, `rebase`, `stop` and `ask` on product issues and delivery pull requests. That is the
-# intended split: it steers work on the product repository without operating the harness itself.
-#
-# `harness doctor` names it as a warning for exactly this reason, and a warning does not stop the
-# harness. Do not invite it here to silence that line.
-2 BrightBoost-Tech
-
-# TO ADD A MAINTAINER, TWO THINGS. Both, or their comments are read, denied and ignored:
-#
-#   1. add one line here: the digit 2, a space, then their GitHub handle; and
-#   2. invite them to THIS repository, so GitHub reports them as a collaborator.
-#
-# The second is the half people forget, and it fails silently from their side -- a denied
-# comment looks exactly like the harness being asleep. `harness doctor` names anyone listed
-# here who has no access, which is the only way to see it without asking them to test it.
-# Nothing else is needed -- no restart, no secret. The next sweep reads the file fresh.
-#
-# Do not park a fill-me-in name here first. `Identity.trust_file_ready()` refuses the WHOLE
-# file when a placeholder token survives anywhere in it, comments included, so a half-filled
-# line does not sit harmlessly: it fails the tier check in `harness doctor` and takes the two
-# real handles down with it. Add the line when you have the handle.
+# Nathan. Level 2, vouched for account 193453438, and deliberately NOT a collaborator here:
+# D30 — a write collaborator on a personal-account repository can push a branch whose workflow
+# runs with the Claude token and the bot PAT in scope. On `Bright-Bots-Initiative/brightboost`
+# his organisation membership is private, so GitHub reports him as CONTRIBUTOR there; without
+# the vouch he was refused on both repositories. The vouch is instead of repository access, not
+# as well as it: do not invite this account. `harness doctor` checks the id against GitHub and
+# warns if this login is held by another account today.
+2 BrightBoost-Tech vouch:193453438

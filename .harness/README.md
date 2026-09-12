@@ -9,7 +9,7 @@ refused by `redact.allowed_roots()` before any I/O.
 
 | File | Purpose | Written by |
 | --- | --- | --- |
-| `trust.txt` | GitHub handles whose `/harness …` keyword commands are honoured. One per line, `#` comments, case-insensitive. A handle here is necessary but not sufficient: the commenter's `author_association` must also be `OWNER`, `MEMBER` or `COLLABORATOR` (B131). | a human, via PR |
+| `trust.txt` | GitHub handles whose `/harness …` keyword commands are honoured, and how much: `<level> <handle> [vouch:<id>]` per line, `#` comments, case-insensitive. A handle here is necessary but not sufficient — GitHub must also confirm who is typing, either by the account id the line vouches for or by an `author_association` of `OWNER`, `MEMBER` or `COLLABORATOR` (B131, D68). The vouched form is the ordinary one (D69): it admits that one account on every repository whatever its association, refuses any other account holding the login, grants no repository access, and is still capped by its level. Anything that would grant less than it says — a bad level, a handle that is not a GitHub login, a malformed vouch, a stray token, two lines disagreeing about an account — refuses the whole line and is named by `harness doctor`. `harness trust line <login> --level 2` prints the line to paste; `harness trust show` reads the file back as the gate sees it. | a human, via PR |
 | `config.json` | Operational knobs only (P12, B112). Exactly these keys, upper-snake: `WEEKLY_CAP_USD`, `PER_CALL_CAP_USD`, `RESERVE_PCT`, `MAX_CONCURRENT_ITEMS`, `MAX_REVISE_CYCLES`, `NOTIFY_POLL_HOURS`, `MAX_SUBISSUES`, `TRACKING_ISSUE`, `FORK_REPO`, `UPSTREAM_REPO`, `TRUST_FILE`, `WEEKLY_USAGE_STOP_PCT`, `SESSION_USAGE_STOP_PCT`, `OVERRUN_PCT`, `RUN_WINDOW_START`, `RUN_WINDOW_END`. A value here overrides the same key in `.env`; any other key is a startup error naming it. | a human, via PR |
 | `HALT` | The kill switch for Actions mode (B149/B150). If this file exists on the default branch, every spending workflow logs `halted by .harness/HALT` and exits 0 as its **first** step — before checkout, before `harness doctor`, before the dispatcher. Creating it is a one-line commit that works from a phone. Delete it to resume. | a human, via commit |
 | `PIN` | sha256 over the pinned result definition (`harness/gates.py`, `harness/packager.py`, `harness/redact.py`, every file under `prompts/`). Checked by `python -m harness.verify_pin --check` in the container entrypoint and in `selftest`. | the orchestrator, `python -m harness.verify_pin --write` |
@@ -69,5 +69,7 @@ so the run fails at `harness doctor` naming the key (A30).
   `<NATHAN_HANDLE>` placeholder it shipped with is gone. `Identity.trust_file_ready()` is what
   reads that: it wants the file present, at least two handles, and no placeholder left. Adding
   or removing a handle is a reviewed PR, and `tests/test_trust.py` pins the shipped file.
+  `BrightBoost-Tech` is vouched (`vouch:193453438`) instead of being a collaborator here (D30,
+  D68); `harness doctor` lists every vouch and warns if the login now resolves to another id.
 - The harness never merges, approves or dismisses anything (I-12). Nothing in this directory can
   change that.

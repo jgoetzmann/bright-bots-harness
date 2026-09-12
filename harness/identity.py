@@ -22,6 +22,7 @@ from harness.errors import ConfigError, GitHubError, RateCeilingReached, TierVio
 from harness.gh import GitHubReadOnly
 from harness.redact import write_redacted
 from harness.store.sqlite import LABELS, STATES
+from harness.trust import parse_trust
 
 HANDLE = "brightboost-harness"
 KEY_NAME = TOKEN_KEY_NAME
@@ -291,7 +292,20 @@ class Identity:
         return tuple(h for h in handles if h.lower() not in allowed)
 
     def trust_file_ready(self) -> bool:
-        """The trust file exists, carries no placeholder, and names at least two handles."""
+        """The trust file exists, carries no unfinished line, and names at least two handles.
+
+        "Unfinished" is :attr:`Trust.skipped` -- *any* ``<...>`` placeholder, which is what the
+        trust file's own header and D69 both promise. It used to be the two literal spellings
+        below and nothing else, so `2 <NEW_MAINTAINER>` passed this check while being refused
+        by the gate, and the operator was warned about a consequence that would not happen.
+        The parser now has the one definition of a line that grants nothing, so this reads it
+        instead of keeping a second, narrower idea of the same thing. Both spellings stay:
+        `NATHAN_HANDLE` without its brackets is not a placeholder by that definition.
+
+        Counting accepted handles rather than non-comment lines is the same move -- a malformed
+        line is not a handle, and calling the file ready on the strength of one is how the
+        setup checklist reported done for a file that admitted one person.
+        """
         path = getattr(self.config, "trust_file", None)
         if not path:
             return False
@@ -301,10 +315,10 @@ class Identity:
             return False
         if TRUST_PLACEHOLDER in text or "NATHAN_HANDLE" in text:
             return False
-        handles = [
-            line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
-        ]
-        return len(handles) >= 2
+        trusted = parse_trust(text)
+        if trusted.skipped:
+            return False
+        return len(trusted) >= 2
 
     def budget_experiment_recorded(self) -> bool:
         root = getattr(self.config, "repo_root", None)

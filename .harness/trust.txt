@@ -12,7 +12,10 @@
 #
 # The id is the `id` field of `GET https://api.github.com/users/<login>`. It pins the line to
 # ONE account: that account is heard wherever it comments, whatever GitHub reports about it,
-# and any OTHER account holding the same login is refused (D68).
+# and any OTHER account holding the same login is refused (D68). It must be a PERSON: an
+# organisation has an account id too and never authors a comment, so vouching for one admits
+# nobody at all. `harness trust line` refuses to print such a line and `harness doctor` names
+# one already here.
 #
 # Format: `<level> <handle>`, optionally followed by `vouch:<id>`. One per line. '#' starts a
 # comment. Case-insensitive.
@@ -48,9 +51,10 @@
 # `harness trust show` prints this file exactly as the gate reads it, including every entry
 # that is being refused and every handle that still depends on the association half.
 #
-# Do not park a fill-me-in name here. A `<...>` placeholder is skipped (doctor names it), and
+# Do not park a fill-me-in name here. ANY `<...>` placeholder is skipped (doctor names it), and
 # `Identity.trust_file_ready()` fails the WHOLE file while one is present, taking the real
-# handles down with it. Add the line when you have the handle.
+# handles down with it — it reads the same parser this gate does, so the two agree about what
+# an unfinished line is. Add the line when you have the handle.
 3 jgoetzmann
 
 # Nathan. Level 2, vouched for account 193453438, and deliberately NOT a collaborator here:

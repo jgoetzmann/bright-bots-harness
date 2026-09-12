@@ -597,13 +597,31 @@ def _commands_md_level_rows() -> dict[int, str]:
     return rows
 
 
-def _trust_file_level_rows() -> dict[int, str]:
-    rows: dict[int, str] = {}
+def _commands_md_level_names() -> dict[int, str]:
+    return {
+        int(m.group(1)): m.group(2).strip()
+        for m in re.finditer(r"^\|\s*\*\*(\d)\*\*\s*\|([^|]*)\|([^|]*)\|", _commands_md(), re.M)
+    }
+
+
+def _trust_file_level_rows() -> dict[int, tuple[str, str]]:
+    """``(name, verbs)`` per level, from the header an operator reads while editing the file.
+
+    The names in the pattern come from `trust.LEVEL_NAMES` rather than being spelled here, so a
+    tier renamed in code and not in the file stops matching and the assertion below says so.
+    """
+    from harness.trust import LEVEL_NAMES
+
+    names = "|".join(re.escape(LEVEL_NAMES[level]) for level in (1, 2, 3))
+    rows: dict[int, tuple[str, str]] = {}
     for line in _read(".harness/trust.txt").splitlines():
-        match = re.match(r"^#\s+([123])\s+(?:operator|maintainer|asker)\s+(.*)$", line)
+        match = re.match(rf"^#\s+([123])\s+({names})\s+(.*)$", line)
         if match:
-            rows[int(match.group(1))] = match.group(2)
-    assert set(rows) == {1, 2, 3}, f".harness/trust.txt's level table is missing rows: {rows}"
+            rows[int(match.group(1))] = (match.group(2), match.group(3))
+    assert set(rows) == {1, 2, 3}, (
+        ".harness/trust.txt's level table is missing rows, or calls a level something "
+        f"`trust.LEVEL_NAMES` does not: {rows}"
+    )
     return rows
 
 
@@ -637,7 +655,7 @@ def test_b351_the_commands_md_level_table_names_exactly_its_levels_verbs(level):
 @pytest.mark.parametrize("level", [1, 2, 3])
 def test_b351_the_trust_file_header_names_exactly_its_levels_verbs(level):
     """The header an operator reads while adding somebody. It said level 1 was `ask` only."""
-    named = _verbs_in(_trust_file_level_rows()[level], backticked=False)
+    named = _verbs_in(_trust_file_level_rows()[level][1], backticked=False)
 
     assert named == _tiers()[level], (
         f".harness/trust.txt's level-{level} line names {sorted(named)}; VERB_LEVEL says "
@@ -656,13 +674,34 @@ def test_b351_readme_names_exactly_each_levels_verbs(level):
     )
 
 
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_b351_every_page_calls_a_level_by_the_name_the_code_gives_it(level):
+    """A level's NAME is as much of the table as its verbs, and comes from the same source:
+    `harness trust show` and `harness doctor` both render `trust.LEVEL_NAMES`. README called
+    level 1 "trusted" -- a word that in this codebase means "in the trust file at all", which
+    is levels 1 to 3 -- while the code, the CLI and every other page called it "asker"."""
+    from harness.trust import LEVEL_NAMES
+
+    name = LEVEL_NAMES[level]
+
+    assert _commands_md_level_names()[level] == name
+    assert name in _readme_level_spans()[level], f"README does not call level {level} {name!r}"
+    assert _trust_file_level_rows()[level][0] == name
+
+
 def test_b351_the_matcher_would_notice_the_drift_it_was_written_for():
     """A drift guard whose matcher never fires passes for ever (B105's did, until D67). These
-    are the two sentences this change corrected, and a row that has lost a verb."""
+    are the sentences this change corrected, and a row that has lost a verb."""
+    from harness.trust import LEVEL_NAMES
+
     assert _verbs_in("level 1 (trusted) `ask` alone", backticked=True) == {"ask"}
     assert _verbs_in("1  asker       ask only", backticked=False) == {"ask"}
     assert _verbs_in("`ask` and `status`", backticked=True) == {"ask", "status"}
     assert _tiers()[1] == {"ask", "status"}, "level 1 is both verbs, which is the whole point"
+    # README's own words for level 1, before and after. The first is what the name check has
+    # to reject, or it is a check that cannot fail.
+    assert LEVEL_NAMES[1] not in " (trusted) `ask` and `status`, level 0"
+    assert LEVEL_NAMES[1] in " (asker) `ask` and `status`, level 0"
 
 
 def test_b351_every_verb_lands_in_exactly_one_tier():

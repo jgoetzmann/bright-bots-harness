@@ -499,7 +499,11 @@ def test_B329_doctor_lists_the_vouch_and_says_nothing_more_when_the_id_matches(
     assert f"vouched for one account (D68; association not required): @brightboost-tech = " \
            f"account {NATHAN_ID}" in out
     assert payload["trust"]["vouched"] == {
-        "brightboost-tech": {"id": NATHAN_ID, "checked": True, "actual": NATHAN_ID}
+        # D69 added `type`: an account that is not a person can never author a comment, so a
+        # vouch for one admits nobody, and nothing else about the entry would say so.
+        "brightboost-tech": {
+            "id": NATHAN_ID, "checked": True, "actual": NATHAN_ID, "type": "User"
+        }
     }
     assert not [w for w in payload["warnings"] if "vouch" in w]
 

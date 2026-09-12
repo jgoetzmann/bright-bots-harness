@@ -44,6 +44,25 @@ def normalise_handle(handle: str) -> str:
     return handle.strip().lstrip("@").lower()
 
 
+def _is_level_token(token: str) -> bool:
+    """True when `token` is an attempt at the level column: ASCII decimal digits, nothing else.
+
+    `str.isdigit()` alone is also true for digits that are not ASCII, and both kinds were
+    defects when probed against the shipped parser. An Arabic-Indic three satisfied ``int()``
+    and granted OPERATOR level with nothing recorded as malformed -- from a character the
+    handle rule beside it would have refused outright. A superscript two raised ValueError,
+    which ``load_trust`` did not catch, so it escaped into ``build_context`` and every command
+    and workflow built on one. Neither can be a level, so neither is read as one: the line
+    falls through to the handle path and is refused and named there, like any other.
+
+    ASCII-ness is the whole added rule. A long run of digits is still an attempt at a level,
+    and still refused as out of range: narrowing this to "at most N digits" would send a
+    21-digit first token to the handle path, where it is login-shaped and would be granted
+    :data:`DEFAULT_LEVEL` in silence.
+    """
+    return token.isascii() and token.isdigit()
+
+
 def parse_user_id(value: object) -> int | None:
     """A GitHub numeric user id, or None when `value` is not one.
 
@@ -175,7 +194,7 @@ def parse_trust(text: str) -> Trust:
         handle_part = parts[0]
         rest = parts[1:]
         explicit = False
-        if parts[0].isdigit():
+        if _is_level_token(parts[0]):
             if len(parts) < 2 or not 1 <= int(parts[0]) <= MAX_LEVEL:
                 malformed.append(entry)
                 continue
@@ -183,10 +202,14 @@ def parse_trust(text: str) -> Trust:
             handle_part = parts[1]
             rest = parts[2:]
             explicit = True
-        if handle_part.lower().startswith(VOUCH_WORD):
-            # `2 vouch:193453438` -- a vouch with no handle in front of it. Never a login.
-            malformed.append(entry)
-            continue
+        # Nothing here judges what the handle STARTS with. A rule that did -- any handle
+        # beginning `vouch` refused the whole line -- was wrong twice over: it refused a login
+        # that merely shares those five letters (`vouched`, `voucherifyio` and `vouchio` are
+        # real accounts), and `refusals` then blamed the vouch, which was the well-formed half,
+        # sending the operator to fix the wrong end of the line. The case it was written for,
+        # `2 vouch:193453438` -- a vouch with no handle in front of it -- carries a colon and is
+        # refused by `_HANDLE_RE` below, which is the rule that knows what a login looks like.
+        #
         # D69: EVERY token after the handle must be one the gate actually reads. Before this
         # only tokens beginning `vouch` were inspected and the rest were discarded in silence,
         # so `2 nathan 193453438` -- the id pasted without the keyword, which is exactly what a
@@ -244,12 +267,22 @@ def parse_trust(text: str) -> Trust:
 
 
 def load_trust(path: Path) -> Trust:
-    """Read ``.harness/trust.txt``. A missing or unreadable file is nobody, not everybody."""
+    """Read ``.harness/trust.txt``. A missing or unreadable file is nobody, not everybody.
+
+    ValueError is caught beside OSError as defence in depth. This is called from
+    ``build_context``, so an exception raised here is not a refused line but a dead command --
+    and `doctor` gates discover.yml, feedback.yml and implement.yml under ``set -e``, so it
+    would be a dead fleet. One such bug existed (see :func:`_is_level_token`) and is fixed; a
+    parser fault must cost the file's contents, never everything the harness does.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return Trust()
-    return parse_trust(text)
+    try:
+        return parse_trust(text)
+    except ValueError:  # pragma: no cover - no known input reaches this; that is the point
+        return Trust()
 
 
 def is_authorised(
@@ -368,7 +401,7 @@ def _handle_token(line: str) -> str:
     parts = line.split()
     if not parts:
         return ""
-    if parts[0].isdigit() and len(parts) > 1:
+    if _is_level_token(parts[0]) and len(parts) > 1:
         return parts[1]
     return parts[0]
 
@@ -384,16 +417,18 @@ def refusals(trusted: Trust) -> tuple[tuple[str, str], ...]:
     conflicted = set(trusted.conflicted or ())
     out: list[tuple[str, str]] = []
     for line in trusted.malformed:
+        parts = line.split()
         token = _handle_token(line)
-        rest = line.split()[2:] if line.split()[:1] and line.split()[0].isdigit() else (
-            line.split()[1:]
-        )
+        rest = parts[2:] if parts[:1] and _is_level_token(parts[0]) else parts[1:]
         if line in conflicted:
             what = "disagrees with another line about which account its handle is (D68)"
+        elif token and not handle_shaped(token):
+            # Ahead of the vouch test, because `vouch` appearing anywhere in the line is true
+            # of the HANDLE as well as of a trailing token: `2 vouch:193453438` was reported as
+            # a bad vouch when the vouch was fine and the handle was missing.
+            what = "names something that is not a GitHub login"
         elif VOUCH_WORD in line.lower():
             what = "carries a vouch that is not one (D68)"
-        elif token and not handle_shaped(token):
-            what = "names something that is not a GitHub login"
         elif rest:
             what = "carries a token after the handle that is not `vouch:<id>`"
         else:

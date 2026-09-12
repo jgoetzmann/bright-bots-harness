@@ -1061,3 +1061,92 @@ warns about; B352 checks it through the store.
 including level-1 askers, and a refusal — the normal case for a vouched non-collaborator — is
 swallowed into `ctx.record_decision`, so it is in the run record and never surfaced to the person
 expecting a review request. Pre-existing, documented under D54, and out of scope here.
+
+### D69 adversarial pass — B353–B358
+
+Two independent reviews of the commit above, with "the tests pass" ruled out as evidence (the
+standing practice on every harness PR). Eleven findings, nine distinct; each was re-probed against
+the shipped code before anything was touched, and each turned out to be another way the first cut
+still ended in the one failure D69 exists to remove — a line, or a command, that grants nothing
+while looking finished.
+
+**A login that begins `vouch` is a login (B353).** `parse_trust` refused any handle whose first five
+letters were `vouch`. That is a rule about a substring where every other rule here is about a shape,
+and `vouch`, `vouched`, `vouchio` and `voucherifyio` are all registered GitHub accounts:
+`2 vouched vouch:57787098` granted nothing, and `refusals()` then reported "carries a vouch that is
+not one", blaming the one half of the line that was perfect. `harness trust line vouched --level 2`
+printed that refused line with every appearance of success. The branch is **deleted**, not narrowed:
+the case it existed for — `2 vouch:193453438`, a vouch with no handle in front of it — contains a
+colon and is refused by `_HANDLE_RE`, the rule that knows what a login is. *Rejected:* replacing it
+with a shape test on the handle slot. A second rule about the handle is exactly how the first one
+came to be wrong, and `_HANDLE_RE` already decides that question. `refusals()` now asks whether the
+handle is a login **before** it looks for the word `vouch` anywhere in the line, so the half that is
+broken is the half that is named.
+
+**The level column is ASCII digits, or it is not a level (B354).** `str.isdigit()` is true for digits
+that are not ASCII, and the parser hardened the handle column to ASCII while leaving the column
+beside it as it was. Two live defects, both probed: an Arabic-Indic three satisfied `int()` and
+granted **operator** level with nothing recorded as malformed — from a character `_HANDLE_RE` would
+have refused outright — and a superscript two raised `ValueError`, which `load_trust` did not catch,
+so it escaped into `build_context`: every command, and `doctor`, which gates discover.yml,
+feedback.yml and implement.yml under `set -e`. A hand-edited file could therefore stop the fleet by
+crashing it, which is worse than the *problem*-to-*warning* move above was meant to make impossible.
+Fixed with `token.isascii() and token.isdigit()`, and `load_trust` now returns an empty `Trust`
+rather than raising, whatever the parser does. *Rejected:* the suggested `_DIGITS_RE.fullmatch`,
+which caps at twenty digits — a 21-digit first token would then fall through to the handle path,
+where it is login-shaped, and be granted level 1 in silence. The rule to add was ASCII-ness, and
+only that.
+
+**A vouch names an account that can author a comment, or it names nobody (B355).** `trust line`
+accepted whatever `GET /users/<login>` returned and never read `type`. An organisation resolves to a
+perfectly good id, and the id a vouch is checked against is `comment.user.id` — the account that
+typed — so such a line parses, reads as vouched in `trust show`, passes `doctor`'s id check, and
+admits nobody anywhere for ever. `dependabot` (id 27347476) and `vouch` (45102943) are both
+Organization accounts; the command would have printed a line for either. It now refuses, and
+`doctor` names a non-person vouch already committed. Only a type GitHub actually returned is refused:
+an absent `type` is unknown, and unknown is not evidence — a payload change must not stop the
+operator adding anybody. *Rejected as unreachable:* the same finding's concern about Bot accounts. A
+bot's login carries `[bot]`, which `_HANDLE_RE` refuses, so no bot can be in the file at all.
+
+**The helper runs where the file is edited (B356).** `trust show` went through `_load`, and
+`trust line` built a whole `Context` — store, governor, ledger, clone manager, write guard — to make
+one unauthenticated `GET /users/<login>`. So the two commands written to make the manual step easy
+both failed in a fresh checkout (`error: no .env file at .env`), and the lookup created `harness.db`
+on a page that says it writes nothing. `gh.public_reader()` is the fix: an unauthenticated
+`GitHubReadOnly` over a store that neither caches nor meters, because the trailing-hour meter exists
+to keep the *fleet* inside the shared ceiling and lives in the database the fleet shares — GitHub's
+own 403 still arrives as `RateCeilingReached`. `trust show` falls back to `.harness/trust.txt` and
+says so when there is no configuration. The transport stays inside `gh.py`, which I-2′ requires.
+*Rejected:* keeping the `Context` and falling back to a public read when it cannot be built. Two
+paths, and the one that runs on a provisioned machine is not the one that matters. The B347 test
+that pinned "a startup failure is not a lookup failure" is replaced rather than kept: there is no
+startup left to fail, and the tests now assert the stronger property — every `trust` test fails if a
+`Context` is built at all.
+
+**It never prints a line the gate refuses (B357).** The B353 defect was visible from the outside the
+whole time: the command printed a line and the parser refused it. `trust line` now parses its own
+output and prints nothing unless the result is exactly the grant it promised — the one assertion
+that would have caught B353 without anybody thinking of the word `vouch`.
+
+**One definition of an unfinished line (B358).** The trust file's header warns that a placeholder
+fails `Identity.trust_file_ready()` and takes the real handles down with it; the check tested for two
+literal spellings of the placeholder this repository shipped with, so `2 <NEW_MAINTAINER>` passed it
+while being refused by the gate. It now reads `Trust.skipped` — the parser's definition, which is why
+that field was added — and counts accepted handles rather than non-comment lines, since a refused
+line is not a handle. The two legacy spellings stay: `NATHAN_HANDLE` without its brackets is not a
+placeholder by the parser's definition.
+
+**Three documentation drifts, and a page nobody updated.** README said `harness trust line` "writes"
+the line for you — it prints; that it *cannot* write is B143 and the whole design — and called level
+1 "trusted", a word that in this codebase means "in the trust file at all", which is levels 1 to 3,
+while the code, the CLI and every other page call it "asker". B351's drift tests now check each
+level's **name** against `trust.LEVEL_NAMES` on all three pages as well as its verbs, and the trust
+file's header pattern is built from `LEVEL_NAMES`, so a tier renamed in code and not in the file
+fails the build. docs/OPERATIONS.md — the page most likely to be open while adding somebody — still
+led with the association gate and mentioned neither new command; it now leads with the vouched line
+and lists both. COMMANDS.md's "Neither form writes anything" was true of `.harness/` and false of the
+database, and is now true as written.
+
+Nothing here changes the gate: the level cap per verb, fail-closed on a malformed line, B131 for
+unvouched handles, and "no new access to the repository for anybody" are all exactly as D69 left
+them. What changed is that four more kinds of line, and two commands, stopped failing quietly.

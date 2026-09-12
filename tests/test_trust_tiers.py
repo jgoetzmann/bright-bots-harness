@@ -1,4 +1,4 @@
-"""D69: the trust file is the security boundary, so one line must work everywhere (B340-B352).
+"""D69: the trust file is the security boundary, so one line must work everywhere (B340-B358).
 
 D68 made `vouch:<id>` the way ONE account was heard without repository access. D69 makes it the
 ordinary way anybody is added, and closes the ways a hand-edited line could grant nothing while
@@ -7,6 +7,11 @@ vanishes, a second line that silently loses to the first.
 
 The gate itself is unchanged. What changes is that a line either means what it says or is
 refused and named -- never accepted into something quieter than its author meant.
+
+B353-B358 are D69's adversarial pass, and every one of them is a way the first cut still ended
+in a silent refusal: a real login the parser would not read, a level column that granted or
+crashed, an account that can never comment, and a helper that needed a provisioned machine
+before it would help.
 """
 from __future__ import annotations
 
@@ -322,10 +327,15 @@ def test_B346_level_zero_is_the_absence_of_a_line_and_grants_no_verb():
 
 
 class UsersGh:
-    """`GET /users/<login>` as GitHub answers it, unauthenticated."""
+    """`GET /users/<login>` as GitHub answers it, unauthenticated.
 
-    def __init__(self, users=None, fail=None):
+    `kinds` is the `type` field: GitHub returns "User" for a person and "Organization" for an
+    organisation, and the real endpoint answers 200 for both (B355).
+    """
+
+    def __init__(self, users=None, fail=None, kinds=None):
         self.users = {k.lower(): v for k, v in (users or {}).items()}
+        self.kinds = {k.lower(): v for k, v in (kinds or {}).items()}
         self.fail = fail
         self.asked: list[str] = []
         self.dry_run = False
@@ -339,27 +349,46 @@ class UsersGh:
             raise GitHubError(
                 f'github returned 404 for https://api.github.com{path}: {{"message":"Not Found"}}'
             )
-        return {"login": login, "id": self.users[login.lower()], "type": "User"}
+        return {
+            "login": login,
+            "id": self.users[login.lower()],
+            "type": self.kinds.get(login.lower(), "User"),
+        }
+
+
+def _no_context(config, args, run_id):
+    """`harness trust` must not build one. Asserted in every trust test rather than described.
+
+    B356: the lookup is a single unauthenticated GET and `show` reads one local text file, so a
+    `Context` -- store, governor, ledger, clone manager, write guard -- is a machine the
+    command has no use for and cannot assume. Building one meant a fresh checkout answered
+    "could not start up to look @x up: no .env file at .env" and never asked GitHub anything.
+    """
+    raise AssertionError(
+        "`harness trust` built a Context; it needs a GitHub client, not a provisioned machine"
+    )
 
 
 def run_trust(tmp_path, monkeypatch, capsys, argv, *, trust="3 jgoetzmann\n", gh=None,
-              context_error=None):
-    """`harness trust ...` in a repository whose trust file holds `trust`."""
+              configured=True):
+    """`harness trust ...` in a repository whose trust file holds `trust`.
+
+    `configured=False` is a checkout with no `.env` at all -- the state somebody is in exactly
+    when they want this command most.
+    """
     from conftest import write_env
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".harness").mkdir(exist_ok=True)
     (tmp_path / ".harness" / "trust.txt").write_text(trust, encoding="utf-8")
-    env = write_env(tmp_path / ".env", TRUST_FILE=".harness/trust.txt")
     client = gh if gh is not None else UsersGh({NATHAN: NATHAN_ID})
-
-    def _build(config, args, run_id):
-        if context_error is not None:
-            raise context_error
-        return SimpleNamespace(gh=client)
-
-    monkeypatch.setattr(cli, "_context", _build)
-    code = cli.main(["--config", str(env), "trust", *argv])
+    monkeypatch.setattr(cli, "PUBLIC_READER", lambda: client)
+    monkeypatch.setattr(cli, "_context", _no_context)
+    argv = ["trust", *argv]
+    if configured:
+        env = write_env(tmp_path / ".env", TRUST_FILE=".harness/trust.txt")
+        argv = ["--config", str(env), *argv]
+    code = cli.main(argv)
     captured = capsys.readouterr()
     return code, captured.out, captured.err
 
@@ -410,25 +439,20 @@ def test_B347_a_failed_lookup_prints_no_line_at_all(tmp_path, monkeypatch, capsy
     assert NATHAN.lower() in err.lower()
 
 
-def test_B347_a_startup_failure_is_not_reported_as_a_failed_lookup(tmp_path, monkeypatch, capsys):
-    """Two failures, two fixes, two sentences.
-
-    Found by running the real command rather than a fake: a config whose database directory did
-    not exist reported "could not resolve @<login>'s account id", when the account had never
-    been asked about at all. Building the client is a whole `Context` -- store, governor,
-    ledger -- and every way that can fail was being blamed on GitHub.
-    """
-    from harness.errors import HarnessError
-
+def test_B347_a_failed_lookup_says_which_account_it_could_not_resolve(
+    tmp_path, monkeypatch, capsys
+):
+    """The sentence has to name the thing that failed. Its ancestor reported "could not resolve
+    @<login>'s account id" for a database that would not open, sending somebody to check a
+    login that was never the problem; B356 removed the database instead of the sentence."""
+    gh = UsersGh({}, fail=GitHubError("github returned 502 for /users/x: bad gateway"))
     code, out, err = run_trust(
-        tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"],
-        context_error=HarnessError("unable to open database file"),
+        tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"], gh=gh
     )
 
     assert code != 0 and out.strip() == ""
-    assert "could not start up" in err
-    assert "could not resolve" not in err, "a startup failure blamed on the account lookup"
-    assert "unable to open database file" in err, "the real reason has to survive"
+    assert f"could not resolve @{NATHAN}'s account id" in err
+    assert "bad gateway" in err, "the real reason has to survive"
 
 
 def test_B347_no_vouch_prints_the_association_line_without_asking_github(
@@ -681,3 +705,290 @@ def test_B352_a_store_built_without_a_trust_file_still_renders():
     )
 
     assert list(store.trusted) == []
+
+
+# --------------------------------------------------------------------------------------
+# B353 - a login that begins `vouch` is a login
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "handle,account",
+    [
+        ("vouched", 57787098),      # a real GitHub account
+        ("vouchio", 30939362),      # another
+        ("voucherifyio", 19346225),  # and another
+        ("vouch", 45102943),        # the bare word is itself a registered login
+    ],
+)
+def test_B353_a_login_beginning_vouch_is_read_as_a_handle(handle, account):
+    """The first cut refused any handle whose first five letters were `vouch`, which is a rule
+    about a substring rather than about a shape. These logins exist; the operator would have
+    pasted a line that granted nothing, and `refusals` would have blamed the vouch -- the one
+    well-formed half -- sending them to fix the wrong end of the line.
+    """
+    trusted = parse_trust(f"3 jgoetzmann\n2 {handle} vouch:{account}\n")
+
+    assert trusted.level_of(handle) == 2
+    assert trusted.vouched_id(handle) == account
+    assert trusted.malformed == ()
+    assert comment_authorised(
+        rest_comment(login=handle, uid=account, association="NONE"), trusted
+    ) is True
+
+
+def test_B353_a_vouch_with_no_handle_in_front_of_it_is_still_refused():
+    """The case the deleted rule existed for. `_HANDLE_RE` refuses it, because a login has no
+    colon in it -- the rule that knows what a login is, rather than a rule about five letters."""
+    trusted = parse_trust(f"3 jgoetzmann\n2 vouch:{NATHAN_ID}\n")
+
+    assert len(trusted) == 1 and "jgoetzmann" in trusted
+    assert trusted.malformed == (f"2 vouch:{NATHAN_ID}",)
+
+
+def test_B353_the_refusal_names_the_handle_when_the_handle_is_what_is_wrong():
+    """Two halves, two fixes. `carries a vouch that is not one` was said of a line whose vouch
+    was perfect and whose handle was missing."""
+    reasons = dict(trust_mod.refusals(parse_trust(f"2 vouch:{NATHAN_ID}\n")))
+
+    assert "not a GitHub login" in reasons[f"2 vouch:{NATHAN_ID}"]
+
+
+def test_B353_a_malformed_vouch_still_blames_the_vouch():
+    """The reorder must not take the D68 wording from the line it was written for."""
+    line = f"2 {NATHAN} vouch:{NATHAN_ID}x"
+
+    reasons = dict(trust_mod.refusals(parse_trust(line + "\n")))
+
+    assert "carries a vouch that is not one (D68)" == reasons[line]
+
+
+# --------------------------------------------------------------------------------------
+# B354 - the level column is ASCII digits, or it is not a level
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "level",
+    [
+        "٣",  # Arabic-Indic three: `isdigit()`, and `int()` reads it as 3
+        "２",  # fullwidth two: the same
+        "²",  # superscript two: `isdigit()`, and `int()` RAISES on it
+    ],
+)
+def test_B354_a_digit_that_is_not_ascii_is_not_a_level(level):
+    """Both halves were live defects. The first granted OPERATOR level from a character the
+    handle rule beside it would have refused, with nothing in `malformed` for doctor to name.
+    The second raised ValueError out of the parser."""
+    trusted = parse_trust(f"3 jgoetzmann\n{level} nathan\n")
+
+    assert trusted.level_of("nathan") == 0, "a level nobody can type is not a level"
+    assert trusted.malformed == (f"{level} nathan",), "and it is named rather than dropped"
+    assert trusted.level_of("jgoetzmann") == 3, "one bad line does not poison the file"
+
+
+def test_B354_load_trust_returns_rather_than_raising_on_any_line(tmp_path):
+    """`load_trust` is called from `build_context`, so an exception here is not a refused line
+    but a dead command -- and `doctor` gates three spending workflows under `set -e`, so it is
+    a dead fleet (#27). A superscript two did exactly that."""
+    path = tmp_path / "trust.txt"
+    path.write_text("² jack\n3 jgoetzmann\n", encoding="utf-8")
+
+    trusted = load_trust(path)
+
+    assert trusted.level_of("jgoetzmann") == 3, "the good line below it survived too"
+    assert trusted.malformed == ("² jack",)
+
+
+def test_B354_an_ordinary_level_is_untouched():
+    """The guard adds ASCII-ness and nothing else: a long run of digits is still an attempt at
+    a level, and still refused as out of range rather than read as a handle of digits."""
+    assert parse_trust("3 jgoetzmann\n").level_of("jgoetzmann") == 3
+    assert parse_trust("2 nathan\n").level_of("nathan") == 2
+    assert parse_trust("9" * 21 + " someone\n").malformed == ("9" * 21 + " someone",)
+    assert parse_trust("9" * 21 + "\n").malformed == ("9" * 21,)
+
+
+# --------------------------------------------------------------------------------------
+# B355 - a vouch names an account that can author a comment, or it names nobody
+# --------------------------------------------------------------------------------------
+
+
+def test_B355_trust_line_refuses_an_account_that_never_authors_a_comment(
+    tmp_path, monkeypatch, capsys
+):
+    """An organisation resolves to a perfectly good id, and `comment.user.id` is the account
+    that TYPED. Such a line parses, reads as vouched in `trust show`, and passes doctor's id
+    check, while admitting nobody anywhere for ever -- the silent denial this command exists to
+    prevent, manufactured by the command itself. `dependabot` is a real Organization account.
+    """
+    gh = UsersGh({"dependabot": 27347476}, kinds={"dependabot": "Organization"})
+    code, out, err = run_trust(
+        tmp_path, monkeypatch, capsys, ["line", "dependabot", "--level", "2"], gh=gh
+    )
+
+    assert code != 0
+    assert out.strip() == "", f"a line was printed for an organisation: {out!r}"
+    assert "Organization" in err and "not a person" in err
+
+
+def test_B355_a_person_is_still_the_ordinary_case(tmp_path, monkeypatch, capsys):
+    """The check must refuse only what GitHub actually called something else."""
+    code, out, _ = run_trust(tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"])
+
+    assert code == 0 and out.strip() == f"2 {NATHAN} vouch:{NATHAN_ID}"
+
+
+def test_B355_an_account_of_unknown_type_is_not_refused(tmp_path, monkeypatch, capsys):
+    """Absent is not evidence. A payload with no `type` is unknown, and unknown must not turn
+    into a refusal to add somebody."""
+    class NoType(UsersGh):
+        def get(self, path):
+            data = super().get(path)
+            data.pop("type")
+            return data
+
+    code, out, _ = run_trust(
+        tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"],
+        gh=NoType({NATHAN: NATHAN_ID}),
+    )
+
+    assert code == 0 and out.strip() == f"2 {NATHAN} vouch:{NATHAN_ID}"
+
+
+def test_B355_doctor_names_a_vouch_for_an_account_that_is_not_a_person(
+    tmp_path, monkeypatch, capsys
+):
+    """`trust line` refuses to print such a line now, but one committed by hand before that
+    check reads as healthy everywhere else: it parses, `trust show` calls it vouched, and the
+    id matches the account it names."""
+    gh = UsersGh({"acme": 4242}, kinds={"acme": "Organization"})
+    code, out, payload = doctor(
+        tmp_path, monkeypatch, capsys, trust="3 jgoetzmann\n2 acme vouch:4242\n", gh=gh
+    )
+
+    assert code == 0, "a bad trust line must not take the fleet down"
+    named = [w for w in payload["warnings"] if "@acme" in w and "person" in w]
+    assert named, f"nothing named the vouch that admits nobody: {payload['warnings']}"
+    assert "Organization" in named[0]
+    assert payload["trust"]["vouched"]["acme"]["type"] == "Organization"
+
+
+# --------------------------------------------------------------------------------------
+# B356 - the helper runs where the file is edited: no .env, no database
+# --------------------------------------------------------------------------------------
+
+
+def test_B356_trust_line_resolves_an_id_with_no_configuration_at_all(
+    tmp_path, monkeypatch, capsys
+):
+    """One unauthenticated GET. Binding it to a `Context` made every way a machine can be
+    unprovisioned a way to fail to add somebody: in a fresh checkout the command answered
+    "could not start up to look @x up: no .env file at .env" and never asked GitHub anything.
+    """
+    code, out, err = run_trust(
+        tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"], configured=False
+    )
+
+    assert code == 0
+    assert out.strip() == f"2 {NATHAN} vouch:{NATHAN_ID}"
+    assert not (tmp_path / ".env").exists(), "the test itself must not have written one"
+
+
+def test_B356_trust_show_reads_the_default_path_with_no_configuration(
+    tmp_path, monkeypatch, capsys
+):
+    """It reads one local text file, so it asks for no more than that: the moment somebody
+    wants this report is while editing that file."""
+    text = f"3 jgoetzmann\n2 {NATHAN} vouch:{NATHAN_ID}\n"
+    code, out, _ = run_trust(
+        tmp_path, monkeypatch, capsys, ["show"], trust=text, configured=False
+    )
+
+    assert code == 0
+    assert "@jgoetzmann" in out and f"@{NATHAN.lower()}" in out
+    assert "default path" in out, "it has to say which file it fell back to"
+
+
+def test_B356_neither_form_writes_a_database(tmp_path, monkeypatch, capsys):
+    """COMMANDS.md says neither form writes anything. `build_context` opened the store, so the
+    lookup created `harness.db` beside the checkout."""
+    run_trust(tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"])
+    run_trust(tmp_path, monkeypatch, capsys, ["show"])
+
+    assert list(tmp_path.rglob("*.db")) == [], "`harness trust` wrote a database"
+
+
+# --------------------------------------------------------------------------------------
+# B357 - it never prints a line the gate refuses
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [["--level", "2"], ["--level", "2", "--no-vouch"]])
+def test_B357_every_line_it_prints_parses_back_to_the_grant_it_promises(
+    tmp_path, monkeypatch, capsys, argv
+):
+    """The output is meant to be pasted unedited, so the command checks it against the parser
+    rather than trusting the two to agree. They did not: a login beginning `vouch` was refused
+    by the parser while this printed it with every appearance of success."""
+    gh = UsersGh({"vouched": 57787098})
+    code, out, _ = run_trust(
+        tmp_path, monkeypatch, capsys, ["line", "vouched", *argv], gh=gh
+    )
+    trusted = parse_trust(out)
+
+    assert code == 0 and out.strip()
+    assert trusted.level_of("vouched") == 2, f"the gate refuses the line it printed: {out!r}"
+
+
+def test_B357_a_line_the_gate_would_refuse_is_not_printed(tmp_path, monkeypatch, capsys):
+    """The check itself, driven by a parser that refuses everything: stdout stays empty and the
+    exit code is non-zero, because a line that looks finished and admits nobody is worse than
+    no line at all."""
+    monkeypatch.setattr(cli.trust_mod, "parse_trust", lambda text: trust_mod.Trust())
+    code, out, err = run_trust(tmp_path, monkeypatch, capsys, ["line", NATHAN, "--level", "2"])
+
+    assert code != 0
+    assert out.strip() == ""
+    assert "refusing to print" in err
+
+
+# --------------------------------------------------------------------------------------
+# B358 - one definition of an unfinished line
+# --------------------------------------------------------------------------------------
+
+
+def _identity(tmp_path, text):
+    from harness.identity import Identity
+
+    path = tmp_path / "trust.txt"
+    path.write_text(text, encoding="utf-8")
+    return Identity(SimpleNamespace(trust_file=path, self_repo="a/b", repo="c/d"), None)
+
+
+def test_B358_any_placeholder_makes_the_trust_file_unready(tmp_path):
+    """The file's own header warns that a placeholder fails `trust_file_ready()` and takes the
+    real handles with it. It tested for two literal spellings, so every other placeholder
+    passed -- the operator was warned about a consequence that would not happen."""
+    ready = _identity(tmp_path, "3 jgoetzmann\n2 <NEW_MAINTAINER>\n").trust_file_ready()
+
+    assert ready is False
+
+
+def test_B358_the_legacy_placeholder_still_fails_it(tmp_path):
+    """`NATHAN_HANDLE` without its brackets is not a placeholder by the parser's definition, so
+    the literal check stays beside the general one."""
+    assert _identity(tmp_path, "3 jgoetzmann\n2 <NATHAN_HANDLE>\n").trust_file_ready() is False
+    assert _identity(tmp_path, "3 jgoetzmann\n2 NATHAN_HANDLE\n").trust_file_ready() is False
+
+
+def test_B358_a_finished_file_is_ready(tmp_path):
+    assert _identity(
+        tmp_path, f"3 jgoetzmann\n2 {NATHAN} vouch:{NATHAN_ID}\n"
+    ).trust_file_ready() is True
+
+
+def test_B358_a_file_naming_one_real_handle_is_not_ready(tmp_path):
+    """Counting accepted handles rather than non-comment lines: a refused line is not a handle,
+    and reporting the setup step done on the strength of one is how it went unnoticed."""
+    assert _identity(tmp_path, "3 jgoetzmann\n2 nathan@example.com\n").trust_file_ready() is False

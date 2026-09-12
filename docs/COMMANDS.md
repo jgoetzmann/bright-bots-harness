@@ -572,13 +572,25 @@ line is precisely the entry that gets silently denied, so handing you one that l
 manufacture the failure this command exists to prevent. `--level` is required for the same reason:
 defaulting somebody's authority is the one mistake worth costing a keystroke.
 
+For the same reason it refuses a login GitHub reports as an **organisation** rather than a person:
+an organisation has a perfectly good account id and never authors a comment, so a vouch for one
+would parse, read as vouched in `trust show`, pass `doctor`'s id check — and admit nobody, anywhere,
+for ever. `harness doctor` names such a line if one is already committed. Every line it does print
+is parsed back before printing, so it can never hand you text the gate refuses.
+
 `harness trust show` prints who is at what level, which entries are vouched, which still depend on
 the association half, and **every line that is being refused** — a bad level, an unfinished
 placeholder, a handle that is not a login, a stray token, or two lines disagreeing about an account.
 
-Neither form writes anything. `.harness/` is outside the harness's write roots on purpose (B143),
-so it cannot change its own trust list; the command produces text a human commits through a
-reviewed pull request, and that review is the security boundary.
+Neither form writes anything — not `.harness/`, not the database, not a file of any kind.
+`.harness/` is outside the harness's write roots on purpose (B143), so it cannot change its own
+trust list; the command produces text a human commits through a reviewed pull request, and that
+review is the security boundary.
+
+Neither form needs a working `.env` either, and `trust line` needs no credential: the lookup is one
+unauthenticated `GET /users/<login>`, and `trust show` reads one local text file (falling back to
+`.harness/trust.txt`, and saying so, when there is no configuration to name another path). Both run
+in any checkout, which is the point — the moment you want them is while editing that file.
 
 `dispatch` starts nothing. It is the answer to "why is nothing happening":
 

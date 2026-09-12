@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence
 
 from harness import __version__
 from harness import redact
-from harness.clock import Clock, iso
+from harness.clock import Clock, SystemClock, iso
 from harness.clone import HOOKS_OFF, PROTECTED_SCAN_COMMITS, walk_harness_commits
 from harness.errors import CloneError, GitHubError, RateCeilingReached, TierViolation
 from harness.gates import run_command
@@ -836,6 +836,45 @@ def ceiling_for(config: Any) -> int:
     if int(getattr(config, "permission_tier", 0) or 0) >= 2:
         return max(configured, AUTHENTICATED_CEILING_PER_HOUR)
     return configured
+
+
+#: The ceiling a one-shot public read holds itself to: the `.env` default, a margin under
+#: GitHub's unauthenticated 60 an hour.
+PUBLIC_CEILING_PER_HOUR = 50
+
+
+class _Unmetered:
+    """The :class:`Store` surface :class:`GitHubReadOnly` caches and meters through, doing
+    neither.
+
+    For ONE public read from a command a person typed. The trailing-hour meter exists to keep
+    the *fleet* inside the shared unauthenticated ceiling and lives in the database the fleet
+    shares; requiring that database is what made `harness trust line` -- the command that
+    exists to make adding somebody easy -- need a provisioned machine before it would resolve
+    an account id. GitHub's own 403 still arrives as `RateCeilingReached` from
+    `_raise_for_status`, so the real limit is still enforced, by the party that owns it.
+    """
+
+    def cache_get(self, url: str) -> tuple[str | None, str] | None:
+        return None
+
+    def cache_put(self, url: str, etag: str | None, body: str) -> None:
+        return None
+
+    def record_api_call(self, url: str, status: int, cached: bool) -> None:
+        return None
+
+    def api_calls_since(self, iso_ts: str) -> int:
+        return 0
+
+
+def public_reader(clock: Clock | None = None) -> GitHubReadOnly:
+    """An unauthenticated read-only client that needs no Config, Store, Context or `.env`.
+
+    Exactly what an anonymous request can read, and nothing more: the token door (I-11) is
+    `build_client`'s alone and is not opened here.
+    """
+    return GitHubReadOnly("", _Unmetered(), clock or SystemClock(), PUBLIC_CEILING_PER_HOUR)
 
 
 def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:

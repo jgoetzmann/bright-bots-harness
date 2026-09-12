@@ -437,11 +437,26 @@ which is the point.
 | Un-block an item | relabel it `stage:ready` (or `stage:queued` for a fresh proposal) |
 | Wake a `stage:needs-human` item | comment `/harness revise` from a trusted account; nothing else touches it |
 | Create the twelve labels | `harness init --labels` (idempotent; a no-op message without a token) |
+| Add somebody to the trust file | `harness trust line <login> --level 2`, paste the line it prints into `.harness/trust.txt`, open a PR |
+| See who is trusted, and what is being refused | `harness trust show` |
 
-Every command is honoured only from a handle in `.harness/trust.txt` whose comment carries
-`author_association` OWNER, MEMBER, or COLLABORATOR — both, or it is silently ignored
-(B131, B132) — unless the line vouches for the commenter's account id (`vouch:<id>`, D68),
-which stands in for the association. Adding a handle is a reviewed PR to `.harness/trust.txt`.
+Every command is honoured only from a handle in `.harness/trust.txt`, at a level the verb reaches,
+**and** confirmed by GitHub — both halves, or it is read, denied and ignored with no reply (B131,
+B132). The ordinary way to add somebody is one vouched line (D69):
+
+```
+2 their-github-login vouch:their-numeric-account-id
+```
+
+`harness trust line <login> --level 2` prints exactly that, account id and all; `harness trust show`
+prints the file as the gate reads it, including every line being refused. Neither writes anything,
+and neither needs a working `.env` — you paste the line into `.harness/trust.txt` and open a pull
+request, and that review is the whole security boundary. The vouch pins the line to one account, so
+it works on **every** repository with no invitation and gives no repository access to anybody (D30).
+
+A line **without** a vouch is the other half of B131: it needs GitHub to report the commenter as
+OWNER, MEMBER or COLLABORATOR on the repository the comment is on — in practice an invitation. That
+route still works and needs no id, so use it for somebody who is already a collaborator here.
 
 ## 12. Where the ledger actually lives (D28)
 

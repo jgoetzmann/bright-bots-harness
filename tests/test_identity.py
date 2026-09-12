@@ -368,16 +368,62 @@ def test_B85_the_tokens_section_names_the_env_key_that_carries_the_token(tmp_pat
     assert "HARNESS_GITHUB_TOKEN" in section_body(doc, "## Tokens")
 
 
-def test_B85_workflows_stays_none_at_tier_2_while_contents_becomes_readable(tmp_path):
+def test_B85_contents_becomes_readable_at_tier_2(tmp_path):
     identity = Identity(make_config(tmp_path), account_found())
 
     doc = identity.render_human_doc(identity.assess(2))
 
     tokens = section_body(doc, "## Tokens")
     contents = [line for line in tokens.splitlines() if "Contents" in line]
-    workflows = [line for line in tokens.splitlines() if "Workflows" in line]
     assert contents and any("read" in line.lower() for line in contents)
-    assert workflows and any("none" in line.lower() for line in workflows)
+
+
+def test_b309_tier_2_asks_for_exactly_the_scopes_doctor_expects(tmp_path):
+    """B309 / D67: HUMAN.md is the checklist a person follows to mint the machine PAT. At tier 2
+    it asked for `public_repo` only and called `workflow`'s absence I-15 -- followed at the next
+    rotation, that silently reverts D67 and stalls the fork. The prerequisite and the token row
+    name the set `harness doctor` checks, and nothing tells the reader to leave one out."""
+    from harness.__main__ import EXPECTED_TOKEN_SCOPES
+
+    identity = Identity(make_config(tmp_path), account_found())
+    readiness = identity.assess(2)
+    doc = identity.render_human_doc(readiness)
+
+    pat = next(p for p in readiness.prerequisites if p.id == "classic-pat")
+    tokens = section_body(doc, "## Tokens")
+    token_row = next(line for line in tokens.splitlines() if line.startswith("| `HARNESS_"))
+    for scope in EXPECTED_TOKEN_SCOPES:
+        assert f"`{scope}`" in pat.title, f"the classic-pat prerequisite omits `{scope}`"
+        assert f"`{scope}`" in token_row, f"the token row omits `{scope}`"
+    flat = " ".join(doc.split())
+    assert "`public_repo` only" not in flat and "`public_repo` **only**" not in flat
+    assert "Do not add `workflow`" not in pat.detail
+    assert "no `workflow`" not in section_body(doc, "## What the harness will never ask for")
+    assert "`Workflows`: none" not in tokens and "| `Workflows` | none |" not in tokens
+
+
+def test_b309_tier_2_says_the_harness_not_github_stops_a_github_push(tmp_path):
+    """B309 / D67: with `workflow` granted, "enforced by the receiving end" is false. The document
+    says what does stop it -- the harness's own refusal -- and that doctor watches the scopes."""
+    identity = Identity(make_config(tmp_path), account_found())
+
+    flat = " ".join(identity.render_human_doc(identity.assess(2)).split())
+
+    assert "receiving end" not in flat and "deliberately absent" not in flat
+    assert "GitHub itself rejects" not in flat
+    assert "refuses to push any commit of its own that touches `.github/` (I-15)" in flat
+    assert "`harness doctor` reads the token's real scopes" in flat
+
+
+def test_b309_below_tier_2_the_workflows_permission_is_still_never_asked_for(tmp_path):
+    """B309: moving `workflow` off the classic list must not drop it from the fine-grained one --
+    below tier 2 nothing is pushed, and the tier-1 `Workflows` row still says none."""
+    identity = Identity(make_config(tmp_path), account_found())
+
+    doc = identity.render_human_doc(identity.assess(1))
+
+    never = section_body(doc, "## What the harness will never ask for")
+    assert "The `Workflows` permission" in never
 
 
 # --- B83: no secret value ever reaches the document -------------------------------------------

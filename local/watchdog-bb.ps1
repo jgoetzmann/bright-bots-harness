@@ -79,10 +79,70 @@ function Container-UptimeSeconds {
     } catch { return 0 }
 }
 
+# D67 / B304: the walk gh.push_branch makes before every push, mirrored for this publisher.
+# Granting the machine PAT the `workflow` scope took away GitHub's own refusal of a push that
+# edits a workflow, and this process pushes with that PAT: a guard that lived only in Python would
+# leave local mode the unguarded half. The same `git log` (clone.harness_walk_argv) and the same
+# rule: walk from the tip, stop at the first commit a harness email did not author - upstream's
+# commits, relayed by a rebase, keep their authors - and refuse if any commit above that touches
+# .github/. Past the cap it refuses rather than pass the rest unchecked. B312: and it refuses a
+# clone whose history is substituted - a refs/replace/ entry, a grafts file, a shallow history -
+# because git then shows the walk commits the push does not send (clone.substituted_history).
+# harness/clone.py holds the Python half of every value below; local/preflight.py and
+# tests/test_local_mode.py hold the two together. Returns one line per reason to refuse; nothing
+# means the push may go.
+function Get-UnpublishablePaths([string]$Clone, [string]$Ref) {
+    $HarnessEmails = @("harness@brightboost-harness", "harness@localhost")
+    $ProtectedPrefix = "/.github/"
+    $ScanCommits = 100
+    $rs = [string][char]30
+    $us = [string][char]31
+    $replaced = @(& git -C $Clone for-each-ref '--format=%(refname)' "refs/replace/" 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @("git for-each-ref failed (exit $LASTEXITCODE), so no commit was checked") }
+    if ($replaced.Count -gt 0) { return @("the clone's history is substituted by refs/replace/ ($($replaced[0])), so no commit was checked") }
+    $probe = @(& git -C $Clone rev-parse "--is-shallow-repository" --git-path "info/grafts" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $probe.Count -lt 2) { return @("git rev-parse failed (exit $LASTEXITCODE), so no commit was checked") }
+    if ("$($probe[0])".Trim() -ne "false") { return @("the clone's history is shallow, so no commit was checked") }
+    $grafts = "$($probe[1])".Trim()
+    if (-not [System.IO.Path]::IsPathRooted($grafts)) { $grafts = Join-Path $Clone $grafts }
+    if (Test-Path -LiteralPath $grafts) { return @("the clone's history is substituted by a grafts file ($grafts), so no commit was checked") }
+    $lines = @(& git -C $Clone --no-replace-objects -c core.commitGraph=false -c core.quotepath=off -c log.showRoot=true log "--format=%x1e%H%x1f%ae" --name-only --no-renames --first-parent "--diff-merges=first-parent" -n ($ScanCommits + 1) $Ref -- 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @("git log $Ref failed (exit $LASTEXITCODE), so no commit was checked") }
+    $found = @()
+    $walked = 0
+    $sha = ""
+    foreach ($raw in $lines) {
+        $line = "$raw"
+        # Ordinal, always. PowerShell 7 compares with ICU, which treats U+001E as an
+        # ignorable character: under it "".StartsWith($rs) is TRUE, so the blank line git
+        # prints between a commit's header and its paths entered this branch and threw on
+        # Substring(1). Windows PowerShell 5.1 (NLS) said false, so it passed there and
+        # failed on both CI legs.
+        if ($line.Length -eq 0) { continue }
+        if ($line.StartsWith($rs, [System.StringComparison]::Ordinal)) {
+            $fields = $line.Substring(1).Split($us)
+            $email = ""
+            if ($fields.Count -gt 1) { $email = $fields[1].Trim().ToLowerInvariant() }
+            if ($HarnessEmails -notcontains $email) { break }
+            if ($walked -ge $ScanCommits) { $found += "the top $ScanCommits commits are all the harness's, so the ones below were never checked"; break }
+            $walked++
+            $sha = $fields[0].Trim()
+            continue
+        }
+        $p = $line.Replace([string][char]92, "/").Trim().Trim([char]96).Trim().Trim('"')
+        if (-not $p) { continue }
+        while ($p.StartsWith("./", [System.StringComparison]::Ordinal)) { $p = $p.Substring(2) }
+        $p = "/" + $p.TrimStart("/")
+        if ($p.Contains($ProtectedPrefix)) { $found += "harness commit $($sha.Substring(0, [math]::Min(12, $sha.Length))) touches $($p.Substring(1))" }
+    }
+    return $found
+}
+
 # Host-side push (P5). The loop's deliver stage cannot publish - it holds no GitHub credential - so
 # it leaves the branch in its clone and writes runs/<item>/DELIVER.json. This pushes such a branch
 # to the fork with the host's HARNESS_GITHUB_TOKEN under the rules gh.push_branch follows: only
-# branches under harness/, only when the tip author is the harness identity (B139), the token
+# branches under harness/, only when the tip author is the harness identity (B139), only when no
+# commit the harness authored touches .github/ (D67, Get-UnpublishablePaths above), the token
 # never in a URL, an argv or a log line (it travels as GIT_CONFIG_* environment), and NEVER a bare
 # --force: a lease, so a commit a human pushed to the same fork branch between two passes is not
 # silently discarded. The lease must carry an explicit expected sha here - `--force-with-lease`
@@ -138,6 +198,11 @@ function Push-Delivered {
         $author = "$(& git -C $clone log -1 --format=%ae 2>&1)".Trim()
         if ($author -ne "harness@brightboost-harness") {
             Write-Host "$(Stamp) $($dir.Name): refusing to push $branch - tip author is '$author', not the harness (B139)"; continue
+        }
+        # D67 / B304: nothing under .github/ leaves this host either - the push goes as HEAD.
+        $held = @(Get-UnpublishablePaths $clone "HEAD")
+        if ($held.Count -gt 0) {
+            Write-Host "$(Stamp) $($dir.Name): refusing to push $branch - $($held -join '; ') (I-15, D67)"; continue
         }
         $url = "https://github.com/$remote.git"
         $basic = ""

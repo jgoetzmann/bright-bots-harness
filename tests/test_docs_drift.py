@@ -375,3 +375,187 @@ def test_commands_md_does_not_confuse_the_two_kill_switches():
         "COMMANDS.md says `harness halt` creates .harness/HALT; it creates HALT_FILE"
     )
     assert "HALT_FILE" in text, "the page must name the file `harness halt` actually writes"
+
+
+# --------------------------------------------------------------------------------------
+# The machine PAT's scopes (D67) — no live document says the token lacks one it carries
+# --------------------------------------------------------------------------------------
+
+#: GitHub's classic token scopes, so a backticked word can be told from a scope name.
+CLASSIC_SCOPES = frozenset({
+    "repo", "repo:status", "repo_deployment", "public_repo", "repo:invite", "security_events",
+    "workflow", "write:packages", "read:packages", "delete:packages", "admin:org", "write:org",
+    "read:org", "manage_runners:org", "admin:public_key", "write:public_key", "read:public_key",
+    "admin:repo_hook", "write:repo_hook", "read:repo_hook", "admin:org_hook", "gist",
+    "notifications", "user", "read:user", "user:email", "user:follow", "delete_repo",
+    "write:discussion", "read:discussion", "admin:enterprise", "codespace", "project",
+    "read:project", "admin:gpg_key", "write:gpg_key", "read:gpg_key", "audit_log", "copilot",
+})
+
+#: A run of backticked names: "`a`", "`a`, `b` and `c`".
+_NAMES = r"((?:`[a-z_:]+`(?:\s*,\s*|\s+and\s+|\s+)?)+)"
+
+
+def _carried() -> frozenset[str]:
+    """What the token carries is what doctor checks it for (B305); one set, read, not copied."""
+    from harness.__main__ import EXPECTED_TOKEN_SCOPES
+
+    return frozenset(EXPECTED_TOKEN_SCOPES)
+
+
+def _scope_live_docs() -> list[str]:
+    """Every document read as the present truth. Not `docs/delivery/` (frozen, amended by
+    DECISIONS.md) and not DECISIONS.md, which records what was true when it was written."""
+    fixed = ["README.md", "HUMAN.md", ".env.example", "local/README.md", ".harness/README.md"]
+    globbed = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for pattern in ("docs/*.md", "prompts/*.md", ".github/workflows/*.yml")
+        for path in sorted(REPO_ROOT.glob(pattern))
+    ]
+    return fixed + globbed
+
+
+def _false_scope_claims(text: str, carried: frozenset[str]) -> list[str]:
+    """Each phrase in `text` that says the token lacks a scope in `carried`, names part of
+    `carried` as all it holds, or credits GitHub rather than the harness with I-15."""
+    flat = " ".join(text.split())
+    found: list[str] = []
+    for scope in sorted(carried):
+        s = re.escape(scope)
+        for pattern in (
+            rf"\b(?:has|carries|holds) no `{s}`",
+            rf"\bno `{s}`(?: scope|,)",
+            rf"\bnever `{s}`",
+            rf"`{s}` stays off",
+            rf"`{s}`[^.]{{0,60}}(?:deliberately (?:absent|withheld)|whose absence)",
+            rf"deliberately absent is `{s}`",
+            rf"\b(?:token|PAT) lacks the `{s}` scope and",
+            rf"\bDo not add `{s}`",
+        ):
+            found += [m.group(0) for m in re.finditer(pattern, flat, re.I)]
+    # "only" must end the phrase ("`a` only, present in"), so "`a` only gates b" is not a claim.
+    held = (
+        r"\s*(?:\*\*)?\s*"
+        r"(?:(?:only|ONLY)(?=[\s*]*(?:[,.;:)|—-]|$))|and nothing else|, nothing else)"
+    )
+    for pattern in (_NAMES + held, r"\bbeyond " + _NAMES):
+        for m in re.finditer(pattern, flat):
+            named = set(re.findall(r"`([a-z_:]+)`", m.group(1))) & CLASSIC_SCOPES
+            if named and named < carried:
+                found.append(m.group(0))
+    for pattern in (
+        r"enforced (?:twice )?by (?:GitHub|the receiving end)",
+        r"\breceiving end\b",
+        r"GitHub itself (?:rejects|refuses)",
+        r"enforced twice by two things",
+    ):
+        found += [m.group(0) for m in re.finditer(pattern, flat)]
+    return found
+
+
+def _need_not_check_spans(text: str) -> list[str]:
+    """Each "a reviewer need not check for these" paragraph, with the list that follows it."""
+    blocks = re.split(r"\n[ \t]*\n", text)
+    spans: list[str] = []
+    for index, block in enumerate(blocks):
+        if not re.search(r"(?:need not|do not need to|don't need to) check", block, re.I):
+            continue
+        span = [block]
+        for follow in blocks[index + 1:]:
+            if not re.match(r"\s*(?:[-*]|\d+\.)\s", follow):
+                break
+            span.append(follow)
+        spans.append("\n\n".join(span))
+    return spans
+
+
+@pytest.mark.parametrize("doc", _scope_live_docs())
+def test_b310_no_live_document_says_the_token_lacks_a_scope_it_carries(doc):
+    """B310 / D67: the machine PAT carries `public_repo`, `notifications` and `workflow`. Some
+    forty statements said it held `public_repo` alone, that `workflow`'s absence was I-15, or
+    that GitHub enforced I-15 -- including the rotation runbook, which would have reverted D67
+    at the next rotation, and the body of every delivery PR. This is what stops the census being
+    needed twice: the set is the one doctor checks, so the next grant moves both together."""
+    false = _false_scope_claims(_read(doc), _carried())
+
+    assert false == [], f"{doc} says something D67 made false: {false}"
+
+
+@pytest.mark.parametrize("doc", _scope_live_docs())
+def test_b310_no_reviewer_is_told_a_github_change_needs_no_check(doc):
+    """B310 / D67: USING.md and PACKAGE-FORMAT.md filed `.github/**` under "things you do not
+    need to check for", because GitHub refused the push. It no longer does; the harness's own
+    check is the only one, so a reviewer who skips the file list skips the one backstop left."""
+    spans = [span for span in _need_not_check_spans(_read(doc)) if ".github" in span]
+
+    assert spans == [], f"{doc} tells a reviewer a .github change needs no check: {spans}"
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        "A classic PAT with `public_repo` and nothing else, on a machine account.",
+        "No `workflow` scope, so GitHub itself rejects any push touching `.github/workflows/`.",
+        "classic, scope `public_repo` only, nothing else. `workflow` stays off; its absence is "
+        "invariant I-15.",
+        "| `Workflows` | none | The `workflow` scope is deliberately absent: GitHub rejects |",
+        "or ask you for any access beyond `public_repo` on its own account.",
+        "`.github/**` (I-15 — the token lacks the `workflow` scope and GitHub refuses the push)",
+        "| Push to `.github/**` anywhere | **no** | I-15, enforced by GitHub |",
+        "- holds one classic PAT, scope **`public_repo` only**.",
+        "Any classic scope beyond `public_repo`: no `repo`, no `workflow`, no `admin:*`.",
+        "Do not add `workflow`: its absence is invariant I-15.",
+    ],
+)
+def test_b310_the_matcher_catches_each_sentence_d67_corrected(stale):
+    """B310: a drift guard whose matcher never fires passes forever (B105's did, until D67).
+    Each of these is a sentence this change corrected, verbatim or nearly."""
+    assert _false_scope_claims(stale, _carried()), f"the matcher misses {stale!r}"
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        "A classic PAT with `public_repo`, `notifications` and `workflow` and nothing else.",
+        "scopes `public_repo`, `notifications` and `workflow` **only** | `Metadata`: Read",
+        "Any classic scope beyond `public_repo`, `notifications` and `workflow`: no `repo`.",
+        "A token rotated without `workflow` fails here; leaving `workflow` off only stalls it.",
+        "`workflow` only ever gated workflow files.",
+    ],
+)
+def test_b310_the_matcher_passes_what_is_true_now(current):
+    assert _false_scope_claims(current, _carried()) == []
+
+
+def test_b310_the_reviewer_matcher_catches_the_old_using_md_list():
+    old = (
+        "Three things you do not need to check for, because the code to do them does not "
+        "exist:\n\n- The harness cannot merge, approve, or dismiss a review (I-12).\n"
+        "- The PR cannot contain a change under `.github/**` (I-15).\n\nTo steer it instead."
+    )
+    assert any(".github" in span for span in _need_not_check_spans(old))
+
+
+#: Every passage that tells a person -- or the model -- which scopes the token holds or should.
+SCOPE_INSTRUCTIONS = (
+    ("docs/OPERATIONS.md", "2. Generate a new one", "\n3. "),
+    (".env.example", "# Classic GitHub PAT", "HARNESS_GITHUB_TOKEN="),
+    ("README.md", "**One GitHub credential", "The only other secret"),
+    ("docs/SAFETY.md", "holds one classic PAT", "\n- has"),
+    ("prompts/system.md", "holds exactly one", "It is used by"),
+    ("HUMAN.md", "Classic personal access token on", "https://"),
+)
+
+
+@pytest.mark.parametrize("doc, start, end", SCOPE_INSTRUCTIONS)
+def test_b311_every_scope_instruction_names_exactly_what_doctor_expects(doc, start, end):
+    """B311 / D67: the rotation runbook said "`public_repo` only; `workflow` stays off". A person
+    following it after a leak would mint a token that cannot sync the fork, and nothing would
+    say why until doctor's warning. Each place that says what to grant names doctor's set."""
+    text = _read(doc)
+    begin = text.index(start)
+    passage = text[begin:text.index(end, begin + len(start))]
+
+    named = set(re.findall(r"`([a-z_:]+)`", passage)) & CLASSIC_SCOPES
+
+    assert named == set(_carried()), f"{doc} names {sorted(named)} for the token's scopes"

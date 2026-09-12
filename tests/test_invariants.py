@@ -1118,6 +1118,58 @@ def test_i15_reject_forbidden_diff_lives_in_implement_py_and_is_not_copied_into_
     assert constants == [], "I-15: deliver.py must not define its own forbidden path set"
 
 
+def test_i15_one_protected_path_set_defined_in_clone_py_and_read_by_every_publisher():
+    """B308 / D67 (handoff 6.5): "divergent copies of a safety check are worse than one". With
+    the token's `workflow` scope granted, the path half of I-15 is code alone, so it lives once
+    -- `clone.PROTECTED_PUSH_PATHS` and its two readers, `protected_paths_in` and
+    `walk_harness_commits` -- and B64 (implement), the push guard (gh), the handoff (deliver)
+    and revise each read it rather than keep a set of their own. The PowerShell publisher's
+    copy is held to it by tests/test_local_mode.py and local/preflight.py."""
+    from harness import clone
+    from harness.stages import implement
+
+    clone_tree = _parse(HARNESS_DIR / "clone.py")
+    assigned = {
+        target.id
+        for node in ast.walk(clone_tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+    assert "PROTECTED_PUSH_PATHS" in assigned, "clone.py must define the protected path set"
+    assert implement.FORBIDDEN_DIFF_PATHS is clone.PROTECTED_PUSH_PATHS
+
+    shared = {"PROTECTED_PUSH_PATHS", "protected_paths_in", "walk_harness_commits"}
+    for rel in ("stages/implement.py", "gh.py", "stages/deliver.py", "stages/revise.py"):
+        tree = _parse(HARNESS_DIR / rel)
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        assert used & shared, f"harness/{rel} does not read the shared protected path set"
+
+    # A second copy would be a named collection holding the prefix. (identity.py's CODEOWNERS
+    # check lists "/.github/" among the paths a code owner must cover -- a different question,
+    # asked inline, and not a set anything publishes by.)
+    def named_sets(tree: ast.Module) -> list[str]:
+        found = []
+        for node in tree.body:
+            value = getattr(node, "value", None)
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
+                value, (ast.Tuple, ast.List, ast.Set)
+            ):
+                if any(isinstance(e, ast.Constant) and e.value == "/.github/" for e in value.elts):
+                    found.append(ast.unparse(node)[:80])
+        return found
+
+    copies = [
+        f"{_rel(path)}: {hit}"
+        for path in _harness_sources()
+        if path.name != "clone.py"
+        for hit in named_sets(_parse(path))
+    ]
+    assert copies == [], "a second copy of the protected path set: " + "; ".join(copies)
+    assert named_sets(clone_tree), "the check must see clone.py's own set, or it proves nothing"
+
+
 # --------------------------------------------------------------------------------------
 # I-16 — no module above the store branches on execution mode
 # --------------------------------------------------------------------------------------
@@ -1835,18 +1887,63 @@ def test_b146_ops_never_retries_a_step_that_could_have_spent():
         assert re.search(word, text, re.I), f"ops.yml must still name {word!r} (B146)"
 
 
+def _fork_slug() -> str:
+    """The live fork, from the committed config: never spelled here, so it cannot rot (D67)."""
+    data = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    return str(data["FORK_REPO"])
+
+
+#: B312/D67: how a workflow names the fork. Not only the literal slug -- no workflow spells it,
+#: they all reach it through the `FORK_REPO` repository variable -- but that variable too, in
+#: every form a workflow uses it: `${{ vars.FORK_REPO }}`, `env.FORK_REPO`, `$FORK_REPO`,
+#: `${FORK_REPO}`. A check that knew only the literal inspected no real line and passed on
+#: anything the workflows actually do with the fork (B306 fixed the rot, not this).
+_FORK_VARIABLE = re.compile(r"(?:vars|env)\.FORK_REPO|\$\{?FORK_REPO\b")
+
+
+def _names_fork(line: str, fork: str) -> bool:
+    return fork in line or bool(_FORK_VARIABLE.search(line))
+
+
+def _pushes_github_to(line: str, fork: str) -> bool:
+    return _names_fork(line, fork) and (
+        ("git push" in line and ".github" in line) or ".github/workflows" in line
+    )
+
+
 def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():
     """B105 / D2-R7.12 (handoff §4.4, §7): no push whose target is the fork carries a .github
-    path; the fork's default branch only ever moves by fast-forward."""
-    fork = "brightboost-harness/brightboost"
+    path; the fork's default branch only ever moves by fast-forward.
+
+    B306 / D67: this spelled the fork `brightboost-harness/brightboost`, a repository that does
+    not exist, so the loop never matched. B312/D67: reading the slug from config fixed the rot
+    but not the vacuity -- no workflow spells the fork literally either; they reach it through
+    the `FORK_REPO` variable, so a scan that knew only the slug still inspected no real line.
+    The matcher now counts that variable as naming the fork, this asserts the scan saw at least
+    one line that does, and the matcher is shown to fire on both spellings before it is trusted
+    to stay quiet. Static only: it reads workflow YAML and does NOT cover the runtime push path,
+    which is `gh.push_branch`'s commit walk (B298)."""
+    fork = _fork_slug()
+    assert re.fullmatch(r"[\w.-]+/[\w.-]+", fork), f"FORK_REPO is not an owner/name: {fork!r}"
+    assert _pushes_github_to(f"git push https://github.com/{fork}.git HEAD:.github/x", fork)
+    assert _pushes_github_to('git push "https://x@github.com/${{ vars.FORK_REPO }}.git" '
+                             "HEAD:refs/heads/h -- .github/workflows/ci-cd.yml", fork)
+    assert not _pushes_github_to(f"git push https://github.com/{fork}.git HEAD:main", fork)
+    assert not _pushes_github_to("git push https://github.com/${{ vars.FORK_REPO }}.git "
+                                 "HEAD:main", fork)
+    inspected = 0
     violations: list[str] = []
     for name in ALL_WORKFLOWS:
         for lineno, line in enumerate(_d2_workflow(name).splitlines(), start=1):
-            if "git push" in line and fork in line and ".github" in line:
-                violations.append(f"{name}:{lineno}")
-            if fork in line and ".github/workflows" in line:
+            if _names_fork(line, fork):
+                inspected += 1
+            if _pushes_github_to(line, fork):
                 violations.append(f"{name}:{lineno}")
     assert violations == [], "B105 violated: " + ", ".join(violations)
+    assert inspected > 0, (
+        "B105 inspected no workflow line that names the fork, so it proves nothing -- the "
+        "workflows reach the fork through the FORK_REPO variable, which the matcher must read"
+    )
 
 
 def test_b127_implement_yml_orders_halt_doctor_sync_fork_dispatch_then_work():

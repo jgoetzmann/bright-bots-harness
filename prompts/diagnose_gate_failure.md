@@ -33,7 +33,7 @@ $spec_text
 Every one of these makes the gate pass while making the change worse. Any of them causes the whole
 item to be rejected and blocked.
 
-- Adding `continue-on-error`, or editing anything under `.github/workflows/`.
+- Adding `continue-on-error`, or editing anything under `.github/`.
 - Adding `.skip(`, `.only(`, `xit(`, `xdescribe(`, or deleting or emptying a failing test.
 - Raising a timeout, a retry count, or a coverage or size threshold.
 - Adding an ignore or suppression comment: `eslint-disable`, `@ts-ignore`, `@ts-expect-error`,

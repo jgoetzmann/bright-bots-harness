@@ -275,8 +275,14 @@ exits 0 at its first step (B149). Locally, `harness halt`; for the container, `.
 
 1. Sign in as the machine account → Settings → Developer settings → Personal access tokens →
    Tokens (classic) → **Delete** the token. Every request carrying it fails from that second.
-2. Generate a new one: classic, scope `public_repo` only, nothing else. `workflow` stays
-   off; its absence is invariant I-15.
+2. Generate a new one: classic, scopes `public_repo`, `notifications` and `workflow`, nothing
+   else (D67). All three are needed: `public_repo` pushes to the fork and opens the pull
+   request; `notifications` lets the sweep see a mention on a product issue; `workflow` lets
+   `harness sync-fork` fast-forward the fork past upstream's own CI changes, and without it
+   nothing can be delivered once upstream touches `.github/workflows/`. Leaving `workflow` off
+   does not buy back I-15 — the harness refuses to push `.github/` itself — it only stalls
+   the fork. After step 3, `harness doctor` prints the scopes it reads off the new token and
+   warns on a missing or extra one.
 3. This repository → Settings → Secrets and variables → Actions → `HARNESS_GITHUB_TOKEN`
    → Update. And the host `.env` if local mode is in use — the container never had it
    (R5.7), so nothing there changes.

@@ -192,10 +192,11 @@ jobs:
         # touch the fork, and the sweep is the entire command surface. A stale fork must not
         # deafen the harness.
         #
-        # It fails for a structural reason as well as a transient one: under I-15 the PAT has no
-        # `workflow` scope on purpose, so fast-forwarding is refused outright whenever upstream
-        # has touched `.github/workflows/**` since the fork last synced. That is a standing
-        # condition, not a blip, and it must not mean permanent silence.
+        # Since D67 the PAT carries the `workflow` scope, so an upstream change to
+        # `.github/workflows/**` no longer refuses the fast-forward outright. What is left is
+        # transient (the network, GitHub) or a token rotated without `workflow`, which is a
+        # standing condition until someone re-grants it -- `harness doctor`, above, warns about
+        # the missing scope by name -- and must not mean permanent silence either.
       - name: harness sync-fork
         id: syncfork
         if: steps.halt.outputs.halted != 'true'

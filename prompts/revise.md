@@ -66,7 +66,9 @@ or to the package. Delete anything that traces to neither.
 
 These are absolute. A diff violating any of them is rejected whole and the item is blocked.
 
-- **Do not edit any file under `.github/workflows/`.**
+- **Do not edit any file under `.github/`** — not a workflow, a composite action, `dependabot.yml`
+  or `CODEOWNERS` — and do not commit anything yourself: the harness commits, and checks every
+  commit on the branch before it pushes.
 - **Do not widen, skip, or disable a gate.** No `continue-on-error`, no `.skip(`, no `.only(`, no
   raised timeout, no new lint-ignore or type-ignore comment, no relaxed rule, no deleted test. If a
   gate is red and you cannot fix it honestly, leave it red and explain why.

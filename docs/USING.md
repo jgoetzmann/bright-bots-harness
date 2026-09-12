@@ -157,11 +157,12 @@ All three produce the same tree, because the branch tip is exactly `BASE` plus t
 
 What is **not** in the PR body and stays in the package: `DECISIONS.md`, `ACCEPTANCE.md`, `manifest.json`, `patches/`, `bundle.gitbundle`, `transcript.jsonl`. In Actions mode the run directory `runs/item-<n>/` is uploaded as a workflow artifact on every run, cancelled ones included, kept 14 days — minus the disposable clone, the workspace and `node_modules`, which are excluded from the upload.
 
-Three things you do not need to check for, because the code to do them does not exist:
+Two things you do not need to check for:
 
-- The harness cannot merge, approve, or dismiss a review (I-12). Gate 2 is you or Nathan, always.
-- The PR cannot contain a change under `.github/**` (I-15): the machine account's PAT has no `workflow` scope, so GitHub itself refuses the push, and `_reject_forbidden_diff` in `stages/implement.py` catches the subtler cases a token scope cannot see.
+- The harness cannot merge, approve, or dismiss a review (I-12): the code to do it does not exist. Gate 2 is you or Nathan, always.
 - The evidence cannot come from a widened gate: `harness/gates.py`, where the sequence lives, is hashed into `.harness/PIN` along with `packager.py`, `redact.py` and every file under `prompts/`. Every spending workflow runs `harness doctor` before its work step, and a pin mismatch fails it there.
+
+One thing still worth a glance at: **a change under `.github/`** (I-15). The harness refuses to push one — before every push `gh.push_branch` walks the commits it authored on the branch and refuses if any touches `.github/`, `deliver` reads every commit the push would send that upstream does not already hold (whoever authored it) and refuses the same, and before implement or revise commits its work `_reject_forbidden_diff` in `stages/implement.py` rejects a diff that touches `.github/`, along with the subtler cases no path check can see. (A handoff commits interrupted work unchecked, to lose nothing, and withholds the push instead.) But that is now the harness's own check and nothing else: since D67 the machine account's PAT carries the `workflow` scope, so GitHub would accept the push. A PR whose file list shows anything under `.github/` is a harness bug — don't merge it.
 
 To steer it instead of merging, see the next section — `/harness revise`, `/harness rebase`, `/harness stop`. Note the latency: comments on the product repo are polled, not pushed.
 

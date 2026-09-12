@@ -1004,6 +1004,53 @@ def test_B64_a_changed_ci_workflow_path_blocks_the_item_and_is_never_committed(
     assert rig.log.count("gates(baseline=False)") == 0
 
 
+def _b64_rig(tmp_path, monkeypatch, changed):
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    approved_item(rig, item_id)
+    rig.log.clear()
+    stub_implement_side_effects(
+        monkeypatch,
+        rig.log,
+        gate_runner=lambda clone, *, baseline, runner=None: list(GREEN),
+        changed=changed,
+    )
+    return rig, item_id
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
+        ".github/ISSUE_TEMPLATE/bug.md",
+        ".github/actions/setup/action.yml",
+    ],
+)
+def test_b296_any_path_under_github_blocks_the_item(tmp_path, monkeypatch, path):
+    """B296 / D67 (handoff 8, test 7): B64's path arm is the whole of `.github/` now, not only
+    `.github/workflows/`. With the token's `workflow` scope granted nothing at GitHub's end
+    stops a composite action, `dependabot.yml` or `CODEOWNERS` edit, and each steers CI."""
+    rig, item_id = _b64_rig(tmp_path, monkeypatch, ["src/lib/bundle.ts", path])
+
+    with pytest.raises(HarnessError, match="forbidden diff"):
+        implement(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
+@pytest.mark.parametrize("path", ["docs/github-setup.md", "src/github/client.ts"])
+def test_b296_a_path_that_only_mentions_github_is_not_blocked(tmp_path, monkeypatch, path):
+    """B296: the leading "/" `normalise_repo_path` adds is what keeps these out."""
+    rig, item_id = _b64_rig(tmp_path, monkeypatch, [path])
+
+    implement(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "implementing"
+    assert "commit" in rig.log
+
+
 def test_B64_a_clean_change_set_is_not_blocked(tmp_path, monkeypatch):
     rig, item_id = proposable(tmp_path)
     propose(rig.ctx, item_id)

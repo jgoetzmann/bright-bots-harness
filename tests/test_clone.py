@@ -526,7 +526,123 @@ def test_b229_a_refusing_pre_push_hook_does_not_stop_the_push(config, clock, ite
 
 
 def _git_in(cwd, *args):
-    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    proc = subprocess.run(
+        ["git", "-c", "user.email=harness@localhost", "-c", "user.name=harness", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc.stdout
+
+
+# --- D67 / B312-B314: reading history the way a push sends it ------------------------------
+
+
+def _walk_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "wclone"
+    repo.mkdir()
+    _git_in(repo, "init", "-q", "-b", "main")
+    return repo
+
+
+def _wc(repo: Path, email: str, files: dict, message: str = "c") -> str:
+    for rel, text in files.items():
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8", newline="\n")
+    _git_in(repo, "add", "-A")
+    _git_in(repo, "-c", f"user.email={email}", "-c", "user.name=n", "commit", "-q", "-m", message)
+    return _git_in(repo, "rev-parse", "HEAD").strip()
+
+
+def test_b312_substituted_history_reports_a_replace_ref(tmp_path):
+    """B312: a `refs/replace/` entry is a substitution, whatever it maps."""
+    from harness.clone import substituted_history
+
+    repo = _walk_repo(tmp_path)
+    base = _wc(repo, "dev@example.com", {"README.md": "x\n"}, "base")
+    twin = _git_in(repo, "commit-tree", f"{base}^{{tree}}", "-m", "twin").strip()
+    assert substituted_history(repo) == []
+    _git_in(repo, "replace", base, twin)
+
+    reasons = substituted_history(repo)
+
+    assert reasons and "refs/replace/" in reasons[0]
+
+
+def test_b312_substituted_history_reports_a_grafts_file(tmp_path):
+    """B312: a grafts file cannot be switched off on a command line, so a clone that has one is
+    refused rather than read."""
+    from harness.clone import substituted_history
+
+    repo = _walk_repo(tmp_path)
+    _wc(repo, "dev@example.com", {"README.md": "x\n"}, "base")
+    grafts = Path(_git_in(repo, "rev-parse", "--git-path", "info/grafts").strip())
+    graftfile = grafts if grafts.is_absolute() else repo / grafts
+    graftfile.parent.mkdir(parents=True, exist_ok=True)
+    graftfile.write_text(_git_in(repo, "rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
+
+    reasons = substituted_history(repo)
+
+    assert any("grafts" in r for r in reasons)
+
+
+def test_b312_walk_refuses_a_clone_with_a_replace_ref(tmp_path):
+    """B312: the walk a push shares refuses to read a substituted clone -- it would show the
+    walk commits the push does not send."""
+    from harness.clone import walk_harness_commits
+    from harness.errors import CloneError
+
+    repo = _walk_repo(tmp_path)
+    base = _wc(repo, "harness@localhost", {".github/workflows/ci.yml": "on: push\n"}, "sneak")
+    twin = _git_in(repo, "commit-tree", f"{base}^{{tree}}", "-m", "twin").strip()
+    _git_in(repo, "replace", base, twin)
+
+    with pytest.raises(CloneError, match="substituted"):
+        walk_harness_commits(repo, "HEAD")
+
+
+def test_b313_protected_paths_above_reads_every_commit_over_the_anchor(tmp_path):
+    """B313/B314: everything on the branch the anchor does not hold, whoever authored it, and
+    not only the first-parent line -- a merged side branch under `.github/` is seen too."""
+    from harness.clone import protected_paths_above
+
+    repo = _walk_repo(tmp_path)
+    anchor = _wc(repo, "dev@example.com", {"README.md": "x\n"}, "upstream base")
+    _git_in(repo, "checkout", "-q", "-b", "side")
+    _wc(repo, "mallory@example.com", {".github/workflows/evil.yml": "on: push\n"}, "evil")
+    _git_in(repo, "checkout", "-q", "main")
+    _wc(repo, "harness@localhost", {"src/a.ts": "a\n"}, "work")
+    _git_in(repo, "-c", "user.email=harness@localhost", "-c", "user.name=h", "merge", "-q",
+            "--no-ff", "-m", "merge", "side")
+
+    held = protected_paths_above(repo, "HEAD", [anchor])
+
+    assert held == [".github/workflows/evil.yml"]
+
+
+def test_b313_protected_paths_above_relays_what_the_anchor_already_holds(tmp_path):
+    """B313: a `.github/` change that is upstream's own -- below the anchor -- is not held."""
+    from harness.clone import protected_paths_above
+
+    repo = _walk_repo(tmp_path)
+    _wc(repo, "dev@example.com", {".github/workflows/ci.yml": "on: push\n"}, "upstream ci")
+    anchor = _git_in(repo, "rev-parse", "HEAD").strip()
+    _wc(repo, "harness@localhost", {"src/a.ts": "a\n"}, "work")
+
+    assert protected_paths_above(repo, "HEAD", [anchor]) == []
+
+
+def test_b313_protected_paths_above_refuses_when_it_has_no_anchor(tmp_path):
+    """B313: no anchor means the whole history would be read as unpublishable, or none of it --
+    either way it was not checked against upstream, so it refuses rather than guess."""
+    from harness.clone import protected_paths_above
+    from harness.errors import CloneError
+
+    repo = _walk_repo(tmp_path)
+    _wc(repo, "harness@localhost", {"src/a.ts": "a\n"}, "work")
+
+    with pytest.raises(CloneError):
+        protected_paths_above(repo, "HEAD", [""])

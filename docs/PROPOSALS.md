@@ -429,9 +429,11 @@ These are validation errors; the proposal is never published.
 
 The schema does not check these; other things do.
 
-- A workflow file under `.github/workflows/`. The prompt forbids listing one; `_reject_forbidden_diff`
-  blocks a diff that touches one, deletions included; and the machine account's PAT carries no
-  `workflow` scope, so GitHub rejects the push outright (I-15).
+- Any path under `.github/` — a workflow, a composite action, `dependabot.yml`, `CODEOWNERS`. The
+  prompt forbids listing one; `_reject_forbidden_diff` blocks a diff that touches one, deletions
+  included; and `gh.push_branch` refuses to push a branch on which any commit the harness authored
+  touches one (I-15). Both are the harness's own checks: the machine account's PAT carries the
+  `workflow` scope (D67), so GitHub would not refuse the push.
 - A gate widened, skipped, lengthened or made non-blocking. `_reject_forbidden_diff` (B64) blocks a
   diff that adds `continue-on-error`, `.skip(`, `.only(`, `xdescribe(`, `xit(`, `eslint-disable`,
   `@ts-ignore` or `@ts-expect-error`, or that raises or introduces a timeout.

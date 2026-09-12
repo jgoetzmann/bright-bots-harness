@@ -65,6 +65,17 @@ DECISION_TAIL_LINES = 20
 #: already parked (blocked, needs-human) or already gone (shipped, merged, abandoned).
 HANDOFF_FROM_STATES: tuple[str, ...] = ("implementing", "packaged", "revising")
 
+#: B314/D67: where a handoff puts the fork's `main`, fetched at check time. A ref of the
+#: harness's own, force-updated by that fetch, so nothing the model left in the clone -- a
+#: moved `refs/remotes/origin/main` included -- can stand in for it.
+GUARD_FORK_MAIN = "refs/harness-guard/fork-main"
+
+#: B315: the commits a handoff withheld, as a patch series beside HANDOFF.md. An Actions run
+#: uploads `runs/` but not the clone, which does not outlive the run, so this is what a person
+#: can still read afterwards.
+WITHHELD_NAME = "WITHHELD.patch"
+MAX_WITHHELD_CHARS = 2_000_000
+
 TRUNCATION_NOTE = (
     "\n\n> **Truncated here.** The complete `EVIDENCE.md` is in the run artifact "
     "(`runs/item-<id>/package/`) uploaded by the workflow that opened this pull request.\n"
@@ -512,7 +523,10 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         )
         ctx.check_halt()
 
-        # 3. push the branch to the fork — never to upstream (§5.3).
+        # 3. push the branch to the fork — never to upstream (§5.3). B313/D67: and only once no
+        #    commit the push would send that upstream does not already hold -- whoever
+        #    authored it -- touches `.github/`.
+        _refuse_github_changes(ctx, the_lease)
         ctx.gh.push_branch(the_lease.path, the_lease.branch, remote_repo=fork)
         ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
     record["pushed"] = True
@@ -575,6 +589,44 @@ def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
         return conflicted
     gates.run_command(["git", "rebase", "--abort"], lease.path)
     raise HarnessError(f"git rebase failed without conflicts: {(err or out).strip()[-2000:]}")
+
+
+def _refuse_github_changes(ctx: Context, lease: Lease) -> None:
+    """B313/D67: raise unless no commit on the branch above the upstream commit `_rebase` just
+    put it on touches `.github/`, whoever authored it.
+
+    The push guard's walk stops at the first commit a harness email did not author, and the
+    model, holding Bash, can commit under any name; B64 read the working tree, and the branch a
+    push sends is a ref the model could have moved away from it. This reads exactly the commits
+    the push sends that upstream does not hold. Its anchor is `FETCH_HEAD`, which `_rebase`
+    fetched after the model's last call, so nothing the model left in the clone stands in for
+    it; upstream's own `.github/` commits sit below it and are relayed, as B299 requires. When
+    the range cannot be read, nothing is pushed.
+    """
+    try:
+        held = clone_mod.protected_paths_above(
+            lease.path, lease.branch, ["FETCH_HEAD"], gates.run_command
+        )
+    except HarnessError as exc:
+        ctx.record_decision(f"deliver did not push {lease.branch}: its commits were not read")
+        raise HarnessError(
+            f"refusing to push {lease.branch}: the commits on it above upstream could not be "
+            f"read, so none of them was checked (D67): {exc}"
+        ) from exc
+    if held:
+        listed = ", ".join(held[:10])
+        ctx.record_decision(
+            f"deliver did not push {lease.branch}: commits on it above upstream touch {listed}"
+        )
+        raise HarnessError(
+            f"refusing to push {lease.branch}: commits on it that upstream does not hold touch "
+            f"{listed}, whoever authored them; the harness never publishes a change under "
+            ".github/ (I-15, D67)"
+        )
+    ctx.record_decision(
+        f"author-blind check passed: no commit on {lease.branch} above upstream touches "
+        ".github/ (D67)"
+    )
 
 
 def _conflicted_files(lease: Lease) -> list[str]:
@@ -652,25 +704,45 @@ def build_handoff_body(
     pushed: bool,
     committed: bool,
     now_iso: str,
+    withheld: Sequence[str] = (),
+    kept: str = "",
 ) -> str:
     """B213: everything the next run (or a human) needs, and nothing that needs a credential.
 
     Pure: the caller gathers the pieces, this renders them. The last section is the exact
-    command that picks the work up again.
+    command that picks the work up again. ``withheld`` names the `.github/` paths that kept
+    the branch off the fork (B301), so the note does not blame a missing credential; then the
+    item is blocked, not carried, and the last section says what a person decides instead
+    (B315). ``kept`` names the patch of the withheld commits beside this note, if one was
+    written.
     """
-    push_note = (
-        f"pushed to `{fork}`"
-        if pushed
-        else "not pushed - no write credential, so the branch exists only in the clone"
+    if pushed:
+        push_note = f"pushed to `{fork}`"
+    elif withheld:
+        push_note = (
+            "not pushed - withheld for "
+            + ", ".join(f"`{item}`" for item in list(withheld)[:5])
+            + "; the harness never publishes a change under `.github/` (I-15, D67)"
+        )
+    else:
+        push_note = "not pushed - no write credential, so the branch exists only in the clone"
+    intro = (
+        (
+            "The harness stopped part-way through this item, and its branch holds something the "
+            "harness never publishes, so the push was withheld and the item is blocked until a "
+            "person decides. Nothing was merged and nothing was pushed."
+        )
+        if withheld
+        else (
+            "The harness stopped part-way through this item and handed it back. Nothing was "
+            "merged and nothing was force-pushed: every commit made so far is on the branch "
+            "below, and one command resumes the work exactly where it stopped."
+        )
     )
     parts: list[str] = [
         f"# Handoff - item {item_id}",
         "",
-        (
-            "The harness stopped part-way through this item and handed it back. Nothing was "
-            "merged and nothing was force-pushed: every commit made so far is on the branch "
-            "below, and one command resumes the work exactly where it stopped."
-        ),
+        intro,
         "",
         f"- **Reason:** {reason}",
         f"- **Item:** `{self_repo}#{item_id}` - {title or '(no title recorded)'}",
@@ -681,10 +753,20 @@ def build_handoff_body(
         "- **Uncommitted work at the stop:** "
         + ("committed as a wip commit" if committed else "none - the tree was clean"),
         f"- **Handed off at:** {now_iso}",
-        "",
-        "## Gate results",
-        "",
     ]
+    if withheld:
+        parts.append(
+            "- **Withheld work:** "
+            + (
+                f"`{kept}` beside this note - the branch's commits above the fork's `main`, "
+                "as a patch series"
+                if kept
+                else "not kept - no patch of it could be written"
+            )
+            + ". An Actions run does not upload the clone, and the clone does not outlive the "
+            "run."
+        )
+    parts.extend(["", "## Gate results", ""])
     if gate_lines:
         parts.append(f"The last recorded sequence (`gates/{gates_label}.json`):")
         parts.append("")
@@ -709,6 +791,21 @@ def build_handoff_body(
     else:
         parts.append("_The work package listed no acceptance criteria._")
 
+    if withheld:
+        parts.extend(
+            [
+                "",
+                "## What happens next",
+                "",
+                "The item is `stage:blocked`, and nothing resumes it by itself. A maintainer "
+                "reads the withheld work and decides; a change under `.github/` that is wanted "
+                "is made by a person. `/harness go` returns the item to the queue, and it "
+                "starts again from what the fork holds, which does not include the withheld "
+                "commits.",
+                "",
+            ]
+        )
+        return "\n".join(parts)
     parts.extend(
         [
             "",
@@ -749,8 +846,15 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
 
     # 1. Nothing the model already wrote may be lost to a usage stop.
     committed = _commit_wip(ctx, clone, reason)
-    # 2. B212: to the fork, only with a credential, and never with force.
-    pushed = _push_handoff(ctx, clone, branch, fork)
+    # 2. B212: to the fork, only with a credential, and never with force. B301/D67: and never
+    #    carrying anything under `.github/` -- the push is withheld, and B315 keeps the withheld
+    #    commits where a person can still read them.
+    pushed, withheld, anchor = _push_handoff(ctx, clone, branch, fork)
+    kept = (
+        _keep_withheld(ctx, run_dir, clone, branch, anchor or str(item.base_sha or ""))
+        if withheld
+        else ""
+    )
 
     gates_label, gate_lines = _gate_summary(run_dir)
     body = redact.redact(
@@ -770,6 +874,8 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             pushed=pushed,
             committed=committed,
             now_iso=now_iso,
+            withheld=withheld,
+            kept=kept,
         )
     )
     path = run_dir / HANDOFF_NAME
@@ -782,6 +888,25 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
         except HarnessError as exc:
             ctx.record_decision(f"handoff could not comment on {self_repo}#{item_id}: {exc}")
     ctx.store.append_event(item_id, "warn", f"handoff: {reason}")
+    if withheld:
+        # B315: not carried. Nothing a resume could pick up reached the fork -- in Actions mode
+        # `continue` would re-acquire a branch that is not there, or one without this work --
+        # so the item waits for a person instead, like any other forbidden diff.
+        ctx.record_decision(
+            f"blocked item {item_id} on its handoff ({reason}): {branch} holds what the harness "
+            f"never publishes, so it was not pushed; {path} says what"
+            + (f", and {run_dir / kept} keeps the withheld commits" if kept else "")
+        )
+        current = ctx.store.get_work_item(item_id) or item
+        if current.state in HANDOFF_FROM_STATES:
+            try:
+                ctx.store.transition(
+                    item_id, "blocked", reason=f"handoff withheld a .github/ change: {reason}"
+                )
+            except HarnessError as exc:
+                ctx.record_decision(f"could not block item {item_id} on handoff: {exc}")
+        log.info("handed off item %s, blocked with its push withheld: %s", item_id, reason)
+        return path
     ctx.record_decision(
         f"handed item {item_id} off ({reason}); the branch {branch or '(none)'} is "
         + ("on the fork" if pushed else "in the clone only")
@@ -826,17 +951,101 @@ def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:
     return True
 
 
-def _push_handoff(ctx: Context, clone: Path, branch: str, fork: str) -> bool:
-    """B212: the carried branch goes to the fork, never upstream, and never with force."""
+def _push_handoff(
+    ctx: Context, clone: Path, branch: str, fork: str
+) -> tuple[bool, list[str], str]:
+    """B212: the carried branch goes to the fork, never upstream, and never with force.
+
+    B301/D67: and never with a change under `.github/`. Only the push is withheld -- HANDOFF.md
+    and the comment still happen, and B315 blocks the item and keeps the withheld commits --
+    and the paths come back so the note can say why. `push_branch` would refuse some of it too;
+    this names the paths first, and also sees what the push guard's walk cannot
+    (`_unpublishable`). Returns ``(pushed, withheld, anchor)``; ``anchor`` is the ref the
+    author-blind check read above, or "" when it had none.
+    """
     if not ctx.gh.can_write or not branch:
-        return False
+        return False, [], ""
+    held, anchor = _unpublishable(ctx, clone, branch)
+    if held:
+        ctx.record_decision(
+            f"handoff withheld the push of {branch} for {', '.join(held[:10])}; the harness "
+            "never publishes a change under .github/ (I-15, D67)"
+        )
+        return False, held, anchor
     try:
         ctx.gh.push_branch(clone, branch, remote_repo=fork, force=False)
     except HarnessError as exc:
         ctx.record_decision(f"handoff could not push {branch} to {fork}: {exc}")
-        return False
+        return False, [], anchor
     ctx.record_decision(f"handoff pushed {branch} to {fork} (never upstream, never forced)")
-    return True
+    return True, [], anchor
+
+
+def _unpublishable(ctx: Context, clone: Path, branch: str) -> tuple[list[str], str]:
+    """B301/B314: the `.github/` paths the carried branch holds, a placeholder when it cannot
+    tell, and the anchor the author-blind half read above ("" when it had none).
+
+    A handoff is the one push that follows a model call no check has seen -- the usage stop
+    lands inside the call, before implement's B64 -- so it asks two questions. The push guard's
+    own commit walk, which stops at the first commit a harness email did not author. And,
+    because the model holds Bash and a commit it makes carries whatever name it gives, the
+    author-blind one: every commit on the branch that the fork's `main` does not hold. That
+    `main` is fetched now, into a ref of the harness's own (B314): `refs/remotes/origin/main`
+    is a file in the clone the model could have moved onto its own commit, and an anchor it
+    moved would hide exactly what this looks for. When either question cannot be answered, the
+    push is withheld: a false alarm costs one withheld push, a miss publishes a workflow change.
+    """
+    try:
+        walk = clone_mod.walk_harness_commits(clone, branch, gates.run_command)
+    except HarnessError as exc:
+        ctx.record_decision(f"handoff could not walk the commits on {branch}: {exc}")
+        return ["(the branch's commits could not be read)"], ""
+    held = [path for _sha, path in walk.protected()]
+    if walk.capped:
+        held.append(f"(over {clone_mod.PROTECTED_SCAN_COMMITS} harness commits, unchecked)")
+    code, out, err = gates.run_command(
+        ["git", "-c", f"core.hooksPath={clone_mod.HOOKS_OFF}", "fetch", "--no-tags", "--quiet",
+         "origin", f"+refs/heads/main:{GUARD_FORK_MAIN}"],
+        clone,
+    )
+    if code != 0:
+        ctx.record_decision(
+            f"handoff could not fetch the fork's main ({code}): {(err or out).strip()[-300:]}"
+        )
+        return sorted(set(held)) + ["(the fork's main could not be fetched to check against)"], ""
+    try:
+        held.extend(
+            clone_mod.protected_paths_above(clone, branch, [GUARD_FORK_MAIN], gates.run_command)
+        )
+    except HarnessError as exc:
+        ctx.record_decision(f"handoff could not read {branch} above the fork's main: {exc}")
+        held.append("(the branch's commits above the fork's main could not be read)")
+    return sorted(set(held)), GUARD_FORK_MAIN
+
+
+def _keep_withheld(ctx: Context, run_dir: Path, clone: Path, branch: str, anchor: str) -> str:
+    """B315: write the commits a handoff withheld where a person can still read them.
+
+    The file's name, or "" when there was nothing to anchor the range on or git could not
+    produce it. Redacted like every other write, and capped: it is evidence, not a transport.
+    """
+    if not anchor or not branch:
+        ctx.record_decision("handoff kept no patch of the withheld work: nothing to anchor it on")
+        return ""
+    code, out, err = gates.run_command(
+        [*clone_mod.GUARD_GIT, "format-patch", "--stdout", f"{anchor}..{branch}"], clone
+    )
+    if code != 0 or not out.strip():
+        ctx.record_decision(
+            f"handoff could not write a patch of the withheld work ({code}): "
+            f"{(err or out).strip()[-300:]}"
+        )
+        return ""
+    if len(out) > MAX_WITHHELD_CHARS:
+        out = out[:MAX_WITHHELD_CHARS] + f"\n\n[truncated at {MAX_WITHHELD_CHARS} characters]\n"
+    write_redacted(run_dir / WITHHELD_NAME, out)
+    ctx.record_decision(f"handoff kept the withheld commits as {run_dir / WITHHELD_NAME}")
+    return WITHHELD_NAME
 
 
 def _gate_summary(run_dir: Path) -> tuple[str, list[str]]:

@@ -220,3 +220,116 @@ def test_audit13_preflight_holds_the_publishers_together():
                  "check_bb_env_has_readers", "check_config_schema_agrees"):
         assert f"def {name}(" in body, f"local/preflight.py must define {name}"
         assert f"    {name}()" in body, f"main() must call {name}"
+
+
+# --- D67 / B304: both publishers refuse the same commits ----------------------------------
+
+
+def _walk_function() -> str:
+    match = re.search(r"^function Get-UnpublishablePaths.*?^\}", _read(WATCHDOG), re.M | re.S)
+    assert match, "local/watchdog-bb.ps1 must define Get-UnpublishablePaths (D67)"
+    return match.group(0)
+
+
+def test_audit13_both_publishers_refuse_the_same_paths_and_trust_the_same_authors():
+    """B304 / D67: in local mode the watchdog is the only publisher, and it pushes with the same
+    PAT -- which now carries `workflow`, so GitHub no longer refuses a workflow edit for it. Its
+    walk must name the prefix, the author emails and the cap harness/clone.py does, and run the
+    same `git log`, or local mode is the unguarded half. local/preflight.py checks the same."""
+    from harness import clone
+
+    body = _walk_function()
+    emails = re.search(r"\$HarnessEmails\s*=\s*@\(([^)]*)\)", body)
+    assert emails, "the watchdog's walk names no author emails"
+    named = sorted(re.findall(r'"([^"]+)"', emails.group(1)))
+    assert named == sorted(clone.HARNESS_AUTHOR_EMAILS)
+    prefix = re.search(r'\$ProtectedPrefix\s*=\s*"([^"]*)"', body)
+    assert prefix and (prefix.group(1),) == clone.PROTECTED_PUSH_PATHS
+    scan = re.search(r"\$ScanCommits\s*=\s*(\d+)", body)
+    assert scan and int(scan.group(1)) == clone.PROTECTED_SCAN_COMMITS
+    for flag in clone.harness_walk_argv("HEAD"):
+        if flag.startswith("-") or "=" in flag:
+            assert flag in body, f"the watchdog's walk lacks {flag!r} (clone.harness_walk_argv)"
+
+
+def test_audit13_the_watchdog_walks_before_it_pushes():
+    code = "\n".join(ln for ln in _read(WATCHDOG).splitlines() if not ln.strip().startswith("#"))
+    walk_at = code.find("Get-UnpublishablePaths $clone")
+    assert 0 <= walk_at < code.index('push "--force-with-lease'), "walk first, then push"
+    assert "$held.Count -gt 0" in code[walk_at:], "a refusal must stop the push"
+
+
+def _powershell() -> str | None:
+    import shutil
+
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+@pytest.mark.skipif(_powershell() is None, reason="no PowerShell on this machine")
+@pytest.mark.parametrize("touch, refused", [(".github/workflows/ci-cd.yml", True),
+                                            ("src/app.ts", False)])
+def test_audit13_the_powershell_walk_and_the_python_walk_agree_on_a_branch(
+    tmp_path, touch, refused
+):
+    """B304 (handoff 8, test 20): the watchdog's own function, lifted out of the script, run
+    over the same fixture branch as clone.walk_harness_commits. Upstream's workflow commit sits
+    below the harness's in both cases; only a harness commit under .github/ is refused."""
+    import os
+    import subprocess
+
+    from harness import clone
+
+    repo = tmp_path / "clone"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        argv = ["git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args]
+        done = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+
+    def commit(email: str, rel: str, message: str) -> None:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("x\n", encoding="utf-8", newline="\n")
+        git("add", "-A")
+        git("-c", f"user.email={email}", "-c", "user.name=someone", "commit", "-q", "-m", message)
+
+    git("init", "-q", "-b", "main")
+    commit("dev@example.com", "README.md", "chore: seed")
+    commit("dev@example.com", ".github/workflows/upstream.yml", "ci: upstream's own")
+    commit("harness@localhost", touch, "wip: handoff")
+    script = tmp_path / "walk.ps1"
+    script.write_text("\n".join([
+        '$ErrorActionPreference = "Continue"',
+        _walk_function(),
+        "$r = @(Get-UnpublishablePaths $args[0] $args[1])",
+        "foreach ($x in $r) { Write-Output $x }",
+        'Write-Output "count=$($r.Count)"',
+    ]) + "\n", encoding="utf-8")
+    argv = [_powershell(), "-NoProfile", "-NonInteractive"]
+    if os.name == "nt":
+        argv += ["-ExecutionPolicy", "Bypass"]
+
+    done = subprocess.run(argv + ["-File", str(script), str(repo), "HEAD"],
+                          capture_output=True, text=True, timeout=180)
+
+    lines = [ln.strip() for ln in done.stdout.splitlines() if ln.strip()]
+    assert lines and lines[-1].startswith("count="), (done.stdout, done.stderr)
+    ps_refuses = lines[-1] != "count=0"
+    py_refuses = bool(clone.walk_harness_commits(repo, "HEAD").protected())
+    assert ps_refuses == py_refuses == refused, (lines, done.stderr)
+    if refused:
+        assert any(touch in line for line in lines[:-1]), lines
+
+
+def test_b312_the_walk_compares_the_record_separator_ordinally():
+    """PowerShell 7 compares with ICU, which treats U+001E as ignorable, so under it
+    ``"".StartsWith($rs)`` is true: the blank line ``git log --name-only`` prints between a
+    commit's header and its paths entered the record branch and threw on ``Substring(1)``.
+    Windows PowerShell 5.1 (NLS) said false, which is why it passed locally and failed on both
+    CI legs. The comparison must be ordinal, or the guard is only as good as the runner's
+    globalization."""
+    body = _walk_function()
+
+    assert "StartsWith($rs, [System.StringComparison]::Ordinal)" in body, body
+    assert "$line.Length -eq 0" in body, "an empty line must never reach the record branch"
+

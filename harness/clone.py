@@ -9,7 +9,7 @@ import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Sequence
 
 from harness.clock import Clock
 from harness.errors import CloneError, ForkDiverged, PreflightFailed
@@ -99,6 +99,238 @@ def long_path(path: Path | str) -> str:
 #: `core.hooksPath` for a harness clone: a path that holds no hooks, so none can fire (B229).
 #: A directory that does not exist is what git itself documents for turning hooks off.
 HOOKS_OFF = "no-hooks"
+
+
+# -- what the harness never publishes (D67, I-15, B64) ---------------------------------------
+
+#: The path prefixes no harness commit may carry to a remote (B296/D67). Matched against
+#: `normalise_repo_path`, which prepends "/", so `.github/x` at the top of the tree matches and
+#: `docs/github-setup.md` does not. All of `.github/`, not only its workflows: composite
+#: actions, `dependabot.yml` and `CODEOWNERS` steer CI and review as surely as a workflow does,
+#: and since D67 granted the machine PAT `workflow`, nothing at GitHub's end stops any of them.
+#: The one definition: B64 (`implement.FORBIDDEN_DIFF_PATHS`), the push guard in `gh.py`, the
+#: handoff in `deliver.py` and revise all read it; `local/watchdog-bb.ps1` spells the same
+#: prefix and `local/preflight.py` holds the two together (B304).
+PROTECTED_PUSH_PATHS: tuple[str, ...] = ("/.github/",)
+
+#: B139/D67: the author emails the harness writes. The first is `deliver.GIT_IDENTITY`'s, used
+#: by the rebase; the second is what `implement.COMMIT` writes and cannot change.
+HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harness@localhost")
+
+#: B297: how many commits the walk takes from a branch tip. A walk that takes this many
+#: harness commits without reaching anyone else's refuses rather than pass the rest unchecked;
+#: a real branch carries a handful.
+PROTECTED_SCAN_COMMITS = 100
+
+#: `git log`'s record and field separators for the walk (ASCII RS and US). Git C-quotes every
+#: path holding a control character, so neither can appear on a path line, and no filename can
+#: forge the start of a commit record.
+_RECORD = chr(30)
+_FIELD = chr(31)
+
+#: B312/D67: how every guard-side git read begins -- the walk, B64's diffs, and the
+#: author-blind range check. Each option takes away one way the clone's own files, which the
+#: model can write with Bash, could show a check a different history from the one a push sends:
+#: `--no-replace-objects` ignores `refs/replace/`, and `core.commitGraph=false` reads parents
+#: and trees from the commits themselves, not from a cache file beside them. With
+#: `core.quotepath=off` a non-ASCII path arrives as itself. Grafts and a shallow file have no
+#: such switch, so `substituted_history` refuses a clone that has either.
+GUARD_GIT: tuple[str, ...] = (
+    "git", "--no-replace-objects", "-c", "core.commitGraph=false", "-c", "core.quotepath=off",
+)
+
+#: B312: the three things `substituted_history` asks git about. `local/watchdog-bb.ps1` asks
+#: the same three, and `local/preflight.py` holds it to them.
+SUBSTITUTION_PROBES: tuple[str, ...] = ("refs/replace/", "--is-shallow-repository", "info/grafts")
+
+
+def normalise_repo_path(path: str) -> str:
+    """A repository path in the one form the protected-path match reads (B64, B296).
+
+    Moved from `implement._normalise`. Backslashes become slashes, a `./` prefix goes, and a
+    leading "/" is prepended, which is what makes a top-level `.github/` match and keeps
+    `src/dotgithub/` from matching. D67 added the quote strip: git C-quotes a path that holds a
+    double quote, a backslash or a control character, and the opening quote must not carry
+    such a path past the match.
+    """
+    text = str(path).replace(SEP, "/").strip().strip("`").strip().strip('"')
+    while text.startswith("./"):
+        text = text[2:]
+    return "/" + text.lstrip("/")
+
+
+def protected_paths_in(paths: Iterable[str]) -> list[str]:
+    """The paths in ``paths`` no harness commit may publish, in the order given (B296)."""
+    return [
+        str(path)
+        for path in paths
+        if str(path).strip()
+        and any(marker in normalise_repo_path(path) for marker in PROTECTED_PUSH_PATHS)
+    ]
+
+
+@dataclass(frozen=True)
+class HarnessCommit:
+    """One commit the walk attributed to the harness: its sha, author email and paths."""
+
+    sha: str
+    email: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CommitWalk:
+    """What `walk_harness_commits` found at the top of a ref (B297).
+
+    ``commits`` is the harness's run of commits from the tip, newest first. ``stopped_at`` is
+    the first commit someone else authored -- where the mainline begins -- or "" when the walk
+    reached the root. ``capped`` means it took `PROTECTED_SCAN_COMMITS` harness commits and
+    there were more, so it cannot vouch for the ref.
+    """
+
+    commits: tuple[HarnessCommit, ...]
+    stopped_at: str
+    capped: bool
+
+    def protected(self) -> list[tuple[str, str]]:
+        """``(sha, path)`` for every protected path a harness commit touches, tip first."""
+        return [(c.sha, path) for c in self.commits for path in protected_paths_in(c.paths)]
+
+
+def harness_walk_argv(ref: str) -> list[str]:
+    """The one `git log` the walk runs; `local/watchdog-bb.ps1` runs the same (B304).
+
+    `--name-only --no-renames` lists a rename as the delete and the add it is, and lists a
+    deletion at all (D42: removing a workflow is not milder than editing one). `--first-parent`
+    keeps the walk on the branch's own line, and since git 2.31 it already gives a merge commit
+    the paths it brought in (plain `git log` shows a merge none); `--diff-merges=first-parent`
+    says so explicitly, for an older git and for the reader. It begins with `GUARD_GIT` (B312),
+    so neither `refs/replace/` nor the commit-graph cache can show the walk a different history
+    from the one the push sends. Grafts and a shallow file cannot be switched off from here, so
+    `walk_harness_commits` refuses a clone that has either before it runs this.
+    `log.showRoot=true`, so no config in the clone can hide a root commit's paths. One more than
+    the cap, to tell "the cap" from "past it".
+    """
+    return [
+        "git", "--no-replace-objects", "-c", "core.commitGraph=false", "-c", "core.quotepath=off",
+        "-c", "log.showRoot=true", "log",
+        "--format=%x1e%H%x1f%ae", "--name-only", "--no-renames", "--first-parent",
+        "--diff-merges=first-parent", "-n", str(PROTECTED_SCAN_COMMITS + 1), ref, "--",
+    ]
+
+
+def substituted_history(cwd: Path | str, run: GitRunner | None = None) -> list[str]:
+    """B312/D67: why the clone's history cannot be read as a push would send it; [] if it can.
+
+    A clone can show git a history its objects do not hold, through files the model can write
+    with Bash: a `refs/replace/` entry swaps one object for another, `info/grafts` rewrites a
+    commit's parents, and a shallow file cuts them off. A push sends the real objects either
+    way. `GUARD_GIT` switches off the first for one command, but nothing on a command line
+    switches off the other two, so a check refuses such a clone rather than read it. A harness
+    clone is a full clone and has none of the three. Git failing to answer is a reason too.
+    """
+    runner = run if run is not None else run_command
+    root = Path(cwd)
+    replace_refs, shallow_query, grafts_path = SUBSTITUTION_PROBES
+    code, out, err = runner(
+        ["git", "for-each-ref", "--format=%(refname)", replace_refs], root
+    )
+    if code != 0:
+        return [f"git for-each-ref failed ({code}): {(err or out).strip()[-300:]}"]
+    reasons: list[str] = []
+    replaced = [line.strip() for line in out.splitlines() if line.strip()]
+    if replaced:
+        reasons.append(f"{len(replaced)} {replace_refs} ref(s), {replaced[0]} first")
+    code, out, err = runner(["git", "rev-parse", shallow_query, "--git-path", grafts_path], root)
+    answers = [line.strip() for line in out.splitlines() if line.strip()]
+    if code != 0 or len(answers) < 2 or answers[0] not in ("true", "false"):
+        return reasons + [f"git rev-parse failed ({code}): {(err or out).strip()[-300:]}"]
+    if answers[0] == "true":
+        reasons.append("a shallow history")
+    grafts = Path(answers[1])
+    if (grafts if grafts.is_absolute() else root / grafts).exists():
+        reasons.append(f"a grafts file at {answers[1]}")
+    return reasons
+
+
+def _refuse_substituted(cwd: Path | str, ref: str, run: GitRunner) -> None:
+    substituted = substituted_history(cwd, run)
+    if substituted:
+        raise CloneError(
+            f"refusing to read {ref}: the clone's history is substituted ("
+            + "; ".join(substituted)
+            + "), so what git shows is not what a push would send (D67)"
+        )
+
+
+def parse_harness_walk(out: str) -> CommitWalk:
+    """Read `harness_walk_argv`'s output, stopping at the first commit a harness email did not
+    author (B297). Case is folded: a case-variant of a harness email keeps the walk going and
+    is checked, because stopping early is the direction that checks less."""
+    commits: list[HarnessCommit] = []
+    for record in out.split(_RECORD)[1:]:
+        lines = record.splitlines()
+        sha, _sep, email = (lines[0] if lines else "").partition(_FIELD)
+        sha, email = sha.strip(), email.strip()
+        if email.lower() not in HARNESS_AUTHOR_EMAILS:
+            return CommitWalk(tuple(commits), sha, False)
+        if len(commits) >= PROTECTED_SCAN_COMMITS:
+            return CommitWalk(tuple(commits), "", True)
+        paths = tuple(line.strip() for line in lines[1:] if line.strip())
+        commits.append(HarnessCommit(sha, email, paths))
+    return CommitWalk(tuple(commits), "", False)
+
+
+def walk_harness_commits(cwd: Path | str, ref: str, run: GitRunner | None = None) -> CommitWalk:
+    """B297/D67: the commits the harness authored at the top of ``ref``, and what they touch.
+
+    Not "what does this branch change against a recorded base": after `deliver._rebase` that
+    base differs from the branch by everything upstream merged since -- upstream's own
+    `.github/workflows/ci-cd.yml` included -- and a guard asking it would refuse every delivery
+    (D67). The question is which commits the harness wrote. A rebase rewrites the committer and
+    keeps the author, so upstream's commits keep upstream's authors and the walk stops at the
+    first of them. Raises `CloneError` when git fails -- a walk that did not run checked
+    nothing -- and when the clone's history is substituted (B312), which the walk cannot see
+    past.
+    """
+    runner = run if run is not None else run_command
+    _refuse_substituted(cwd, ref, runner)
+    code, out, err = runner(harness_walk_argv(ref), Path(cwd))
+    if code != 0:
+        raise CloneError(f"git log {ref} failed ({code}): {(err or out).strip()[-500:]}")
+    return parse_harness_walk(out)
+
+
+def protected_paths_above(
+    cwd: Path | str, ref: str, anchors: Sequence[str], run: GitRunner | None = None
+) -> list[str]:
+    """B313/B314: the protected paths any commit on ``ref`` touches that none of ``anchors``
+    holds, whoever authored it; sorted, once each.
+
+    The author-blind half, for the two places that hold a commit the model cannot have moved:
+    deliver, whose `_rebase` has just fetched the upstream commit the branch now sits on, and a
+    handoff, which fetches the fork's `main` at check time. Upstream's own commits sit below
+    the anchor and are relayed; everything above it is read, not only the first-parent line,
+    so a merged side branch is read too, and so is a change added and removed again inside the
+    range. Raises `CloneError` when git fails or the history is substituted (B312): a range
+    that could not be read was not checked.
+    """
+    runner = run if run is not None else run_command
+    if not [anchor for anchor in anchors if str(anchor).strip()]:
+        raise CloneError(f"no commit to read {ref} above, so nothing on it was checked")
+    _refuse_substituted(cwd, ref, runner)
+    argv = [
+        *GUARD_GIT, "log", "--format=%x1e%H", "--name-only", "--no-renames",
+        "--diff-merges=first-parent", ref, "--not", *anchors, "--",
+    ]
+    code, out, err = runner(argv, Path(cwd))
+    if code != 0:
+        raise CloneError(
+            f"git log {ref} --not {' '.join(anchors)} failed ({code}): "
+            f"{(err or out).strip()[-500:]}"
+        )
+    paths = [ln for ln in out.splitlines() if ln.strip() and not ln.startswith(_RECORD)]
+    return sorted(set(protected_paths_in(paths)))
 
 
 def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseException) -> None:

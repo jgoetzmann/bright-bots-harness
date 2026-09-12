@@ -342,8 +342,9 @@ them can come back quietly.
 ### And what the first live run found
 
 Running the sweep against the live repository — the first time it had ever got that far — the
-notifications call returned **403, "Missing the `notifications` scope."** I-15 gives the machine PAT
-`public_repo` and nothing else, so the correctly-configured token is refused there. The exception
+notifications call returned **403, "Missing the `notifications` scope."** The machine PAT then held
+`public_repo` and nothing else, so the token as configured was refused there. (It has since gained
+`notifications`, the fix below, and `workflow`, D67.) The exception
 came out of `sweep` and took the **inbox commands it had already collected** with it: the surface
 used by people who have read no documentation, lost because a feed nobody sees was refused.
 
@@ -597,3 +598,181 @@ The rest:
   report that goes out unprompted, and B144's alarm channel — still led with dollars and quoted the
   raw cap rather than the cap less the reserve. Both fixed; the heartbeat drops a stale reading for
   the same reason the accessors do.
+
+
+## D67 / B296–B315 — the token carries `workflow`; the harness guards `.github/` itself
+
+Implemented 2026-09-11 on `fix/workflow-scope-hardening`, from a design handed off on 2026-09-10
+(untracked, in `.handoffs/`).
+
+**The grant.** `harness sync-fork` failed on every run from the moment brightboost changed
+`.github/workflows/ci-cd.yml`: GitHub will not let a token without the classic `workflow` scope
+create or update a workflow file, and fast-forwarding the fork past upstream's own commit is exactly
+that. The fork sat five commits behind with nothing unique to it, and `implement.yml` and
+`discover.yml` hard-fail on a stale fork — correctly — so nothing could be delivered. Of the three
+ways out (fast-forward by hand whenever upstream touches CI, re-fork, grant the scope) the operator
+chose the scope, told plainly that it gives up half of I-15. The machine PAT now carries
+`public_repo`, `notifications` and `workflow`; the operator confirmed it on 2026-09-11, and
+sync-fork has succeeded on every run since 2026-09-10 16:40Z. The plan was harden first, then
+rotate. The rotation came first, so this lands into a window in which the credential was already
+permissive and the code had not caught up.
+
+**What that took away.** I-15 was "enforced twice by two things that fail differently": the missing
+scope, a capability guarantee, and B64. The first is gone, and a survey found the second thinner
+than it read:
+
+- **Hole A.** `handoff` committed `git add -A` over the whole tree and pushed it with no B64 check
+  at all. A usage stop landing while the model had a workflow open published it; the missing scope
+  was the only thing in the way.
+- **Hole B.** `revise` read its diff base *after* the model call. The model holds Bash; a commit it
+  made itself became the tip, the diff came back empty, and every arm of B64 passed a change nobody
+  had looked at.
+- B105's static test spelled the fork `brightboost-harness/brightboost`, which does not exist, and
+  passed unconditionally.
+- Nothing read the token's real scopes.
+- `local/watchdog-bb.ps1`, local mode's only publisher, pushes with the same PAT and checked no path.
+
+**What replaces it.** One predicate, moved to the boundary.
+
+1. **One path set, widened (B296).** `clone.PROTECTED_PUSH_PATHS = ("/.github/",)`, with
+   `normalise_repo_path` (moved from `implement._normalise`, now also stripping git's C-quote) and
+   `protected_paths_in`. All of `.github/`, not only workflows: composite actions, `dependabot.yml`
+   and `CODEOWNERS` steer CI and review too, and GitHub's scope only ever gated workflow files. B64
+   reads it — `implement.FORBIDDEN_DIFF_PATHS` is the same object. The operator accepted the cost:
+   the harness can never be asked to change anything under `.github/` on brightboost; it refuses,
+   and a person carries it.
+2. **Commit-authorship-scoped, not diff-range-scoped (B297).** `clone.walk_harness_commits` walks
+   the branch from its tip (`git log --first-parent --diff-merges=first-parent --name-only
+   --no-renames`) and stops at the first commit a harness email did not author. It asks which
+   commits the harness wrote and what is in them — not what the branch changes against a recorded
+   base. **Why:** the first design diffed from `lease.base_sha`, and `deliver` pushes after
+   rebasing onto upstream, so that diff reports every path upstream changed since — `ci-cd.yml`,
+   the very file the scope was granted for. It would have refused every delivery from the day of
+   the grant, and the suite would have shipped it green, because no deliver test moved upstream
+   before the rebase (B299 and B300 do now). A rebase rewrites the committer and keeps the author,
+   so upstream's commits keep upstream's authors and the walk stops at the first of them.
+3. **The backstop (B298).** `gh.push_branch` runs the walk before every push, through the injected
+   runner, under `--dry-run` too, and refuses when git cannot answer. It takes no `base`: nothing
+   for a caller to get wrong. `push_ref` stays outside it on purpose — its one caller relays
+   upstream's own `main` to the fork, fast-forward only.
+4. **Hole A closed (B301, B315).** `deliver._push_handoff` withholds the push — only the push;
+   HANDOFF.md and the comment still happen — when the branch carries a `.github/` path by the walk
+   *or* by the author-blind check against the fork's `main`. When either cannot be answered, it
+   withholds. The item is then blocked, not carried, and the withheld commits are kept as
+   `WITHHELD.patch` beside the note (B315), because in Actions mode the clone does not outlive the
+   run and `continue` would find no branch to resume.
+5. **Hole B closed (B302, B303).** `revise` fixes its base before the model runs. A resumed item is
+   judged from its fork point, because nothing it carries was ever checked. And it walks the branch
+   before shipping, so a `.github/` commit the branch already carries blocks the item with the
+   clone kept, rather than failing at the push.
+6. **The local publisher (B304).** `Get-UnpublishablePaths` in the watchdog runs the same `git log`
+   with the same prefix, emails and cap, before its push. `local/preflight.py` and
+   `tests/test_local_mode.py` hold the two together, and one test runs the PowerShell function over
+   the same fixture branch as the Python walk.
+7. **Doctor reads the scopes (B305).** `X-OAuth-Scopes` from an unconditional `GET /user`, reported
+   on every run against the expected set: `public_repo`, `notifications`, `workflow`. A missing
+   one, any other, or no header at all (a fine-grained token) is a **warning, never a problem**: a
+   problem exits 3 and stops the fleet (#27).
+8. **B105 de-vacuumed (B306):** the fork slug comes from `.harness/config.json`. **The delivery PR
+   body and the prompts say what is true (B307).** **The I-15 invariant is widened (B308)** to one
+   path set, defined in `clone.py`, read by implement, gh, deliver and revise.
+9. **The spoof and clone-ref substitution, closed (B312, B313, B314).** The walk trusts the author
+   field, and a commit the model made under any name it likes stops the walk before it. So the two
+   pushes that send a branch — `deliver` and the handoff — do not rely on the walk alone: each also
+   reads every commit the push would send that upstream does not already hold, whoever authored it,
+   and refuses any `.github/` path (B313). `deliver` reads from `FETCH_HEAD`, the commit `_rebase`
+   just put the branch on; the handoff fetches the fork's `main` at check time (B314), so a model
+   that ran `git update-ref refs/remotes/origin/main HEAD` onto its own commit cannot move the
+   anchor the check reads. And every guard-side git read — the walk, B64's diffs, the author-blind
+   checks — begins with `git --no-replace-objects -c core.commitGraph=false` and refuses a clone
+   carrying a `refs/replace/` ref, a grafts file or a shallow history (B312): those show git a
+   history the clone's files claim but its objects do not hold, while a push sends the real objects
+   either way.
+
+**Where this departs from the handoff, and why.**
+
+- **The cap refuses.** The handoff said to record a walk that hits its 100-commit cap. A guard that
+  is now the only layer should not publish commits it has not read, and no real branch comes near
+  100.
+- **Author spoofing, and clone-ref substitution.** The walk's stop rule trusts the author field,
+  and the model can commit under any name — plausibly, since a harness clone has no `user.email`
+  and the model must pick one. So every check that follows a model call is author-blind: implement's
+  B64 diffs from a fixed base (unchanged), revise's from the tip it gave the model, a resumed item's
+  from its fork point, and — the point on which this diverges from the handoff — both pushes that
+  send a branch add an author-blind read of every commit over an anchor the model cannot move (B313,
+  B314, item 9 above). An earlier draft conceded that "a model that rewrote the clone's refs could
+  still mislead the handoff's diff … is beyond what a check inside the clone can promise"; an
+  adversarial pass showed that was not so. A `refs/replace/` entry, a grafts file or a shallow file
+  each rewrite what git *reads* without changing what a push *sends*; the checks now read with
+  `--no-replace-objects -c core.commitGraph=false` and refuse a clone that carries any of the three
+  (B312), and the handoff's anchor is fetched from the fork at check time rather than read from a
+  ref in the clone. What remains outside any in-clone check is the transport itself — a model that
+  rewrote `.git/config` to point `origin` elsewhere, or replaced the `git` binary — which is a
+  property of the runner, not of a diff.
+- **`doctor` never "warns that `workflow` is absent"** (handoff §9.3): the rotation came first. The
+  check proves itself by reporting all three scopes and warning on none.
+- **`packager.py` and `prompts/` are corrected here**, not left to the documentation pass. The PR
+  body told every brightboost reviewer the token had no `workflow` scope, and the prompts told the
+  model the rule was `.github/workflows/` when the guard blocks all of `.github/` — a prompt
+  narrower than its check wastes a run. `.harness/PIN` is rewritten for both. F4's
+  `FULLSEND_FORBIDDEN_PATHS` keeps `.github/workflows/`: it routes a proposal to the parallel
+  prompt and is not a safety check.
+
+**The documentation pass (B309–B311).** Every live statement that the token lacks `workflow`,
+that I-15 is enforced by GitHub or "twice", or that a reviewer need not check for a `.github/`
+change now says what is true:
+
+- `docs/SAFETY.md`: I-15 names the shared predicate and says plainly that it is enforced once,
+  by the harness's own code, with doctor's scope report in place of the capability half. The
+  scope table, the operations table and the never-ask list follow.
+- `docs/USING.md` and `docs/PACKAGE-FORMAT.md`: a `.github/` change moves out of "you need not
+  check" and into "still check".
+- `docs/OPERATIONS.md`: the rotation runbook names all three scopes and says that leaving
+  `workflow` off only stalls the fork.
+- Also corrected: `README.md`, `docs/PROPOSALS.md`, `.env.example` and the `continue-on-error`
+  rationale in `feedback.yml`.
+- `harness/identity.py` and the `HUMAN.md` it generates (B309). `HUMAN.md` was re-rendered from
+  the statuses it already recorded, with no network call, so only the scope lines changed.
+- The delivery PR body (B307) states only the check that is enforced, the refusal to push.
+  "Rejected before it is committed" overclaimed: a handoff commits interrupted work and
+  withholds only the push. `prompts/system.md` changed with it, and `.harness/PIN` is rewritten.
+
+B310 is the drift guard. No live document may say the token lacks a scope doctor expects,
+credit GitHub with I-15, or put `.github/` in a list a reviewer need not check. Its matcher is
+tested against the sentences corrected here, so it cannot pass vacuously the way B105 did. B311
+holds every passage that says which scopes to grant to exactly `EXPECTED_TOKEN_SCOPES`.
+
+**The adversarial pass (B312–B315).** Three independent reviews of the branch found the guard
+thinner than it read, and this closes each real finding:
+
+- The walk and B64's diffs ran plain `git diff`/`git log`, which honour `refs/replace/` and
+  the commit-graph and grafts caches — files the model can write with Bash to show a check a
+  history the push does not send. Every guard-side read now uses `clone.GUARD_GIT`
+  (`--no-replace-objects -c core.commitGraph=false`) and refuses a clone carrying a
+  `refs/replace/` ref, a grafts file or a shallow history (`clone.substituted_history`, B312),
+  in Python and in the watchdog.
+- The walk stops at the first non-harness author, so a `.github/` commit the model signs as
+  someone else, or one the model committed itself, would pass the push guard. `deliver` and the
+  handoff each add an author-blind read of the commits the push would send that upstream does
+  not hold (`clone.protected_paths_above`, B313), anchored on a ref the model cannot move — the
+  rebase's `FETCH_HEAD` for deliver, the fork's `main` fetched at check time for the handoff
+  (B314). The handoff's earlier anchor, `refs/remotes/origin/main`, was a ref in the clone the
+  model could move onto its own commit.
+- A withheld handoff previously parked the item `approved` with a carry and told a person to
+  resume it with `continue`, but in Actions mode the clone does not survive the run and the
+  branch never reached the fork, so the resume would fail and the evidence was gone. A withheld
+  handoff now blocks the item and writes the withheld commits as `WITHHELD.patch` in
+  `runs/item-<n>/`, which the run artifact keeps (B315).
+- B105 read the fork by its literal slug, which no workflow spells — they reach the fork
+  through the `FORK_REPO` repository variable — so the scan still inspected no real line even
+  after B306. It now counts that variable as naming the fork and asserts it saw at least one
+  line that does.
+
+**Frozen documents, read as amended.** `docs/delivery/` is not edited in place. Read these as
+amended by D67: in `DELIVERY-2-HANDOFF.md`, §5.2 ("one classic PAT, scope `public_repo` only"),
+the I-15 row of the invariant table ("the token has no `workflow` scope — GitHub rejects it")
+and human prerequisite 5; in `DELIVERY-2-REVIEW.md`, R3.8 ("inspect the PAT scopes") and R5.3
+("classic, `public_repo` only; no `workflow`"), both of which `harness doctor`'s scope report
+now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.md`'s summary of
+I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
+`workflow`, and I-15 is the harness's own check.

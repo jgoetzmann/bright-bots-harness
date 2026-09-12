@@ -1,8 +1,9 @@
 """Machine-account readiness detection and ``HUMAN.md`` generation (spec §13, handoff §16).
 
 Delivery 2 activates the machine account: at tier 2 it holds one classic PAT scoped
-``public_repo`` and nothing else. Its handle is *derived* — the owner of ``FORK_REPO``,
-``jgoetzmann-bot`` in this deployment (D29); the spec's ``brightboost-harness`` survives as
+``public_repo``, ``notifications`` and ``workflow`` and nothing else (D67). Its handle is
+*derived* — the owner of ``FORK_REPO``, ``jgoetzmann-bot`` in this deployment (D29);
+the spec's ``brightboost-harness`` survives as
 the :data:`HANDLE` default and applies only until ``FORK_REPO`` is configured. This module
 still never authenticates. The credential's key name comes from ``config`` so this file never
 spells it (R3.3).
@@ -51,7 +52,7 @@ TIER_NAMES: dict[int, str] = {
 #: did the right thing. There is one list, and it is the one the store writes.
 STATE_LABELS: tuple[str, ...] = tuple(LABELS[state] for state in STATES)
 
-# §13.2 for tiers 0 and 1, verbatim; §5.2 for tier 2 (classic PAT, ``public_repo`` only).
+# §13.2 for tiers 0 and 1, verbatim; §5.2 for tier 2 (classic PAT), with D67's scopes.
 # (permission, value for the tier, note)
 PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
     0: (
@@ -86,10 +87,17 @@ PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
             "writable because the account is not a collaborator",
         ),
         (
+            "Notifications",
+            "Read",
+            "The `notifications` scope: the sweep reads the feed to see a mention on a product "
+            "issue the account has never touched",
+        ),
+        (
             "Workflows",
-            "none",
-            "The `workflow` scope is deliberately absent: GitHub rejects any push that touches "
-            "`.github/workflows/` (I-15)",
+            "Read and write",
+            "The `workflow` scope, granted (D67) so `harness sync-fork` can fast-forward the fork "
+            "past upstream's own workflow commits. GitHub therefore no longer refuses a push "
+            "touching `.github/`; the harness refuses one itself (I-15)",
         ),
         ("Administration", "none", "No `admin:*` scope, ever"),
         ("Secrets, Environments, Actions", "none", "Never"),
@@ -99,21 +107,23 @@ PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
 NEVER_ASK_FOR_COMMON: tuple[str, ...] = (
     "Production credentials of any kind — database URLs, deployment keys, cloud accounts.",
     "Organization administration, or ownership of the organization.",
-    "The `Workflows` permission, or the classic `workflow` scope. Without it GitHub itself "
-    "rejects any push that modifies `.github/workflows/`, so \"never edit CI to go green\" stops "
-    "being a rule the harness is trusted to follow and becomes something it cannot do.",
     "Branch-protection changes, or any relaxation of a required check.",
     "Merge rights. Every change the harness produces is reviewed and merged by a human.",
 )
 
 NEVER_ASK_FOR_FINE_GRAINED: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
+    "The `Workflows` permission. Below tier 2 nothing is pushed at all, and a fine-grained "
+    "token without it cannot change `.github/workflows/`.",
     "A classic personal access token. Classic scopes are account-wide and cannot be "
     "narrowed to one repository.",
 )
 
+# D67: tier 2's classic token does carry `workflow` -- without it the fork cannot follow
+# upstream's own CI changes -- so it is no longer on this list; I-15 is the harness's own check.
 NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
-    "Any classic scope beyond `public_repo`: no `repo`, no `workflow`, no `admin:*`, "
-    "no `write:org`, no `delete_repo`.",
+    "Any classic scope beyond `public_repo`, `notifications` and `workflow`: no `repo`, no "
+    "`admin:*`, no `write:org`, no `delete_repo`. `harness doctor` warns if the token "
+    "carries one.",
     "Write access to the product repository. The account owns the fork and nothing else; "
     "it is not, and must not become, a collaborator upstream.",
 )
@@ -469,18 +479,21 @@ class Identity:
             Prerequisite(
                 id="classic-pat",
                 title=(
-                    f"Classic PAT on `{self.handle}`, scope `public_repo` only, present in "
-                    f"`.env` as `{KEY_NAME}`"
+                    f"Classic PAT on `{self.handle}`, scopes `public_repo`, `notifications` "
+                    f"and `workflow` only, present in `.env` as `{KEY_NAME}`"
                 ),
                 tier_required=2,
                 satisfied=token_ok,
                 actor="you",
                 detail=(
                     "Fine-grained tokens cannot open a pull request from a fork to an upstream "
-                    "repository (§5.2), so the credential is classic. Do not add `workflow`: "
-                    "its absence is invariant I-15. Do not add `repo`, `admin:*` or anything "
-                    "else. Put the value in `.env` only; never in a chat, a commit, or a "
-                    "package."
+                    "repository (§5.2), so the credential is classic. Grant `public_repo`, "
+                    "`notifications` and `workflow`: `workflow` lets `harness sync-fork` "
+                    "fast-forward the fork past upstream's own CI changes (D67), and "
+                    "`notifications` lets the sweep see mentions on product issues. Do not add "
+                    "`repo`, `admin:*` or anything else; `harness doctor` reports the scopes "
+                    "the token carries and warns on any difference. Put the value in `.env` "
+                    "only; never in a chat, a commit, or a package."
                 ),
                 verify="harness doctor",
             ),
@@ -760,8 +773,9 @@ class Identity:
             )
         else:
             lines.append(
-                f"| `{KEY_NAME}` | Classic personal access token on `{self.handle}`, scope "
-                f"`public_repo` **only** | {permission_summary(target)} | "
+                f"| `{KEY_NAME}` | Classic personal access token on `{self.handle}`, scopes "
+                "`public_repo`, `notifications` and `workflow` **only** | "
+                f"{permission_summary(target)} | "
                 f"{CLASSIC_CREATE_URL} | Nobody: the account owns the fork `{self.fork_repo}` "
                 "and nothing of the organization's; there is no organization-side approval |"
             )
@@ -778,7 +792,7 @@ class Identity:
                 "(I-11)."
             )
             lines.append("")
-            lines.append(f"What `public_repo` grants, and what it does not, for tier {target}:")
+            lines.append(f"What the three scopes grant, and what they do not, for tier {target}:")
         else:
             lines.append(f"The exact permission set for tier {target}, from the tier table:")
         lines.append("")
@@ -789,10 +803,13 @@ class Identity:
         lines.append("")
         if target >= 2:
             lines.append(
-                "The scope that is deliberately absent is `workflow`. GitHub rejects any push "
-                "that modifies `.github/workflows/`, so \"never edit CI to go green\" is "
-                "enforced by the receiving end (I-15), not trusted to the model. `repo`, "
-                "`admin:*` and every other classic scope are absent too."
+                "`workflow` is granted (D67): without it GitHub refuses to let the fork "
+                "fast-forward past an upstream change to `.github/workflows/`, and the fork "
+                "falls behind. So GitHub no longer stops a push that touches `.github/`; the "
+                "harness does, in its own code: it refuses to push any commit of its own that "
+                "touches `.github/` (I-15). `harness doctor` reads the token's real scopes "
+                "before every spending run and warns on any difference. `repo`, `admin:*` and "
+                "every other classic scope are absent."
             )
         else:
             lines.append(

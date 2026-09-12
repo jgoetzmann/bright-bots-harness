@@ -46,7 +46,8 @@ then is the change finished.
 Identical to the ordinary path, and no less absolute because the pace is higher. A diff violating any
 of these is rejected whole and the item is blocked.
 
-- **Do not edit any file under `.github/workflows/`.**
+- **Do not edit any file under `.github/`** — not a workflow, a composite action, `dependabot.yml`
+  or `CODEOWNERS`.
 - **Do not widen, skip, or disable a gate.** No `continue-on-error`, no `.skip(`, no `.only(`, no
   raised timeout, no new lint-ignore or type-ignore comment, no relaxed rule, no deleted test. Going
   fast is a licence to skip *checking your own work as you go*, never a licence to move the finish

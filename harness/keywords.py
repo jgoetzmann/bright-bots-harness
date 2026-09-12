@@ -455,8 +455,8 @@ def sweep(
     try:
         notifications = list(gh.notifications(since))
     except GitHubError as exc:
-        # The notifications endpoint needs a scope of its own, and I-15 gives the machine PAT
-        # `public_repo` and nothing else -- so a correctly-configured token can be refused here.
+        # The notifications endpoint needs the `notifications` scope, so a token without it --
+        # one rotated without it, say; doctor names the gap (B305) -- is refused here.
         # Losing the feed costs cold product-issue mentions; letting the refusal out of `sweep`
         # costs the INBOX TOO, which is the surface people who have read no documentation use.
         # The inbox is read before this line for exactly that reason, so keep what it found.

@@ -705,8 +705,8 @@ def test_commands_from_gates_each_command_on_its_own_level():
 
 
 def test_a_refused_notifications_feed_still_delivers_the_inbox():
-    """The notifications endpoint needs a scope of its own, and I-15 gives the machine PAT
-    `public_repo` and nothing else -- so a correctly-configured token is refused here with a 403.
+    """The notifications endpoint needs a scope of its own, `notifications`, which the machine PAT
+    did not carry when this was found (it held `public_repo` alone) -- so it was refused with a 403.
 
     Found by running the sweep against the live repository: it raised out of `sweep`, and the
     inbox commands it had ALREADY collected went with it. The inbox is the surface used by people

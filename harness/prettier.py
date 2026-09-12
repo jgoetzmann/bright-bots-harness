@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
+from harness.clone import GUARD_GIT
 from harness.gates import run_command
 
 log = logging.getLogger("harness")
@@ -58,7 +59,11 @@ def _diff_names(
     root = Path(clone)
     seen: list[str] = []
 
-    argv = ["git", "diff", "--name-only"]
+    # B312/D67: this list is B64's path arm, so it reads history the way a push sends it.
+    # `GUARD_GIT` keeps a `refs/replace/` entry for ``base_sha`` from swapping in a tree that
+    # already holds the change, and `--no-renames` lists a move out of `.github/` as the
+    # deletion it is -- with rename detection `--name-only` names only the new path.
+    argv = [*GUARD_GIT, "diff", "--name-only", "--no-renames"]
     if diff_filter is not None:
         argv.append(f"--diff-filter={diff_filter}")
     argv.append(base_sha)
@@ -68,7 +73,7 @@ def _diff_names(
     else:
         seen.extend(out.splitlines())
 
-    code, out, err = run(["git", "ls-files", "--others", "--exclude-standard"], root)
+    code, out, err = run([*GUARD_GIT, "ls-files", "--others", "--exclude-standard"], root)
     if code != 0:
         log.warning("git ls-files --others failed (%s): %s", code, err.strip()[:500])
     else:

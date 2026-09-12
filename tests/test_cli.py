@@ -2520,3 +2520,145 @@ def test_doctor_a_real_problem_still_degrades(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
 
     assert code == 3 and "degraded:" in out
+
+
+# --------------------------------------------------------------------------------------
+# B305 (D67) - doctor reads what the machine PAT actually holds
+# --------------------------------------------------------------------------------------
+EXPECTED_SCOPES = ("notifications", "public_repo", "workflow")
+
+
+def _scopes_context(monkeypatch, scopes, *, error=None):
+    """`_context` handing doctor a client whose token reports `scopes` (or raises `error`)."""
+    from types import SimpleNamespace
+
+    asked: list[bool] = []
+
+    def token_scopes():
+        asked.append(True)
+        if error is not None:
+            raise error
+        return scopes
+
+    gh = SimpleNamespace(can_write=True, token_scopes=token_scopes)
+    monkeypatch.setattr(cli, "_context", lambda config, args, *, run_id: SimpleNamespace(gh=gh))
+    return asked
+
+
+def _probe_scopes(tier=2, **kwargs):
+    from types import SimpleNamespace
+
+    payload: dict = {}
+    warnings = cli._doctor_token_scopes(
+        SimpleNamespace(permission_tier=tier), SimpleNamespace(), payload, **kwargs
+    )
+    return warnings, payload
+
+
+def test_b305_doctor_reports_the_expected_scopes_without_a_warning(monkeypatch):
+    """B305: the D67 set -- `public_repo`, `notifications`, `workflow` -- is what a correctly
+    scoped token holds, and it is reported, not warned about."""
+    _scopes_context(monkeypatch, EXPECTED_SCOPES)
+
+    warnings, payload = _probe_scopes()
+
+    assert warnings == []
+    assert payload["token_scopes"]["checked"] is True
+    assert payload["token_scopes"]["granted"] == list(EXPECTED_SCOPES)
+    assert payload["token_scopes"]["missing"] == payload["token_scopes"]["unexpected"] == []
+
+
+@pytest.mark.parametrize(
+    "scope, consequence",
+    [("workflow", "sync-fork"), ("notifications", "goes unseen"),
+     ("public_repo", "nothing is delivered")],
+)
+def test_b305_a_missing_expected_scope_is_a_warning_naming_what_breaks(
+    monkeypatch, scope, consequence
+):
+    _scopes_context(monkeypatch, tuple(s for s in EXPECTED_SCOPES if s != scope))
+
+    (warning,), payload = _probe_scopes()
+
+    assert f"`{scope}`" in warning and consequence in warning
+    assert payload["token_scopes"]["missing"] == [scope]
+
+
+def test_b305_the_feed_probe_and_the_scope_check_do_not_both_report_notifications(monkeypatch):
+    """B305: when the notifications feed probe has already warned, the scope check does not say
+    the same thing a second time."""
+    _scopes_context(monkeypatch, ("public_repo", "workflow"))
+
+    warnings, _payload = _probe_scopes(feed_unreadable=True)
+
+    assert warnings == []
+
+
+def test_b305_a_scope_beyond_the_expected_set_is_a_warning(monkeypatch):
+    """B305: nothing else would notice the token acquiring `delete_repo` or `admin:org`."""
+    _scopes_context(monkeypatch, ("delete_repo", *EXPECTED_SCOPES))
+
+    (warning,), payload = _probe_scopes()
+
+    assert "`delete_repo`" in warning
+    assert payload["token_scopes"]["unexpected"] == ["delete_repo"]
+
+
+def test_b305_a_token_that_reports_no_scopes_is_cannot_tell_not_fine(monkeypatch):
+    _scopes_context(monkeypatch, None)
+
+    (warning,), payload = _probe_scopes()
+
+    assert "fine-grained" in warning and payload["token_scopes"]["checked"] is False
+
+
+def test_b305_a_scope_read_that_fails_is_a_warning_not_a_crash(monkeypatch):
+    from harness.errors import GitHubError
+
+    _scopes_context(monkeypatch, None, error=GitHubError("github returned 401 for /user"))
+
+    (warning,), _payload = _probe_scopes()
+
+    assert "401" in warning
+
+
+def test_b305_tier_0_holds_no_token_and_is_not_checked(monkeypatch):
+    asked = _scopes_context(monkeypatch, ())
+
+    warnings, payload = _probe_scopes(tier=0)
+
+    assert warnings == [] and asked == []
+    assert payload["token_scopes"] == {"checked": False}
+
+
+def test_b305_a_scope_warning_never_changes_doctors_exit_code(tmp_path, monkeypatch, capsys):
+    """B305: warnings only. `doctor` gates feedback.yml and implement.yml under `set -e`, so a
+    scope check filed as a problem would stop the fleet over a diagnostic -- #27 again."""
+    monkeypatch.chdir(tmp_path)
+    write_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(cli, "_doctor_trust_access", lambda config, args, trusted, payload: ())
+
+    def granting(granted):
+        def probe(config, args, payload, *, feed_unreadable=False):
+            missing = [s for s in EXPECTED_SCOPES if s not in granted]
+            payload["token_scopes"] = {
+                "checked": True, "granted": list(granted), "expected": list(EXPECTED_SCOPES),
+                "missing": missing, "unexpected": [],
+            }
+            return [f"the machine PAT lacks the `{s}` scope" for s in missing]
+
+        return probe
+
+    monkeypatch.setattr(cli, "_doctor_token_scopes", granting(EXPECTED_SCOPES))
+    baseline = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert "token scopes: notifications, public_repo, workflow" in out
+
+    monkeypatch.setattr(cli, "_doctor_token_scopes", granting(("notifications", "public_repo")))
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert code == baseline, "a scope warning must not change doctor's exit code"
+    assert "warnings (the harness still runs)" in out and "`workflow`" in out

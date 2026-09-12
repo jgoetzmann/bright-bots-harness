@@ -319,3 +319,17 @@ def test_audit13_the_powershell_walk_and_the_python_walk_agree_on_a_branch(
     assert ps_refuses == py_refuses == refused, (lines, done.stderr)
     if refused:
         assert any(touch in line for line in lines[:-1]), lines
+
+
+def test_b312_the_walk_compares_the_record_separator_ordinally():
+    """PowerShell 7 compares with ICU, which treats U+001E as ignorable, so under it
+    ``"".StartsWith($rs)`` is true: the blank line ``git log --name-only`` prints between a
+    commit's header and its paths entered the record branch and threw on ``Substring(1)``.
+    Windows PowerShell 5.1 (NLS) said false, which is why it passed locally and failed on both
+    CI legs. The comparison must be ordinal, or the guard is only as good as the runner's
+    globalization."""
+    body = _walk_function()
+
+    assert "StartsWith($rs, [System.StringComparison]::Ordinal)" in body, body
+    assert "$line.Length -eq 0" in body, "an empty line must never reach the record branch"
+

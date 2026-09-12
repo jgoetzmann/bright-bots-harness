@@ -113,7 +113,13 @@ function Get-UnpublishablePaths([string]$Clone, [string]$Ref) {
     $sha = ""
     foreach ($raw in $lines) {
         $line = "$raw"
-        if ($line.StartsWith($rs)) {
+        # Ordinal, always. PowerShell 7 compares with ICU, which treats U+001E as an
+        # ignorable character: under it "".StartsWith($rs) is TRUE, so the blank line git
+        # prints between a commit's header and its paths entered this branch and threw on
+        # Substring(1). Windows PowerShell 5.1 (NLS) said false, so it passed there and
+        # failed on both CI legs.
+        if ($line.Length -eq 0) { continue }
+        if ($line.StartsWith($rs, [System.StringComparison]::Ordinal)) {
             $fields = $line.Substring(1).Split($us)
             $email = ""
             if ($fields.Count -gt 1) { $email = $fields[1].Trim().ToLowerInvariant() }
@@ -125,7 +131,7 @@ function Get-UnpublishablePaths([string]$Clone, [string]$Ref) {
         }
         $p = $line.Replace([string][char]92, "/").Trim().Trim([char]96).Trim().Trim('"')
         if (-not $p) { continue }
-        while ($p.StartsWith("./")) { $p = $p.Substring(2) }
+        while ($p.StartsWith("./", [System.StringComparison]::Ordinal)) { $p = $p.Substring(2) }
         $p = "/" + $p.TrimStart("/")
         if ($p.Contains($ProtectedPrefix)) { $found += "harness commit $($sha.Substring(0, [math]::Min(12, $sha.Length))) touches $($p.Substring(1))" }
     }

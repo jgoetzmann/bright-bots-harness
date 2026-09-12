@@ -941,3 +941,123 @@ corrected wherever it promised something that does not happen.
   so `_GO_DEAD_ENDS`'s "`/harness work` opens a fresh item" holds only for a reworded request. The
   docs say all of this. Adding `blocked` edges would change D1's state machine, and that change
   deserves its own decision.
+
+## D69 / B340–B352 — the trust file is the boundary, so one line must work everywhere
+
+Decided by the operator's delegate; implemented 2026-09-12 on `feat/trust-tiers`, stacked on D68.
+The brief was "figure out the trust system — multiple tiers, and only I will be adding people to it
+manually, so that should be good." Read as: **the hand-curated file IS the security boundary**,
+because only the operator can change it and only through a CODEOWNERS-reviewed pull request. Every
+decision below follows from taking that seriously.
+
+**The tiers are right; keep them.** Tabulated from `keywords.VERB_LEVEL`, level 3 is
+`halt`/`resume`/`reject`, level 2 the eight steering verbs, level 1 `ask`/`status`, and level 0 the
+absence of a line. Nothing is added, removed or renumbered. Level 1 looks empty in the shipped file
+but is load-bearing: it is `DEFAULT_LEVEL`, the least-privilege reading of a line that omits its
+level, so a typo falls to asking rather than to steering. Splitting `status` (free) from `ask`
+(spends) into a fourth tier was rejected — it would renumber the file the operator hand-edits,
+which is the one thing that must stay stable across a manual workflow, and would demote the only
+verb the "asker" tier is named for.
+
+What was actually wrong was legibility, in two ways the code contradicted:
+
+- **Level 1 is not free.** `ask` clones the product repository and calls the model
+  (`stages/ask.py`); `status` costs nothing. Both pages that described the tier said "changes no
+  state", which is true, and implied "costs nothing", which is not.
+- **The 2/3 line is partly fictional.** In `discovered`, `approved`, `blocked` and `needs-human` a
+  level-2 `stop` ends the item for good, because none has an edge to `blocked` — the authority
+  `reject` was reserved for (recorded under D68 and unchanged here).
+
+Both are properties to display, not tiers to add. The table is now built by `trust.tier_table()`
+from the verb→level mapping **passed in as a parameter** — `keywords` imports `trust`, so reaching
+back for `VERB_LEVEL` inside `trust.py` would be the import cycle `links._who` already sidesteps by
+hand — and `tests/test_docs_drift.py` checks COMMANDS.md, README.md and `.harness/trust.txt`'s own
+header against it in both directions (B351). The drift had already happened: the trust file said
+level 1 was "`ask` only" and README said "`ask` alone", both wrong since `status` joined it, while
+COMMANDS.md was right precisely because a test read it.
+
+*Deviation from the plan, recorded:* the table was to carry a "spends" column generated from code.
+It does not. That would have meant a new per-verb cost constant in `keywords.py`, and the claim it
+encodes is not derivable from `VERB_LEVEL`, so the table would have asserted something the drift
+test could not actually check — the failure mode this section exists to remove. The table stays a
+pure function of `VERB_LEVEL`; the spending fact is stated in prose next to `ask`'s existing cap.
+
+**The vouched line is now the ordinary way to add anyone.** D68 introduced `vouch:<id>` as the
+workaround for one account. D69 makes it the documented default, and a bare line the special case
+for somebody already invited:
+
+```
+2 their-github-login vouch:their-numeric-account-id
+```
+
+One line, one file, one reviewed PR, and it works on **every** surface — this repository and the
+product repository — with no invitation and no silent denial. The association route is kept exactly
+as B131 defined it for unvouched handles, so an invited collaborator still needs no id.
+
+This is not a weakening, and the direction matters: the association guards a **name**, which can be
+renamed away and claimed by somebody else, and it is granted per-repository and is invisible from
+the commenter's side. An account id is immutable and never reused. A vouched line therefore admits
+one account everywhere and refuses any other account holding that login **even when GitHub calls it
+OWNER** — stricter on identity than what it replaces — while granting no repository access at all,
+so D30 stands untouched. Rejected: inviting every maintainer as a collaborator (breaks D30, since a
+write collaborator on a personal-account repository can push a branch whose workflow runs with the
+Claude token and the bot PAT in scope); dropping the association route (would force an id on people
+for whom the invite already works, and would change B131); and resolving logins to ids at runtime (a
+network read on the hot path of every comment, failing open or closed unpredictably).
+
+**Anything that would grant less than it says is now refused outright.** All five were found by
+probing the shipped parser, not by reading it:
+
+- `2 nathan 193453438` — the id pasted with the keyword left off — parsed to a plain level-2 line
+  with no vouch and nothing in `malformed`. It looked right, vouched for nobody, and granted
+  nothing anywhere he was not already a collaborator. Only tokens beginning `vouch` were ever
+  inspected; **every** token after the handle is now read, and one the gate does not understand
+  refuses the whole line.
+- `2 Jack Goetzmann` silently registered the handle `jack`.
+- `2 nathan@example.com` and `2 nathan,` registered literally and could never match a login —
+  refused for ever, silently. A handle must now be GitHub-login-shaped.
+- `2 <NEW_MAINTAINER>` vanished entirely: no entry in `malformed`, `implicit` or anywhere else, so
+  `doctor` could not name it, while the same line failed `Identity.trust_file_ready()` for a reason
+  nothing connected back to it. Placeholders are now recorded in `Trust.skipped`.
+- `3 jack` beside `1 jack` silently kept level 3, so a line added to **demote** somebody did
+  nothing. The merge is unchanged (B269 pins it); the duplication is now recorded and named.
+
+Each refusal takes the whole line, for D68's reason: read as something smaller, the line still
+grants a level, which is not what its author meant either. Fail-closed is unchanged throughout.
+
+**`harness trust`, which prints and never writes.** `trust line <login> --level N` resolves the
+account id from the public API and prints the exact line on stdout with what it grants on stderr,
+so it can be copied without editing. `trust show` prints the file as the gate reads it: who, at
+what level, by which route, and every entry being refused. Neither writes: `.harness/` is outside
+the write roots on purpose (B143) so the harness cannot change its own trust list, and the review
+is the boundary. Two details are deliberate — `--level` is **required**, because defaulting
+somebody's authority is exactly the silent misgrant this work removes; and a failed id lookup
+prints **no line at all** and exits non-zero, because an unvouched line is precisely the entry that
+gets silently denied, so emitting one after failing to look the account up would manufacture the
+defect the command exists to prevent. It lives in `__main__.py` plus the existing `trust.py`, so
+`SPEC_PACKAGE_FILES` and `D2_PACKAGE_FILES` are untouched; the refusal logic sits in `trust.py`
+because B330 fails the build if any other module decides who is heard.
+
+**A refused trust line now warns instead of stopping the fleet.** It was a `doctor` *problem*,
+which exits 3 — and `doctor` gates discover.yml, feedback.yml and implement.yml under `set -e`. So
+one typo in a hand-edited file stopped everything, which is precisely the failure #27 fixed once
+before, when a stranded-access diagnostic took the fleet down within an hour of go-live. The line
+already grants nothing at the gate, so the fleet-wide stop bought no safety it did not already
+have. The loudness moved to review time, where the operator is standing: the suite fails any pull
+request whose `.harness/trust.txt` carries a refused, skipped or duplicated entry (B350). `doctor`
+also now names placeholders and duplicates, and always says which handles depend on the association
+half — including saying "could not check" out loud at tier 0, where that read needs push access and
+printing nothing at all read as "checked, nobody is stranded".
+
+**A defect this turned up.** `store/__init__.py` loads a whole `Trust` and `store/github.py` then
+did `tuple(trusted)`, discarding the levels. `links._who` falls back to "level 2+" for anything but
+a `Trust`, so every work item and proposal pull request the harness opened showed a number while
+replies — which pass `ctx.trusted` — named the handles. The footer exists so a reader of a public
+thread can see whether their own comment would be honoured without first learning what a level is.
+Invisible in tests because the fakes pass a `Trust`, which is the boundary class of defect CLAUDE.md
+warns about; B352 checks it through the store.
+
+**Recorded, not fixed.** `stages/deliver.py` requests review from every handle in the file,
+including level-1 askers, and a refusal — the normal case for a vouched non-collaborator — is
+swallowed into `ctx.record_decision`, so it is in the run record and never surfaced to the person
+expecting a review request. Pre-existing, documented under D54, and out of scope here.

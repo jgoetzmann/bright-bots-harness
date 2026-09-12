@@ -480,12 +480,20 @@ neither access nor a vouch, and lists every vouch.
 
 | Level | Who | Commands |
 |---|---|---|
-| **3** | operator | everything, including `halt`, `resume`, `reject` (the terminal form of `stop`) and `--force` |
-| **2** | maintainer | `work` `go` `audit` `promote` `revise` `rebase` `split` `stop` |
-| **1** | asker | `ask`, `status` |
+| **3** | operator | everything below, plus `halt`, `resume`, `reject` and `--force` |
+| **2** | maintainer | `audit` `go` `promote` `rebase` `revise` `split` `stop` `work` |
+| **1** | asker | `ask` and `status` |
 | **0** | not in the file | nothing; the comment body is never parsed |
 
+This table is generated from `keywords.VERB_LEVEL` and checked against it by
+`tests/test_docs_drift.py`, so it cannot drift from the levels the gate actually enforces.
+
 Using a verb above your level is answered, not silent: the reply names the level it needed.
+
+Two things the numbers do not say on their own. **Level 1 is not free**: `ask` reads the product
+repository and spends a model call, bounded by `ASK_CAP_USD`; `status` costs nothing. And **level 2
+is not merely "cannot halt"**: in the four stages with nowhere to park an item, a level-2 `stop`
+ends that item for good, which is the authority `reject` was reserved for.
 
 ### Latency, and how you know it heard you
 
@@ -542,6 +550,35 @@ harness status          # queue by state, budget remaining, what is in flight
 harness dispatch        # what may start now, the priority queue, and why the head is or is not moving
 harness ledger          # spend, per-stage medians, window state, distance to each usage stop
 ```
+
+### Adding somebody to the trust file
+
+```bash
+harness trust show                          # the file as the gate reads it
+harness trust line nathan --level 2         # the exact line to paste
+harness trust line invited --level 2 --no-vouch   # for somebody already a collaborator here
+```
+
+`harness trust line` turns a GitHub login into the one line that adds them, resolving their numeric
+account id from the public API so you never retype it:
+
+```
+2 BrightBoost-Tech vouch:193453438
+```
+
+The line goes on stdout and what it grants goes on stderr, so it can be copied without editing.
+**If the account id cannot be resolved, it prints no line at all and exits non-zero** — an unvouched
+line is precisely the entry that gets silently denied, so handing you one that looks finished would
+manufacture the failure this command exists to prevent. `--level` is required for the same reason:
+defaulting somebody's authority is the one mistake worth costing a keystroke.
+
+`harness trust show` prints who is at what level, which entries are vouched, which still depend on
+the association half, and **every line that is being refused** — a bad level, an unfinished
+placeholder, a handle that is not a login, a stray token, or two lines disagreeing about an account.
+
+Neither form writes anything. `.harness/` is outside the harness's write roots on purpose (B143),
+so it cannot change its own trust list; the command produces text a human commits through a
+reviewed pull request, and that review is the security boundary.
 
 `dispatch` starts nothing. It is the answer to "why is nothing happening":
 

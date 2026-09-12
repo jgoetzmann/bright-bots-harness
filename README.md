@@ -95,9 +95,11 @@ Six other words are understood, each meaning the verb it became: `fix` → `revi
 `queue` → `go`, `usage` → `status`, `ledger` → `status`, `help` → `status`.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3 (the
-operator) everything, level 2 (maintainers) everything that queues or steers work, level 1
-(trusted) `ask` alone, level 0 nothing — a level-0 comment body is never even parsed. A refusal is
-answered rather than silent, naming the level the verb needed.
+operator) adds `halt`, `resume` and `reject`, level 2 (maintainers) `audit`, `go`, `promote`,
+`rebase`, `revise`, `split`, `stop` and `work`, level 1 (trusted) `ask` and `status`, level 0
+nothing — a level-0 comment body is never even parsed. A refusal is
+answered rather than silent, naming the level the verb needed. Adding somebody is one reviewed
+line in that file, which `harness trust line` writes for you.
 
 Append `--force` to start something now rather than at the next run window. Level 3 only, and it
 lifts **the calendar and nothing else**: the kill switch, both usage stops, every USD cap and both

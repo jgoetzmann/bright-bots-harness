@@ -12,6 +12,7 @@ from harness.clock import Clock, iso, parse_iso
 from harness.errors import DuplicateWorkItem, GitHubError, IllegalTransition, StoreError
 from harness import links
 from harness.redact import redact
+from harness.trust import Trust
 from harness.store.sqlite import (
     KIND_LABELS,
     LABELS,
@@ -206,7 +207,12 @@ class GitHubStore:
         # B227: what the bodies this store writes say about themselves. Optional so a test may
         # build a store without a whole Config; the text degrades, nothing raises.
         self.config = config
-        self.trusted = tuple(trusted)
+        # D69: kept WHOLE when it is a Trust. `tuple(trusted)` discarded the levels that
+        # `store/__init__.py` had just loaded, so `links._who` fell through to "level 2+" on
+        # every work item and proposal pull request while replies -- which pass `ctx.trusted`
+        # -- named the handles. The footer exists so a reader of a public thread can see
+        # whether their own comment would be honoured without first learning what a level is.
+        self.trusted = trusted if isinstance(trusted, Trust) else tuple(trusted)
         # item id -> (stage, usd) of the latest finish_stage_run in this process (B101 comment).
         self._last_run: dict[int, tuple[str, float]] = {}
         # run id -> (item id, stage) for runs started in this process.

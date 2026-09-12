@@ -355,7 +355,8 @@ def build_pr_body(
             "",
             (
                 f"Honoured only from {_trusted_handles(trusted)}, and only when GitHub also "
-                "reports you as an owner, member or collaborator here. Everyone else's comments "
+                "reports you as an owner, member or collaborator here, or `.harness/trust.txt` "
+                "vouches for your exact account. Everyone else's comments "
                 "are read and ignored. A command is acted on once — editing a comment does not "
                 "re-fire it, so post a new one."
             ),

@@ -117,10 +117,14 @@ jobs:
         env:
           PYTHONPATH: .
           ACTOR: ${{ github.event.comment.user.login }}
+          # D68: the numeric account id. A trust.txt line may vouch for one exact account, which
+          # the sweep checks against `user.id` in the REST payload; without this the ack would
+          # refuse somebody the sweep then answers.
+          ACTOR_ID: ${{ github.event.comment.user.id }}
           ASSOCIATION: ${{ github.event.comment.author_association }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
-          python -m harness ack --body-file comment.txt --actor "$ACTOR" --association "$ASSOCIATION" --repo "${{ github.repository }}" --number "$NUMBER" > ack.json || true
+          python -m harness ack --body-file comment.txt --actor "$ACTOR" --actor-id "$ACTOR_ID" --association "$ASSOCIATION" --repo "${{ github.repository }}" --number "$NUMBER" > ack.json || true
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
           try:

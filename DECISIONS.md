@@ -776,3 +776,168 @@ and human prerequisite 5; in `DELIVERY-2-REVIEW.md`, R3.8 ("inspect the PAT scop
 now verifies, with R3.8's tests widened to B298–B301; and `DELIVERY-4-HANDOFF.md`'s summary of
 I-15 as "no `workflow` scope". The classic token carries `public_repo`, `notifications` and
 `workflow`, and I-15 is the harness's own check.
+
+## D68 / B320–B331 — vouch for an account, not a name
+
+Decided by the operator's delegate; implemented 2026-09-11 on
+`feat/vouched-trust-and-maintainer-docs`. B320–B339 are this branch's numbers.
+
+**The problem.** Nathan — GitHub login `BrightBoost-Tech`, numeric user id **193453438**
+(`GET /users/BrightBoost-Tech`) — maintains `Bright-Bots-Initiative/brightboost` and is level 2 in
+`.harness/trust.txt`. B131 requires a level **and** an `author_association` of OWNER, MEMBER or
+COLLABORATOR, and he had that association nowhere it mattered:
+
+- **Here**, he is deliberately not a collaborator. D30 stands: a write collaborator on a
+  personal-account repository can push a branch whose workflow runs with the Claude OAuth token
+  and the bot PAT in scope. Every comment of his on this repository was read, denied and ignored.
+- **On brightboost**, his organisation membership is private, so GitHub reports him as
+  CONTRIBUTOR: all 65 of his recent comments read that way. He does have push access there
+  (`GET /repos/Bright-Bots-Initiative/brightboost/assignees/BrightBoost-Tech` → 204), but the
+  association does not show it. So his commands there, gate-2 steering on delivery PRs included,
+  were very likely denied too, and revise's review filter kept his review feedback from the model.
+  The trust file's comment said GitHub reports him as a member there, and no read we can make
+  confirms it.
+
+**The decision.** Keep D30, so he still has no access to this repository, and let a trust line
+**vouch** for one exact account:
+
+```
+2 BrightBoost-Tech vouch:193453438
+```
+
+A comment passes the association half of the gate whatever its `author_association`, on every
+surface, when its `user.login` matches the handle **and** its `user.id` equals the vouched id.
+
+This isn't a weakening. The association was guarding a *name*: a login can be renamed away and
+claimed by somebody else, and a per-repository association was what said "this is still the person
+the line meant". An account id is immutable and never reused, so it says the same thing more
+exactly. A vouched handle held by any other account is **refused**, even when that account is an
+OWNER, which is stricter than B131 was.
+
+**What doesn't change:**
+- The level still caps the verbs. A vouched level-2 handle is refused `halt`, `resume` and `reject`
+  with "needs level 3; @BrightBoost-Tech is level 2", and a `--force` from it is dropped with the
+  same explanation.
+- A line without `vouch:` is B131 exactly.
+- `Identity.trust_file_ready()`'s placeholder rule is untouched.
+
+**The rules:**
+- **The token.** It is `vouch:<positive integer>`, at most one per line, and case-insensitive. A
+  token that starts with `vouch` but isn't exactly that refuses the **whole line**: `vouch:`,
+  `vouch:12x`, `vouch=…`, `vouch:0`, two vouches, or a vouch with no handle. The line grants
+  nothing and is recorded in `Trust.malformed`, and doctor names it the way B269 names a bad
+  level. Read as "no vouch", the line would still grant level 2 to anyone GitHub calls a member,
+  which isn't what its author meant either.
+- **A vouched handle's lines must agree (B331).** Two lines vouching for *different* ids, or a
+  vouched line beside a bare line for the same handle, refuse **every** line naming it; they go
+  to `Trust.malformed` and `Trust.conflicted`, and doctor names each as disagreeing about which
+  account the handle is. Merging them the way levels merge would grant what neither line does:
+  `3 x` beside `2 x vouch:1` gave account 1 level 3 with no association, the level from one line
+  and the waiver from the other. The same vouch on several lines is one account and still takes
+  the highest level.
+- **A missing or garbled id.** For a vouched handle, an absent, zero, non-numeric or boolean
+  `user.id` is unknown, and unknown never matches.
+- **One gate.** `trust.comment_authorised(comment, trusted)` reads `user.login`, `user.id` and
+  `author_association` from a REST payload and calls `is_authorised`, which gained a `user_id`
+  keyword. The sweep (`keywords.authorise`), `harness ack` and revise's review filter all go
+  through it. `tests/test_trust_vouch.py` B330 fails the build if any other module reads
+  `author_association` or calls `is_authorised` directly, so the rule can't be applied in one
+  place and forgotten in another.
+- **`ack.yml`** passes `github.event.comment.user.id` to `harness ack --actor-id` through the env
+  block. An ack run with no id, as from the previous workflow, fails closed: it stays silent for a
+  vouched handle.
+- **`harness doctor`** lists every vouch and drops vouched handles from the "no access" warning,
+  since having no access here is the point. When a client is available it checks each id against
+  `GET /users/<login>`. A different id, or a 404 (renamed or deleted), is a **warning** and never a
+  problem: a problem exits 3 and gates every spending workflow (#27), and a stale vouch stops one
+  person's comments, which it is already doing safely. A read that fails (the rate ceiling, the
+  network) says nothing.
+
+**A defect this turned up.** Revise's `_review_feedback` flattened `ctx.trusted` into a frozenset
+of lower-cased handles before filtering. That dropped the levels, which was harmless because a set
+grants level 1 and that is what the filter asks for. It would also have dropped every vouch: this
+was the exact place the rule could be taught to the sweep and forgotten. It passes the `Trust`
+itself now, and B328 checks it through the stage.
+
+**Two limits, recorded here and not fixed:**
+- **D53's "assign the bot" gesture only reaches threads the bot is already in.** `jgoetzmann-bot`
+  can't be assigned on a brightboost issue it hasn't commented on:
+  `GET /repos/Bright-Bots-Initiative/brightboost/assignees/jgoetzmann-bot` → 404, because GitHub
+  assigns only collaborators, organisation members and the thread's own participants.
+- **Plain PR review summaries aren't read by the sweep.** `keywords.sweep` reads issue comments
+  and inline review comments only (`keywords.py`, the `read()` helper in `sweep`), so a `/harness`
+  line typed into a review's summary box is never seen as a command. Revise does read review
+  bodies as feedback, through the same gate.
+
+**What the adversarial review changed.** The mixed-line escalation above (B331) was found in
+review, not in the first cut. So were five places where the maintainer docs promised a gesture a
+vouched maintainer without access cannot make. FOR-MAINTAINERS told him to merge or close the
+gate-1 pull request, to commit `.harness/HALT` "without permission", to assign the bot on any
+issue, to put commands "in a normal review comment", and that `reject` means `stop`. The merge,
+the commit and `halt` are the operator's under D30. Assignment is limited as above. The summary
+box is not read. A typed `reject` is level 3. Each page now says so, and says what he can do
+instead: `/harness revise`, and `/harness stop`, which at level 2 parks even a proposal, since
+`proposed` has a `blocked` edge. COMMANDS' per-repository paragraph now applies only to unvouched
+lines, and OPERATIONS' latency example matches the cron (21:41 Friday, 00:41 Monday).
+
+**Found while bringing the maintainer page to 2026-09-11, recorded and not fixed:**
+- **`go` on a suggestion does not replace the merge.** It moves an unmerged `via:suggested`
+  proposal to `approved`, but implement reads the work package from `runs/` or from the merged
+  `proposals/<id>-*.md` (D46), and on Actions only the second can exist. The next in-window
+  build clones, installs and runs the baseline gates, then raises in `_read_spec` with the item
+  already `implementing`: a red run, repeated after B147's reconciliation, until the operator
+  merges. That build is not only `implement.yml`'s: `feedback.yml`'s "Reconcile" step runs
+  `harness run` with no `--item`, which inside the window builds **every** approved item in one
+  loop, so the red run recurs on the three-hourly sweep too — and, since the loop catches only
+  usage stops, it ends the loop for the approved items after it. A sixth member of the `runs/`
+  family. After the merge `go` is useless as well: `implement.yml`'s `harness approve` has already
+  approved the item, green light or none. So the docs tell a maintainer not to `go` a suggestion,
+  and give the yes as a plain comment and the no as `/harness stop`.
+- **The green-light comment's "Assign me" does nothing** on an issue the harness has already
+  suggested: `discover --mode assigned` skips a reference it already has. `/harness go` works.
+- **`_forced` replies that a forced item "starts on the next sweep".** The sweep's `harness run`
+  honours only the run window and the carry; the dispatcher plan that honours `--force` runs in
+  `implement.yml` (its crons, a gate-1 merge, or a dispatch). COMMANDS says so.
+- **A delivery pull request awaiting review shuts the `harness-ok` pool**, because `shipped` is in
+  `priority.OUTSTANDING_STATES`. As designed: suggestions wait for every open request.
+  brightboost#868 does not: its work item (#4) is closed and carries only the legacy
+  `harness:packaged` label, and `list_work_items` filters on the `stage:` label, so the first
+  labelled batch is eligible on the next Sunday run. Recorded, not fixed: `_issues` reads
+  `state=all`, so a *closed* work item left wearing an outstanding `stage:` label would hold the
+  pool shut indefinitely. None does today (searched 2026-09-11).
+
+**What the review of the maintainer page changed (B332).** One defect fixed in code, and the page
+corrected wherever it promised something that does not happen.
+
+- **Triage re-picked issues it already had (B332, fixed).** `_triage_product_repo` skipped
+  assigned, claimed and excluded-label issues, but not an issue that already had a work item: a
+  suggestion still waiting at gate 1, one a maintainer had parked with `stop`, one ended. A
+  suggested item does not hold the pool shut, and its proposal pull request is in this repository,
+  so nothing on brightboost claims the issue. If the ranking picked it again, `_ensure_item`
+  returned the old id, which took one of the five slots, and `discover.yml`'s
+  `harness propose <id>` then raised `IllegalTransition` in `_enter` — a red run and an ops issue,
+  and a maintainer's no undone by the next Sunday's ranking. Triage now reads the store once and
+  skips any issue whose `issue:<n>` ref it already holds, in any state; the product-repository
+  path runs only when nothing is `discovered`, so that is every known issue. Traced, not
+  reproduced live: whether it bit depended on the ranking.
+- **The page's corrections.** A maintainer cannot run a workflow, so "run `feedback` from the
+  Actions tab" became "post any `/harness` command on the inbox", whose run sweeps his
+  notifications too. `go` on a suggestion is harmful before the merge and useless after it, and
+  silence is not a no, since the merge builds a suggestion regardless; the yes is now a plain
+  comment and the no is `/harness stop`. The claim that one item is built per run and the window
+  holds six runs is gone (see the `go` note above). `stage:blocked` and `stage:needs-human` are
+  named as waiting on a person. A `--force` from level 2 still runs the rest of the command. A
+  halted harness still acks on this repository. An inbox answer can wait up to two hours behind a
+  build, because both take the `harness-ledger` lock. Assigning the bot helps only on an issue
+  where it answered without opening an item. "Asking twice is one item" is true only for the same
+  link, or the same words from the same account. USING's latency example matches the cron.
+  README lists all six aliases and all three ways to start outside the window. The command table's
+  dollar column is now relative weight (D66).
+- **Recorded, not fixed: a level-2 `stop` has nowhere to park four stages.** `discovered`,
+  `approved`, `blocked` and `needs-human` have no edge to `blocked`, so `_act_on_command` ends the
+  item (`abandoned`) and says so. A fresh `/harness work` is `discovered` until Sunday, so this is
+  the stop a maintainer is likeliest to make. Asking again with the same link, or the same words
+  from the same account, finds the ended item through `find_by_ref`, which scans closed issues too,
+  so `_GO_DEAD_ENDS`'s "`/harness work` opens a fresh item" holds only for a reworded request. The
+  docs say all of this. Adding `blocked` edges would change D1's state machine, and that change
+  deserves its own decision.

@@ -510,7 +510,11 @@ CI = ".github/workflows/ci-cd.yml"
 def _git(repo, *args: str) -> str:
     import subprocess
 
-    argv = ["git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args]
+    argv = [
+        "git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false",
+        # A runner has no ambient identity, and commit-tree needs one (D39).
+        "-c", "user.email=harness@localhost", "-c", "user.name=harness", *args,
+    ]
     done = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True)
     assert done.returncode == 0, f"{argv}: {done.stderr}"
     return done.stdout.strip()

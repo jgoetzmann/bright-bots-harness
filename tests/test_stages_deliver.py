@@ -139,7 +139,11 @@ def make_config(tmp_path: Path, *, trusted=("jgoetzmann",), **overrides):
 
 
 def _git(*args: str, cwd: Path) -> str:
-    argv = ["git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args]
+    argv = [
+        "git", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false",
+        # A runner has no ambient identity, and commit-tree needs one (D39).
+        "-c", "user.email=harness@localhost", "-c", "user.name=harness", *args,
+    ]
     p = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(argv)} failed in {cwd}: {p.stderr}")

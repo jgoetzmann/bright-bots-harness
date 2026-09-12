@@ -526,7 +526,12 @@ def test_b229_a_refusing_pre_push_hook_does_not_stop_the_push(config, clock, ite
 
 
 def _git_in(cwd, *args):
-    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    proc = subprocess.run(
+        ["git", "-c", "user.email=harness@localhost", "-c", "user.name=harness", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc.stdout

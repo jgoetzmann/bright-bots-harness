@@ -556,6 +556,16 @@ def doctor(tmp_path, monkeypatch, capsys, *, trust, gh=None):
     from conftest import write_env
 
     monkeypatch.chdir(tmp_path)
+    # doctor probes the machine it runs on, and a runner has no `claude`: without these it
+    # reports a missing binary, exits 3 (EXIT_DEGRADED) whatever the trust file says, and the
+    # assertions below pass only where the binaries happen to be installed. Same house
+    # pattern as tests/test_cli.py's doctor tests (make_which/make_run).
+    monkeypatch.setattr(cli, "WHICH", lambda name: f"/fake/bin/{name}")
+    monkeypatch.setattr(
+        cli,
+        "RUN",
+        lambda argv, *a, **k: SimpleNamespace(returncode=0, stdout="claude 2.1.257", stderr=""),
+    )
     (tmp_path / ".harness").mkdir(exist_ok=True)
     (tmp_path / ".harness" / "trust.txt").write_text(trust, encoding="utf-8")
     env = write_env(tmp_path / ".env", TRUST_FILE=".harness/trust.txt")

@@ -198,7 +198,9 @@ Red gates after a `revise` or `rebase` block the item and push nothing.
 Both of these must hold, or the comment is read and silently ignored (the denial is counted in the ledger, and the body never reaches a prompt — authorisation happens before parsing):
 
 1. The handle is in [`.harness/trust.txt`](../.harness/trust.txt) — currently `jgoetzmann` and `BrightBoost-Tech`. Adding one is a reviewed PR; the file is CODEOWNERS-protected and the harness cannot write it.
-2. GitHub reports the commenter's `author_association` as `OWNER`, `MEMBER` or `COLLABORATOR`. `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR` and `NONE` are refused — unless the handle's line ends `vouch:<id>` and the comment comes from that exact account (its numeric GitHub user id), which stands in for the association on every repository (D68). `BrightBoost-Tech` is vouched this way; any other account using that login is refused, and the level still caps the verbs.
+2. GitHub confirms the identity behind the handle, one of two ways. **Either** the line ends `vouch:<id>` and the comment comes from that exact account — its numeric GitHub user id, which stands in for the association on every repository and needs no access to any of them (D68). **Or** GitHub reports the commenter's `author_association` as `OWNER`, `MEMBER` or `COLLABORATOR`; `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR` and `NONE` are refused. Any other account using a vouched login is refused whatever its association, and the level still caps the verbs either way.
+
+The vouched form is the ordinary way to add somebody (D69): one line, printed by `harness trust line <login> --level 2`, committed through a reviewed PR. A line that would grant nothing — a bad level, a handle that is not a GitHub login, a malformed vouch, a stray token after the handle — is refused whole rather than read as something smaller, and `harness doctor` and `harness trust show` both name it.
 
 ### Three parsing rules that bite
 

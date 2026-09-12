@@ -558,14 +558,22 @@ def test_B329_a_vouched_handle_is_not_reported_as_having_no_access(tmp_path, mon
 
 
 def test_B329_doctor_names_a_malformed_vouch_like_a_malformed_level(tmp_path, monkeypatch, capsys):
-    """B269's rule, applied to the vouch: refused, and said out loud."""
+    """B269's rule, applied to the vouch: refused, and said out loud.
+
+    D69 moved the finding from `problems` to `warnings`. The refusal itself is unchanged -- the
+    line grants nothing, which `test_B349_a_refused_line_still_grants_nothing` pins -- but a
+    doctor PROBLEM exits 3 and gates discover.yml, feedback.yml and implement.yml under
+    `set -e`, so one typo in a hand-edited file stopped the whole fleet (#27). The build-time
+    check in test_docs_drift.py is what now fails the pull request that would ship such a line.
+    """
     line = f"2 {NATHAN} vouch:{NATHAN_ID}x"
     code, out, payload = doctor(tmp_path, monkeypatch, capsys, trust=f"3 jgoetzmann\n{line}\n")
 
-    assert code == 3
+    assert code == 0, "a refused trust line must not take the fleet down"
     assert f"trust file line carries a vouch that is not one (D68) and was refused: {line!r}" in (
-        payload["problems"]
+        payload["warnings"]
     )
+    assert not [p for p in payload["problems"] if "trust file line" in p]
 
 
 @pytest.mark.parametrize(
@@ -582,13 +590,15 @@ def test_B331_doctor_names_every_line_of_a_disagreement_as_one(tmp_path, monkeyp
         tmp_path, monkeypatch, capsys, trust="3 jgoetzmann\n" + "\n".join(pair) + "\n"
     )
 
-    assert code == 3
+    # D69: a warning rather than a problem, for the reason in B329 above. What each line is
+    # told about itself is unchanged, which is what this test is for.
+    assert code == 0
     for line in pair:
         assert (
             "trust file line disagrees with another line about which account its handle is (D68)"
             f" and was refused: {line!r}"
-        ) in payload["problems"]
-    assert not any("is not a level" in p for p in payload["problems"])
+        ) in payload["warnings"]
+    assert not any("is not a level" in w for w in payload["warnings"])
 
 
 # --------------------------------------------------------------------------------------

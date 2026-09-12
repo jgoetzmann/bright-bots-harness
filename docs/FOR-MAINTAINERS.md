@@ -214,10 +214,14 @@ Before assuming it is broken: the gate that lets you command it has two halves, 
 is invisible from your side.
 
 1. Your handle is in [`.harness/trust.txt`](../.harness/trust.txt), with a level.
-2. GitHub reports you as `OWNER`, `MEMBER` or `COLLABORATOR` on the repository you commented on —
-   which in practice means **you have been invited to it** — or your trust-file line vouches for
-   your account (`vouch:` and your numeric GitHub user id), which stands in for this half on
-   every repository (D68). `BrightBoost-Tech` is vouched, so this half is already met for it.
+2. GitHub confirms who is typing — **either** your line vouches for your numeric account id
+   (`vouch:<id>`), which stands in for this half on **every** repository and needs no access to
+   any of them, **or** GitHub reports you as `OWNER`, `MEMBER` or `COLLABORATOR` on the
+   repository you commented on, which in practice means you have been invited to it.
+
+The vouched form is the ordinary one, and it is one line: Jack runs
+`harness trust line <your-login> --level 2`, pastes what it prints, and merges the pull request.
+`BrightBoost-Tech` is vouched that way, so this half is already met for it everywhere.
 
 A comment that fails either half is read, counted as denied, and ignored. There is no reply,
 because replying to anyone who types `/harness` on a public repository is how a bot becomes a

@@ -32,6 +32,12 @@ VOUCH_WORD = "vouch"
 _VOUCH_RE = re.compile(r"vouch:([1-9][0-9]{0,19})", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]{1,20}")
 
+#: D69: the shape of a GitHub login -- ASCII letters, digits and hyphens, at most 39 of them.
+#: A handle outside it can never equal a `user.login`, so a line carrying one is a grant to
+#: nobody. `nathan@example.com` and `nathan,` both registered literally before this, and were
+#: then refused for ever without a word to anybody.
+_HANDLE_RE = re.compile(r"[A-Za-z0-9-]{1,39}")
+
 
 def normalise_handle(handle: str) -> str:
     """Canonical form of a GitHub login: stripped, no leading ``@``, lower-cased (R4.5)."""
@@ -74,6 +80,13 @@ class Trust:
     #: D68: the lines of a handle refused because they disagree about the vouch -- two ids, or
     #: a vouched line beside a bare one. Each is in :attr:`malformed` too; this says why.
     conflicted: tuple[str, ...] = ()
+    #: D69: unresolved placeholder lines (`2 <NEW_MAINTAINER>`). They grant nothing, as they
+    #: always did; recording them is what lets `doctor` name a line that used to vanish.
+    skipped: tuple[str, ...] = ()
+    #: D69: handles named by more than one accepted line. The highest level still wins, so a
+    #: line added to DEMOTE somebody does nothing at all -- the one edit here whose failure
+    #: looks exactly like success.
+    duplicated: tuple[str, ...] = ()
 
     def __contains__(self, handle: object) -> bool:
         return normalise_handle(str(handle)) in self.levels
@@ -143,11 +156,19 @@ def parse_trust(text: str) -> Trust:
     implicit: list[str] = []
     malformed: list[str] = []
     conflicted: list[str] = []
+    skipped: list[str] = []
     # Every accepted line, per handle: the id it vouches for (None for a bare line), and itself.
     lines_of: dict[str, list[tuple[int | None, str]]] = {}
     for raw_line in text.splitlines():
         entry = raw_line.split("#", 1)[0].strip()
-        if not entry or "<" in entry or ">" in entry:
+        if not entry:
+            continue
+        if "<" in entry or ">" in entry:
+            # An unresolved placeholder, never a handle. D69 records it rather than dropping
+            # it: it granted nothing before and grants nothing now, but a line that vanishes
+            # cannot be named by `doctor` -- while the same line fails
+            # `Identity.trust_file_ready()` for a reason nothing connects back to it.
+            skipped.append(entry)
             continue
         parts = entry.split()
         level = DEFAULT_LEVEL
@@ -166,16 +187,29 @@ def parse_trust(text: str) -> Trust:
             # `2 vouch:193453438` -- a vouch with no handle in front of it. Never a login.
             malformed.append(entry)
             continue
-        attempts = [token for token in rest if token.lower().startswith(VOUCH_WORD)]
+        # D69: EVERY token after the handle must be one the gate actually reads. Before this
+        # only tokens beginning `vouch` were inspected and the rest were discarded in silence,
+        # so `2 nathan 193453438` -- the id pasted without the keyword, which is exactly what a
+        # hurried operator types -- parsed to a plain level-2 line. It looked like a vouch,
+        # vouched for nobody, and granted nothing anywhere he was not already a collaborator.
+        # Refused for D68's reason: read as "no vouch" the line still grants a level, which is
+        # not what its author meant either.
         pinned: int | None = None
-        if attempts:
-            match = _VOUCH_RE.fullmatch(attempts[0]) if len(attempts) == 1 else None
-            if match is None:
-                malformed.append(entry)
-                continue
+        unreadable = False
+        for token in rest:
+            match = _VOUCH_RE.fullmatch(token)
+            if match is None or pinned is not None:
+                unreadable = True
+                break
             pinned = int(match.group(1))
+        if unreadable:
+            malformed.append(entry)
+            continue
         handle = normalise_handle(handle_part)
         if not handle:
+            continue
+        if not _HANDLE_RE.fullmatch(handle):
+            malformed.append(entry)
             continue
         if not explicit:
             implicit.append(handle)
@@ -184,12 +218,15 @@ def parse_trust(text: str) -> Trust:
         levels[handle] = max(level, levels.get(handle, 0))
         lines_of.setdefault(handle, []).append((pinned, entry))
     vouched: dict[str, int] = {}
+    duplicated: list[str] = []
     for handle, lines in lines_of.items():
         pins = {pin for pin, _entry in lines}
         if len(pins) == 1:
             (only,) = pins
             if only is not None:
                 vouched[handle] = only
+            if len(lines) > 1:
+                duplicated.append(handle)
             continue
         levels.pop(handle, None)
         refused = [entry for _pin, entry in lines]
@@ -201,6 +238,8 @@ def parse_trust(text: str) -> Trust:
         malformed=tuple(malformed),
         vouched=vouched,
         conflicted=tuple(conflicted),
+        skipped=tuple(skipped),
+        duplicated=tuple(sorted(set(duplicated) & set(levels))),
     )
 
 
@@ -279,3 +318,115 @@ def comment_authorised(comment: Mapping[str, Any], trusted: Any, *, min_level: i
     if not login:
         return False
     return is_authorised(login, association, trusted, min_level=min_level, user_id=uid)
+
+
+# --------------------------------------------------------------------------------------
+# D69: reading the file back. Pure, and here rather than in the CLI, because the reasons a
+# line grants nothing are the gate's own rules -- `tests/test_trust_vouch.py::test_B330`
+# fails the build if any other module decides for itself who is heard.
+# --------------------------------------------------------------------------------------
+
+
+def handle_shaped(handle: str) -> bool:
+    """True when `handle` could be a GitHub login at all (letters, digits, hyphens)."""
+    return bool(_HANDLE_RE.fullmatch(normalise_handle(handle)))
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One accepted handle, and how its line is honoured."""
+
+    handle: str
+    level: int
+    level_name: str
+    #: ``vouch`` when the line names an account id, ``association`` when GitHub must vouch
+    #: for it instead. The second is the half nobody can see from the commenter's side.
+    route: str
+    vouched_id: int | None
+
+
+def describe(trusted: Trust) -> tuple[Entry, ...]:
+    """Every accepted handle, most privileged first, with the route its line takes."""
+    out: list[Entry] = []
+    for handle in sorted(trusted.levels, key=lambda h: (-int(trusted.levels[h]), h)):
+        level = int(trusted.levels[handle])
+        pinned = trusted.vouched_id(handle)
+        out.append(
+            Entry(
+                handle=handle,
+                level=level,
+                level_name=LEVEL_NAMES.get(level, str(level)),
+                route="vouch" if pinned is not None else "association",
+                vouched_id=pinned,
+            )
+        )
+    return tuple(out)
+
+
+def _handle_token(line: str) -> str:
+    """The token a refused line meant as its handle, for saying what is wrong with it."""
+    parts = line.split()
+    if not parts:
+        return ""
+    if parts[0].isdigit() and len(parts) > 1:
+        return parts[1]
+    return parts[0]
+
+
+def refusals(trusted: Trust) -> tuple[tuple[str, str], ...]:
+    """``(line, what is wrong with it)`` for every line that grants nothing.
+
+    Four ways to grant nothing with four different fixes, so they get four different
+    sentences: a level out of range is a typo to correct, a placeholder is a line to finish, a
+    handle that is not a login is the wrong text entirely, and a disagreement about an account
+    is two lines that have to be made one.
+    """
+    conflicted = set(trusted.conflicted or ())
+    out: list[tuple[str, str]] = []
+    for line in trusted.malformed:
+        token = _handle_token(line)
+        rest = line.split()[2:] if line.split()[:1] and line.split()[0].isdigit() else (
+            line.split()[1:]
+        )
+        if line in conflicted:
+            what = "disagrees with another line about which account its handle is (D68)"
+        elif VOUCH_WORD in line.lower():
+            what = "carries a vouch that is not one (D68)"
+        elif token and not handle_shaped(token):
+            what = "names something that is not a GitHub login"
+        elif rest:
+            what = "carries a token after the handle that is not `vouch:<id>`"
+        else:
+            what = "is not a level"
+        out.append((line, what))
+    for line in trusted.skipped:
+        out.append((line, "is an unresolved placeholder"))
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class Tier:
+    """One level, and the verbs it may give."""
+
+    level: int
+    name: str
+    verbs: tuple[str, ...]
+
+
+def tier_table(verb_level: Mapping[str, int]) -> tuple[Tier, ...]:
+    """One row per level, most privileged first, built from `verb_level`.
+
+    The mapping is a PARAMETER rather than an import: `keywords` imports this module, so
+    reaching back for `keywords.VERB_LEVEL` here would be a cycle -- the one `links._who`
+    already sidesteps with a function-local import. Taking it as an argument means the table
+    is a function of the levels the gate actually enforces, and prose checked against it
+    cannot drift from them.
+    """
+    return tuple(
+        Tier(
+            level=level,
+            name=LEVEL_NAMES.get(level, str(level)),
+            verbs=tuple(sorted(v for v, lvl in verb_level.items() if int(lvl) == level)),
+        )
+        for level in range(MAX_LEVEL, -1, -1)
+    )

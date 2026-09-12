@@ -437,20 +437,33 @@ GitHub user could spend your Claude allowance, or steer what the model writes, b
 `/harness revise`. So every keyword command is authorised **before** its body is parsed, and it
 is honoured only if **both** hold:
 
-1. the commenter's handle is in `.harness/trust.txt` (case-insensitive), **and**
-2. the comment's `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`.
+1. the commenter's handle is in `.harness/trust.txt` (case-insensitive) at a level the verb
+   reaches, **and**
+2. GitHub confirms the identity behind it — **either** an `author_association` of `OWNER`,
+   `MEMBER` or `COLLABORATOR`, **or** the account id the line vouches for (D68).
 
-Two independent checks because they fail differently: the trust file is your intent; the
-association is GitHub's assertion. Neither alone is enough.
+Two independent checks because they fail differently: the trust file is your intent; the second
+condition is GitHub's assertion about who is typing. Neither alone is enough, and the level caps
+what either may do.
 
-**One exception (D68).** A trust line may end `vouch:<id>`, the numeric GitHub user id of one
-account. For that handle the id takes the place of condition 2: a comment passes when its
-`user.id` is the vouched id, whatever its association, and is refused when it is not, whatever
-its association. The association was guarding a name, which can be renamed away and claimed by
-somebody else; an account id is never reused, so the vouch guards the same thing more exactly.
-The level still caps the verbs, and a malformed vouch refuses the whole line. Every surface —
-the sweep, `harness ack`, and revise's review filter — decides through the one function
-`trust.comment_authorised`.
+**The vouched form is the ordinary one (D69).** A line ending `vouch:<id>` — the numeric GitHub
+user id of one account — pins that line to exactly that account: it passes wherever it comments,
+whatever its association, and is refused when the id does not match, whatever its association.
+That is *stricter* on identity than the association it replaces, not weaker. The association
+guards a **name**, which can be renamed away and claimed by somebody else, and it is granted
+per-repository; an account id is immutable and never reused. So a vouched line admits one account
+everywhere and grants it no repository access at all, which is what lets a maintainer steer the
+harness without being invited to it (D30). A bare line is condition 2's first branch exactly, for
+somebody who is already a collaborator.
+
+Anything that would make a line grant less than it says is refused outright rather than read
+quietly: a level outside 1–3, a handle that is not a GitHub login, a malformed vouch, a stray
+token after the handle, or two lines disagreeing about which account a handle is. Each refuses the
+**whole line**, grants nothing, and is named by `harness doctor` and `harness trust show`.
+
+Every surface — the sweep, `harness ack`, and revise's review filter — decides through the one
+function `trust.comment_authorised`, and a test fails the build if any other module reads the
+association or calls the inner judge itself.
 
 A command from anyone else is **silently ignored** (B132): no reply, no reaction, no log line
 that quotes the body. Replying would confirm the trigger exists and invite probing. The

@@ -290,6 +290,11 @@ def _inline(value: Any, limit: int) -> str:
     return text.replace("`", "'").replace("<", "&lt;").replace("@", "@​")
 
 
+def _count(n: int, noun: str) -> str:
+    """``1 note``, ``2 notes``: the status line is read by a person, so it counts in English."""
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
 def self_audit_block(record: Any, tip: str) -> str:
     """D70: the self-audit's status line, and what it found, for the delivery PR body.
 
@@ -313,10 +318,11 @@ def self_audit_block(record: Any, tip: str) -> str:
     elif not findings:
         lines.append(f"**Self-audit at `{tip}`: clean.**")
     elif not blocking:
-        lines.append(f"**Self-audit at `{tip}`: no blocking findings, {notes} notes.**")
+        lines.append(f"**Self-audit at `{tip}`: no blocking findings, {_count(notes, 'note')}.**")
     else:
         lines.append(
-            f"**Self-audit at `{tip}`: {len(blocking)} blocking findings (+{notes} notes)** — "
+            f"**Self-audit at `{tip}`: {_count(len(blocking), 'blocking finding')} "
+            f"(+{_count(notes, 'note')})** — "
             "a model reviewing its own diff; an opinion, not a gate result."
         )
         lines.append("")

@@ -67,7 +67,7 @@ CREATE TABLE {name} (
   stage           TEXT    NOT NULL CHECK (stage IN
                     ('discover','propose','implement','package','deliver','revise','decompose',
                      'selfaudit','selfaudit_fix')),
-  backend        TEXT    NOT NULL,
+  backend         TEXT    NOT NULL,
   status          TEXT    NOT NULL CHECK (status IN
                     ('running','ok','failed','halted','budget_exhausted','timeout')),
   started_at      TEXT    NOT NULL,

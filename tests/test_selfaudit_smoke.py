@@ -190,7 +190,7 @@ def test_d70_smoke_the_pr_body_line_sits_after_the_gate_block(tmp_path):
     record = {"history": [{"cycle": 1, "tip": TIP, "status": "ok", "outcome": "", "findings": [
         {"severity": "note", "claim": "c", "where": "acceptance:1", "evidence": ""}]}]}
     block = self_audit_block(record, TIP)
-    line = f"**Self-audit at `{TIP}`: no blocking findings, 1 notes.**"
+    line = f"**Self-audit at `{TIP}`: no blocking findings, 1 note.**"
     assert block.splitlines()[0] == line
     body = build_pr_body(GOLDEN_DIR / "package", **kwargs, self_audit=block)
     assert body.index("<summary>Gate results") < body.index(line)

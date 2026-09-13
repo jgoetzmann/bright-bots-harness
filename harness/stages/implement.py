@@ -34,7 +34,7 @@ from harness.errors import (
     RunnerError,
 )
 from harness.halt import check_halt
-from harness.redact import write_redacted
+from harness.redact import redact_json, write_redacted
 from harness.store import WorkItem
 from harness.stages import data_block, load_prompt, run_model
 # D70: module-level, for the handoff and `_tip_sha`. `deliver` imports `implement` lazily, so
@@ -1049,14 +1049,20 @@ def _discard_since(ctx: Context, lease: Lease, tip: str) -> None:
 
 
 def _record_self_audit(ctx: Context, history: Sequence[dict]) -> Path:
-    """`runs/<run-id>/selfaudit.json`: every cycle, each with the tip it audited."""
+    """`runs/<run-id>/selfaudit.json`: every cycle, each with the tip it audited.
+
+    Every string is redacted *before* it is serialised. `write_redacted` alone runs its patterns
+    over the JSON text, and `token=\\S+` read past the closing quote of a finding whose evidence
+    quoted a credential, so the record stopped parsing and the pull request said the audit had
+    not run (B382). The text pass still runs, and finds nothing left to take.
+    """
     payload = {
         "schema": 1,
         "max_cycles": int(ctx.config.max_self_audit_cycles),
         "history": list(history),
     }
     path = ctx.run_dir / deliver_mod.SELFAUDIT_NAME
-    write_redacted(path, json.dumps(payload, indent=2) + "\n")
+    write_redacted(path, json.dumps(redact_json(payload), indent=2) + "\n")
     return path
 
 

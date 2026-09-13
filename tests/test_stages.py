@@ -84,6 +84,7 @@ ASK_CAP_USD=0.50
 ASK_MAX_PER_DAY=20
 SUGGEST_MIN_HEADROOM_PCT=50
 AUDIT_MIN_HEADROOM_PCT=75
+MAX_SELF_AUDIT_CYCLES=3
 HARNESS_GITHUB_TOKEN=
 ANTHROPIC_API_KEY=
 """
@@ -98,7 +99,12 @@ RUNNER_STAGES = (
     "diagnose_gate_failure",
     "ask",
     "audit",
+    "selfaudit",
+    "selfaudit_fix",
 )
+
+#: D70: what the default self-audit fixture says -- nothing found.
+CLEAN_SELFAUDIT = '<!-- selfaudit: {"verdict": "clean", "findings": []} -->\nNothing to report.'
 
 
 def write_env(tmp_path: Path, *, fullsend: str = "false") -> Path:
@@ -193,6 +199,8 @@ def write_runner_fixtures(
                 "",
             ]
         ),
+        "selfaudit": CLEAN_SELFAUDIT,
+        "selfaudit_fix": "The finding held; the failure message now names the chunk.",
     }
     for stage in RUNNER_STAGES:
         payload = {
@@ -465,8 +473,13 @@ RED = [
 ]
 
 
-def stub_implement_side_effects(monkeypatch, log: list[str], *, gate_runner, changed=None):
-    """Replace the four module-level injectables in harness.stages.implement."""
+def stub_implement_side_effects(
+    monkeypatch, log: list[str], *, gate_runner, changed=None, tip="b" * 12
+):
+    """Replace the module-level injectables in harness.stages.implement.
+
+    D70 added four git operations the self-audit loop uses. `tip` is what `TIP_SHA` reports;
+    the diff is a one-hunk stand-in, and a reset or restore is only logged."""
 
     def prettier(clone, paths, runner=None):
         log.append("prettier")
@@ -483,6 +496,21 @@ def stub_implement_side_effects(monkeypatch, log: list[str], *, gate_runner, cha
     monkeypatch.setattr(implement_mod, "PRETTIER", prettier)
     monkeypatch.setattr(implement_mod, "CHANGED_PATHS", changed_paths)
     monkeypatch.setattr(implement_mod, "COMMIT", commit)
+
+    def unified_diff(lease):
+        log.append("unified_diff")
+        return ("diff --git a/src/lib/bundle.ts b/src/lib/bundle.ts\n+export const x = 1;\n", False)
+
+    def reset_to(clone, sha):
+        log.append(f"reset_to:{sha}")
+
+    def restore_paths(clone, sha, paths):
+        log.append(f"restore_paths:{sha}:{','.join(paths)}")
+
+    monkeypatch.setattr(implement_mod, "TIP_SHA", lambda lease: tip)
+    monkeypatch.setattr(implement_mod, "UNIFIED_DIFF", unified_diff)
+    monkeypatch.setattr(implement_mod, "RESET_TO", reset_to)
+    monkeypatch.setattr(implement_mod, "RESTORE_PATHS", restore_paths)
 
 
 def approved_item(rig: Rig, item_id: int) -> None:

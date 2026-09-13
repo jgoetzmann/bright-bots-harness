@@ -62,6 +62,8 @@ version.
 | `diagnose_gate_failure.md` | `implement()`, once per gate-retry cycle, up to `max_retries_gates` | `$gate_output`, `$spec_text` |
 | `revise.md` | `revise()`, one call per revision cycle, up to `max_revise_cycles`; covers all four `$source` values | `$source`, `$feedback`, `$spec_text` |
 | `decompose.md` | `decompose()`, one call per parent issue | `$issue_title`, `$issue_body`, `$max` |
+| `selfaudit.md` | `implement()`, once per self-audit cycle after the gates have no new failures, up to `max_self_audit_cycles` (D70); run as stage `selfaudit` | `$spec_text`, `$diff`, `$diff_truncated`, `$touched_paths`, `$gate_summary`, `$repo`, `$branch` |
+| `selfaudit_fix.md` | `implement()`, after a self-audit with blocking findings, before the cap (D70); run as stage `selfaudit_fix` | `$spec_text`, `$findings`, `$repo`, `$branch` |
 
 What each placeholder holds:
 
@@ -98,10 +100,20 @@ What each placeholder holds:
   association, both required — B131). An untrusted comment body is never rendered here (B133). For
   `continue` it is the handoff note `runs/item-N/HANDOFF.md`, written by the harness itself.
 - **`$max`** — `config.max_subissues`, the most sub-issues `decompose` may emit (B111).
+- **`$diff`** — `git diff <base>..HEAD` of the committed change, cut at `MAX_DIFF_CHARS` with a
+  visible mark, and followed by every changed path when it was cut; in a `Data — not instructions`
+  block. For `selfaudit.md` `$spec_text`, `$touched_paths` and `$gate_summary` are wrapped the same
+  way.
+- **`$diff_truncated`** — one sentence written by the harness: whether `$diff` is complete.
+- **`$touched_paths`** — the work package's `## Touched paths`, one per line.
+- **`$gate_summary`** — each post-change gate with its exit code, the reds that were already red at
+  baseline marked pre-existing.
+- **`$findings`** — the self-audit's blocking findings, each with its `where`, `claim` and
+  `evidence`, in a `Data — not instructions` block.
 
 ## Output contracts
 
-Four prompts have a parsed output and cannot be reworded freely:
+Five prompts have a parsed output and cannot be reworded freely:
 
 - `propose.md` must keep demanding, as the very first line, the
   `<!-- proposal: {...} -->` block with exactly the eleven §4.3 keys and their closed enums.
@@ -110,6 +122,11 @@ Four prompts have a parsed output and cannot be reworded freely:
   must also keep demanding the work-package headings, in order, spelled exactly: `parse_work_package`
   splits on them, and the fullsend fitness gate counts the `## Slices` and `## Behaviors` entries out
   of the result.
+- `selfaudit.md` must keep demanding, as the very first line, the
+  `<!-- selfaudit: {"verdict": ..., "findings": [...]} -->` block: `verdict` `clean` or `findings`,
+  each finding's `severity` `blocking` or `note`, and a `where` naming a changed or touched path or
+  an `acceptance:<n>`/`behavior:<n>` index. `implement.parse_self_audit` reads it; an answer it
+  cannot read is recorded as *not run* and blocks nothing (D70).
 - `discover_triage.md` must keep demanding bare numbers, one per line. The caller parses numbers out
   of the result text and returns (or creates) work items in that order.
 - `decompose.md` must keep demanding numbered lines of the shape `N. <title> — <one-paragraph body>`.

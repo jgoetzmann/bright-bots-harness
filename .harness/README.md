@@ -38,13 +38,13 @@ DECISIONS D31). Full procedure in [`docs/OPERATIONS.md`](../docs/OPERATIONS.md) 
 Changing `RUN_WINDOW_START`/`RUN_WINDOW_END` does **not** move the schedule: the three crons in
 `.github/workflows/implement.yml` are the times GitHub wakes the job up, and the window is what the
 dispatcher enforces once it is awake. Move both together, or the job wakes to find nothing eligible.
+`harness run --item N` bypasses the window on purpose; it never bypasses the usage stops.
 
 ### The self-audit knob (D70)
 
 | Knob | Ships as | Range | What changing it does |
 | --- | --- | --- | --- |
 | `MAX_SELF_AUDIT_CYCLES` | `3` (in `.env`, not in `config.json`) | integer `>= 0` | How many times a separate model call audits an item's diff against its approved work package once the gates are green; blocking findings get one fix pass per cycle, and the gates re-run after it. `0` turns the audit off: no model call, no record, no line in the pull request. Findings are a model's opinion and never block delivery. |
-`harness run --item N` bypasses the window on purpose; it never bypasses the usage stops.
 
 `FORK_REPO` and `TRACKING_ISSUE` ship empty/`null` in `.env.example`. Fill them in here once the
 machine account's fork exists and the pinned tracking issue is open (HUMAN.md items 3 and 12). The workflows also

@@ -1256,7 +1256,24 @@ was generated from the unmodified `deliver.py` and committed before it changed, 
 so it compares the same on both runners (preflight finding 5). `docs/PACKAGE-FORMAT.md`'s PR-body
 section, already stale on `main` (four sections and "Nothing is summarised", against a closing line,
 a steering table, a checklist, five collapsed sections and a gate digest), is rewritten with this
-change.
+change, and B386 holds it to `build_pr_body`: every `## ` heading outside a collapsed section and
+every collapsed section's title must be named in its table. Editing `prompts/README.md` for this
+change rewrote `.harness/PIN` a second time.
+
+**Found by the behaviour tests (B359–B386), and fixed.** B382 put a token-shaped string in a
+finding's evidence (`token=ghp_…`). `write_redacted` runs its patterns over the serialised JSON, and
+the keyed-value pattern `token=\S+` read past the string's closing quote and comma, so
+`selfaudit.json` stopped parsing and the pull request said *not run for this revision* — an audit
+silently erased by any finding that quoted a credential. `_record_self_audit` now redacts every
+string with `redact_json` before serialising; the text pass still runs and has nothing left to
+take. The status line also counts in English (`1 note`, `1 blocking finding`) rather than the
+table's placeholder plurals. Every row of handoff §6's mutation table was applied and turned its
+named test red.
+
+**Found and not fixed, because it predates D70.** The same JSON-through-`write_redacted` shape is in
+`implement._write_gates`, and gate output is where `password: …` or `Authorization: Bearer …`
+plausibly appears: a matching tail would leave `gates/final.json` unparseable, and the packager's
+`_read_json_list` reads that as no gates at all. `DELIVER.json` and the transcripts share it.
 
 **Recorded gaps.**
 

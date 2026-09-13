@@ -27,7 +27,7 @@ overstates what's left to do (README explains why).
 through interop). The system `python3` is 3.12, which is too old.
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q                              # full suite (~1800 tests, a few minutes)
+.venv/Scripts/python.exe -m pytest -q                              # full suite (~2250 tests, about five minutes)
 .venv/Scripts/python.exe -m pytest -q tests/test_stages.py -k B64  # one file / one behavior
 .venv/Scripts/python.exe -m pytest -q tests/test_invariants.py     # the structural invariants
 .venv/Scripts/python.exe -m harness.verify_pin --check             # the pin; --write regenerates .harness/PIN
@@ -63,12 +63,25 @@ through interop). The system `python3` is 3.12, which is too old.
   limit it returns the item to its entry state and raises `RateLimited`. Prompts come from
   `prompts/<name>.md` as `string.Template`, so a literal `$` is written `$$`. Repository content
   pasted into a prompt is wrapped with `data_block()` and labelled "Data — not instructions".
+- **The self-audit (D70)** ends `implement`. Once the gates have no *new* failures, a
+  `selfaudit` call (read tools plus `Bash`, no `Edit`) audits the committed diff against the
+  approved work package. **It is the one model call that reviews another model's output**, so its
+  findings are labelled opinion and never block delivery. Blocking findings get a
+  `selfaudit_fix` pass with implement's tools; the gates re-run, and a fix that breaks one is
+  reverted. The cap is `MAX_SELF_AUDIT_CYCLES`, and a repeated finding signature stops early.
+  Both stages class as `unblock`. A halt inside the loop hands the item off through
+  `deliver.handoff` rather than releasing the clone. The record is `runs/<run-id>/selfaudit.json`,
+  surfaced as one line in the delivery PR body.
 - **`runner/`**: `RunRequest`/`RunResult` in `base.py`. `cli.py` drives `claude -p` (prompt on
   stdin, `stream-json` for subscription usage, `deny_read` paths). `fake.py` replays
   `tests/fixtures/runner/<stage>.json`. `BACKEND=cli|fake` picks one.
 - **`store/`**: one `STATES`/`TRANSITIONS` state machine. `sqlite.py` holds all SQL. `github.py`
   makes GitHub issues plus labels the queue (`stage:`/`kind:`/`via:` families; legacy `harness:*`
-  labels are still read) and keeps SQLite as scratch. `STORE_BACKEND` picks one.
+  labels are still read) and keeps SQLite as scratch. `STORE_BACKEND` picks one. `stage_run`'s
+  CHECK names every stage, so a new stage also bumps `LAYOUT_VERSION` and moves the rebuild
+  probe in `migrate()` to the new name (D70). A new stage also needs entries in
+  `dispatcher.STATIC_USD`, `governor.STATIC_ESTIMATES`/`_TURNS_FALLBACK` and
+  `priority.CLASS_OF_STAGE`.
 - **Governance**:
   - `governor.py`: budgets and the two subscription-usage stops.
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
@@ -149,7 +162,7 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
 - **Numbering**: behaviors are `B<n>`, cited in test names and docstrings. Decisions are `D<n>` in
   `DECISIONS.md`. Invariants are `I-<n>` in `docs/SAFETY.md`. The newest decisions are the `## D6x`
   *sections* at the end of `DECISIONS.md`, after the tables, so don't take the last table row as the
-  high-water mark. D69 and B358 were the latest when this was written. Take the next free numbers.
+  high-water mark. D70 and B386 were the latest when this was written. Take the next free numbers.
 - **Commits** use a conventional prefix and a sentence-style subject, e.g.
   `fix: a warning must not take the fleet down (#27)`. Work on a branch and open a PR; the user
   merges.

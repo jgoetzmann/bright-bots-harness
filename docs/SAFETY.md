@@ -527,6 +527,41 @@ non-database subset and says so in `EVIDENCE.md` rather than claiming full parit
 
 ---
 
+## The self-audit is an opinion, not a gate (D70)
+
+Once an item's gates have no new failures, `implement` makes the one model call in the harness
+that reviews another model's output: `selfaudit` reads the committed diff against the approved
+work package and answers whether the change does what was approved, and only that. Every other
+check here is mechanical. This one is not, and it is held to that:
+
+- **Its findings are opinion.** A finding never blocks delivery and never sits beside gate output
+  as a measurement. Blocking findings get a `selfaudit_fix` pass, up to `MAX_SELF_AUDIT_CYCLES`
+  (`0` turns the audit off), and a repeated finding stops the loop. Whatever survives reaches the
+  reviewer as one line in the delivery PR, labelled "a model reviewing its own diff; an opinion,
+  not a gate result", and every finding is in the package's `DECISIONS.md`. An answer the harness
+  cannot read, a failed call or an unreadable diff is recorded as *not run* and blocks nothing.
+- **It never loosens a gate.** A fix pass is re-gated in full, and one that breaks a gate green
+  before it is reverted to the pre-fix commit, whose results are written back. A fix pass whose
+  diff touches `.github/`, or adds anything else B64 refuses, blocks the item like any other
+  forbidden diff — the one exception to "advisory".
+- **The tools.** The auditor holds `Read`, `Glob`, `Grep` and `Bash`, with `Edit`, `Write`,
+  `WebFetch` and `WebSearch` denied (`implement.SELFAUDIT_ALLOWED_TOOLS`). The fix pass holds
+  implement's tools.
+- **The credential it widens.** The deny rules bind the read tool only, and the machine credential
+  sits in `$GITHUB_WORKSPACE/.env`, three directories above the clone, so every call holding
+  `Bash` is a path to it: `implement` and `revise` before D70, and `selfaudit` and `selfaudit_fix`
+  now. This is recorded, not mitigated. `ask.py`'s read-only tuples in place of the auditor's
+  would take its shell away.
+- **The tree guard.** An auditor holding `Bash` can still write to the clone. The change set is
+  compared against the audited commit before and after the call; anything the auditor introduced
+  is restored and its audit discarded as *not run: the auditor modified the tree*, so nothing it
+  wrote reaches a commit or a handoff.
+- **A halt inside the loop hands the item off** with its committed work (`deliver.handoff`) rather
+  than releasing the clone. A usage stop or a rate limit is not caught there, and ends the run as
+  it does everywhere else.
+
+---
+
 ## The kill switch, in both modes
 
 **Actions mode:** commit a file at `.harness/HALT` on the default branch. Its contents are

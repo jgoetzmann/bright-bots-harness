@@ -34,9 +34,9 @@ Placeholder syntax:
 Two mechanisms, both required:
 
 1. **Filename.** The name is the contract. `harness/stages/*.py` loads `discover_triage`, `propose`,
-   `implement`, `implement_fullsend`, `diagnose_gate_failure`, `revise`, `decompose`, and `system` by
-   exactly those names. A prompt is never renamed; a materially different prompt gets a new file and
-   a new call site.
+   `implement`, `implement_fullsend`, `diagnose_gate_failure`, `selfaudit`, `selfaudit_fix` (D70),
+   `revise`, `decompose`, and `system` by exactly those names. A prompt is never renamed; a
+   materially different prompt gets a new file and a new call site.
 2. **Header comment.** Every prompt's first line is an HTML comment carrying its version:
 
        <!-- version: 1 -->

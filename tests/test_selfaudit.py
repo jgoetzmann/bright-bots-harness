@@ -759,7 +759,8 @@ def test_B371_a_cut_diff_is_marked_and_a_finding_on_a_file_past_the_cut_still_co
     large = "".join(f"export const line{n} = {n};\n" for n in range(400))
     (repo / "src").mkdir()
     (repo / "src" / "a-large.ts").write_text(large, encoding="utf-8", newline="\n")
-    (repo / "src" / "z-cut.ts").write_text("export const cut = 1;\n", encoding="utf-8", newline="\n")
+    cut = repo / "src" / "z-cut.ts"
+    cut.write_text("export const cut = 1;\n", encoding="utf-8", newline="\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "--no-verify", "-m", "change")
     monkeypatch.setattr(implement_mod, "MAX_DIFF_CHARS", 2000)
@@ -791,7 +792,8 @@ def test_B371_a_cut_diff_is_marked_and_a_finding_on_a_file_past_the_cut_still_co
 
     [request] = loop.requests("selfaudit")
     assert "was cut at 2000 characters" in request.prompt
-    [diff] = [body for label, body in blocks(request.prompt).items() if label.startswith("git diff")]
+    found = blocks(request.prompt)
+    [diff] = [body for label, body in found.items() if label.startswith("git diff")]
     assert "[diff truncated here: 2000 of " in diff
     assert diff.split("Every changed path:\n", 1)[1].split() == ["src/a-large.ts", "src/z-cut.ts"]
     assert [f["where"] for f in loop.history()[0]["findings"]] == ["src/z-cut.ts"]
@@ -1155,7 +1157,8 @@ def test_B379_whatever_the_auditor_writes_is_restored_away_and_its_audit_discard
     assert loop.requests("selfaudit_fix") == []
     current = loop.clone / path
     assert not current.exists() or current.read_text(encoding="utf-8") == IMPLEMENTED
-    assert all(tampered.encode() not in snap.get(path, b"") for snap in loop.tree.snapshots.values())
+    snapshots = loop.tree.snapshots.values()
+    assert all(tampered.encode() not in snapshot.get(path, b"") for snapshot in snapshots)
     assert len(loop.tree.commits) == 1
     assert "**Self-audit: not run — the auditor modified the tree.**" in loop.body
 

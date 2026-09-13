@@ -552,10 +552,14 @@ check here is mechanical. This one is not, and it is held to that:
   `Bash` is a path to it: `implement` and `revise` before D70, and `selfaudit` and `selfaudit_fix`
   now. This is recorded, not mitigated. `ask.py`'s read-only tuples in place of the auditor's
   would take its shell away.
-- **The tree guard.** An auditor holding `Bash` can still write to the clone. The change set is
-  compared against the audited commit before and after the call; anything the auditor introduced
-  is restored and its audit discarded as *not run: the auditor modified the tree*, so nothing it
-  wrote reaches a commit or a handoff.
+- **The tree guard.** An auditor holding `Bash` can still write to the clone or move its branch.
+  The change set against the audited commit, and the branch and commit HEAD names, are read before
+  and after the call. If either changed, HEAD, the index and the tree are put back on that commit,
+  anything the auditor introduced is removed, and its audit is discarded as *not run: the auditor
+  modified the tree*. The clone is re-read afterwards, and one that still differs blocks the item
+  rather than let a model's leftovers reach a commit or a handoff. A fix pass may edit but not
+  commit: a branch it moved is put back on the tip, with its edits left for B64, the formatter and
+  the gates.
 - **A halt inside the loop hands the item off** with its committed work (`deliver.handoff`) rather
   than releasing the clone. A usage stop or a rate limit is not caught there, and ends the run as
   it does everywhere else.

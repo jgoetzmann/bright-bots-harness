@@ -162,7 +162,7 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
 - **Numbering**: behaviors are `B<n>`, cited in test names and docstrings. Decisions are `D<n>` in
   `DECISIONS.md`. Invariants are `I-<n>` in `docs/SAFETY.md`. The newest decisions are the `## D6x`
   *sections* at the end of `DECISIONS.md`, after the tables, so don't take the last table row as the
-  high-water mark. D70 and B386 were the latest when this was written. Take the next free numbers.
+  high-water mark. D70 and B394 were the latest when this was written. Take the next free numbers.
 - **Commits** use a conventional prefix and a sentence-style subject, e.g.
   `fix: a warning must not take the fleet down (#27)`. Work on a branch and open a PR; the user
   merges.

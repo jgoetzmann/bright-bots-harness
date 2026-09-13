@@ -1218,11 +1218,19 @@ discarded the same way before anything else happens.
 other B64 violation) blocks the item like every other forbidden diff, whatever finding prompted it.
 
 **The auditor tree guard.** An auditor holding `Bash` can write to the clone — `sed -i`, a redirect,
-test output — and whatever it leaves would be committed by the next fix pass's `git add -A` or by a
-handoff's work-in-progress commit. The loop compares the change set against the audited tip before
-and after the call; anything the auditor introduced is restored to the tip, and the audit is
-discarded as *not run: the auditor modified the tree*. The same guard runs when the audit call is
-rate-limited, because `RateLimited` is raised after the model has already run (preflight finding 3).
+test output — and it can move the branch: `git commit`, `--amend`, `reset --soft`, `update-ref`, a
+switch. Whatever it writes would be committed by the next fix pass's `git add -A` or by a handoff's
+work-in-progress commit, and a moved branch is packaged as it stands (`format-patch base..HEAD`).
+The loop reads the change set against the audited tip, and HEAD (`_head_state`: the branch it names
+and its full commit), before the call and after it. If either changed, HEAD is put back on that
+branch and commit, the tree is reset to the tip, whatever untracked file the call introduced is
+removed, and the audit is discarded as *not run: the auditor modified the tree*. The clone is then
+re-read rather than trusted, and one that still differs **blocks** the item with the clone kept —
+the second exception to "advisory", because the alternative is committing what a model left behind
+(B391). The same guard runs when the audit call is rate-limited, because `RateLimited` is raised
+after the model has already run (preflight finding 3). A fix pass may edit but not commit: if it
+moved HEAD, the branch is put back on the tip with its edits left in the tree, where B64, the
+formatter, the harness's commit message and the gates all see them (B388).
 `BudgetExhausted` and `RateLimited` are otherwise not caught: they reach `cmd_run`, which hands the
 item off and starts nothing else (D3).
 
@@ -1269,6 +1277,43 @@ string with `redact_json` before serialising; the text pass still runs and has n
 take. The status line also counts in English (`1 note`, `1 blocking finding`) rather than the
 table's placeholder plurals. Every row of handoff §6's mutation table was applied and turned its
 named test red.
+
+**Found by the adversarial pass on the pull request, and fixed (B387–B394).** Three independent
+reviews read the diff with "the tests pass" ruled out as evidence, and each claim was re-run here:
+
+1. **The tree guard compared paths and never HEAD.** An auditor that ran `git commit` left its
+   commit on the branch and in the review package, with a staged reversion that made deliver's
+   rebase refuse. An `--amend` went unseen and dropped the audit's findings from the PR body. A
+   `reset --soft` to the base emptied `format-patch base..HEAD` while the record said clean. The
+   guard reads HEAD now, and so does the fix pass's no-op check (B387, B388).
+2. **A halt on the fix-pass call hid the findings.** It appended *not run: halted* at the very tip
+   the audit had just judged, and the PR body reads the last entry. That cycle's entry now carries
+   *halted before the fix pass; findings carried*; a halt after a committed fix still records the
+   new, unaudited tip as not run (B389).
+3. **A name git quotes escaped the restore.** The change set was read line by line, git C-quotes a
+   name holding a control character, a double quote or a backslash even with `core.quotepath=off`,
+   and `strip()` took the space off a name beginning with one. Such a file survived the restore,
+   and the next `git add -A` committed it; B64's scan of untracked files skipped it too. Both lists
+   are read with `-z` now, and the restore is re-checked (B390, B391).
+4. **Findings were cut before they were redacted.** A token cut at a cap is shorter than its
+   pattern's minimum and no longer equals a live secret, so a 33-character prefix of a `ghp_` token
+   was stored. Each field is redacted whole, then cut (B392).
+5. **Finding text went into decision lines verbatim.** A handoff posts the log's tail as a GitHub
+   comment, so an `@mention` quoted from the repository would have notified its owner. Decision
+   lines carry the PR body's neutralisation now (B393).
+6. **No test ran the git that undoes a model's changes.** Every loop test replaced it, and making
+   `_restore_paths` or `_reset_to` a no-op left the suite green. B394 drives them on a real clone,
+   and B387/B388 run the loop on one. B383's bound on the PR-body block could not fail on the body's
+   own 300-character cap, since the parser already cuts claims at 500; it asserts the cap now.
+
+*Rejected:* B383's check that no evidence appears in the body is not vacuous; it is the assertion
+that evidence stays in the package, and it goes red if the block starts rendering it.
+
+**Found by that pass and not fixed.** A call holding `Bash` can also leave a rebase or merge in
+progress, which deliver's rebase then refuses, or edit the clone's `.git/config` — a clean filter, a
+hooks path, a URL rewrite — which the harness's next `git add -A`, commit or push obeys. The guard
+looks at neither. The second predates D70: `implement` and `revise` hold `Bash` before the same
+calls, and it belongs to the credential surface recorded above.
 
 **Found and not fixed, because it predates D70.** The same JSON-through-`write_redacted` shape is in
 `implement._write_gates`, and gate output is where `password: …` or `Authorization: Bearer …`

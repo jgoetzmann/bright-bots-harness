@@ -4,8 +4,9 @@ Handoff `adversarial-self-audit.md` §6, T1-T27. The loop runs on the tests/test
 `ScriptedRunner` places each model answer on a specific call, and `FakeTree` stands in for git.
 The rig's clone is a plain directory (handoff §4.12), so every git operation the loop, the
 handoff, the packager and deliver make goes to a model of git's own semantics, never to
-whatever git the host happens to have. The tests that need git itself -- T13's diff and T20's
-database -- use a real repository with an explicit identity, and nothing else.
+whatever git the host happens to have. The tests that need git itself -- T13's diff, T20's
+database, and B387, B388, B390 and B394, which drive the git that undoes what a model did --
+use a real repository with an explicit identity and `core.autocrlf` off in the clone.
 
 Every test drives the code and asserts what it left behind: the stage rows, the files under
 `runs/`, the tree, the store, and the pull request body deliver builds.
@@ -29,7 +30,7 @@ import harness.gates as gates_mod
 import harness.packager as packager_mod
 import harness.stages.deliver as deliver_mod
 import harness.stages.implement as implement_mod
-from harness import priority
+from harness import prettier, priority
 from harness.clone import Lease
 from harness.errors import BudgetExhausted, GateFailed, Halted, HarnessError, RateLimited
 from harness.gates import GateResult
@@ -94,6 +95,7 @@ class FakeTree:
     def __init__(self) -> None:
         self.snapshots: dict[str, dict[str, bytes]] = {BASE: {}}
         self.head = BASE
+        self.branch = "refs/heads/harness/fix-816-x"
         self.commits: list[dict] = []
         self.unmodelled: list[list[str]] = []
 
@@ -159,6 +161,15 @@ class FakeTree:
         target = self.snapshots[self.full(sha)]
         for path in paths:
             self._put(Path(clone), path, target.get(path))
+
+    def head_state(self, clone):
+        """`implement._head_state`: the branch HEAD names, and its full commit."""
+        return f"{self.branch} {self.head}"
+
+    def put_head(self, clone, state):
+        """`implement._put_head`: HEAD and its branch back on a state; the tree untouched."""
+        ref, _, sha = state.partition(" ")
+        self.branch, self.head = ref, self.full(sha)
 
     def diff_lines(self, lease, changed):
         """`implement._diff_lines`: added and removed lines of the tree against the base."""
@@ -380,6 +391,8 @@ def loop_rig(
         unified_diff=unified_diff or tree.unified_diff,
         reset_to=tree.reset_to,
         restore_paths=tree.restore_paths,
+        head_state=tree.head_state,
+        put_head=tree.put_head,
     )
     monkeypatch.setattr(implement_mod, "DIFF_LINES", tree.diff_lines)
     monkeypatch.setattr(gates_mod, "run_command", tree.run_command)
@@ -423,7 +436,6 @@ def assert_parked_with_a_carry(loop: Loop, *, can_write: bool) -> None:
     assert (loop.clone / "src" / "lib" / "bundle.ts").read_text(encoding="utf-8") == IMPLEMENTED
     branch = loop.rig.store.get_work_item(loop.item_id).branch_name
     assert loop.rig.gh.pushed == ([(branch, "", False)] if can_write else [])
-    assert loop.history()[-1]["status"] == "not run: halted"
 
 
 # --------------------------------------------------------------------------------------------
@@ -872,6 +884,7 @@ def test_B374_a_halt_before_the_audit_call_parks_the_item_with_its_work(
     assert lease.branch
     assert "selfaudit" not in loop.stages()
     assert_parked_with_a_carry(loop, can_write=can_write)
+    assert loop.history()[-1]["status"] == "not run: halted"
 
 
 @pytest.mark.parametrize("can_write", [False, True], ids=["no-credential", "credential"])
@@ -896,6 +909,7 @@ def test_B374_a_halt_on_the_fix_pass_call_parks_the_item_with_its_work(
     assert loop.history()[0]["findings"][0]["where"] == "acceptance:2"
     assert len(loop.tree.commits) == 1
     assert_parked_with_a_carry(loop, can_write=can_write)
+    assert loop.history()[-1]["outcome"] == "halted before the fix pass; findings carried"
 
 
 def test_B374_a_commanded_halt_parks_the_item_and_the_run_stops_before_packaging(
@@ -920,6 +934,7 @@ def test_B374_a_commanded_halt_parks_the_item_and_the_run_stops_before_packaging
     assert not loop.ctx.config.halt_file.exists()
     assert "selfaudit_fix" not in loop.stages()
     assert_parked_with_a_carry(loop, can_write=False)
+    assert loop.history()[-1]["outcome"] == "halted before the fix pass; findings carried"
     with pytest.raises(Halted):
         package(loop.ctx, loop.item_id, lease)
     assert not (loop.run_dir / "package").exists()
@@ -1276,10 +1291,15 @@ def test_B383_the_body_shows_the_audit_after_the_gates_five_findings_and_a_bound
         f"- `behavior:{n}`" for n in range(1, 6)
     ]
     assert "- and 7 more" in body.splitlines()
-    assert "e" * 50 not in body
+    assert "e" * 50 not in body  # evidence is in the package's DECISIONS.md, never the body
     block = loop.bodies[-1][0]["self_audit"]
     assert block.splitlines()[0] == line
     assert len(block) < 3000
+    # The parser keeps 500 characters of a claim, and the body lists 300 of them: the bound is
+    # the body's own, not one the parser happens to impose first.
+    assert "x" * 301 not in block
+    for row in listed:
+        assert len(row.split(" — ", 1)[1]) == 300, row
 
 
 def test_B384_with_no_record_the_body_says_not_run_for_this_revision(tmp_path, monkeypatch):
@@ -1332,3 +1352,407 @@ def test_B385_doctor_names_the_self_audit_cap_and_exits_0(tmp_path, monkeypatch,
     )
     assert cli.main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["config_keys"]["MAX_SELF_AUDIT_CYCLES"] == "1"
+
+
+# --------------------------------------------------------------------------------------------
+# B387-B394: what the adversarial pass on the pull request found
+# --------------------------------------------------------------------------------------------
+
+BRANCH = "harness/fix-816-x"
+LIVE = "live" + "Q7k" * 12  # a live secret value that no vendor pattern knows
+AWKWARD = (" leading-space.ts", "del\x7fete.ts")  # legal on NTFS too; git C-quotes the second
+
+
+def real_repo(root: Path) -> tuple[Path, str, str]:
+    """A clone as implement leaves it: a base, and the implementation committed on the branch.
+
+    `core.autocrlf` is set in the clone itself, because the harness's own git calls read the
+    clone's configuration and not `_git`'s flags, and a Windows runner turns it on globally.
+    """
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "core.autocrlf", "false")
+    (root / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "--no-verify", "-m", "base")
+    base = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-q", "-b", BRANCH)
+    (root / "src" / "lib").mkdir(parents=True)
+    (root / "src" / "lib" / "bundle.ts").write_text(IMPLEMENTED, encoding="utf-8", newline="\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "--no-verify", "-m", "feat: implement the package")
+    return root, base, _git(root, "rev-parse", "HEAD")
+
+
+def git_step(*commands: tuple[str, ...]):
+    """What a call holding Bash does with git in the clone."""
+
+    def effect(request):
+        for command in commands:
+            _git(Path(request.cwd), *command)
+
+    return effect
+
+
+def slip_in_a_commit(request):
+    """`commit-tree` and `update-ref`: a new commit on the branch, and the tree left untouched."""
+    cwd = Path(request.cwd)
+    sha = _git(cwd, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "chore: slipped in")
+    _git(cwd, "update-ref", f"refs/heads/{BRANCH}", sha)
+
+
+def real_loop(tmp_path, monkeypatch, script: dict):
+    """`_run_self_audit` on a real repository: the rig's store, runner and gates, and production's
+    git for every operation the loop makes. Returns the loop, the lease, the tip and the call."""
+    names = (
+        "CHANGED_PATHS", "COMMIT", "TIP_SHA", "UNIFIED_DIFF", "RESET_TO", "RESTORE_PATHS",
+        "HEAD_STATE", "PUT_HEAD", "DIFF_LINES",
+    )
+    production = {name: getattr(implement_mod, name) for name in names}
+    run_command = gates_mod.run_command
+    loop = loop_rig(tmp_path, monkeypatch, script=script)
+    for name, value in production.items():
+        monkeypatch.setattr(implement_mod, name, value)
+    monkeypatch.setattr(gates_mod, "run_command", run_command)
+    repo, base, tip = real_repo(tmp_path / "real")
+    lease = Lease(run_id="real", path=repo, base_sha=base, branch=BRANCH)
+    loop.rig.store.transition(loop.item_id, "implementing", reason="implement acquired a clone")
+    item = loop.rig.store.get_work_item(loop.item_id)
+    spec_text = implement_mod._read_spec(loop.ctx, item)
+    pkg = implement_mod.parse_work_package(spec_text)
+
+    def run():
+        return implement_mod._run_self_audit(
+            loop.ctx, loop.item_id, item, lease, pkg, spec_text, list(GREEN), list(GREEN)
+        )
+
+    return loop, lease, tip, run
+
+
+def assert_on_the_tip(lease: Lease, tip: str, subjects: list[str]) -> None:
+    repo = lease.path
+    assert _git(repo, "rev-parse", "HEAD") == tip
+    assert _git(repo, "symbolic-ref", "HEAD") == f"refs/heads/{BRANCH}"
+    assert _git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    assert _git(repo, "log", "--format=%s", f"{lease.base_sha}..HEAD").splitlines() == subjects
+
+
+AUDITOR = "AUDITOR WAS HERE\n"
+
+
+@pytest.mark.parametrize(
+    "moves",
+    [
+        [
+            write("src/lib/bundle.ts", AUDITOR),
+            git_step(("commit", "-q", "--no-verify", "-am", "chore: the auditor's commit")),
+        ],
+        [git_step(("commit", "-q", "--no-verify", "--amend", "-m", "chore: the auditor's words"))],
+        [git_step(("reset", "-q", "--soft", "HEAD~1"))],
+        [slip_in_a_commit],
+        [
+            git_step(("checkout", "-q", "-b", "elsewhere")),
+            write("src/lib/bundle.ts", AUDITOR),
+            git_step(("commit", "-q", "--no-verify", "-am", "chore: elsewhere")),
+        ],
+        [git_step(("checkout", "-q", "--detach"))],
+    ],
+    ids=["commit", "amend", "reset-soft", "update-ref", "switch", "detach"],
+)
+def test_B387_an_auditor_that_moves_the_branch_has_it_put_back_and_its_audit_discarded(
+    tmp_path, monkeypatch, moves
+):
+    loop, lease, tip, run = real_loop(
+        tmp_path, monkeypatch, {"selfaudit": [answer(audit(finding()), *moves)]}
+    )
+
+    run()
+
+    assert_on_the_tip(lease, tip, ["feat: implement the package"])
+    patch = _git(lease.path, "format-patch", "--stdout", f"{lease.base_sha}..HEAD")
+    assert AUDITOR.strip() not in patch
+    [entry] = loop.history()
+    assert entry["status"] == "not run: the auditor modified the tree"
+    assert entry["findings"] == []
+    assert loop.requests("selfaudit_fix") == []
+
+
+def test_B387_a_rate_limited_auditor_that_committed_is_put_back_too(tmp_path, monkeypatch):
+    moves = [
+        write("src/lib/bundle.ts", AUDITOR),
+        git_step(("commit", "-q", "--no-verify", "-am", "chore: the auditor's commit")),
+    ]
+    loop, lease, tip, run = real_loop(
+        tmp_path, monkeypatch, {"selfaudit": [answer(rate_limited(), *moves)]}
+    )
+
+    with pytest.raises(RateLimited):
+        run()
+
+    assert_on_the_tip(lease, tip, ["feat: implement the package"])
+    assert loop.history()[-1]["status"] == "not run: rate limited"
+    assert loop.state() == "approved"
+
+
+def test_B388_a_fix_pass_that_commits_its_own_work_is_committed_again_by_the_harness(
+    tmp_path, monkeypatch
+):
+    commit = ("commit", "-q", "--no-verify", "-m", "wip: the model's own commit")
+    loop, lease, tip, run = real_loop(
+        tmp_path,
+        monkeypatch,
+        {
+            "selfaudit": [audit(finding()), audit()],
+            "selfaudit_fix": [
+                answer(
+                    None,
+                    write("src/lib/bundle.test.ts", "it('holds');\n"),
+                    git_step(("add", "-A"), commit),
+                )
+            ],
+        },
+    )
+
+    run()
+
+    repo = lease.path
+    subjects = _git(repo, "log", "--format=%s", f"{lease.base_sha}..HEAD").splitlines()
+    assert len(subjects) == 2 and subjects[1] == "feat: implement the package"
+    assert "address self-audit findings" in subjects[0]
+    assert "the model's own commit" not in _git(repo, "log", "--format=%B", "HEAD")
+    assert _git(repo, "rev-parse", "HEAD~1") == tip
+    assert _git(repo, "show", "HEAD:src/lib/bundle.test.ts") == "it('holds');"
+    assert _git(repo, "symbolic-ref", "HEAD") == f"refs/heads/{BRANCH}"
+    assert _git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    first, second = loop.history()
+    assert first["tip"] == tip[:12]
+    assert first["outcome"] == "fix pass committed; no new gate failures"
+    assert (second["tip"], second["status"]) == (_git(repo, "rev-parse", "HEAD")[:12], "ok")
+
+
+def test_B388_a_fix_pass_that_resets_the_branch_to_the_base_cannot_pass_for_no_change(
+    tmp_path, monkeypatch
+):
+    loop, lease, tip, run = real_loop(
+        tmp_path,
+        monkeypatch,
+        {
+            "selfaudit": [audit(finding())],
+            "selfaudit_fix": [answer(None, git_step(("reset", "-q", "--soft", "HEAD~1")))],
+        },
+    )
+
+    run()
+
+    assert_on_the_tip(lease, tip, ["feat: implement the package"])
+    [entry] = loop.history()
+    assert entry["outcome"] == "fix pass changed nothing"
+
+
+def test_B389_a_halt_before_the_fix_pass_leaves_that_cycles_findings_as_the_last_word(
+    tmp_path, monkeypatch
+):
+    ref: dict = {}
+    unpublishable_is_clear(monkeypatch)
+    loop = ref["loop"] = loop_rig(
+        tmp_path, monkeypatch, script={"selfaudit": [answer(audit(finding()), engage_halt(ref))]}
+    )
+
+    implement(loop.ctx, loop.item_id)
+
+    tip = loop.tree.head[:12]
+    [entry] = loop.history()
+    assert (entry["tip"], entry["status"]) == (tip, "ok")
+    assert [f["where"] for f in entry["findings"]] == ["acceptance:2"]
+    assert entry["outcome"] == "halted before the fix pass; findings carried"
+    block = self_audit_block({"history": loop.history()}, tip).splitlines()
+    assert block[0].startswith(f"**Self-audit at `{tip}`: 1 blocking finding (+0 notes)**")
+    assert "- Cycle 1: halted before the fix pass; findings carried." in block
+
+
+def test_B389_a_halt_after_a_committed_fix_is_not_run_for_the_tip_nobody_audited(
+    tmp_path, monkeypatch
+):
+    ref: dict = {}
+    unpublishable_is_clear(monkeypatch)
+    loop = ref["loop"] = loop_rig(
+        tmp_path,
+        monkeypatch,
+        script={
+            "selfaudit": [audit(finding())],
+            "selfaudit_fix": [
+                answer(None, write("src/lib/bundle.test.ts", "it('holds');\n"), engage_halt(ref))
+            ],
+        },
+    )
+
+    implement(loop.ctx, loop.item_id)
+
+    first, second = loop.history()
+    assert first["outcome"] == "fix pass committed; no new gate failures"
+    assert (second["cycle"], second["status"]) == (2, "not run: halted")
+    assert second["tip"] == loop.tree.head[:12] != first["tip"]
+
+
+def test_B390_a_name_git_would_quote_is_read_as_it_is_by_the_change_set_restore_and_b64(
+    tmp_path,
+):
+    repo, base, tip = real_repo(tmp_path / "real")
+    for name in AWKWARD:
+        (repo / name).write_text("it.skip('x');\n", encoding="utf-8", newline="\n")
+
+    assert prettier.all_changed_paths(repo, tip) == sorted(AWKWARD)
+    lease = Lease(run_id="real", path=repo, base_sha=base, branch=BRANCH)
+    added, _removed = implement_mod._diff_lines(lease, list(AWKWARD))
+    assert added.count("it.skip('x');") == len(AWKWARD)
+
+    implement_mod._restore_paths(repo, tip[:12], prettier.all_changed_paths(repo, tip))
+
+    assert prettier.all_changed_paths(repo, tip) == []
+    assert not any((repo / name).exists() for name in AWKWARD)
+
+
+def test_B391_a_clone_the_loop_cannot_put_back_blocks_the_item_and_commits_nothing(
+    tmp_path, monkeypatch
+):
+    loop = loop_rig(
+        tmp_path,
+        monkeypatch,
+        can_write=True,
+        script={"selfaudit": [answer(audit(finding()), write("audit-scratch.txt", "left\n"))]},
+    )
+    monkeypatch.setattr(implement_mod, "RESTORE_PATHS", lambda clone, sha, paths: None)
+
+    with pytest.raises(HarnessError, match="could not put"):
+        implement(loop.ctx, loop.item_id)
+
+    assert loop.state() == "blocked"
+    assert [keep for _lease, keep in loop.rig.clones.released] == [True]
+    assert (loop.clone / "audit-scratch.txt").exists()
+    assert "audit-scratch.txt" not in loop.tree.committed_paths()
+    assert loop.rig.gh.pushed == []
+    assert loop.requests("selfaudit_fix") == []
+    assert loop.history()[-1]["status"] == "not run: the auditor modified the tree"
+
+
+def test_B392_a_secret_a_finding_cap_would_cut_is_redacted_whole_before_the_cut(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", LIVE)
+
+    def across(cap: int, secret: str, kept: int) -> str:
+        return "c" * (cap - kept) + secret + " and the rest"
+
+    offered = [
+        finding("acceptance:2", claim=across(500, TOKEN, 33), evidence=across(1000, LIVE, 30)),
+        finding(
+            "acceptance:1", severity="note",
+            claim=across(500, LIVE, 30), evidence=across(1000, TOKEN, 33),
+        ),
+        finding(across(120, LIVE, 30), severity="note", claim="names nothing"),
+        finding(across(120, TOKEN, 33), severity="note", claim="names nothing either"),
+    ]
+    loop = loop_rig(tmp_path, monkeypatch, cap=1, script={"selfaudit": [audit(*offered)]})
+
+    loop.through_delivery()
+
+    assert len(loop.history()[0]["findings"]) == 2
+    assert loop.decisions().count("discarded a finding") == 2
+    places = {"the body": loop.body}
+    for path in loop.run_dir.rglob("*"):
+        if path.is_file() and "clone" not in path.relative_to(loop.run_dir).parts:
+            places[path.relative_to(loop.run_dir).as_posix()] = path.read_text(
+                encoding="utf-8", errors="replace"
+            )
+    assert "selfaudit.json" in places and "DECISIONS.md" in places
+    for secret in (TOKEN, LIVE):
+        pieces = [secret[i : i + 20] for i in range(len(secret) - 19)]
+        for name, text in places.items():
+            assert not any(piece in text for piece in pieces), (name, secret[:4])
+
+
+def test_B393_a_mention_in_a_finding_is_not_live_in_the_comment_a_halt_posts(
+    tmp_path, monkeypatch
+):
+    ref: dict = {}
+    unpublishable_is_clear(monkeypatch)
+    quoted = finding(
+        claim="ask @octocat to review", evidence="CODEOWNERS names @octocat in <b>`bold`</b>"
+    )
+    loop = ref["loop"] = loop_rig(
+        tmp_path,
+        monkeypatch,
+        can_write=True,
+        script={"selfaudit": [answer(audit(quoted), engage_halt(ref))]},
+    )
+
+    implement(loop.ctx, loop.item_id)
+
+    posted = [
+        body for _repo, _number, body in loop.rig.gh.comments_posted
+        if "halted during self-audit" in body
+    ]
+    assert len(posted) == 1
+    assert "ask @​octocat to review" in posted[0]  # the finding's line is in the comment
+    assert "@octocat" not in posted[0]
+    assert "<b>" not in posted[0]
+    assert "@octocat" not in loop.decisions()
+
+
+def test_B394_the_git_that_undoes_a_models_changes_works_on_a_real_clone(tmp_path):
+    repo, base, _ = real_repo(tmp_path / "real")
+    for name in ("b.txt", "keep.txt", "gone.txt"):
+        (repo / name).write_text(f"{name}\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "feat: more of it")
+    tip = _git(repo, "rev-parse", "HEAD")
+    short = tip[:12]
+
+    # _restore_paths: every kind of mess a call holding Bash can leave, each path by name.
+    (repo / "keep.txt").write_text("changed\n", encoding="utf-8", newline="\n")
+    (repo / "gone.txt").unlink()
+    (repo / "new-dir").mkdir()
+    (repo / "new-dir" / "new.txt").write_text("new\n", encoding="utf-8", newline="\n")
+    (repo / "staged.txt").write_text("staged\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "staged.txt")
+    (repo / "[ab].txt").write_text("a pathspec that matches b.txt\n", encoding="utf-8")
+    (repo / "b.txt").write_text("changed, and never named\n", encoding="utf-8", newline="\n")
+    named = [p for p in prettier.all_changed_paths(repo, short) if p != "b.txt"]
+    assert "[ab].txt" in named and "new-dir/new.txt" in named
+
+    implement_mod._restore_paths(repo, short, named)
+
+    assert prettier.all_changed_paths(repo, short) == ["b.txt"]
+    assert _git(repo, "ls-files", "b.txt") == "b.txt"
+    assert (repo / "b.txt").read_text(encoding="utf-8") == "changed, and never named\n"
+    assert (repo / "keep.txt").read_text(encoding="utf-8") == "keep.txt\n"
+    assert (repo / "gone.txt").read_text(encoding="utf-8") == "gone.txt\n"
+    assert not (repo / "new-dir" / "new.txt").exists() and not (repo / "staged.txt").exists()
+
+    # _reset_to: a committed fix is undone and the branch is back on the tip.
+    (repo / "fix.txt").write_text("fix\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "fix: the fix")
+
+    implement_mod._reset_to(repo, short)
+
+    assert _git(repo, "rev-parse", "HEAD") == tip
+    assert prettier.all_changed_paths(repo, short) == []
+
+    # _head_state and _put_head: a switch and a commit elsewhere; HEAD back, the tree untouched.
+    state = implement_mod._head_state(repo)
+    assert state == f"refs/heads/{BRANCH} {tip}"
+    _git(repo, "checkout", "-q", "-b", "elsewhere")
+    (repo / "moved.txt").write_text("moved\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "chore: elsewhere")
+    assert implement_mod._head_state(repo) != state
+
+    implement_mod._put_head(repo, state)
+
+    assert implement_mod._head_state(repo) == state
+    assert (repo / "moved.txt").exists()
+    implement_mod._reset_to(repo, short)
+    assert _git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    assert _git(repo, "rev-parse", f"refs/heads/{BRANCH}") == tip
+    assert base != tip

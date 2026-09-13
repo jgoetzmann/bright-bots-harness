@@ -533,14 +533,20 @@ def stub_implement_side_effects(
     unified_diff=None,
     reset_to=None,
     restore_paths=None,
+    head_state=None,
+    put_head=None,
 ):
     """Replace the module-level injectables in harness.stages.implement.
 
-    D70 added four git operations the self-audit loop uses (handoff §4.12: the rig's clone is
+    D70 added the git operations the self-audit loop uses (handoff §4.12: the rig's clone is
     not a repository). Each has a stand-in, and each may instead be given with its production
     signature: `changed` a list or ``(clone, sha) -> paths``; `tip` a string, ``(lease) -> str``,
-    or None to keep production's `TIP_SHA`; `commit`, `unified_diff`, `reset_to` and
-    `restore_paths` callables. Every call is logged either way."""
+    or None to keep production's `TIP_SHA`; `commit`, `unified_diff`, `reset_to`,
+    `restore_paths`, `head_state` and `put_head` callables. Every call is logged either way.
+
+    Without `head_state`, HEAD is one branch at `tip` (``""`` when `tip` is not a string), and
+    a reset empties a fixed change list, as `git reset --hard` does to what it tracks."""
+    reset: list[str] = []
 
     def prettier(clone, paths, runner=None):
         log.append("prettier")
@@ -550,6 +556,8 @@ def stub_implement_side_effects(
         log.append("changed_paths")
         if callable(changed):
             return list(changed(clone, base_sha))
+        if reset:
+            return []
         return list(changed if changed is not None else ["src/lib/bundle.ts"])
 
     def commit_(clone, message):
@@ -570,6 +578,7 @@ def stub_implement_side_effects(
 
     def reset_to_(clone, sha):
         log.append(f"reset_to:{sha}")
+        reset.append(sha)
         if reset_to is not None:
             reset_to(clone, sha)
 
@@ -578,11 +587,23 @@ def stub_implement_side_effects(
         if restore_paths is not None:
             restore_paths(clone, sha, paths)
 
+    def head_state_(clone):
+        if head_state is not None:
+            return head_state(clone)
+        return f"refs/heads/rig {tip}" if isinstance(tip, str) else ""
+
+    def put_head_(clone, state):
+        log.append(f"put_head:{state}")
+        if put_head is not None:
+            put_head(clone, state)
+
     if tip is not None:
         monkeypatch.setattr(implement_mod, "TIP_SHA", tip if callable(tip) else lambda lease: tip)
     monkeypatch.setattr(implement_mod, "UNIFIED_DIFF", unified_diff_)
     monkeypatch.setattr(implement_mod, "RESET_TO", reset_to_)
     monkeypatch.setattr(implement_mod, "RESTORE_PATHS", restore_paths_)
+    monkeypatch.setattr(implement_mod, "HEAD_STATE", head_state_)
+    monkeypatch.setattr(implement_mod, "PUT_HEAD", put_head_)
 
 
 def approved_item(rig: Rig, item_id: int) -> None:

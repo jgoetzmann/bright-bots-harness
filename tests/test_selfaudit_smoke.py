@@ -166,7 +166,10 @@ def test_d70_smoke_a_halt_on_the_fix_pass_hands_the_item_off(tmp_path, monkeypat
     assert len(handed) == 1 and handed[0].startswith("halted during self-audit")
     assert "run:selfaudit_fix" not in rig.log
     assert [keep for _lease, keep in rig.clones.released] == []
-    assert _record(rig, item_id)["history"][-1]["status"] == "not run: halted"
+    last = _record(rig, item_id)["history"][-1]
+    assert (last["status"], last["outcome"]) == (
+        "ok", "halted before the fix pass; findings carried"
+    )
 
 
 def test_d70_smoke_cap_zero_makes_no_call_and_writes_no_record(tmp_path, monkeypatch):

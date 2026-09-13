@@ -9,7 +9,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from harness import commitmsg, gates, prettier
 from harness.clone import (
@@ -34,7 +34,7 @@ from harness.errors import (
     RunnerError,
 )
 from harness.halt import check_halt
-from harness.redact import redact_json, write_redacted
+from harness.redact import redact, redact_json, write_redacted
 from harness.store import WorkItem
 from harness.stages import data_block, load_prompt, run_model
 # D70: module-level, for the handoff and `_tip_sha`. `deliver` imports `implement` lazily, so
@@ -71,7 +71,8 @@ TIMEOUT_S = 3600
 
 #: D70: the auditor reads and may run read-only commands, and may not edit. `Bash` is the
 #: operator's ruling and widens the credential surface (docs/SAFETY.md); anything it writes to
-#: the clone is discarded by the tree guard in `_run_self_audit`. To make it read-only, use
+#: the clone, and any move of its branch, is undone by the tree guard in `_run_self_audit`.
+#: To make it read-only, use
 #: `ask.py`'s tuples here.
 SELFAUDIT_ALLOWED_TOOLS = ("Read", "Glob", "Grep", "Bash")
 SELFAUDIT_DISALLOWED_TOOLS = ("Edit", "Write", "WebFetch", "WebSearch")
@@ -177,7 +178,9 @@ def _unified_diff(lease: Lease) -> tuple[str, bool]:
 
 
 def _reset_to(clone: Path, sha: str) -> None:
-    """D70: put the branch, the index and the tree back on ``sha``. Raises when git refuses."""
+    """D70: put the branch HEAD names, the index and the tree back on ``sha``. Raises when git
+    refuses. It resets whichever branch HEAD names, so `_put_head` goes first when a model may
+    have switched branches."""
     code, out, err = gates.run_command([*_SELFAUDIT_GIT, "reset", "--hard", "--quiet", sha], clone)
     if code != 0:
         raise HarnessError(
@@ -185,15 +188,51 @@ def _reset_to(clone: Path, sha: str) -> None:
         )
 
 
+def _head_state(clone: Path) -> str:
+    """D70: ``"<ref> <sha>"``, the branch HEAD names (``-`` when detached) and its full commit.
+
+    The tree guard's second half. Paths alone miss a call that ran `git commit --amend`, `git
+    reset --soft` or `git update-ref` and left the tree as it found it; the sha alone misses a
+    switch to another branch at the same commit. ``""`` when HEAD cannot be read.
+    """
+    code, sha, _ = gates.run_command(
+        [*_SELFAUDIT_GIT, "rev-parse", "--verify", "--quiet", "HEAD"], clone
+    )
+    if code != 0 or not sha.strip():
+        return ""
+    code, ref, _ = gates.run_command([*_SELFAUDIT_GIT, "symbolic-ref", "--quiet", "HEAD"], clone)
+    return f"{ref.strip() if code == 0 and ref.strip() else '-'} {sha.strip()}"
+
+
+def _put_head(clone: Path, state: str) -> None:
+    """D70: HEAD back to a `_head_state` -- its branch, naming its commit -- with the index and
+    the tree left exactly as they are. Raises when ``state`` is empty or git refuses."""
+    ref, _, sha = state.partition(" ")
+    if not ref or not sha:
+        raise HarnessError(f"cannot put HEAD back in {clone}: its state was never read")
+    if ref == "-":
+        steps = [["update-ref", "--no-deref", "HEAD", sha]]
+    else:
+        steps = [["update-ref", ref, sha], ["symbolic-ref", "HEAD", ref]]
+    for step in steps:
+        code, out, err = gates.run_command([*_SELFAUDIT_GIT, *step], clone)
+        if code != 0:
+            raise HarnessError(
+                f"git {' '.join(step)} failed in {clone}: {(err or out).strip()[:300]}"
+            )
+
+
 def _restore_paths(clone: Path, tip: str, paths: Sequence[str]) -> None:
     """D70: make each path what it is at ``tip``; a path the tip does not hold is removed.
 
     The tree guard: whatever the auditor (or an unfinished fix pass) left in the clone would
     otherwise be committed by the next `git add -A` or by a handoff's work-in-progress commit.
+    Each path is used exactly as `prettier.all_changed_paths` read it with `-z`: never stripped,
+    since a name may begin with a space.
     """
     root = Path(clone).resolve()
     for raw in paths:
-        rel = str(raw).strip()
+        rel = str(raw)
         if not rel:
             continue
         code, _, _ = gates.run_command([*_SELFAUDIT_GIT, "cat-file", "-e", f"{tip}:{rel}"], clone)
@@ -232,6 +271,8 @@ TIP_SHA = deliver_mod._tip_sha  # the 12-character tip, "" when it cannot be rea
 UNIFIED_DIFF = _unified_diff  # (text, truncated)
 RESET_TO = _reset_to
 RESTORE_PATHS = _restore_paths
+HEAD_STATE = _head_state  # "<ref> <full sha>", "" when HEAD cannot be read
+PUT_HEAD = _put_head
 
 
 # --------------------------------------------------------------------------------------------
@@ -585,12 +626,13 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
             elif line.startswith("-"):
                 removed.append(line[1:])
 
+    # D70: `-z`, as `prettier._diff_names` reads it. Line by line, git C-quotes a name holding a
+    # control character, and the quoted form names no file, so its lines went unscanned (B390).
     code, out, _ = gates.run_command(
-        [*GUARD_GIT, "ls-files", "--others", "--exclude-standard"], lease.path
+        [*GUARD_GIT, "ls-files", "-z", "--others", "--exclude-standard"], lease.path
     )
     if code == 0:
-        for rel in out.splitlines():
-            rel = rel.strip()
+        for rel in out.split("\0"):
             if not rel:
                 continue
             candidate = lease.path / rel
@@ -785,6 +827,12 @@ def _squash(value: Any) -> str:
     return " ".join(str(value if value is not None else "").split())
 
 
+def _said(value: Any, limit: int) -> str:
+    """Model text for one line of the decision log: redacted whole, then cut, with no mention,
+    tag or fence left live. A handoff posts the log's tail as a GitHub comment (B393)."""
+    return deliver_mod._inline(redact(_squash(value)), limit)
+
+
 def _where_path(text: str) -> str:
     """A path as a finding or a work package spells it, in the form `git diff` prints it."""
     path = text.strip().strip("`'\"").replace("\\", "/")
@@ -865,16 +913,18 @@ def parse_self_audit(
         where_text = _squash(where)[:MAX_FINDING_WHERE_CHARS]
         if not _where_ok(where_text, changed_set, touched_set, n_acceptance, n_behaviors):
             problems.append(
-                f"finding {number}: where {where_text[:120]!r} names no changed path, no "
+                f"finding {number}: where {_said(where, 120)!r} names no changed path, no "
                 "touched path, and no valid acceptance or behavior index"
             )
             continue
+        # Redacted whole, then cut: a token cut at a cap is shorter than any pattern matches,
+        # and no longer equal to a live secret, so it would be stored as it stands (B392).
         kept.append(
             {
                 "severity": severity,
-                "claim": _squash(claim)[:MAX_FINDING_CLAIM_CHARS],
-                "where": where_text,
-                "evidence": _squash(evidence)[:MAX_FINDING_EVIDENCE_CHARS],
+                "claim": redact(_squash(claim))[:MAX_FINDING_CLAIM_CHARS],
+                "where": redact(_squash(where))[:MAX_FINDING_WHERE_CHARS],
+                "evidence": redact(_squash(evidence))[:MAX_FINDING_EVIDENCE_CHARS],
             }
         )
     return kept, problems
@@ -913,7 +963,7 @@ def _not_run(ctx: Context, entry: dict, reason: str, detail: str = "") -> dict:
     entry["findings"] = []
     ctx.record_decision(
         f"self-audit cycle {entry['cycle']} at {entry['tip']} not run: {reason}"
-        + (f" ({detail[:300]})" if detail else "")
+        + (f" ({_said(detail, 300)})" if detail else "")
         + "; no findings, and nothing is blocked"
     )
     return entry
@@ -996,10 +1046,12 @@ def _self_audit(
         + (f"{blocking} blocking, {len(findings) - blocking} note(s)" if findings else "clean")
     )
     for finding in findings:
+        evidence = _said(finding["evidence"], MAX_FINDING_EVIDENCE_CHARS)
         ctx.record_decision(
-            f"self-audit finding ({finding['severity']}) at {finding['where']}: "
-            f"{finding['claim']}"
-            + (f" -- evidence: {finding['evidence']}" if finding["evidence"] else "")
+            f"self-audit finding ({finding['severity']}) at "
+            f"{_said(finding['where'], MAX_FINDING_WHERE_CHARS)}: "
+            f"{_said(finding['claim'], MAX_FINDING_CLAIM_CHARS)}"
+            + (f" -- evidence: {evidence}" if evidence else "")
         )
     return entry
 
@@ -1036,16 +1088,59 @@ def _self_audit_fix(
     return "" if result.ok else str(result.error or "unknown")
 
 
-def _discard_since(ctx: Context, lease: Lease, tip: str) -> None:
-    """Back to ``tip``: its commit, its index, its tree, and nothing left untracked."""
+def _discard_since(
+    ctx: Context,
+    item_id: int,
+    lease: Lease,
+    tip: str,
+    head: str,
+    keep: Iterable[str] = (),
+) -> None:
+    """Back to ``tip`` on the branch ``head`` named: that commit, its index, its tree, and
+    nothing untracked left behind but ``keep``, the paths that were there before the call.
+
+    Checked afterwards, not trusted. Whatever is left would be committed by the next `git add
+    -A` or by a handoff's work-in-progress commit, so a clone that cannot be put back is blocked
+    and kept for a person (B391).
+    """
     if not tip or lease.base_sha.startswith(tip):
         # Never the base: a reset there deletes the committed implementation (preflight).
         raise HarnessError(f"refusing to reset {lease.branch} to its base {lease.base_sha}")
-    RESET_TO(lease.path, tip)
-    leftover = list(CHANGED_PATHS(lease.path, tip))
-    if leftover:
-        RESTORE_PATHS(lease.path, tip, leftover)
+    kept = set(keep)
+    try:
+        PUT_HEAD(lease.path, head)
+        RESET_TO(lease.path, tip)
+        leftover = sorted(set(CHANGED_PATHS(lease.path, tip)) - kept)
+        if leftover:
+            RESTORE_PATHS(lease.path, tip, leftover)
+        still = sorted(set(CHANGED_PATHS(lease.path, tip)) - kept)
+        problem = f"{', '.join(still[:10])} still differ from it" if still else ""
+        if not problem and HEAD_STATE(lease.path) != head:
+            problem = "HEAD did not come back"
+    except HarnessError as exc:
+        problem = str(exc)
+    if problem:
+        reason = f"the self-audit could not put {lease.branch} back on {tip}: {problem[:300]}"
+        _block(ctx, item_id, lease, reason)
+        raise HarnessError(f"item {item_id} blocked: {reason}")
     ctx.record_decision(f"self-audit put {lease.branch} back on {tip}")
+
+
+def _left_behind(lease: Lease, tip: str, head: str, before: set[str]) -> str:
+    """What a call that may not change the clone changed, in words; ``""`` when nothing.
+
+    Both halves of the tree guard: a path that differs from ``tip`` now and did not before the
+    call, and a HEAD that no longer names the branch and commit it did. A commit, an amend or a
+    `reset --soft` moves the branch and may leave no path behind at all (B387).
+    """
+    moved = HEAD_STATE(lease.path)
+    introduced = sorted(set(CHANGED_PATHS(lease.path, tip)) - before)
+    said: list[str] = []
+    if moved != head:
+        said.append(f"HEAD moved from {head or '(unread)'} to {moved or '(unreadable)'}")
+    if introduced:
+        said.append("changed " + ", ".join(introduced[:10]))
+    return "; ".join(said)
 
 
 def _record_self_audit(ctx: Context, history: Sequence[dict]) -> Path:
@@ -1079,18 +1174,25 @@ def _run_self_audit(
     """D70: audit, fix, re-gate, up to the cap. ``(final gate results, handed off)``.
 
     Advisory throughout: findings that survive go to the human, a fix pass that breaks a gate
-    is reverted, and an audit that cannot answer is recorded as not run. The one exception is a
-    fix pass whose diff B64 rejects, which blocks the item like any other forbidden diff.
+    is reverted, and an audit that cannot answer is recorded as not run. Two things block: a fix
+    pass whose diff B64 rejects, like any other forbidden diff, and a clone the loop cannot put
+    back on its tip (B391).
     """
     cap = int(ctx.config.max_self_audit_cycles)
     history: list[dict] = []
     seen: set[str] = set()
     previous = final
+    head = ""  # `_head_state` when the cycle began: the branch and commit each call was given
     unverified = ""  # the pre-fix tip while a fix pass has not yet been judged by the gates
     try:
         for cycle in range(1, cap + 1):
             tip = TIP_SHA(lease)
-            if not tip or lease.base_sha.startswith(tip):
+            head = HEAD_STATE(lease.path)
+            if (
+                not tip
+                or lease.base_sha.startswith(tip)
+                or not head.rpartition(" ")[2].startswith(tip)
+            ):
                 history.append(
                     _not_run(ctx, _entry(cycle, tip or lease.base_sha[:12]),
                              "the tip could not be read")
@@ -1102,20 +1204,20 @@ def _run_self_audit(
                     ctx, item_id, lease, pkg, spec_text, baseline, final, tip, cycle
                 )
             except RateLimited:
-                introduced = sorted(set(CHANGED_PATHS(lease.path, tip)) - before)
-                if introduced:
-                    RESTORE_PATHS(lease.path, tip, introduced)
+                # Raised after the model ran, so the guard runs here too (preflight finding 3).
                 history.append(_entry(cycle, tip, "not run: rate limited"))
+                if _left_behind(lease, tip, head, before):
+                    _discard_since(ctx, item_id, lease, tip, head, keep=before)
                 raise
-            introduced = sorted(set(CHANGED_PATHS(lease.path, tip)) - before)
-            if introduced:
-                # §4.5: an auditor holding Bash wrote to the clone. What it wrote is discarded,
-                # and so is its audit.
-                RESTORE_PATHS(lease.path, tip, introduced)
-                entry = _not_run(
-                    ctx, _entry(cycle, tip), "the auditor modified the tree",
-                    "restored " + ", ".join(introduced[:10]),
+            left = _left_behind(lease, tip, head, before)
+            if left:
+                # §4.5: an auditor holding Bash wrote to the clone or moved its branch. What it
+                # did is undone, and its audit is discarded (B379, B387).
+                history.append(
+                    _not_run(ctx, _entry(cycle, tip), "the auditor modified the tree", left)
                 )
+                _discard_since(ctx, item_id, lease, tip, head, keep=before)
+                break
             history.append(entry)
             blocking = [f for f in entry["findings"] if f["severity"] == "blocking"]
             if entry["status"] != "ok" or not blocking:
@@ -1142,16 +1244,38 @@ def _run_self_audit(
             try:
                 failed = _self_audit_fix(ctx, item_id, lease, spec_text, blocking)
             except RateLimited:
-                _discard_since(ctx, lease, tip)
+                _discard_since(ctx, item_id, lease, tip, head)
                 unverified = ""
                 entry["outcome"] = "fix pass rate limited; its changes were discarded"
                 raise
             if failed:
-                _discard_since(ctx, lease, tip)
+                _discard_since(ctx, item_id, lease, tip, head)
                 unverified = ""
                 entry["outcome"] = "fix pass failed; its changes were discarded"
-                ctx.record_decision(f"self-audit fix pass failed ({failed[:300]}); discarded")
+                ctx.record_decision(
+                    f"self-audit fix pass failed ({_said(failed, 300)}); discarded"
+                )
                 break
+            moved = HEAD_STATE(lease.path)
+            if moved != head:
+                # The prompt says the harness commits. A pass that committed, reset or switched
+                # branches anyway has the branch put back on the tip with its edits left in the
+                # tree, where B64, the formatter, the commit message and the gates all see them,
+                # and a `reset --soft` cannot pass for "changed nothing" (B388).
+                try:
+                    PUT_HEAD(lease.path, head)
+                except HarnessError as exc:
+                    ctx.record_decision(
+                        f"self-audit fix pass moved HEAD and it could not be put back ({exc})"
+                    )
+                    _discard_since(ctx, item_id, lease, tip, head)
+                    unverified = ""
+                    entry["outcome"] = "fix pass moved HEAD; its changes were discarded"
+                    break
+                ctx.record_decision(
+                    f"self-audit fix pass moved HEAD to {moved or '(unreadable)'}; put "
+                    f"{lease.branch} back on {tip} with the pass's edits kept in the tree"
+                )
             # revise's pattern: the model does not commit, so its edits are the diff against
             # the tip it was given.
             if not CHANGED_PATHS(lease.path, tip):
@@ -1191,11 +1315,21 @@ def _run_self_audit(
             ctx.check_halt()
     except Halted as exc:
         if unverified:
-            _discard_since(ctx, lease, unverified)
+            try:
+                _discard_since(ctx, item_id, lease, unverified, head)
+            except HarnessError:
+                _record_self_audit(ctx, history)
+                raise
             final = previous
             _write_gates(ctx, "final", final)
-        history.append(_entry(len(history) + 1, TIP_SHA(lease) or lease.base_sha[:12],
-                              "not run: halted"))
+        current = TIP_SHA(lease) or lease.base_sha[:12]
+        last = history[-1] if history else None
+        if last is not None and last["tip"] == current and last["status"] == "ok":
+            # The halt beat the fix pass, so this cycle's findings still describe this exact
+            # tip. They stay the record's last word rather than giving way to "not run" (B389).
+            last["outcome"] = "halted before the fix pass; findings carried"
+        else:
+            history.append(_entry(len(history) + 1, current, "not run: halted"))
         _record_self_audit(ctx, history)
         ctx.record_decision(
             f"halted during the self-audit of item {item_id}; handing it off with its work "

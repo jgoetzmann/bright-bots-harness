@@ -1150,3 +1150,123 @@ database, and is now true as written.
 Nothing here changes the gate: the level cap per verb, fail-closed on a malformed line, B131 for
 unvouched handles, and "no new access to the repository for anybody" are all exactly as D69 left
 them. What changed is that four more kinds of line, and two commands, stopped failing quietly.
+
+## D70 / B359– — an adversarial self-audit before delivery
+
+The operator's brief, verbatim: "Add an adversarial self-audit before delivery. After the gate
+sequence goes green, and before package/guard/push, the harness should run a separate model call
+that audits its own diff against the approved work package — the plan it was given at gate 1. It
+gets the proposal's acceptance criteria, behaviors and touched paths, plus the actual diff, and
+answers one question: does this change do what was approved, and only that? Findings feed back into
+the existing implement loop the same way a red gate does — the audit's output becomes the input for
+another pass, then the seven gates run again. Bounded like the diagnose loop is: a cap on cycles,
+and no re-entry on a repeated finding signature."
+
+Rulings: **three cycles** (`MAX_SELF_AUDIT_CYCLES`, default `3`; `0` turns it off with no model
+call, no record and no line in the pull request); the audit runs once the gates are green **by the
+`_new_failures` rule**, never by "every gate exits 0", which would skip every known-red item;
+the audit is **advisory**; the loop returns to the code step, and the gates re-run after every code
+change.
+
+**This is the first model call in the harness that reviews another model's output.** Every check
+before it is mechanical: the gates run twice and are diffed, a closed schema validator rejects a
+malformed proposal, and three refusals run before any push. A model checking a model is weaker
+evidence than a green gate, so the evidence rule is: a finding is always labelled a model's opinion,
+never sits beside gate output as a measurement, and never blocks delivery. The PR body's status line
+says "a model reviewing its own diff; an opinion, not a gate result" wherever it reports a blocking
+finding. The in-repository documents never stated the property this removes; a maintainer brief
+published outside the repository did, and only a person can correct it.
+
+**Tools, and the credential they widen.** The auditor holds `Read`, `Glob`, `Grep` and `Bash`, with
+`Edit`, `Write`, `WebFetch` and `WebSearch` denied; the fix pass holds `implement`'s tools. The
+harness's deny rules bind the read tool only, and the machine credential sits in
+`$GITHUB_WORKSPACE/.env` three directories above the clone, so every call holding `Bash` is a path to
+it. Today that was `implement` and `revise`; this adds `selfaudit_fix` and, as ruled, `selfaudit`.
+The product maintainer flagged this surface on 2026-09-12 and it is not mitigated here. Downgrading
+the auditor is one line: `ask.py`'s tuples in place of `implement.SELFAUDIT_*_TOOLS`.
+
+**Two stage names, and why the fix pass has its own.** `audit` is taken by `/harness audit` in nine
+places, so the auditor is `selfaudit`. The fix pass is `selfaudit_fix` rather than a second
+`implement` call because `priority.class_of` routes `propose` and `implement` through the item's
+`via`: run as `implement` on a suggested item it classes as `suggested`, and `priority.admit` can
+refuse it at 50 % weekly usage, abandoning an item whose gates just went green. Both new stages map
+to `unblock` in `CLASS_OF_STAGE`, a class `admit` never refuses, which leaves the governor as the
+only thing that can stop them.
+
+**A halt inside the loop hands the item off.** `implement()` releases the clone on `Halted`
+(`_release_on_halt`), and until now nothing after its last halt check could lose committed green
+work. The loop adds model calls, each of which checks for a halt first. Letting the halt propagate
+would delete the implementation; catching it and returning the lease would leave the item in
+`implementing`, where `harness run --item` refuses it for three hours. So a halt anywhere in the loop
+calls `deliver.handoff` — commit what is there, push it to the fork withholding `.github/`, item to
+`approved` with a ledger carry — and returns the lease; the run's next halt check (`cmd_run`'s halt
+file, or `package()`'s own check for a commanded halt) stops the run. The item resumes through
+`revise --source continue`. A halt landing while a fix pass is unjudged first puts the branch back
+on the pre-fix tip, so only gate-verified work is handed off; the loop's one explicit halt check sits
+after the post-fix gate verdict, where the tree is verified or already reverted (preflight finding
+1). If the handoff itself cannot run, the halt goes on to `implement()`'s ordinary release.
+
+**A fix pass that breaks a gate is reverted, never blocked.** The branch is reset to the pre-fix
+commit, whose gates were green, the green results are written back to `gates/final.json` so the
+packager reads green evidence, and the findings are carried. The reset target is the tip read at the
+start of the cycle and is **never the base**: a tip that cannot be read ends the audit as not run,
+because a reset to the base would delete the whole implementation and deliver an empty branch as
+green (preflight finding 4). A fix pass whose call fails, or that is rate-limited, has its edits
+discarded the same way before anything else happens.
+
+**One deliberate exception to "advisory":** a fix pass whose diff touches `.github/` (or adds any
+other B64 violation) blocks the item like every other forbidden diff, whatever finding prompted it.
+
+**The auditor tree guard.** An auditor holding `Bash` can write to the clone — `sed -i`, a redirect,
+test output — and whatever it leaves would be committed by the next fix pass's `git add -A` or by a
+handoff's work-in-progress commit. The loop compares the change set against the audited tip before
+and after the call; anything the auditor introduced is restored to the tip, and the audit is
+discarded as *not run: the auditor modified the tree*. The same guard runs when the audit call is
+rate-limited, because `RateLimited` is raised after the model has already run (preflight finding 3).
+`BudgetExhausted` and `RateLimited` are otherwise not caught: they reach `cmd_run`, which hands the
+item off and starts nothing else (D3).
+
+**Fail closed, fail quiet.** An unreadable block, a failed call, or an unavailable diff means no
+findings and a status of *not run: <reason>*. A finding's `where` must name a path in the full change
+list (never the paths of the cut diff text), a path in the work package's touched paths, or a valid
+`acceptance:<n>`/`behavior:<n>` index — the last two are how an omission is reported.
+
+**Where it surfaces.** `runs/<run-id>/selfaudit.json` holds every cycle with the tip it audited, its
+status, findings and outcome; every finding, notes included, is a `record_decision` line and reaches
+the package's `DECISIONS.md` with no packager change. The delivery PR body gains one status line
+after the gate results, with at most five blocking findings, compared against the branch tip read
+before the rebase. *Rejected:* a `SELFAUDIT.md` in the package — it edits the pinned `packager.py`,
+`PACKAGE_FILES`, the `archive` tuple and an exact-equality test, and would not survive between runs
+either, since the package lives under `runs/` too.
+
+**The migration.** `stage_run`'s closed CHECK named seven stages, so the first audit call would have
+raised `StoreError`. The CHECK gains both stages, `LAYOUT_VERSION` becomes 3, and the rebuild probe
+changes from `'deliver'` — present on every layout-2 database, so an existing `harness.db` would have
+kept the old CHECK — to `'selfaudit_fix'`. `_rebuild` preserves every row.
+
+**The pin, and a frozen table.** `prompts/selfaudit.md` and `prompts/selfaudit_fix.md` are new, and
+every file under `prompts/` is pinned, so `.harness/PIN` was rewritten. `tests/test_dispatcher.py`
+asserts `dispatcher.STATIC_USD` by exact equality and calls it frozen; it now carries `selfaudit`
+(0.50, shaped like a propose) and `selfaudit_fix` (1.00, shaped like a revise). Both also have
+`STATIC_ESTIMATES` entries and turn-cap fallbacks (`propose`, `implement`) rather than new
+`MAX_TURNS_*` keys, which every complete `.env` would have needed.
+
+**The PR body is pinned byte for byte with the audit off.** `tests/fixtures/deliver/pr_body_cap0.md`
+was generated from the unmodified `deliver.py` and committed before it changed, written as LF bytes
+so it compares the same on both runners (preflight finding 5). `docs/PACKAGE-FORMAT.md`'s PR-body
+section, already stale on `main` (four sections and "Nothing is summarised", against a closing line,
+a steering table, a checklist, five collapsed sections and a gate digest), is rewritten with this
+change.
+
+**Recorded gaps.**
+
+1. `revise` does not run the audit. Its diff base and push path differ (D67), so a revised branch is
+   re-gated but not re-audited.
+2. **Carried items** — anything stopped by a usage stop, a rate limit, `--until` or a halt mid-audit
+   — finish through `revise --source continue` and are **delivered unaudited**.
+3. The audit record is same-process only: `runs/` does not survive between Actions runs (D46), and it
+   reaches `deliver` only because `harness run --item` runs implement, package and deliver in one
+   process. Anywhere else the line reads *not run for this revision*.
+4. **After `/harness revise`, the delivery PR's status line describes a tree the auditor never
+   saw**, because nothing in `gh.py` edits a pull request body. The line names the sha it audited so
+   a reader can tell.

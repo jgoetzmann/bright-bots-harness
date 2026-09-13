@@ -48,6 +48,11 @@
 #     nobody;
 #   - two lines naming one handle disagree about which account it is (D68).
 #
+#
+# Two lines naming one handle that do NOT disagree about the account keep the HIGHEST level
+# of the two, so a line added to DEMOTE somebody does nothing at all. `harness doctor` and
+# `harness trust show` both name the duplicate; edit the line that is there rather than
+# adding another one.
 # `harness trust show` prints this file exactly as the gate reads it, including every entry
 # that is being refused and every handle that still depends on the association half.
 #

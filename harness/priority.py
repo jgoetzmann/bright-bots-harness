@@ -42,6 +42,10 @@ CLASS_OF_STAGE: dict[str, str] = {
     "revise": "unblock",
     "deliver": "unblock",
     "package": "unblock",
+    # D70: both self-audit calls run after an item's gates went green. Classed by the stage, so
+    # a suggested item is never refused half-way; an unmapped stage would fall through to `via`.
+    "selfaudit": "unblock",
+    "selfaudit_fix": "unblock",
     "audit": "audit",
     "decompose": "directed",
     "discover": "directed",

@@ -24,6 +24,10 @@ STATIC_USD: dict[str, float] = {
     # it has a ceiling of its own rather than borrowing the per-call cap.
     "ask": 0.05,
     "audit": 3.00,
+    # D70. The self-audit reads one diff against one work package, as a proposal reads an
+    # issue; its fix pass is one more implementation pass, as a revise is.
+    "selfaudit": 0.50,
+    "selfaudit_fix": 1.00,
 }
 
 

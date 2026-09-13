@@ -20,8 +20,9 @@ from harness.redact import write_redacted
 
 # The row in ``schema_version`` (HARNESS-SPEC 5.2.1, verbatim; tests B7/B8 assert it stays 1).
 SCHEMA_VERSION = 1
-# ``PRAGMA user_version``: the Delivery 2 layout (twelve states, seven stages in the CHECKs).
-LAYOUT_VERSION = 2
+# ``PRAGMA user_version``: layout 2 was Delivery 2's (twelve states, seven stages in the CHECKs);
+# layout 3 is D70's, the same tables with the two self-audit stages added to ``stage_run``.
+LAYOUT_VERSION = 3
 
 # The Delivery 1 layout (HARNESS-SPEC 5.2.1) has no constant here and is never created:
 # ``migrate()`` builds every fresh database from ``SCHEMA_SQL_V2`` below, and a database
@@ -64,8 +65,9 @@ CREATE TABLE {name} (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   work_item_id    INTEGER NOT NULL REFERENCES work_item(id),
   stage           TEXT    NOT NULL CHECK (stage IN
-                    ('discover','propose','implement','package','deliver','revise','decompose')),
-  backend         TEXT    NOT NULL,
+                    ('discover','propose','implement','package','deliver','revise','decompose',
+                     'selfaudit','selfaudit_fix')),
+  backend        TEXT    NOT NULL,
   status          TEXT    NOT NULL CHECK (status IN
                     ('running','ok','failed','halted','budget_exhausted','timeout')),
   started_at      TEXT    NOT NULL,
@@ -451,7 +453,10 @@ class SqliteStore:
                 raise StoreError(f"migration failed adding work_item.via: {exc}") from exc
         if self._table_sql("work_item").find("'merged'") < 0:
             self._rebuild("work_item", WORK_ITEM_DDL_V2, WORK_ITEM_COLUMNS, "idx_work_item_state")
-        if self._table_sql("stage_run").find("'deliver'") < 0:
+        # D70: probe for the newest stage, not `'deliver'`, which every layout-2 database already
+        # carries -- that probe would leave an existing database on the old CHECK, and the first
+        # self-audit call would then raise.
+        if self._table_sql("stage_run").find("'selfaudit_fix'") < 0:
             self._rebuild("stage_run", STAGE_RUN_DDL_V2, STAGE_RUN_COLUMNS, "idx_stage_run_item")
         current = conn.execute("PRAGMA user_version").fetchone()
         if current is None or int(current[0]) < LAYOUT_VERSION:

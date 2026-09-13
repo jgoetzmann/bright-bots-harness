@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "text": "<!-- selfaudit: {\"verdict\": \"clean\", \"findings\": []} -->\nEvery acceptance criterion and behavior traces to a hunk in the diff, and every hunk traces to one of them.",
+  "turns": 4,
+  "cost_usd": 0.0125,
+  "allowance_pct": null,
+  "duration_ms": 4321,
+  "session_id": "fixture-session",
+  "exit_code": 0,
+  "transcript": [
+    {"role": "user", "content": "fixture prompt"},
+    {"role": "assistant", "content": "<!-- selfaudit: {\"verdict\": \"clean\", \"findings\": []} -->"}
+  ],
+  "error": null
+}

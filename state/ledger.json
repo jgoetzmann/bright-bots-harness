@@ -37,7 +37,7 @@
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-12T19:25:48Z",
+    "notifications_last_seen": "2026-09-14T05:05:18Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -46,7 +46,9 @@
       "IC_kwDOULOSYs8AAAABTkQtnA",
       "IC_kwDOULOSYs8AAAABTuYqhw"
     ],
-    "keyword_denied": {},
+    "keyword_denied": {
+      "jgoetzmann": 3
+    },
     "ask_calls": {
       "date": "2026-09-09",
       "count": 1

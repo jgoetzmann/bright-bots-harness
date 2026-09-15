@@ -14,7 +14,7 @@ Put one of these on its own line in a comment on this pull request:
 | `/harness revise <notes>` | one more implementation pass, your notes as the brief |
 | `/harness rebase` | rebase onto this repository's current `main`, then push again |
 | `/harness stop` | close this and park the work item; `/harness go` puts it back |
-| `/harness status` | spend, queue, and when the next thing happens |
+| `/harness status` | usage, queue, and when the next thing happens |
 
 Honoured only from @BrightBoost-Tech, @jgoetzmann, and only when GitHub also reports you as an owner, member or collaborator here, or `.harness/trust.txt` vouches for your exact account. Everyone else's comments are read and ignored. A command is acted on once — editing a comment does not re-fire it, so post a new one.
 
@@ -122,11 +122,11 @@ git clone bundle.gitbundle -b harness/fix-633-bundle-size r
 
 ---
 
-Written by the **Bright Bots Harness** — an automated agent that takes an issue on [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost) through to a reviewable pull request.
+Posted by the **Bright Bots Harness**, an automated agent that turns issues on [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost) into reviewable pull requests.
 
-It **never merges anything**. Two human gates stand in the way: a proposal is approved by a person merging it, and a delivery is approved by a person merging that. Everything it writes is redacted, and a committed kill switch stops it mid-flight.
+It never merges anything: a person approves the plan by merging the proposal, and the change by merging the delivery. A committed kill switch stops it.
 
-**Where things are.** [Start here](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/FOR-MAINTAINERS.md) · [Every command](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/COMMANDS.md) · [How to use it](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/USING.md) · [Finding work and steering it](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/PROPOSALS.md) · [What it will and will not do](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/SAFETY.md) · [When something is wrong](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/OPERATIONS.md) · [What is in a review package](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/PACKAGE-FORMAT.md)
+**Where things are.** [Start here](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/FOR-MAINTAINERS.md) · [Every command](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/COMMANDS.md) · [What it will and will not do](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/SAFETY.md) · [When something is wrong](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/OPERATIONS.md) · [What is in a review package](https://github.com/jgoetzmann/bright-bots-harness/blob/main/docs/PACKAGE-FORMAT.md)
 
 **Repositories.** harness [`jgoetzmann/bright-bots-harness`](https://github.com/jgoetzmann/bright-bots-harness) · fork [`jgoetzmann-bot/brightboost`](https://github.com/jgoetzmann-bot/brightboost) · product [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost)
 

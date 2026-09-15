@@ -770,7 +770,7 @@ def test_B247_the_audit_body_says_it_is_a_list_and_not_a_plan(tmp_path):
         trusted=rig.ctx.trusted,
     )
 
-    assert "list, not a plan" in body
+    assert "list of findings, and nothing in it is queued" in body
     assert "/harness promote" in body
     assert "b" * 12 in body
 
@@ -1355,9 +1355,8 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
     assert "40% used" in out and "50 points" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
-    # The ceiling quoted is the one the dispatcher spends against, not the raw cap.
-    # The dollar figure survives underneath, said as the estimate it is.
-    assert "reserve" in out and "nobody bills it" in out
+    # Subscription usage is the whole report: no dollar figure follows it (D73).
+    assert "nobody bills it" not in out and "$" not in out
 
 
 def test_queue_is_an_alias_for_go_now(tmp_path):
@@ -1795,7 +1794,7 @@ def test_a_command_that_errors_is_answered_in_the_thread(tmp_path):
 
 
 def test_revise_wakes_a_needs_human_item_from_the_harness_issue(tmp_path):
-    """`stage:needs-human` is only visible on the harness issue, and OPERATIONS.md, USING.md and
+    """`stage:needs-human` is only visible on the harness issue, and OPERATIONS.md and
     `stages/revise.py` all tell the operator to type `/harness revise` THERE. Routing on the
     surface instead of the state sent that to a re-propose, and `needs-human -> proposing` is
     not a legal edge -- so the documented recovery answered with a traceback."""

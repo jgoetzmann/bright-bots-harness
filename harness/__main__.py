@@ -1714,8 +1714,6 @@ def _usage_report(ctx, config, now) -> str:
 
     lines.extend(links.usage_headline(led, config, now))
     lines.append("")
-    lines.append(links.spend_estimate(led, config))
-    lines.append("")
 
     try:
         rows = priority.queue(store=ctx.store, ledger=led)

@@ -72,6 +72,7 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("ASK_MAX_PER_DAY", "20"),
     ("SUGGEST_MIN_HEADROOM_PCT", "50"),
     ("AUDIT_MIN_HEADROOM_PCT", "75"),
+    ("MAX_SELF_AUDIT_CYCLES", "3"),
     ("WEEKLY_USAGE_STOP_PCT", "90"),
     ("SESSION_USAGE_STOP_PCT", "70"),
     ("OVERRUN_PCT", "10"),
@@ -315,9 +316,13 @@ def test_B122_static_table_values(tmp_path):
     """B122/§6.4: the static estimates are the frozen table.
 
     Delivery 4 added two. `ask` is one read and a paragraph; `audit` reads a whole repository,
-    which is why it has a ceiling of its own (`AUDIT_CAP_USD`) rather than the per-call cap."""
+    which is why it has a ceiling of its own (`AUDIT_CAP_USD`) rather than the per-call cap.
+
+    D70 added two more: `selfaudit` reads one diff against one work package, priced like a
+    propose, and `selfaudit_fix` is one more implementation pass, priced like a revise."""
     assert STATIC_USD == {"discover": 0.20, "propose": 0.50, "implement": 2.50, "revise": 1.00,
-                          "decompose": 0.30, "package": 0.05, "ask": 0.05, "audit": 3.00}
+                          "decompose": 0.30, "package": 0.05, "ask": 0.05, "audit": 3.00,
+                          "selfaudit": 0.50, "selfaudit_fix": 1.00}
 
 
 def test_B122_cheaper_stage_fits_where_implement_does_not(tmp_path):

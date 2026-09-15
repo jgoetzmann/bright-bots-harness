@@ -47,6 +47,47 @@ def _read(relative: str) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# D70 / B386 — docs/PACKAGE-FORMAT.md's PR-body table names every section the body has
+# --------------------------------------------------------------------------------------
+
+
+def _pr_body_table() -> str:
+    doc = _read("docs/PACKAGE-FORMAT.md")
+    start = doc.index("## 6. The delivery PR")
+    end = doc.find("\n## ", start + 1)
+    section = doc[start:] if end < 0 else doc[start:end]
+    return "\n".join(line for line in section.splitlines() if line.startswith("|"))
+
+
+def test_B386_every_pr_body_heading_and_collapsed_section_is_in_the_package_format_table():
+    """`docs/PACKAGE-FORMAT.md` §6 listed four concatenated files and "Nothing is summarised" long
+    after `build_pr_body` had grown a steering table, a checklist, five collapsed sections and a
+    gate digest (D70). The body is built from the golden inputs, the self-audit line included;
+    every `## ` heading outside a collapsed section, and every collapsed section's title, must be
+    named in that section's table."""
+    from types import SimpleNamespace
+
+    from harness.stages.deliver import build_pr_body
+
+    inputs = REPO_ROOT / "tests" / "fixtures" / "deliver" / "pr_body_cap0"
+    kwargs = json.loads((inputs / "kwargs.json").read_bytes().decode("utf-8"))
+    kwargs["config"] = SimpleNamespace(**kwargs["config"])
+    kwargs["trusted"] = tuple(kwargs["trusted"])
+    body = build_pr_body(
+        inputs / "package", **kwargs, self_audit="**Self-audit: not run for this revision.**"
+    )
+
+    outside = re.sub(r"<details>.*?</details>", "", body, flags=re.S)
+    headings = re.findall(r"^## (.+)$", outside, re.M)
+    titles = re.findall(r"<summary>(.+?)</summary>", body)
+    assert len(headings) >= 3 and len(titles) >= 5, (headings, titles)
+    table = _pr_body_table()
+    missing = [name for name in headings + titles if name not in table]
+    assert missing == [], f"docs/PACKAGE-FORMAT.md §6's table does not name: {missing}"
+    assert "Self-audit" in table, "the table must name the self-audit line (D70)"
+
+
+# --------------------------------------------------------------------------------------
 # .github/CODEOWNERS — the reviewed-change guarantee covers everything that decides a result
 # --------------------------------------------------------------------------------------
 

@@ -101,6 +101,8 @@ FIELD_KEYS: tuple[str, ...] = (
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
     "AUDIT_MIN_HEADROOM_PCT",
+    # D70: the adversarial self-audit before delivery.
+    "MAX_SELF_AUDIT_CYCLES",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
@@ -134,6 +136,7 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
     "AUDIT_MIN_HEADROOM_PCT",
+    "MAX_SELF_AUDIT_CYCLES",
 )
 
 #: Where the override file lives, relative to the directory holding `.env`.
@@ -237,6 +240,8 @@ class Config:
     ask_max_per_day: int
     suggest_min_headroom_pct: float
     audit_min_headroom_pct: float
+    #: D70: audit/fix cycles after the gates go green; 0 turns the self-audit off entirely.
+    max_self_audit_cycles: int
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -641,6 +646,12 @@ def load_config(
             f"{suggest_min_headroom_pct}"
         )
 
+    max_self_audit_cycles = _require_int(values, "MAX_SELF_AUDIT_CYCLES")
+    if max_self_audit_cycles < 0:
+        raise ConfigError(
+            f"MAX_SELF_AUDIT_CYCLES must be 0 or more; got {max_self_audit_cycles}"
+        )
+
     # I-18 (D61): the harness never works on its own repository. A system that can rewrite the
     # rules it is governed by has no rules -- a change to gh.py or prompts/implement.md could
     # propose its way out of the kill switch, the credential door and the pin, and the
@@ -703,6 +714,7 @@ def load_config(
         ask_max_per_day=ask_max_per_day,
         suggest_min_headroom_pct=suggest_min_headroom_pct,
         audit_min_headroom_pct=audit_min_headroom_pct,
+        max_self_audit_cycles=max_self_audit_cycles,
     )
     _LAST_CONFIG = config
     return config

@@ -84,6 +84,7 @@ ASK_CAP_USD=0.50
 ASK_MAX_PER_DAY=20
 SUGGEST_MIN_HEADROOM_PCT=50
 AUDIT_MIN_HEADROOM_PCT=75
+MAX_SELF_AUDIT_CYCLES=3
 HARNESS_GITHUB_TOKEN=
 ANTHROPIC_API_KEY=
 """
@@ -98,7 +99,12 @@ RUNNER_STAGES = (
     "diagnose_gate_failure",
     "ask",
     "audit",
+    "selfaudit",
+    "selfaudit_fix",
 )
+
+#: D70: what the default self-audit fixture says -- nothing found.
+CLEAN_SELFAUDIT = '<!-- selfaudit: {"verdict": "clean", "findings": []} -->\nNothing to report.'
 
 
 def write_env(tmp_path: Path, *, fullsend: str = "false") -> Path:
@@ -193,6 +199,8 @@ def write_runner_fixtures(
                 "",
             ]
         ),
+        "selfaudit": CLEAN_SELFAUDIT,
+        "selfaudit_fix": "The finding held; the failure message now names the chunk.",
     }
     for stage in RUNNER_STAGES:
         payload = {
@@ -396,6 +404,55 @@ class CountingRunner:
         return self.inner.run(request)
 
 
+class ScriptedRunner:
+    """D70: wraps FakeRunner the way CountingRunner does, with a queue of steps per stage.
+
+    `FakeRunner` gives one answer per stage for every call; a loop needs a different answer on
+    each. Every call of a stage pops that stage's next step, and a stage with none left gets
+    its fixture. A step is:
+
+    - a ``str``: the fixture's result carrying this text;
+    - a ``RunResult``: returned as it is -- a failure, or a rate limit;
+    - an exception: raised from inside the call, as a runner that fails does;
+    - a callable taking the request, run before any result exists -- it edits the clone the way
+      a model holding ``Edit`` or ``Bash`` does, or engages a halt -- whose return value is
+      itself a step, ``None`` meaning the fixture.
+
+    A halt is not queued as an exception: `run_model` checks for one *before* the call reaches
+    the runner, so a test engages the switch from an earlier step and lets production find it.
+    """
+
+    def __init__(self, inner, script: dict | None = None) -> None:
+        self.inner = inner
+        self.name = getattr(inner, "name", "fake")
+        self.script: dict[str, list] = {
+            stage: list(steps) for stage, steps in (script or {}).items()
+        }
+        self.requests: list[object] = []
+
+    def push(self, stage: str, *steps) -> None:
+        self.script.setdefault(stage, []).extend(steps)
+
+    def run(self, request):
+        import dataclasses
+
+        from harness.runner.base import RunResult
+
+        self.requests.append(request)
+        queue = self.script.get(request.stage)
+        step = queue.pop(0) if queue else None
+        if callable(step) and not isinstance(step, (type, BaseException)):
+            step = step(request)
+        if isinstance(step, BaseException):
+            raise step
+        if isinstance(step, RunResult):
+            return step
+        result = self.inner.run(request)
+        if isinstance(step, str):
+            result = dataclasses.replace(result, text=step)
+        return result
+
+
 class Rig:
     def __init__(self, ctx, runner, log, config, store, clones, gh) -> None:
         self.ctx = ctx
@@ -465,8 +522,31 @@ RED = [
 ]
 
 
-def stub_implement_side_effects(monkeypatch, log: list[str], *, gate_runner, changed=None):
-    """Replace the four module-level injectables in harness.stages.implement."""
+def stub_implement_side_effects(
+    monkeypatch,
+    log: list[str],
+    *,
+    gate_runner,
+    changed=None,
+    tip="b" * 12,
+    commit=None,
+    unified_diff=None,
+    reset_to=None,
+    restore_paths=None,
+    head_state=None,
+    put_head=None,
+):
+    """Replace the module-level injectables in harness.stages.implement.
+
+    D70 added the git operations the self-audit loop uses (handoff §4.12: the rig's clone is
+    not a repository). Each has a stand-in, and each may instead be given with its production
+    signature: `changed` a list or ``(clone, sha) -> paths``; `tip` a string, ``(lease) -> str``,
+    or None to keep production's `TIP_SHA`; `commit`, `unified_diff`, `reset_to`,
+    `restore_paths`, `head_state` and `put_head` callables. Every call is logged either way.
+
+    Without `head_state`, HEAD is one branch at `tip` (``""`` when `tip` is not a string), and
+    a reset empties a fixed change list, as `git reset --hard` does to what it tracks."""
+    reset: list[str] = []
 
     def prettier(clone, paths, runner=None):
         log.append("prettier")
@@ -474,15 +554,56 @@ def stub_implement_side_effects(monkeypatch, log: list[str], *, gate_runner, cha
 
     def changed_paths(clone, base_sha, git_runner=None):
         log.append("changed_paths")
+        if callable(changed):
+            return list(changed(clone, base_sha))
+        if reset:
+            return []
         return list(changed if changed is not None else ["src/lib/bundle.ts"])
 
-    def commit(clone, message):
+    def commit_(clone, message):
         log.append("commit")
+        if commit is not None:
+            commit(clone, message)
 
     monkeypatch.setattr(implement_mod, "GATE_RUNNER", gate_runner)
     monkeypatch.setattr(implement_mod, "PRETTIER", prettier)
     monkeypatch.setattr(implement_mod, "CHANGED_PATHS", changed_paths)
-    monkeypatch.setattr(implement_mod, "COMMIT", commit)
+    monkeypatch.setattr(implement_mod, "COMMIT", commit_)
+
+    def unified_diff_(lease):
+        log.append("unified_diff")
+        if unified_diff is not None:
+            return unified_diff(lease)
+        return ("diff --git a/src/lib/bundle.ts b/src/lib/bundle.ts\n+export const x = 1;\n", False)
+
+    def reset_to_(clone, sha):
+        log.append(f"reset_to:{sha}")
+        reset.append(sha)
+        if reset_to is not None:
+            reset_to(clone, sha)
+
+    def restore_paths_(clone, sha, paths):
+        log.append(f"restore_paths:{sha}:{','.join(paths)}")
+        if restore_paths is not None:
+            restore_paths(clone, sha, paths)
+
+    def head_state_(clone):
+        if head_state is not None:
+            return head_state(clone)
+        return f"refs/heads/rig {tip}" if isinstance(tip, str) else ""
+
+    def put_head_(clone, state):
+        log.append(f"put_head:{state}")
+        if put_head is not None:
+            put_head(clone, state)
+
+    if tip is not None:
+        monkeypatch.setattr(implement_mod, "TIP_SHA", tip if callable(tip) else lambda lease: tip)
+    monkeypatch.setattr(implement_mod, "UNIFIED_DIFF", unified_diff_)
+    monkeypatch.setattr(implement_mod, "RESET_TO", reset_to_)
+    monkeypatch.setattr(implement_mod, "RESTORE_PATHS", restore_paths_)
+    monkeypatch.setattr(implement_mod, "HEAD_STATE", head_state_)
+    monkeypatch.setattr(implement_mod, "PUT_HEAD", put_head_)
 
 
 def approved_item(rig: Rig, item_id: int) -> None:
@@ -673,7 +794,7 @@ def test_B256_audit_mode_without_a_lens_is_refused_before_any_model_call(tmp_pat
 # --------------------------------------------------------------------------
 
 
-def proposable(tmp_path, *, propose_text=None, fullsend="false"):
+def proposable(tmp_path, *, propose_text=None, fullsend="false", via="requested"):
     gh = FakeGh(issues=(gh_issue(816),))
     env_path = write_env(tmp_path, fullsend=fullsend)
     config = load_config(env_path, environ={})
@@ -681,7 +802,7 @@ def proposable(tmp_path, *, propose_text=None, fullsend="false"):
     store = Store(config.db_path, clock)
     store.migrate()
     item_id = store.create_work_item(
-        kind="issue", external_ref="issue:816", title="bundle size check misreports esm"
+        kind="issue", external_ref="issue:816", title="bundle size check misreports esm", via=via
     )
     fixtures_dir = write_runner_fixtures(
         tmp_path / "runner-fixtures",

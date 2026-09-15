@@ -1,4 +1,4 @@
-"""Disposable clone lifecycle (SPEC §5.7) and the fast-forward-only fork sync (handoff §4.4)."""
+"""Disposable clone lifecycle, and the fast-forward-only fork sync."""
 
 from __future__ import annotations
 
@@ -49,22 +49,19 @@ def branch_name_for(item: WorkItem) -> str:
 
 
 def _source_repo(config) -> str:
-    """The repository clones come from: the fork at tier 2 (D2 §4.4), else the product repo.
+    """The repository clones come from: the fork at tier 2, else the product repository (B220).
 
-    B220/D40: the fork is only the right source while the harness can keep it current, and
-    that takes a write credential -- `sync_fork` fast-forwards it through `gh.push_ref`, which
-    tier 2 alone can call. Below tier 2 the fork is frozen wherever it was last left, so
-    cloning it pins every proposal, diff and gate run to a stale base and silently reports it
-    as the product repository. Measured: a tier-0 trial cloned a fork twelve commits behind
-    upstream. With no push there is no reason to prefer the fork at all.
+    The fork is the right source only while the harness can keep it current, which takes a
+    write credential: `sync_fork` fast-forwards it through `gh.push_ref`, and tier 2 alone can
+    call that. Below tier 2 the fork stays wherever it was last left, so cloning it would pin
+    every proposal, diff and gate run to a stale base while reporting it as the product
+    repository.
     """
     fork = (getattr(config, "fork_repo", "") or "").strip()
     chosen = fork if fork and int(getattr(config, "permission_tier", 0) or 0) >= 2 else config.repo
-    # B281/I-18: the last place a clone can be pointed at the harness itself. `load_config`
-    # already refuses `REPO == SELF_REPO`, so reaching this means the configuration was built
-    # some other way -- a test rig, a hand-made Config, a future caller. A second line, because
-    # a checkout of the harness is the one thing that turns "propose a change" into "propose a
-    # change to the rules that govern proposing changes".
+    # The last place a clone can be pointed at the harness itself (I-18). `load_config` already
+    # refuses `REPO == SELF_REPO`, so reaching this means the Config was built some other way:
+    # a test rig, a hand-made Config, a future caller.
     self_repo = str(getattr(config, "self_repo", "") or "").strip()
     if self_repo and chosen.strip().lower() == self_repo.lower():
         raise CloneError(
@@ -101,23 +98,22 @@ def long_path(path: Path | str) -> str:
 HOOKS_OFF = "no-hooks"
 
 
-# -- what the harness never publishes (D67, I-15, B64) ---------------------------------------
+# -- what the harness never publishes (I-15) -------------------------------------------------
 
-#: The path prefixes no harness commit may carry to a remote (B296/D67). Matched against
+#: The path prefixes no harness commit may carry to a remote (B296). Matched against
 #: `normalise_repo_path`, which prepends "/", so `.github/x` at the top of the tree matches and
-#: `docs/github-setup.md` does not. All of `.github/`, not only its workflows: composite
-#: actions, `dependabot.yml` and `CODEOWNERS` steer CI and review as surely as a workflow does,
-#: and since D67 granted the machine PAT `workflow`, nothing at GitHub's end stops any of them.
-#: The one definition: B64 (`implement.FORBIDDEN_DIFF_PATHS`), the push guard in `gh.py`, the
-#: handoff in `deliver.py` and revise all read it; `local/watchdog-bb.ps1` spells the same
-#: prefix and `local/preflight.py` holds the two together (B304).
+#: `docs/github-setup.md` does not. All of `.github/`, since composite actions,
+#: `dependabot.yml` and `CODEOWNERS` steer CI and review as a workflow does, and the machine
+#: PAT carries `workflow`. This is the one definition: `implement.FORBIDDEN_DIFF_PATHS`, the
+#: push guard in `gh.py`, the handoff in `deliver.py` and revise all read it, and
+#: `local/preflight.py` holds `local/watchdog-bb.ps1` to the same prefix.
 PROTECTED_PUSH_PATHS: tuple[str, ...] = ("/.github/",)
 
-#: B139/D67: the author emails the harness writes. The first is `deliver.GIT_IDENTITY`'s, used
-#: by the rebase; the second is what `implement.COMMIT` writes and cannot change.
+#: The author emails the harness writes (B139). The first is `deliver.GIT_IDENTITY`'s, used by
+#: the rebase; the second is what `implement.COMMIT` writes.
 HARNESS_AUTHOR_EMAILS: tuple[str, ...] = ("harness@brightboost-harness", "harness@localhost")
 
-#: B297: how many commits the walk takes from a branch tip. A walk that takes this many
+#: How many commits the walk takes from a branch tip (B297). A walk that takes this many
 #: harness commits without reaching anyone else's refuses rather than pass the rest unchecked;
 #: a real branch carries a handful.
 PROTECTED_SCAN_COMMITS = 100
@@ -128,30 +124,29 @@ PROTECTED_SCAN_COMMITS = 100
 _RECORD = chr(30)
 _FIELD = chr(31)
 
-#: B312/D67: how every guard-side git read begins -- the walk, B64's diffs, and the
-#: author-blind range check. Each option takes away one way the clone's own files, which the
-#: model can write with Bash, could show a check a different history from the one a push sends:
-#: `--no-replace-objects` ignores `refs/replace/`, and `core.commitGraph=false` reads parents
-#: and trees from the commits themselves, not from a cache file beside them. With
-#: `core.quotepath=off` a non-ASCII path arrives as itself. Grafts and a shallow file have no
-#: such switch, so `substituted_history` refuses a clone that has either.
+#: How every guard-side git read begins: the walk, the path diffs and the author-blind range
+#: check (B312). The model can write the clone's own files with Bash, and each option takes
+#: away one way those files could show a check a different history from the one a push sends.
+#: `--no-replace-objects` ignores `refs/replace/`; `core.commitGraph=false` reads parents and
+#: trees from the commits themselves rather than a cache file beside them; `core.quotepath=off`
+#: passes a non-ASCII path through as itself. Grafts and a shallow file have no such switch, so
+#: `substituted_history` refuses a clone that has either.
 GUARD_GIT: tuple[str, ...] = (
     "git", "--no-replace-objects", "-c", "core.commitGraph=false", "-c", "core.quotepath=off",
 )
 
-#: B312: the three things `substituted_history` asks git about. `local/watchdog-bb.ps1` asks
-#: the same three, and `local/preflight.py` holds it to them.
+#: The three things `substituted_history` asks git about. `local/watchdog-bb.ps1` asks the same
+#: three, and `local/preflight.py` holds it to them.
 SUBSTITUTION_PROBES: tuple[str, ...] = ("refs/replace/", "--is-shallow-repository", "info/grafts")
 
 
 def normalise_repo_path(path: str) -> str:
-    """A repository path in the one form the protected-path match reads (B64, B296).
+    """A repository path in the one form the protected-path match reads (B296).
 
-    Moved from `implement._normalise`. Backslashes become slashes, a `./` prefix goes, and a
-    leading "/" is prepended, which is what makes a top-level `.github/` match and keeps
-    `src/dotgithub/` from matching. D67 added the quote strip: git C-quotes a path that holds a
-    double quote, a backslash or a control character, and the opening quote must not carry
-    such a path past the match.
+    Backslashes become slashes, a `./` prefix goes, and a leading "/" is prepended, which makes
+    a top-level `.github/` match and keeps `src/dotgithub/` from matching. Surrounding quotes
+    are stripped, because git C-quotes a path holding a double quote, a backslash or a control
+    character, and the opening quote must not carry such a path past the match.
     """
     text = str(path).replace(SEP, "/").strip().strip("`").strip().strip('"')
     while text.startswith("./"):
@@ -183,7 +178,7 @@ class CommitWalk:
     """What `walk_harness_commits` found at the top of a ref (B297).
 
     ``commits`` is the harness's run of commits from the tip, newest first. ``stopped_at`` is
-    the first commit someone else authored -- where the mainline begins -- or "" when the walk
+    the first commit someone else authored, where the mainline begins, or "" when the walk
     reached the root. ``capped`` means it took `PROTECTED_SCAN_COMMITS` harness commits and
     there were more, so it cannot vouch for the ref.
     """
@@ -200,16 +195,14 @@ class CommitWalk:
 def harness_walk_argv(ref: str) -> list[str]:
     """The one `git log` the walk runs; `local/watchdog-bb.ps1` runs the same (B304).
 
-    `--name-only --no-renames` lists a rename as the delete and the add it is, and lists a
-    deletion at all (D42: removing a workflow is not milder than editing one). `--first-parent`
-    keeps the walk on the branch's own line, and since git 2.31 it already gives a merge commit
-    the paths it brought in (plain `git log` shows a merge none); `--diff-merges=first-parent`
-    says so explicitly, for an older git and for the reader. It begins with `GUARD_GIT` (B312),
-    so neither `refs/replace/` nor the commit-graph cache can show the walk a different history
-    from the one the push sends. Grafts and a shallow file cannot be switched off from here, so
-    `walk_harness_commits` refuses a clone that has either before it runs this.
-    `log.showRoot=true`, so no config in the clone can hide a root commit's paths. One more than
-    the cap, to tell "the cap" from "past it".
+    `--name-only --no-renames` lists a rename as the delete and the add it is, and lists
+    deletions, since removing a workflow is as much a change as editing one. `--first-parent`
+    keeps the walk on the branch's own line; `--diff-merges=first-parent` states what git 2.31
+    and later already do, giving a merge commit the paths it brought in. It begins with
+    `GUARD_GIT`, so neither `refs/replace/` nor the commit-graph cache can show the walk a
+    different history from the one the push sends, and `log.showRoot=true` keeps clone config
+    from hiding a root commit's paths. It asks for one more than the cap, to tell "the cap"
+    from "past it".
     """
     return [
         "git", "--no-replace-objects", "-c", "core.commitGraph=false", "-c", "core.quotepath=off",
@@ -220,14 +213,14 @@ def harness_walk_argv(ref: str) -> list[str]:
 
 
 def substituted_history(cwd: Path | str, run: GitRunner | None = None) -> list[str]:
-    """B312/D67: why the clone's history cannot be read as a push would send it; [] if it can.
+    """Why the clone's history cannot be read as a push would send it; [] if it can (B312).
 
     A clone can show git a history its objects do not hold, through files the model can write
     with Bash: a `refs/replace/` entry swaps one object for another, `info/grafts` rewrites a
     commit's parents, and a shallow file cuts them off. A push sends the real objects either
     way. `GUARD_GIT` switches off the first for one command, but nothing on a command line
-    switches off the other two, so a check refuses such a clone rather than read it. A harness
-    clone is a full clone and has none of the three. Git failing to answer is a reason too.
+    switches off the other two, so a check refuses such a clone. Git failing to answer is a
+    reason too.
     """
     runner = run if run is not None else run_command
     root = Path(cwd)
@@ -282,16 +275,14 @@ def parse_harness_walk(out: str) -> CommitWalk:
 
 
 def walk_harness_commits(cwd: Path | str, ref: str, run: GitRunner | None = None) -> CommitWalk:
-    """B297/D67: the commits the harness authored at the top of ``ref``, and what they touch.
+    """The commits the harness authored at the top of ``ref``, and what they touch (B297).
 
-    Not "what does this branch change against a recorded base": after `deliver._rebase` that
-    base differs from the branch by everything upstream merged since -- upstream's own
-    `.github/workflows/ci-cd.yml` included -- and a guard asking it would refuse every delivery
-    (D67). The question is which commits the harness wrote. A rebase rewrites the committer and
-    keeps the author, so upstream's commits keep upstream's authors and the walk stops at the
-    first of them. Raises `CloneError` when git fails -- a walk that did not run checked
-    nothing -- and when the clone's history is substituted (B312), which the walk cannot see
-    past.
+    The question is which commits the harness wrote, not what the branch changes against a
+    recorded base: after `deliver._rebase` that base differs from the branch by everything
+    upstream merged since, upstream's own `.github/workflows/ci-cd.yml` included, so a guard
+    asking it would refuse every delivery. A rebase rewrites the committer and keeps the
+    author, so upstream's commits keep upstream's authors and the walk stops at the first of
+    them. Raises `CloneError` when git fails, and when the clone's history is substituted.
     """
     runner = run if run is not None else run_command
     _refuse_substituted(cwd, ref, runner)
@@ -304,16 +295,15 @@ def walk_harness_commits(cwd: Path | str, ref: str, run: GitRunner | None = None
 def protected_paths_above(
     cwd: Path | str, ref: str, anchors: Sequence[str], run: GitRunner | None = None
 ) -> list[str]:
-    """B313/B314: the protected paths any commit on ``ref`` touches that none of ``anchors``
-    holds, whoever authored it; sorted, once each.
+    """The protected paths any commit on ``ref`` touches that none of ``anchors`` holds,
+    whoever authored it; sorted, once each (B313).
 
     The author-blind half, for the two places that hold a commit the model cannot have moved:
     deliver, whose `_rebase` has just fetched the upstream commit the branch now sits on, and a
     handoff, which fetches the fork's `main` at check time. Upstream's own commits sit below
-    the anchor and are relayed; everything above it is read, not only the first-parent line,
-    so a merged side branch is read too, and so is a change added and removed again inside the
-    range. Raises `CloneError` when git fails or the history is substituted (B312): a range
-    that could not be read was not checked.
+    the anchor and are relayed. Everything above it is read, including a merged side branch and
+    a change added and removed again inside the range. Raises `CloneError` when git fails or
+    the history is substituted, since a range that could not be read was not checked.
     """
     runner = run if run is not None else run_command
     if not [anchor for anchor in anchors if str(anchor).strip()]:
@@ -337,14 +327,12 @@ def _on_rmtree_error(func: Callable[..., object], path: str, excinfo: BaseExcept
     """Clear the read-only bit, then retry past ``MAX_PATH``; re-raise if it still will not go.
 
     Git marks everything under .git/objects read-only on Windows, so a plain rmtree of a clone
-    fails partway through and leaves a half-deleted directory behind.
+    fails partway through and leaves a half-deleted directory behind. A path under a nested
+    ``node_modules`` chain can also pass ``MAX_PATH``, which is why the retry uses `long_path`.
 
-    B224/D44: both retries used to end in a bare ``return``, which made ``shutil.rmtree`` report
-    success over a partial delete. Measured: 1943 files survived a "successful" removal of a
-    clone that had had ``npm ci`` run in it -- the deepest was 324 characters, and a nested
-    ``node_modules`` chain is ~185 of those on its own -- and the next ``acquire`` died on
-    ``git clone``'s "destination path already exists and is not an empty directory". Swallowing
-    the error turned a removable problem into an unreadable one two steps later.
+    The final call re-raises rather than returning, so ``shutil.rmtree`` cannot report success
+    over a partial delete and leave the next ``acquire`` to fail on a non-empty destination
+    (B224).
     """
     try:
         os.chmod(long_path(path), stat.S_IWRITE | stat.S_IREAD)
@@ -452,10 +440,9 @@ class CloneManager:
         """Fresh clone under ``runs_dir/item-<id>/clone``; ``branch`` re-acquires an existing
         one.
 
-        ``run_id`` names the directory for a read that belongs to no work item -- an `ask`, say,
-        which reads the repository and creates nothing. ``read_only`` stays on the default
-        branch and cuts none of its own, so a stage that only reads cannot leave one behind
-        (B274).
+        ``run_id`` names the directory for a read that belongs to no work item, such as an
+        `ask`. ``read_only`` stays on the default branch and cuts none of its own, so a stage
+        that only reads cannot leave a branch behind (B274).
         """
         blockers = self.preflight()
         if blockers:
@@ -468,10 +455,10 @@ class CloneManager:
         if clone_path.exists():
             shutil.rmtree(long_path(clone_path), onexc=_on_rmtree_error)
         if clone_path.exists():
-            # B224: never hand a half-deleted directory to `git clone`, whose own message for
-            # it names neither the leftovers nor the reason. The count is best-effort on
-            # purpose: whatever defeated the removal can defeat the walk too, and a failure to
-            # count must not replace this message with a traceback.
+            # Never hand a half-deleted directory to `git clone`, whose own message for it
+            # names neither the leftovers nor the reason (B224). The count is best-effort:
+            # whatever defeated the removal can defeat the walk, and a failure to count must
+            # not replace this message with a traceback.
             try:
                 leftovers: object = sum(1 for _ in clone_path.rglob("*"))
             except OSError:
@@ -488,15 +475,10 @@ class CloneManager:
         if code != 0:
             raise CloneError(f"git clone failed ({code}): {err.strip()[-2000:]}")
 
-        # B229/D49: no git hook runs in a harness clone. `npm ci` installs the product
-        # repository's husky hooks, and a pre-push hook then runs inside `git push` -- in an
-        # environment the product does not test, duplicating a gate the harness has already run
-        # explicitly and recorded verbatim. Measured: brightboost's pre-push calls
-        # `scripts/check-bundle-size.js`, which crashes under Node 22 because it uses `require`
-        # in a `"type": "module"` package, so the push was refused and the reviewer got two
-        # thousand characters of vite output in place of a reason. The seven pinned gates are
-        # the harness's definition of "it works"; a developer convenience installed as a side
-        # effect of an install is not one of them, and this widens nothing.
+        # No git hook runs in a harness clone (B229). `npm ci` installs the product's husky
+        # hooks, and a pre-push hook then runs inside `git push`, in an environment the product
+        # does not test, duplicating a gate the harness has already run and recorded verbatim.
+        # The seven pinned gates are the harness's definition of "it works".
         code, _out, err = self._run_git(["config", "core.hooksPath", str(HOOKS_OFF)], clone_path)
         if code != 0:
             raise CloneError(f"git config core.hooksPath failed ({code}): {err.strip()[-2000:]}")
@@ -558,7 +540,7 @@ class CloneManager:
         log.info("clone released run_id=%s", lease.run_id)
 
 
-# -- fork sync (D2 §4.4, B105) -------------------------------------------------------------
+# -- fork sync (B105) -----------------------------------------------------------------------
 
 
 def sync_fork(

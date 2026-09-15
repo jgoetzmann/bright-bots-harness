@@ -1,4 +1,4 @@
-"""Budget periods, spend estimates and admission control (SPEC §5.3; handoff §6 with a ledger)."""
+"""Budget periods, spend estimates and admission control."""
 
 from __future__ import annotations
 
@@ -35,15 +35,12 @@ STATIC_ESTIMATES: dict[str, float] = {
     "package": 0.5,
     "ask": 0.2,
     "audit": 4.0,
-    # D70: priced like the stages whose shape they share (dispatcher.STATIC_USD says the same).
     "selfaudit": 2.0,
     "selfaudit_fix": 4.0,
 }
 
-#: Stages whose per-call ceiling is their own key rather than `PER_CALL_CAP_USD` (B248/B275).
-#: The map lives here, not at the call sites, so a new stage cannot quietly inherit the wrong
-#: ceiling by forgetting to pass one. An `ask` is one question and must stay cheap; an `audit`
-#: reads a whole repository and would fail every time under the per-call cap.
+#: Stages whose per-call ceiling is their own config key instead of `PER_CALL_CAP_USD` (B248).
+#: The map lives here, so a new stage cannot inherit the wrong ceiling by forgetting to pass one.
 STAGE_CAP_KEY: dict[str, str] = {
     "ask": "ask_cap_usd",
     "audit": "audit_cap_usd",
@@ -51,15 +48,14 @@ STAGE_CAP_KEY: dict[str, str] = {
 
 MIN_OBSERVATIONS = 3
 
-# Stages Delivery 1 had no MAX_TURNS_* key for borrow the nearest stage's turn cap.
+# Stages with no MAX_TURNS_* key of their own borrow the nearest stage's turn cap.
 _TURNS_FALLBACK: dict[str, str] = {
     "revise": "implement",
     "decompose": "propose",
     "deliver": "package",
-    # An answer is one read and one paragraph; an audit reads a repository and writes a list.
     "ask": "package",
     "audit": "propose",
-    # D70: fallbacks rather than new MAX_TURNS_* keys, which every complete .env would need.
+    # Fallbacks, so a complete .env needs no new MAX_TURNS_* keys (D70).
     "selfaudit": "propose",
     "selfaudit_fix": "implement",
 }
@@ -165,20 +161,19 @@ class Governor:
             return needed <= self._spend_ceiling_usd()
         return self.estimate(stage) <= self.spendable_pct()
 
-    # -- usage stops (D3, B206-B208) --------------------------------------------------------
+    # -- usage stops ------------------------------------------------------------------------
 
     def usage_stop_reason(self, *, carry: bool = False) -> str | None:
         """Why the subscription signal says to stop, or ``None`` (B206).
 
-        ``None`` without a ledger and ``None`` while nothing has been observed (B207): the USD
-        path then governs exactly as in Delivery 2. ``carry=True`` is the item carried across a
-        weekly reset, which runs on ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
-        The rule itself lives in :func:`harness.dispatcher.usage_stop` so that admission and
-        the plan cannot drift apart.
+        ``None`` without a ledger, and ``None`` while nothing has been observed; the USD path
+        then governs alone. ``carry=True`` is the item carried across a weekly reset, which
+        runs on ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``. The rule itself lives in
+        :func:`harness.dispatcher.usage_stop`, so admission and the plan cannot drift apart.
         """
         if self.ledger is None:
             return None
-        # B399: through the clock, so a reading whose window has reset no longer refuses.
+        # Through the clock, so a reading whose window has reset no longer refuses (B399).
         return usage_stop(self.ledger, self.config, carry=carry, now=self.clock.now())
 
     def _is_carry(self, work_item_id: int) -> bool:
@@ -200,7 +195,7 @@ class Governor:
 
     def authorize(self, work_item_id: int, stage: str) -> Authorization:
         if self.ledger is not None:
-            # B208: an observed usage stop refuses the call before any USD arithmetic.
+            # An observed usage stop refuses the call before any USD arithmetic (B208).
             stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
             if stop is not None:
                 raise BudgetExhausted(stop)
@@ -237,7 +232,7 @@ class Governor:
         return auth
 
     def _cap_usd(self, stage: str) -> float:
-        """The USD ceiling for one call of `stage` (B248/B275)."""
+        """The USD ceiling for one call of `stage` (B248)."""
         key = STAGE_CAP_KEY.get(stage)
         if key is not None:
             value = getattr(self.config, key, None)
@@ -253,9 +248,9 @@ class Governor:
         cost_usd: float | None,
         usage: dict | None = None,
     ) -> None:
-        """Book the call. ``usage`` is the D3 subscription signal the stage observed, if any;
-        it reaches the ledger before the spend so a weekly reset rolls the window first
-        (B204/B205). ``None`` records nothing and erases nothing (B114)."""
+        """Book the call. ``usage`` is the subscription signal the stage observed, if any; it
+        reaches the ledger before the spend, so a weekly reset rolls the window first (B204).
+        ``None`` records nothing and erases nothing."""
         amount = 0.0 if allowance_pct is None else float(allowance_pct)
         start, _end = self._ensure_period()
         self.store.consume_budget(BUDGET_UNIT, start, amount)
@@ -268,10 +263,9 @@ class Governor:
                 stage=auth.stage,
                 issue=int(auth.work_item_id),
                 usd=float(cost_usd or 0.0),
-                # The Actions audit link has no producer: only config.py may read the
-                # environment (I-4) and no config key carries a run URL, so there is nothing
-                # here to fill it from. ``GitHubStore(run_url=...)`` is the frozen seam
-                # (RUN-DECISIONS-D2 section 3); wire both ends together or neither.
+                # No config key carries the run URL, and only config.py reads the environment
+                # (I-4), so there is nothing here to fill this from.
+                # ``GitHubStore(run_url=...)`` is the matching seam: wire both ends or neither.
                 run="",
             )
         log.debug("recorded %.3f%% against %s (cost_usd=%s)", amount, auth.id, cost_usd)

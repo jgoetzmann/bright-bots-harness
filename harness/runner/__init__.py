@@ -1,4 +1,4 @@
-"""Runner backends: the ``claude`` CLI and a deterministic fake (SPEC 5.4)."""
+"""Runner backends: the ``claude`` CLI and a deterministic fake."""
 
 from __future__ import annotations
 

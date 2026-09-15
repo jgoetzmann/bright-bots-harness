@@ -1,4 +1,4 @@
-"""Deterministic fixture-backed runner (SPEC 5.4.2). No child process, no network."""
+"""Deterministic fixture-backed runner. No child process, no network."""
 
 from __future__ import annotations
 

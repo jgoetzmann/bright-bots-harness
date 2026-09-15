@@ -32,7 +32,7 @@ __all__ = [
 
 
 class HarnessError(Exception):
-    """Base class for every error the harness raises on purpose."""
+    """Base class for every error the harness raises itself."""
 
 
 class ConfigError(HarnessError):
@@ -76,7 +76,7 @@ class Halted(HarnessError):
 
 
 class GateFailed(HarnessError):
-    """The product repository's gate sequence is red and cannot be honestly fixed."""
+    """The product repository's gate sequence is red and cannot be fixed without weakening it."""
 
 
 class TierViolation(HarnessError):
@@ -135,4 +135,4 @@ class PinMismatch(HarnessError):
 
 
 class RepoHalted(HarnessError):
-    """``.harness/HALT`` exists on the repository; distinct from the Delivery 1 ``Halted``."""
+    """``.harness/HALT`` exists on the repository; distinct from ``HALT_FILE``'s ``Halted``."""

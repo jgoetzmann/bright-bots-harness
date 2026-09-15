@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "text": "The finding held: the failure message did not name the chunk. Added the chunk name to the message and a test for it.",
+  "turns": 6,
+  "cost_usd": 0.0125,
+  "allowance_pct": null,
+  "duration_ms": 4321,
+  "session_id": "fixture-session",
+  "exit_code": 0,
+  "transcript": [
+    {"role": "user", "content": "fixture prompt"},
+    {"role": "assistant", "content": "The finding held; the message now names the chunk."}
+  ],
+  "error": null
+}

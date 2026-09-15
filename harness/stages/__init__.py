@@ -43,6 +43,9 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 DEFAULT_ENTRY_STATE: dict[str, str] = {
     "implement": "approved",
     "package": "implementing",
+    # D70: both self-audit calls run inside implement, holding its clone and its state.
+    "selfaudit": "approved",
+    "selfaudit_fix": "approved",
 }
 
 #: When the runner reports a rate limit without a usable reset time, the dispatcher is held off

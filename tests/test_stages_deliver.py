@@ -110,6 +110,7 @@ BASE_ENV = {
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
+    "MAX_SELF_AUDIT_CYCLES": "3",
     # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
     # window is left empty (= always open) so the D2 behaviour above is unchanged.
     "WEEKLY_USAGE_STOP_PCT": "90",

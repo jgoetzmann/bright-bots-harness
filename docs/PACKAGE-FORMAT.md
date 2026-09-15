@@ -330,27 +330,39 @@ a failure), pushes the branch to the fork, opens a PR from
 branch, requests review from every handle in `.harness/trust.txt`, comments the PR URL on
 the harness issue, and sets `stage:needs-review`.
 
-**The PR body is generated from the review package** (B108). It is not written by the
-model; it is the package's own files, concatenated in this order and redacted by
-`redact.py` before it is sent (I-13):
+**The PR body is generated from the review package** (B108, B232). The model writes none
+of it: `deliver.build_pr_body` assembles it from the package on disk and the item's
+configuration, and `redact.py` redacts it before it is sent (I-13). It reads top to bottom.
+What a reviewer needs first is uncollapsed; everything that is evidence rather than argument
+sits behind a `<details>`, because the package holds the authoritative copy. In order:
 
 | # | Section | Source | What a reviewer gets |
 |---|---|---|---|
-| 1 | Summary | `README.md` | the work item and external reference, the **base commit**, the branch, the patch count and filenames, the declared touched paths |
-| 2 | Diagnosis | `DIAGNOSIS.md` | the `Diagnosis`, `Issue`, `Approach` and `Risks` sections, with file and line citations |
-| 3 | Evidence | `EVIDENCE.md` | the gate sequence **verbatim** — baseline and post-change, each gate with argv, exit code, verdict, and output tails — including the omission note when the database gates did not run |
-| 4 | Reconstruction | §3 of this document | the clone/checkout/`git am` commands, the `core.autocrlf=false` variant, and the bundle commands, **included verbatim** with `BASE` and the branch name filled in |
+| 1 | Closing line | the item's product issue | `Closes #N` when the item came from a product issue, so merging closes it; absent otherwise |
+| 2 | Who opened it | `.harness/trust.txt`, the work item | the machine account, that the harness cannot merge and will not push again unasked, a link to the work item, and a mention of every trusted handle as the review request |
+| 3 | Steering it from here | `harness/keywords.py` | the `/harness revise`, `rebase`, `stop` and `status` comments, and whose comments are honoured |
+| 4 | If the checks are not running | fixed text | why GitHub may hold the first workflow run from the machine account, and the **Approve and run** button that releases it |
+| 5 | Review checklist | `CONTRIBUTING.md`, `EVIDENCE.md` | the product's reviewer checklist, with build, lint and unit tests ticked only when the gate sequence measured them passing |
+| 6 | What this change is, and why *(collapsed)* | `DIAGNOSIS.md` | the `Diagnosis`, `Issue`, `Approach` and `Risks` sections, with file and line citations |
+| 7 | Gate results — this repository's own sequence, run on the branch *(collapsed)* | `EVIDENCE.md` | a digest: one row per gate per phase with its exit code and verdict, and **every failing gate's output kept whole** |
+| 8 | Self-audit line (D70) | `runs/<run-id>/selfaudit.json` | one status line naming the commit the audit read — clean, notes only, blocking findings, or not run — then at most five blocking findings and a count of the rest, each cycle's fix-pass outcome, and a pointer to `DECISIONS.md`. A model reviewing its own diff: an opinion, labelled so, never a gate result. *Not run for this revision* when there is no record or the branch is no longer the audited commit; absent altogether when `MAX_SELF_AUDIT_CYCLES` is `0` |
+| 9 | The review package, verbatim *(collapsed)* | `README.md` | the work item and external reference, the **base commit**, the branch, the patch count and filenames, the declared touched paths |
+| 10 | Rebuild this exact tree yourself *(collapsed)* | §3 of this document | the upstream clone and fork fetch, the `git am` route and the bundle route, with `BASE` and the branch filled in |
+| 11 | About the harness *(collapsed)* | `links.signature` | the footer every issue and pull request the harness opens ends with (B227) |
 
-Nothing is summarised on the way in. If the evidence is long, the PR body is long; a short
-PR body would be an opinion about the gates, and an opinion is not evidence.
+Gate output is summarised here, and only here (B232/D52): the first delivery PR was 52 KB,
+40 KB of it the stdout of seven passing gates. A green gate's output stays in the package; a
+red gate's is in the body whole. `EVIDENCE.md` carries every gate verbatim and is the
+artifact of record.
 
 What is **not** in the PR body, and stays in the package on disk (and in `packages/` after
-`harness archive`): `DECISIONS.md`, `ACCEPTANCE.md`, `manifest.json`, `patches/`,
-`bundle.gitbundle`, `transcript.jsonl`. The PR's own diff is the patch series; the
-reconstruction commands let a reviewer rebuild it without trusting the diff view.
+`harness archive`): `DECISIONS.md` (which lists every self-audit finding, notes included),
+`ACCEPTANCE.md`, `manifest.json`, `patches/`, `bundle.gitbundle`, `transcript.jsonl`. The PR's
+own diff is the patch series; the reconstruction commands let a reviewer rebuild it without
+trusting the diff view.
 
 Reviewing a delivery PR is §5 with the file names mapped to the sections above, and step 6
-answered by any of the three routes in §3. The base commit named in section 1 exists
+answered by any of the three routes in §3. The base commit named in section 9 exists
 upstream — that is B105/B106 — so `git checkout <BASE>` in a plain upstream clone works
 without touching the fork at all.
 

@@ -63,7 +63,12 @@ def _diff_names(
     # `GUARD_GIT` keeps a `refs/replace/` entry for ``base_sha`` from swapping in a tree that
     # already holds the change, and `--no-renames` lists a move out of `.github/` as the
     # deletion it is -- with rename detection `--name-only` names only the new path.
-    argv = [*GUARD_GIT, "diff", "--name-only", "--no-renames"]
+    # D70: both lists are read NUL-separated (`-z`). Line by line, git C-quotes a name holding a
+    # double quote, a backslash or a control character even with `core.quotepath=off`, and
+    # stripping the quotes left `del\177.js` for a file named with a DEL byte; a name beginning
+    # with a space lost the space. Neither named a file, so the self-audit's tree guard could not
+    # remove it and the next `git add -A` committed it (B390).
+    argv = [*GUARD_GIT, "diff", "--name-only", "--no-renames", "-z"]
     if diff_filter is not None:
         argv.append(f"--diff-filter={diff_filter}")
     argv.append(base_sha)
@@ -71,17 +76,16 @@ def _diff_names(
     if code != 0:
         log.warning("git diff against %s failed (%s): %s", base_sha, code, err.strip()[:500])
     else:
-        seen.extend(out.splitlines())
+        seen.extend(out.split("\0"))
 
-    code, out, err = run([*GUARD_GIT, "ls-files", "--others", "--exclude-standard"], root)
+    code, out, err = run([*GUARD_GIT, "ls-files", "-z", "--others", "--exclude-standard"], root)
     if code != 0:
         log.warning("git ls-files --others failed (%s): %s", code, err.strip()[:500])
     else:
-        seen.extend(out.splitlines())
+        seen.extend(out.split("\0"))
 
     paths: list[str] = []
-    for raw in seen:
-        path = raw.strip().strip('"')
+    for path in seen:
         if path and path not in paths:
             paths.append(path)
     return sorted(paths)

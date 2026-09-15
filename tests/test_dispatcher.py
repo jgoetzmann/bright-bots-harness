@@ -647,6 +647,39 @@ def test_B209_the_carry_item_is_first_inside_the_window_too(tmp_path):
     assert set(result.start) == {810, 823, 830}
 
 
+DAILY_WINDOW = {"RUN_WINDOW_START": "daily 11:00", "RUN_WINDOW_END": "daily 15:00"}
+
+
+def _wednesday_at(hour: int, minute: int = 0):
+    from datetime import datetime, timezone
+
+    return datetime(2026, 9, 2, hour, minute, tzinfo=timezone.utc)
+
+
+def test_B413_a_carry_item_waits_outside_a_daily_window(tmp_path):
+    """B413 (D72): outside a daily window the carried item does not start. The 18:41 UTC sweep
+    (11:41 PDT) would otherwise resume it in the operator's own daytime session, and the plan
+    names the window instead."""
+    config = d3_config(tmp_path, **DAILY_WINDOW)
+    ledger = usage_ledger(weekly=0.05, session=0.05, carry=816)
+
+    result = run_plan(config, ledger, cands(810, 816), now=_wednesday_at(18, 41))
+
+    assert result.start == ()
+    assert result.reason == "outside run window (daily 11:00-15:00 UTC)"
+
+
+def test_B413_a_carry_item_still_goes_first_inside_a_daily_window(tmp_path):
+    """B413: the daily window delays the carry; it does not demote it. At 11:23 UTC the carried
+    item is the first thing started, ahead of the older candidate."""
+    config = d3_config(tmp_path, **DAILY_WINDOW)
+    ledger = usage_ledger(weekly=0.05, session=0.05, carry=816)
+
+    result = run_plan(config, ledger, cands(810, 816), now=_wednesday_at(11, 23))
+
+    assert result.start == (816,)
+
+
 def test_B209_a_carry_item_out_of_leeway_does_not_start(tmp_path):
     """B209: the carry only runs while usage_stop(carry=True) is None — once the leeway is
     spent the carried item waits like everything else."""

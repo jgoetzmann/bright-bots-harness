@@ -431,9 +431,9 @@ in total — see [the table below](#three-kill-switches-and-what-each-one-stops)
 
 Exempts the item from the run window (daily 11:00 → 15:00 UTC). Recorded on the item and in the
 ledger and named in the reply, so "why did this run at midday" has an answer in the issue. The
-exemption is honoured by `implement`'s next run — a gate-1 merge starts one, so does the next
-morning's 11:23 UTC cron, or the operator dispatches it — not by the three-hourly sweep, whatever
-the reply's "next sweep" says (D68). It
+exemption is honoured by `implement`'s next run outside the window — a gate-1 merge or the
+operator's dispatch, since every scheduled run is inside the window anyway — not by the sweep,
+whatever the reply's "next sweep" says (D68). It
 proposes nothing sooner: a forced `/harness work` still waits for `discover` and for the merge.
 
 **Level 3 only.** Below that the flag is ignored, the command still stands, and the reply says why it

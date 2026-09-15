@@ -223,9 +223,10 @@ it shut: its work item is closed and predates the `stage:` labels.
 The dispatcher plans no new item outside `RUN_WINDOW_START` (daily 11:00) to `RUN_WINDOW_END`
 (daily 15:00) UTC, and `implement.yml`'s crons follow that window. Three things start outside it:
 `harness run --item N`, which is what a `workflow_dispatch` with an explicit issue number
-invokes; an item carried across a weekly reset, which runs on `OVERRUN_PCT` leeway instead; and
-an item forced with `--force` (level 3), which `implement.yml`'s next run starts — a gate-1 merge,
-the next morning's cron, or a dispatch. None of them bypasses the usage stops. `discover.yml` is deliberately not window-gated —
+invokes; under a weekly window only, an item carried across a weekly reset, which runs on
+`OVERRUN_PCT` leeway instead (a daily window holds it back too, D72); and an item forced with
+`--force` (level 3), which `implement.yml`'s next run starts — a gate-1 merge or a dispatch.
+None of them bypasses the usage stops. `discover.yml` is deliberately not window-gated —
 one triage call is cheap — and stops only on a halt, a rate limit, the reserve, or a usage
 stop.
 

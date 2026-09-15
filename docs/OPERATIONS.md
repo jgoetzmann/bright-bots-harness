@@ -571,12 +571,13 @@ the dispatcher enforces once they are awake. **Move both together**: `tests/test
 (B412) fails the build when a daily window stops containing those crons.
 
 Why these hours. The subscription has no weekly limit, only a five-hour session about the size of
-a Pro plan's, and that session is shared with your own use. Discover's triage call at 11:07 opens a
-session while you sleep, items start until 15:00, and `SESSION_USAGE_STOP_PCT` — 80 here — stops
-new calls before the session is spent. Starts end an hour before the session does because an
-implement run may take up to its 120-minute timeout. GitHub cron is always UTC; 11:00 UTC is 04:00
-PDT and 03:00 PST, so the session opens between 3 and 4 a.m. Pacific all year and there is nothing
-to move when the clocks change.
+a Pro plan's, and that session is shared with your own use. A session opens with its first model
+call: discover's triage call at 11:07 when there is something to triage, otherwise the first item
+a build starts. Items start until 15:00, and `SESSION_USAGE_STOP_PCT` — 80 here — stops new calls
+before the session is spent. Starts end an hour before a session opened at 11:07 does, because an
+implement run may take up to its 120-minute timeout. A carried item waits for the window too
+(B413). GitHub cron is always UTC; 11:00 UTC is 04:00 PDT and 03:00 PST, so the window opens
+between 3 and 4 a.m. Pacific all year and there is nothing to move when the clocks change.
 
 `harness run --item N` bypasses the window on purpose — that is how you drive one item by hand on a
 Thursday. It does **not** bypass the usage stops.
@@ -593,8 +594,9 @@ A weekly reset in the middle of an implementation used to mean a branch abandone
 2. `HANDOFF.md` is the operator's page: the reason, the branch, the base sha, the fork, the last gate
    results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and the exact next
    command — `harness revise <id> --source continue`.
-3. The carried item is the **first** thing the next run starts, **even outside the run window**, and
-   it may spend against `OVERRUN_PCT` (`10`) of the fresh week instead of waiting for
+3. The carried item is the **first** thing the next run starts — **even outside a weekly run
+   window**; a daily window (D72) holds it back until the window opens — and it may spend against
+   `OVERRUN_PCT` (`10`) of the fresh week instead of waiting for
    `WEEKLY_USAGE_STOP_PCT`. When that leeway is used up the reason is `carry leeway 10% reached` and
    the item is handed off again — same branch, same file, no work lost.
 4. Green gates → the item goes `stage:packaged`, the carry is cleared, and the ordinary package and

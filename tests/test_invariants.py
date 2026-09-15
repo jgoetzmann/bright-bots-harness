@@ -1762,7 +1762,9 @@ def test_b412_the_spending_crons_fire_inside_the_daily_run_window(name):
         minute, hour, day, month, weekday = cron.split()
         assert (day, month, weekday) == ("*", "*", "*"), f"{name}: {cron!r} is not daily"
         for at in (h * 60 + int(minute) for h in _cron_hours(hour)):
-            assert low <= at < high, f"{name}: {cron!r} fires outside {start}-{end} UTC"
+            assert low <= at < high, (
+                f"{name}: {cron!r} fires outside {start}-{end.split(' ', 1)[1]} UTC"
+            )
 
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)

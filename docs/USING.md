@@ -388,7 +388,7 @@ that is not an error. No real model call has yet reported utilization into this 
 
 The window is not the schedule. The crons in `implement.yml` are when GitHub wakes the job up; the window is what the dispatcher enforces once it is awake. Move both together or the job wakes to find nothing eligible. `implement.yml`'s `issue` input and `harness run --item N` bypass the window deliberately; **nothing** bypasses the usage stops.
 
-The window sits inside one five-hour subscription session a day, which `discover` opens at 11:07 UTC. Starts end at 15:00 so an item started late can finish before that session does, and `SESSION_USAGE_STOP_PCT` (80) stops new calls before it is spent (D72).
+The window sits inside one five-hour subscription session a day, which the 11:07 UTC `discover` run opens when it has something to triage. Starts end at 15:00 so an item started late can finish before that session does, and `SESSION_USAGE_STOP_PCT` (80) stops new calls before it is spent (D72).
 
 ### Carry and handoff
 

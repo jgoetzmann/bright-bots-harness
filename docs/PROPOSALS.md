@@ -237,7 +237,8 @@ approve <n>`. The item is then `approved` and waits for the dispatcher — which
 names the window. To start it anyway, dispatch `implement.yml` with the harness issue number in its
 `issue` input: the job then runs `harness run --item N`, which bypasses the window and only the
 window — the usage stops are the governor's and every stage still passes through them. The one other
-thing that may start outside the window is an item carried across a weekly reset (D33).
+thing that may start outside a weekly window is an item carried across a weekly reset (D33); a
+daily window holds that back too (D72).
 
 ## What a work package contains
 

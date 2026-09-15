@@ -1,8 +1,7 @@
-"""The ask stage: one question, one read, one answer, no state (B274-B278).
+"""The ask stage: one question, one read, one answer, no state (B274).
 
-`ask` is the only route that spends the allowance and leaves nothing behind. That is deliberate:
-the cheapest way to find out whether the harness understands a repository is to ask it something
-you already know the answer to, and that check is worthless if asking costs a work item.
+`ask` is the only route that uses the allowance and creates no work item, so asking a question
+whose answer is already known is a cheap check of what the harness understands.
 """
 
 from __future__ import annotations
@@ -20,18 +19,15 @@ __all__ = ["ask", "ALLOWED_TOOLS", "DISALLOWED_TOOLS", "QUESTION_LIMIT", "TIMEOU
 
 log = logging.getLogger("harness")
 
-#: Read-only, exactly as `propose`: an answer needs no more power than a reader has.
+#: Read-only, the same tools as `propose`.
 ALLOWED_TOOLS = ("Read", "Glob", "Grep")
 DISALLOWED_TOOLS = ("Bash", "Edit", "Write", "WebFetch", "WebSearch")
 TIMEOUT_S = 300
 
-#: Longer than this is not a question. Cut rather than refused: the front of a long comment is
-#: nearly always the question and the rest is context, so answering the front beats answering
-#: nothing -- and the cut is named in the reply so nobody is misled about what was read.
+#: A longer question is cut to this many characters rather than refused, and the reply says so.
 QUESTION_LIMIT = 2000
 
-#: Where the day's tally lives. Per calendar day in UTC, and across every asker together: the
-#: cap exists to bound spend, and spend does not care who asked.
+#: Where the day's tally lives: one count per UTC calendar day, shared by every asker.
 COUNTER = "ask_calls"
 
 
@@ -39,8 +35,7 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
     """Answer one question about the product repository. Returns the reply, as markdown.
 
     Nothing else happens: no work item, no transition, no branch, no pull request. The call is
-    authorised like any other (B288) and charged against `ASK_CAP_USD` rather than the per-call
-    cap, because one question should never be allowed to cost what one implementation does.
+    authorised like any other and capped by `ASK_CAP_USD` instead of the per-call cap (B288).
     """
     ctx.check_halt()
     text = str(question or "").strip()
@@ -55,8 +50,7 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
     used = _used_today(ctx, today)
     cap = int(getattr(ctx.config, "ask_max_per_day", 0) or 0)
     if cap and used >= cap:
-        # B276: refused before the model call, not after it. A cap that is checked by spending
-        # the thing it caps is not a cap.
+        # The daily cap is checked before the model call (B276).
         ctx.record_decision(
             f"ask by @{actor or 'someone'} refused: {used} of {cap} answers already given "
             f"on {today}; no model call was made"
@@ -73,8 +67,8 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
             actor=actor or "someone",
             repo=str(getattr(ctx.config, "upstream_repo", "") or ""),
             base_sha=lease.base_sha or "unknown",
-            # B277: fenced as data. The asker is trusted to ask, which is not the same as being
-            # trusted to write the prompt -- and on a public repository the two are far apart.
+            # Fenced as data: being trusted to ask is not being trusted to write the prompt,
+            # and on a public repository anyone can ask (B277).
             question=data_block("the question", text),
         )
         result = run_model(
@@ -105,11 +99,9 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
 
 
 def _framed(answer: str, *, base_sha: str, truncated: bool) -> str:
-    """B278: the answer, then what it is and is not.
+    """The answer, then the caveat that it is a reading of one commit (B278).
 
-    Appended here rather than asked for in the prompt, because a caveat the model can forget is
-    not a caveat. What it says is load-bearing: this is a reading of one commit by something
-    that cannot act on it, and treating it as a decision is the mistake it exists to prevent.
+    Appended in code rather than asked for in the prompt, so the model cannot omit it.
     """
     lines = [answer, ""]
     if truncated:
@@ -134,13 +126,12 @@ def _used_today(ctx: Context, today: str) -> int:
 
 
 def _count(ctx: Context, today: str) -> None:
-    """Charged after the call, and after a failed one too: a failure still spent the allowance."""
+    """Counted after the call, including a failed one, which still used the allowance."""
     ctx.ledger.cursors[COUNTER] = {"date": today, "count": _used_today(ctx, today) + 1}
 
 
 class _Reader:
-    """The stand-in `clones.acquire` needs. An ask belongs to no work item, and inventing one
-    to satisfy a signature would put a phantom in the queue."""
+    """The stand-in `clones.acquire` needs; an ask belongs to no work item."""
 
     id: Any = "ask"
     branch_name = None

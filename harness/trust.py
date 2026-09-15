@@ -1,4 +1,4 @@
-"""Trust file and the first half of the actor gate (handoff 5.5, 8.2 - B131). Fails closed."""
+"""The trust file and the first half of the actor gate. Fails closed (B131)."""
 from __future__ import annotations
 
 import re
@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 # GitHub's assertion of the commenter's relationship to the repo. Anything else, including
-# CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR and NONE, is refused (B131 condition 2).
+# CONTRIBUTOR, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR and NONE, is refused (B131).
 AUTHOR_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
-#: What each level may do, for the messages that have to explain a refusal (B269/D60).
+#: The name of each level, for the messages that explain a refusal (B269).
 LEVEL_NAMES: dict[int, str] = {
     0: "no access",
     1: "asker",
@@ -18,46 +18,39 @@ LEVEL_NAMES: dict[int, str] = {
     3: "operator",
 }
 
-#: A handle listed with no level. Least privilege on ambiguity: a typo in this file must never
-#: silently grant power. `harness doctor` names every one of them so it is never silent either.
+#: The level of a handle listed without one: the least privilege, so a typo grants no power.
+#: `harness doctor` names every handle that lands here.
 DEFAULT_LEVEL = 1
 
-#: The highest level. Nothing above the operator.
+#: The highest level, the operator.
 MAX_LEVEL = 3
 
-#: D68: ``vouch:<numeric GitHub user id>`` after the handle pins the line to ONE account. A
-#: token that starts with this word is an attempt at a vouch, so a typo in the id refuses the
-#: line rather than being quietly ignored into a grant that means something else.
+#: A line may end in ``vouch:<numeric GitHub user id>``, which pins it to one account (D68).
+#: A token beginning with this word is read as a vouch, so a typo in the id refuses the line.
 VOUCH_WORD = "vouch"
 _VOUCH_RE = re.compile(r"vouch:([1-9][0-9]{0,19})", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]{1,20}")
 
-#: D69: the shape of a GitHub login -- ASCII letters, digits and hyphens, at most 39 of them.
-#: A handle outside it can never equal a `user.login`, so a line carrying one is a grant to
-#: nobody. `nathan@example.com` and `nathan,` both registered literally before this, and were
-#: then refused for ever without a word to anybody.
+#: The shape of a GitHub login: ASCII letters, digits and hyphens, at most 39 of them. A handle
+#: outside it can never equal a `user.login`, so its line is refused and named rather than
+#: registered as a grant to nobody (D69).
 _HANDLE_RE = re.compile(r"[A-Za-z0-9-]{1,39}")
 
 
 def normalise_handle(handle: str) -> str:
-    """Canonical form of a GitHub login: stripped, no leading ``@``, lower-cased (R4.5)."""
+    """Canonical form of a GitHub login: stripped, no leading ``@``, lower-cased."""
     return handle.strip().lstrip("@").lower()
 
 
 def _is_level_token(token: str) -> bool:
     """True when `token` is an attempt at the level column: ASCII decimal digits, nothing else.
 
-    `str.isdigit()` alone is also true for digits that are not ASCII, and both kinds were
-    defects when probed against the shipped parser. An Arabic-Indic three satisfied ``int()``
-    and granted OPERATOR level with nothing recorded as malformed -- from a character the
-    handle rule beside it would have refused outright. A superscript two raised ValueError,
-    which ``load_trust`` did not catch, so it escaped into ``build_context`` and every command
-    and workflow built on one. Neither can be a level, so neither is read as one: the line
-    falls through to the handle path and is refused and named there, like any other.
+    `str.isdigit()` is also true of digits that are not ASCII: an Arabic-Indic three satisfies
+    ``int()``, and a superscript two raises ValueError. Neither is read as a level, so such a
+    line falls through to the handle path and is refused and named there.
 
-    ASCII-ness is the whole added rule. A long run of digits is still an attempt at a level,
-    and still refused as out of range: narrowing this to "at most N digits" would send a
-    21-digit first token to the handle path, where it is login-shaped and would be granted
+    There is no length limit. A long run of digits is still an attempt at a level and is
+    refused as out of range; on the handle path it would be login-shaped and granted
     :data:`DEFAULT_LEVEL` in silence.
     """
     return token.isascii() and token.isdigit()
@@ -66,9 +59,8 @@ def _is_level_token(token: str) -> bool:
 def parse_user_id(value: object) -> int | None:
     """A GitHub numeric user id, or None when `value` is not one.
 
-    REST payloads carry an int; the `ack` workflow hands one over as text. Anything else --
-    empty, zero, negative, a bool, a non-ASCII digit -- is "unknown", and unknown never matches
-    a vouched id.
+    REST payloads carry an int; the `ack` workflow hands one over as text. Empty, zero,
+    negative, a bool or a non-ASCII digit is unknown, and unknown never matches a vouched id.
     """
     if isinstance(value, bool):
         return None
@@ -83,28 +75,28 @@ def parse_user_id(value: object) -> int | None:
 
 @dataclass(frozen=True, eq=False)
 class Trust:
-    """Who may command the harness, and how much (B269/D60).
+    """Who may command the harness, and at what level (B269).
 
-    Behaves as the set of handles it used to be -- ``in``, iteration and truthiness all work as
-    before -- so every caller that only asks "is this handle trusted at all" is unchanged.
+    Behaves as a set of handles for ``in``, iteration, ``len`` and truthiness, so a caller that
+    only asks whether a handle is trusted at all needs to know nothing about levels.
     """
 
     levels: Mapping[str, int] = field(default_factory=dict)
     #: Handles listed with no explicit level, so `doctor` can name them.
     implicit: tuple[str, ...] = ()
-    #: Lines that look like a level and are not one. Refused, and named rather than guessed at.
+    #: Refused lines: a level out of range, a handle that is not a login, an unreadable token,
+    #: or a vouch conflict. :func:`refusals` says which.
     malformed: tuple[str, ...] = ()
-    #: D68: handle -> the one numeric account id its line vouches for.
+    #: Handle -> the one numeric account id its line vouches for (D68).
     vouched: Mapping[str, int] = field(default_factory=dict)
-    #: D68: the lines of a handle refused because they disagree about the vouch -- two ids, or
-    #: a vouched line beside a bare one. Each is in :attr:`malformed` too; this says why.
+    #: The lines of a handle refused because they disagree about the vouch: two ids, or a
+    #: vouched line beside a bare one. Each is in :attr:`malformed` too; this says why.
     conflicted: tuple[str, ...] = ()
-    #: D69: unresolved placeholder lines (`2 <NEW_MAINTAINER>`). They grant nothing, as they
-    #: always did; recording them is what lets `doctor` name a line that used to vanish.
+    #: Unresolved placeholder lines (`2 <NEW_MAINTAINER>`). They grant nothing, and are kept
+    #: here so `doctor` can name them (D69).
     skipped: tuple[str, ...] = ()
-    #: D69: handles named by more than one accepted line. The highest level still wins, so a
-    #: line added to DEMOTE somebody does nothing at all -- the one edit here whose failure
-    #: looks exactly like success.
+    #: Handles named by more than one accepted line. The highest level wins, so a line added to
+    #: demote a handle changes nothing, and its failure looks like success (D69).
     duplicated: tuple[str, ...] = ()
 
     def __contains__(self, handle: object) -> bool:
@@ -120,12 +112,7 @@ class Trust:
         return bool(self.levels)
 
     def __eq__(self, other: object) -> bool:
-        """Equal to another :class:`Trust` by levels and vouches, and to a set by handles.
-
-        B131's tests compare the loaded file with a frozenset of handles, and what they assert
-        -- comments ignored, placeholders ignored, case folded -- has not changed. The levels
-        are new information beside that, not a replacement for it.
-        """
+        """Equal to another :class:`Trust` by levels and vouches, and to a set by handles."""
         if isinstance(other, Trust):
             return (dict(self.levels), dict(self.vouched)) == (
                 dict(other.levels), dict(other.vouched)
@@ -142,7 +129,7 @@ class Trust:
         return int(self.levels.get(normalise_handle(handle), 0))
 
     def vouched_id(self, handle: str) -> int | None:
-        """D68: the account id `handle`'s line vouches for, or None when it vouches for none."""
+        """The account id `handle`'s line vouches for, or None when it vouches for none (D68)."""
         found = self.vouched.get(normalise_handle(handle))
         return int(found) if found is not None else None
 
@@ -152,24 +139,17 @@ class Trust:
 
 
 def parse_trust(text: str) -> Trust:
-    """``<level> <handle> [vouch:<id>]`` or a bare ``<handle>``, ``#`` comments, blanks ignored.
+    """``<level> <handle> [vouch:<id>]`` or a bare ``<handle>``; ``#`` comments and blanks ignored.
 
-    A bare handle is :data:`DEFAULT_LEVEL`. An entry containing ``<`` or ``>`` is an unresolved
-    placeholder (``<NATHAN_HANDLE>``) and is not a handle.
+    A bare handle gets :data:`DEFAULT_LEVEL`. An entry containing ``<`` or ``>`` is an
+    unresolved placeholder and never a handle (:attr:`Trust.skipped`).
 
-    A first token that is all digits is an attempt at a level. If it is not one of 1..3 the
-    whole line is **refused** and recorded in :attr:`Trust.malformed` -- not clamped, and not
-    reinterpreted as a handle. `9 someone` meant something, and neither guessing which end of
-    the range they meant nor granting access to a handle named `9` is an improvement on saying
-    so.
+    An ASCII-digit first token outside 1..3 refuses the whole line into
+    :attr:`Trust.malformed`, rather than being clamped or read as a handle. So does any token
+    after the handle other than a single ``vouch:<positive integer>``.
 
-    D68 adds the vouch, under the same rule. A token beginning ``vouch`` must be exactly
-    ``vouch:<positive integer>``, and a line may carry one; anything else refuses the whole
-    line. A vouched handle is refused entirely -- every line naming it -- when those lines do
-    not all carry the same vouch: two DIFFERENT ids, or one line vouching and another naming the
-    handle bare. Which account the operator meant is exactly the question the vouch exists to
-    settle, and merging the lines would answer it with a grant neither line makes alone:
-    ``3 x`` with ``2 x vouch:1`` would otherwise give account 1 level 3 with no association.
+    A handle whose lines disagree about the vouch is refused on every line naming it: merging
+    ``3 x`` with ``2 x vouch:1`` would give account 1 level 3 with no association (D68).
     """
     levels: dict[str, int] = {}
     implicit: list[str] = []
@@ -183,10 +163,8 @@ def parse_trust(text: str) -> Trust:
         if not entry:
             continue
         if "<" in entry or ">" in entry:
-            # An unresolved placeholder, never a handle. D69 records it rather than dropping
-            # it: it granted nothing before and grants nothing now, but a line that vanishes
-            # cannot be named by `doctor` -- while the same line fails
-            # `Identity.trust_file_ready()` for a reason nothing connects back to it.
+            # An unresolved placeholder, never a handle. Recorded rather than dropped, so
+            # `doctor` can name the line that `Identity.trust_file_ready()` refuses (D69).
             skipped.append(entry)
             continue
         parts = entry.split()
@@ -202,21 +180,12 @@ def parse_trust(text: str) -> Trust:
             handle_part = parts[1]
             rest = parts[2:]
             explicit = True
-        # Nothing here judges what the handle STARTS with. A rule that did -- any handle
-        # beginning `vouch` refused the whole line -- was wrong twice over: it refused a login
-        # that merely shares those five letters (`vouched`, `voucherifyio` and `vouchio` are
-        # real accounts), and `refusals` then blamed the vouch, which was the well-formed half,
-        # sending the operator to fix the wrong end of the line. The case it was written for,
-        # `2 vouch:193453438` -- a vouch with no handle in front of it -- carries a colon and is
-        # refused by `_HANDLE_RE` below, which is the rule that knows what a login looks like.
+        # Nothing here judges what the handle starts with: `vouched`, `voucherifyio` and
+        # `vouchio` are real accounts. A vouch with no handle before it, `2 vouch:193453438`,
+        # carries a colon and is refused by `_HANDLE_RE` below.
         #
-        # D69: EVERY token after the handle must be one the gate actually reads. Before this
-        # only tokens beginning `vouch` were inspected and the rest were discarded in silence,
-        # so `2 nathan 193453438` -- the id pasted without the keyword, which is exactly what a
-        # hurried operator types -- parsed to a plain level-2 line. It looked like a vouch,
-        # vouched for nobody, and granted nothing anywhere he was not already a collaborator.
-        # Refused for D68's reason: read as "no vouch" the line still grants a level, which is
-        # not what its author meant either.
+        # Every token after the handle must be one the gate reads. `2 nathan 193453438`, the id
+        # pasted without the keyword, is refused rather than read as a plain level-2 line (D69).
         pinned: int | None = None
         unreadable = False
         for token in rest:
@@ -236,7 +205,7 @@ def parse_trust(text: str) -> Trust:
             continue
         if not explicit:
             implicit.append(handle)
-        # A handle listed twice keeps the highest level it was given -- when its lines agree
+        # A handle listed twice keeps the highest level it was given, provided its lines agree
         # about the vouch, which the loop below settles.
         levels[handle] = max(level, levels.get(handle, 0))
         lines_of.setdefault(handle, []).append((pinned, entry))
@@ -267,13 +236,12 @@ def parse_trust(text: str) -> Trust:
 
 
 def load_trust(path: Path) -> Trust:
-    """Read ``.harness/trust.txt``. A missing or unreadable file is nobody, not everybody.
+    """Read ``.harness/trust.txt``. A missing or unreadable file trusts nobody.
 
-    ValueError is caught beside OSError as defence in depth. This is called from
-    ``build_context``, so an exception raised here is not a refused line but a dead command --
-    and `doctor` gates discover.yml, feedback.yml and implement.yml under ``set -e``, so it
-    would be a dead fleet. One such bug existed (see :func:`_is_level_token`) and is fixed; a
-    parser fault must cost the file's contents, never everything the harness does.
+    ValueError is caught beside OSError. This runs inside ``build_context``, so an exception
+    here would kill the command rather than refuse a line, and `doctor` gates discover.yml,
+    feedback.yml and implement.yml under ``set -e``. A parser fault costs the file's contents
+    and no more.
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
@@ -281,7 +249,7 @@ def load_trust(path: Path) -> Trust:
         return Trust()
     try:
         return parse_trust(text)
-    except ValueError:  # pragma: no cover - no known input reaches this; that is the point
+    except ValueError:  # pragma: no cover - defence in depth; no known input reaches this
         return Trust()
 
 
@@ -293,24 +261,17 @@ def is_authorised(
     min_level: int = 1,
     user_id: object = None,
 ) -> bool:
-    """B131: BOTH the trust file (operator's intent) AND the association (GitHub's assertion).
+    """Both halves: the trust file (the operator's intent) and the association (GitHub's).
 
-    Neither alone suffices. B270 adds the third: the handle's level must reach `min_level`. A
-    plain set of handles is still accepted and every handle in one counts as
-    :data:`DEFAULT_LEVEL`, so a caller that has not been taught about levels cannot accidentally
-    grant more than the least.
+    Neither alone suffices, and the handle's level must reach `min_level` (B270). A plain set
+    of handles is accepted, and every handle in one counts as :data:`DEFAULT_LEVEL`.
 
-    D68 replaces the association half, and only that half, for a vouched line. The association
-    guards a NAME: a login can be renamed away and claimed by somebody else, and GitHub's
-    per-repository association is what said "this is still the person you meant". A numeric
-    account id is never reused, so a line that names the id already says that -- more precisely
-    than the association does. A vouched handle therefore passes when `user_id` equals the
-    vouched id, whatever the association; and it is refused when it does not, whatever the
-    association, because a different account holding that login is not the one the line names.
-    The level still caps what either may do.
+    A vouched line replaces the association half and only that half. A login can be renamed
+    away and claimed by somebody else, while a numeric account id is never reused, so a vouched
+    handle passes exactly when `user_id` equals the vouched id, whatever the association. The
+    level still caps what either may do (D68).
 
-    Callers with a comment in hand use :func:`comment_authorised`, which reads all three fields
-    from the payload in one place.
+    Callers with a comment in hand use :func:`comment_authorised`.
     """
     association = str(author_association or "").strip().upper()
     if not isinstance(trusted, Trust):
@@ -328,9 +289,8 @@ def is_authorised(
 def comment_author(comment: Mapping[str, Any]) -> tuple[str, str, int | None]:
     """``(login, author_association, numeric user id)`` from a REST comment-shaped payload.
 
-    Issue comments, pull request review comments and reviews all carry ``user.login``,
-    ``user.id`` and ``author_association``. Reads nothing else -- in particular never the body,
-    which B273 forbids reading before the gate has passed.
+    Issue comments, pull request review comments and reviews all carry these three fields.
+    Nothing else is read, and never the body, which stays unread until the gate passes (B273).
     """
     user = comment.get("user") or {}
     if not isinstance(user, Mapping):
@@ -341,11 +301,10 @@ def comment_author(comment: Mapping[str, Any]) -> tuple[str, str, int | None]:
 
 
 def comment_authorised(comment: Mapping[str, Any], trusted: Any, *, min_level: int = 1) -> bool:
-    """THE actor gate for one comment, on every surface (B131, B270, D68).
+    """The actor gate for one comment, on every surface (B131, B270).
 
-    The sweep, `harness ack` and revise's review filter all call this, so the rule -- the
-    association half, the vouch that replaces it, and the level -- is applied in exactly one
-    place and cannot be taught to one caller and forgotten by another.
+    The sweep, `harness ack` and revise's review filter all call this, so the association, the
+    vouch that can replace it, and the level are applied in one place for every surface.
     """
     login, association, uid = comment_author(comment)
     if not login:
@@ -354,9 +313,8 @@ def comment_authorised(comment: Mapping[str, Any], trusted: Any, *, min_level: i
 
 
 # --------------------------------------------------------------------------------------
-# D69: reading the file back. Pure, and here rather than in the CLI, because the reasons a
-# line grants nothing are the gate's own rules -- `tests/test_trust_vouch.py::test_B330`
-# fails the build if any other module decides for itself who is heard.
+# Reading the file back, for the CLI and `doctor`. Pure, and kept here because why a line
+# grants nothing is decided by the gate's own rules (D69).
 # --------------------------------------------------------------------------------------
 
 
@@ -372,8 +330,8 @@ class Entry:
     handle: str
     level: int
     level_name: str
-    #: ``vouch`` when the line names an account id, ``association`` when GitHub must vouch
-    #: for it instead. The second is the half nobody can see from the commenter's side.
+    #: ``vouch`` when the line names an account id, ``association`` when GitHub must vouch for
+    #: it instead.
     route: str
     vouched_id: int | None
 
@@ -409,10 +367,9 @@ def _handle_token(line: str) -> str:
 def refusals(trusted: Trust) -> tuple[tuple[str, str], ...]:
     """``(line, what is wrong with it)`` for every line that grants nothing.
 
-    Four ways to grant nothing with four different fixes, so they get four different
-    sentences: a level out of range is a typo to correct, a placeholder is a line to finish, a
-    handle that is not a login is the wrong text entirely, and a disagreement about an account
-    is two lines that have to be made one.
+    Each kind of refusal has its own fix, so each gets its own sentence: a level out of range
+    is a typo, a placeholder is a line to finish, a handle that is not a login is the wrong
+    text, and a disagreement about an account is two lines to be made one.
     """
     conflicted = set(trusted.conflicted or ())
     out: list[tuple[str, str]] = []
@@ -423,9 +380,8 @@ def refusals(trusted: Trust) -> tuple[tuple[str, str], ...]:
         if line in conflicted:
             what = "disagrees with another line about which account its handle is (D68)"
         elif token and not handle_shaped(token):
-            # Ahead of the vouch test, because `vouch` appearing anywhere in the line is true
-            # of the HANDLE as well as of a trailing token: `2 vouch:193453438` was reported as
-            # a bad vouch when the vouch was fine and the handle was missing.
+            # Ahead of the vouch test: in `2 vouch:193453438` the word sits in the handle
+            # position, and the fault is the missing handle rather than the vouch.
             what = "names something that is not a GitHub login"
         elif VOUCH_WORD in line.lower():
             what = "carries a vouch that is not one (D68)"
@@ -451,11 +407,9 @@ class Tier:
 def tier_table(verb_level: Mapping[str, int]) -> tuple[Tier, ...]:
     """One row per level, most privileged first, built from `verb_level`.
 
-    The mapping is a PARAMETER rather than an import: `keywords` imports this module, so
-    reaching back for `keywords.VERB_LEVEL` here would be a cycle -- the one `links._who`
-    already sidesteps with a function-local import. Taking it as an argument means the table
-    is a function of the levels the gate actually enforces, and prose checked against it
-    cannot drift from them.
+    The mapping is a parameter because `keywords` imports this module, so reading
+    `keywords.VERB_LEVEL` here would be a cycle. Taking it as an argument also keeps the table
+    a function of the levels the gate enforces, so prose checked against it cannot drift.
     """
     return tuple(
         Tier(

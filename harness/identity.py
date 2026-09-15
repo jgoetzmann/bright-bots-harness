@@ -1,12 +1,9 @@
-"""Machine-account readiness detection and ``HUMAN.md`` generation (spec §13, handoff §16).
+"""Machine-account readiness detection and ``HUMAN.md`` generation.
 
-Delivery 2 activates the machine account: at tier 2 it holds one classic PAT scoped
-``public_repo``, ``notifications`` and ``workflow`` and nothing else (D67). Its handle is
-*derived* — the owner of ``FORK_REPO``, ``jgoetzmann-bot`` in this deployment (D29);
-the spec's ``brightboost-harness`` survives as
-the :data:`HANDLE` default and applies only until ``FORK_REPO`` is configured. This module
-still never authenticates. The credential's key name comes from ``config`` so this file never
-spells it (R3.3).
+At tier 2 the machine account holds one classic PAT scoped ``public_repo``, ``notifications``
+and ``workflow`` (D67). Its handle is derived: the owner of ``FORK_REPO``, falling back to the
+:data:`HANDLE` default until ``FORK_REPO`` is configured. This module never authenticates, and
+takes the credential's key name from ``config`` so it never spells it.
 """
 
 from __future__ import annotations
@@ -31,12 +28,12 @@ CLASSIC_CREATE_URL = "https://github.com/settings/tokens/new"
 TRUST_PLACEHOLDER = "<NATHAN_HANDLE>"
 
 # The Config flags that say whether the credential is configured, named from the key so this
-# module never contains the flag names themselves (R3.3).
+# module never contains the flag names themselves.
 _PRESENT_FIELD = KEY_NAME.lower().removeprefix("harness_") + "_present"
 _SHAPE_FIELD = KEY_NAME.lower().removeprefix("harness_") + "_shape_ok"
 
-# The patterns themselves live in config.py, as the key name does (R3.3, I-11); the raw-string
-# match in validate_shape is this module's own policy.
+# The patterns live in config.py, beside the key name (I-11); how they are matched is this
+# module's own policy.
 FINE_GRAINED_SHAPE: re.Pattern[str] = FINE_GRAINED_TOKEN_SHAPE
 CLASSIC_SHAPE: re.Pattern[str] = CLASSIC_TOKEN_SHAPE
 
@@ -46,14 +43,11 @@ TIER_NAMES: dict[int, str] = {
     2: "Tier 2 — push branches to its own fork and open pull requests",
 }
 
-#: The twelve state labels of handoff §4.2 (plus `packaged`, R-D), read from the store rather
-#: than repeated here. D4/B264 renamed the family from `harness:*` to `stage:*`, and a copy of
-#: the old names in this module would have made `harness doctor` report every label missing on
-#: a repository that had correctly migrated -- a readiness check failing *because* the operator
-#: did the right thing. There is one list, and it is the one the store writes.
+#: The state labels, read from the store rather than repeated here, so `harness doctor` checks
+#: for the names the store actually writes (B264).
 STATE_LABELS: tuple[str, ...] = tuple(LABELS[state] for state in STATES)
 
-# §13.2 for tiers 0 and 1, verbatim; §5.2 for tier 2 (classic PAT), with D67's scopes.
+# Fine-grained permissions for tiers 0 and 1; the classic PAT's scopes for tier 2 (D67).
 # (permission, value for the tier, note)
 PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
     0: (
@@ -119,8 +113,8 @@ NEVER_ASK_FOR_FINE_GRAINED: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
     "narrowed to one repository.",
 )
 
-# D67: tier 2's classic token does carry `workflow` -- without it the fork cannot follow
-# upstream's own CI changes -- so it is no longer on this list; I-15 is the harness's own check.
+# Tier 2's classic token carries `workflow`, without which the fork cannot follow upstream's
+# own CI changes, so it is absent from this list; the harness's own check is I-15 (D67).
 NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
     "Any classic scope beyond `public_repo`, `notifications` and `workflow`: no `repo`, no "
     "`admin:*`, no `write:org`, no `delete_repo`. `harness doctor` warns if the token "
@@ -131,7 +125,7 @@ NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
 
 
 def permission_set_for(tier: int) -> tuple[tuple[str, str, str], ...]:
-    """The permission rows for a target tier: §13.2 fine-grained below 2, §5.2 classic at 2."""
+    """The permission rows for a target tier: fine-grained below 2, classic at 2."""
     key = 0 if tier < 0 else (2 if tier > 2 else int(tier))
     return PERMISSION_SETS[key]
 
@@ -166,8 +160,9 @@ class Readiness:
 
 
 class Identity:
-    """The machine account — `FORK_REPO`'s owner (`jgoetzmann-bot` here, D29), or the
-    `HANDLE` default until that is set: detected and reported here, used by `gh.py`."""
+    """The machine account: `FORK_REPO`'s owner, or the `HANDLE` default until that is set.
+
+    Detected and reported here, used by `gh.py`."""
 
     handle: str = HANDLE
 
@@ -179,8 +174,8 @@ class Identity:
         self.self_repo = str(getattr(config, "self_repo", "") or "")
         fork = str(getattr(config, "fork_repo", "") or "")
         self.fork_repo = fork or f"{HANDLE}/{self.repo.split('/')[-1] or 'brightboost'}"
-        # The account that owns the fork IS the machine account (handoff §5.1); the default
-        # handle applies only until FORK_REPO is configured.
+        # The account that owns the fork is the machine account; the default handle applies
+        # only until FORK_REPO is configured.
         self.handle = fork.split("/")[0] if fork else HANDLE
         trust_file = getattr(config, "trust_file", None)
         self.trust_file_name = Path(trust_file).name if trust_file else "trust.txt"
@@ -196,7 +191,7 @@ class Identity:
 
     def validate_shape(self, token: str) -> list[str]:
         """Shape errors, empty when plausible. Issues no request, ever."""
-        # The raw string, unstripped: surrounding whitespace is a malformed value, not noise.
+        # The raw string, unstripped: surrounding whitespace makes the value malformed.
         value = str(token)
         if value == "":
             return ["no value supplied"]
@@ -269,14 +264,12 @@ class Identity:
     def trusted_without_access(self, trusted: object) -> tuple[str, ...] | None:
         """Handles in the trust file that GitHub would not report as OWNER/MEMBER/COLLABORATOR.
 
-        The gate is two halves and the second is invisible: B131 needs the handle in
-        `trust.txt` **and** an `author_association` of OWNER, MEMBER or COLLABORATOR on the
-        repository the comment is on. A handle listed at level 2 who is not a collaborator here
-        comments, gets nothing, and has no way to tell that from the harness being asleep --
-        which is exactly how a handover fails quietly on the first day.
+        The gate needs the handle in `trust.txt` and an OWNER, MEMBER or COLLABORATOR
+        association on the repository the comment is on (B131). The second half is invisible
+        from the commenter's side: a listed handle without it is ignored in silence.
 
-        Returns None when it cannot be determined: the collaborators endpoint needs push
-        access, so tier 0 has no answer and must not invent a reassuring one.
+        Returns None when it cannot be determined, since the collaborators endpoint needs push
+        access that tier 0 does not have.
         """
         handles = sorted(str(h) for h in (trusted or ()))
         if not handles or not self.self_repo:
@@ -294,17 +287,12 @@ class Identity:
     def trust_file_ready(self) -> bool:
         """The trust file exists, carries no unfinished line, and names at least two handles.
 
-        "Unfinished" is :attr:`Trust.skipped` -- *any* ``<...>`` placeholder, which is what the
-        trust file's own header and D69 both promise. It used to be the two literal spellings
-        below and nothing else, so `2 <NEW_MAINTAINER>` passed this check while being refused
-        by the gate, and the operator was warned about a consequence that would not happen.
-        The parser now has the one definition of a line that grants nothing, so this reads it
-        instead of keeping a second, narrower idea of the same thing. Both spellings stay:
-        `NATHAN_HANDLE` without its brackets is not a placeholder by that definition.
+        "Unfinished" is :attr:`Trust.skipped`, any ``<...>`` placeholder, which is the gate's
+        own definition of a line that grants nothing (D69). `NATHAN_HANDLE` is checked as well,
+        because without its brackets it is not a placeholder by that definition.
 
-        Counting accepted handles rather than non-comment lines is the same move -- a malformed
-        line is not a handle, and calling the file ready on the strength of one is how the
-        setup checklist reported done for a file that admitted one person.
+        The two handles are counted from the accepted ones, so a malformed line does not make
+        the file ready.
         """
         path = getattr(self.config, "trust_file", None)
         if not path:
@@ -349,7 +337,7 @@ class Identity:
         )
 
     def _tier1_prerequisites(self, current: int, target: int) -> tuple[Prerequisite, ...]:
-        """Delivery 1's list, unchanged: account, email-2fa, token, org-approval, tier."""
+        """Five prerequisites: account, email-2fa, token, org-approval and tier."""
         repo = self.repo or "the product repository"
         account_ok = self.account_exists()
         token_ok = self.token_present() and self.shape_ok()
@@ -427,8 +415,8 @@ class Identity:
         )
 
     def _tier2_prerequisites(self, current: int, target: int) -> tuple[Prerequisite, ...]:
-        """Handoff §16: the sixteen human prerequisites, in order, then the tier agreement and
-        the standing confirmation that the account is not a collaborator upstream."""
+        """The sixteen human prerequisites in order, then the tier agreement and the standing
+        confirmation that the account is not a collaborator upstream."""
         repo = self.repo or "the product repository"
         self_repo = self.self_repo or "this repository"
         codeowners = self.codeowners_text()
@@ -714,10 +702,9 @@ class Identity:
         lines.append("# HUMAN.md — Bright Bots Harness setup")
         lines.append("")
         lines.append(
-            "This is a gap report, regenerated by `harness setup`. It describes the "
-            "distance between what is configured now and what the target tier needs, "
-            "and it shrinks as prerequisites are satisfied. It contains no secret "
-            "value — only key names, scopes, and who must act."
+            "Setup gap report, regenerated by `harness setup`: what the target tier still "
+            "needs, and who must act on each item. It contains no secret value — only key "
+            "names, scopes, and who must act."
         )
         lines.append("")
 

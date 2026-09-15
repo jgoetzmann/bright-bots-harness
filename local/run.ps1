@@ -1,14 +1,14 @@
-# The docker run contract (platform section 5.3) for the bb container -
-# docs/delivery/DELIVERY-2-HANDOFF.md section 10.1. Hand-written; never machine-generated.
-# Called by bb-start.ps1 with the settings from bb-config.json; the defaults below are the
-# handoff's values.
-#   -v <repo>:/harness:ro     the package (P1) - never COPYed into the image
+# The docker run contract for the bb container (docs/LOCAL-MODE.md). Hand-written; never
+# machine-generated. Called by bb-start.ps1 with the settings from bb-config.json; the defaults
+# below apply when a setting is absent.
+#   -v <repo>:/harness:ro     the package, never COPYed into the image
 #   -v <bb-work>:/work        the durable record, run state, HEARTBEAT, STOP, and the loop's .env
 #   -v bb-data:/data          named volume for harness.db (SQLite locking on a bind mount is unreliable)
-#   --env-file <filtered>     process environment through the one credential filter (P4)
-#   --network bb-net          plain bridge (section 10.6); no host ports
-#   --restart on-failure:5    a kill self-heals; a clean exit or docker stop stays down (P6)
-# Running this is a HARD restart (docker rm -f bb). Use bb-stop.ps1 first for a clean unit boundary.
+#   --env-file <filtered>     process environment through the one credential filter
+#   --network bb-net          plain bridge; no host ports
+#   --restart on-failure:5    a kill self-heals; a clean exit or docker stop stays down
+# Running this is a hard restart (docker rm -f bb). Run bb-stop.ps1 first for a clean unit
+# boundary.
 param(
     [string]$Harness = (Split-Path $PSScriptRoot -Parent),
     [string]$Work = (Join-Path (Split-Path $PSScriptRoot -Parent) "bb-work"),
@@ -43,7 +43,7 @@ if (-not $created) { Write-Error "image bb-harness:latest not found; run: .\bb-s
 Write-Host "image bb-harness:latest built $created  (entrypoint.sh + Dockerfile are frozen at that time; harness/ is mounted live)"
 
 $nets = docker network ls --format "{{.Name}}"
-if ($nets -notcontains "bb-net") { docker network create --driver bridge bb-net | Out-Null; Write-Host "created bb-net (plain bridge, handoff section 10.6)" }
+if ($nets -notcontains "bb-net") { docker network create --driver bridge bb-net | Out-Null; Write-Host "created bb-net (plain bridge, no egress allowlist)" }
 $vols = docker volume ls --format "{{.Name}}"
 if ($vols -notcontains "bb-data") { docker volume create bb-data | Out-Null; Write-Host "created named volume bb-data (mounted at /data; holds harness.db)" }
 
@@ -67,7 +67,7 @@ $overrides["PACKAGES_DIR"] = "/work/packages"
 $overrides["HALT_FILE"] = "/work/HALT"
 $overrides["TRUST_FILE"] = "/harness/.harness/trust.txt"
 $overrides["PERMISSION_TIER"] = "0"          # no GitHub credential inside, so the token door stays shut (I-11)
-$overrides["STORE_BACKEND"] = "sqlite"       # local mode = the SQLite store on /data (handoff section 2)
+$overrides["STORE_BACKEND"] = "sqlite"       # local mode uses the SQLite store on /data
 $overrides["MAX_CONCURRENT_ITEMS"] = "1"     # B123: concurrency above 1 is Actions mode only
 $overrides["MAX_CONCURRENT_CLONES"] = "1"    # B123
 $seen = @{}

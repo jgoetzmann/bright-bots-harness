@@ -26,7 +26,7 @@ from harness.store.sqlite import SqliteStore as Store
 
 
 class StoreProtocol(Protocol):
-    """Every public method of :class:`SqliteStore`, plus the three Delivery 2 seam methods."""
+    """Every public method both stores implement."""
 
     def migrate(self) -> None: ...
 
@@ -95,7 +95,7 @@ class StoreProtocol(Protocol):
 
     def api_calls_since(self, iso_ts: str) -> int: ...
 
-    # Delivery 2 (RUN-DECISIONS-D2 section 3)
+    # Proposals, merged items and reconciliation
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str: ...
 

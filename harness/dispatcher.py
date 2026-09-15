@@ -1,4 +1,4 @@
-"""The pure dispatcher (handoff §6.4): a JSON plan from a ledger and candidates; starts nothing."""
+"""The pure dispatcher: a JSON plan from a ledger and candidates; it starts nothing."""
 
 from __future__ import annotations
 
@@ -20,12 +20,8 @@ STATIC_USD: dict[str, float] = {
     "revise": 1.00,
     "decompose": 0.30,
     "package": 0.05,
-    # D4. An `ask` is one read and a paragraph; an audit reads a whole repository, which is why
-    # it has a ceiling of its own rather than borrowing the per-call cap.
     "ask": 0.05,
     "audit": 3.00,
-    # D70. The self-audit reads one diff against one work package, as a proposal reads an
-    # issue; its fix pass is one more implementation pass, as a revise is.
     "selfaudit": 0.50,
     "selfaudit_fix": 1.00,
 }
@@ -37,11 +33,10 @@ class Candidate:
     depends_on: tuple[int, ...] = ()
     stage: str = "implement"
     created_at: str = ""
-    #: B285/D62: the operator said start this now rather than later. Exactly like the B209
-    #: carry, and for the same reason -- the window governs when the harness chooses work on
-    #: its own, not whether work may happen when a person has asked for it.
+    #: The operator asked for this item now, so the run window does not hold it back. The
+    #: window governs when the harness chooses work on its own (B285).
     forced: bool = False
-    #: B287/D63: which of the five priority classes this belongs to.
+    #: Which of the five priority classes this belongs to (B287).
     cls: str = "directed"
 
 
@@ -73,16 +68,15 @@ def usage_stop(
 ) -> str | None:
     """The usage stop for this ledger, or ``None`` when nothing observed stops work (B206).
 
-    Pure, and the single implementation of the rule: :meth:`harness.governor.Governor.
-    usage_stop_reason` delegates here so the admission check and the plan can never disagree.
-    With no observation at all the answer is ``None`` (B207) and the USD path governs alone —
-    B114 survives as "no decision may DEPEND on the signal being present".
+    Pure, and the single implementation of the rule: ``Governor.usage_stop_reason`` delegates
+    here, so the admission check and the plan cannot disagree. With no observation at all the
+    answer is ``None`` and the USD path governs alone.
 
     ``carry=True`` is the item carried across a weekly reset: it may keep going until weekly
     usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
 
-    ``now`` expires an observation whose window has reset since (B399/D71): a 100% reading
-    stops work until its ``resets_at`` and not a second longer. Both callers pass their clock.
+    ``now`` expires an observation whose window has reset since: a 100% reading stops work
+    until its ``resets_at``. Both callers pass their clock.
     """
     weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
@@ -105,8 +99,7 @@ def usage_stop(
 def _usage_suffix(ledger: Ledger) -> str:
     """``"; weekly 49%, session 7%"`` once both utilizations are known, else nothing (B211).
 
-    The last readings as observed, deliberately without B399's expiry: this is a report of what
-    was seen, not a decision. The stops above are the decisions, and they expire at the reset.
+    The last readings as observed, without the expiry the stops above apply.
     """
     weekly = ledger.weekly_utilization()
     session = ledger.session_utilization()
@@ -116,15 +109,15 @@ def _usage_suffix(ledger: Ledger) -> str:
 
 
 def rank(cls: str) -> int:
-    """The priority class's position, lowest first (D63). Imported lazily so `dispatcher` stays
-    the pure function it is: `priority` reads a store, this does not."""
+    """The priority class's position, lowest first (D63). Imported lazily so this module keeps
+    no import of `priority`, which reads a store."""
     from harness.priority import rank as _rank
 
     return _rank(cls)
 
 
 def _window_reason(config: Config) -> str:
-    """The exact B210 reason naming the configured window; a daily one once (B411)."""
+    """The reason text naming the configured run window (B210)."""
     return f"outside run window ({run_window_label(config)} UTC)"
 
 
@@ -137,27 +130,27 @@ def plan(
     merged: Collection[int],
     halted: bool,
 ) -> Plan:
-    """Selection in the handoff §6.4 order, D3 order: rate limit -> halted -> usage stop ->
-    reserve -> run window -> candidates. Pure: same inputs, byte-identical plan (A33)."""
+    """Select in order: rate limit, halted, usage stop, reserve, run window, then candidates.
+
+    Pure: the same inputs give a byte-identical plan.
+    """
     now_iso = iso(now)
     if ledger.rate_limited(now_iso):
         until = ledger.window.get("rate_limited_until")
         return Plan(start=(), reason=f"rate limited until {until}", skipped={})
     if halted:
         return Plan(start=(), reason="halted", skipped={})
-    # B-D4: the commanded halt, so `harness dispatch` says WHO stopped it and why rather than
-    # printing a healthy-looking budget beside a queue that will never move.
+    # The commanded halt, so `harness dispatch` names who stopped the harness and why.
     commanded = ledger.halt_request()
     if commanded is not None:
         who = commanded.get("by", "someone")
         why = f": {commanded['reason']}" if commanded.get("reason") else ""
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
-    # B209: an item carried across a weekly reset resumes before anything else, on the
-    # overrun leeway rather than the weekly stop, and even outside a weekly run window.
-    # B413/D72: not outside a daily one. A daily window is one subscription session a day, a
-    # carry is what that session's stop leaves behind, and the leeway binds only on a weekly
-    # reading -- so exempting it would resume the item in the operator's own daytime session.
+    # An item carried across a weekly reset resumes before anything else, on the overrun leeway
+    # instead of the weekly stop. It may run outside a weekly run window but not a daily one: a
+    # daily window is the one subscription session a day, and a carry resuming outside it would
+    # run in the operator's own daytime session (B413).
     window_open = in_run_window(config, now)
     carry_id = ledger.carry_issue()
     carry_ok = (
@@ -175,11 +168,8 @@ def plan(
     spent = float(ledger.window.get("spent_usd", 0.0) or 0.0)
     ceiling = weekly_cap * (1.0 - reserve_pct / 100.0)
     if spent >= ceiling:
-        # B122 pins this token exactly, and `implement.yml` echoes it, so the word stays. What
-        # is appended is the subscription reading beside it -- an operator who sees "reserve"
-        # alone cannot tell whether the thing that actually runs out is anywhere near its limit,
-        # and the two are very different problems. `_usage_suffix` is empty until both windows
-        # have been observed, so the bare token survives wherever nothing has been measured.
+        # `implement.yml` matches the bare token "reserve", so the word stays (B122). The
+        # subscription readings are appended once both windows have been observed.
         return Plan(start=(), reason="reserve" + _usage_suffix(ledger), skipped={})
     remaining = ceiling - spent
 
@@ -188,16 +178,14 @@ def plan(
         max_slots = 1
 
     merged_ids = {int(number) for number in merged}
-    # B289/B287: class first, then forced to the front of *its own class*, then oldest first.
-    # A forced proposal is still not more urgent than somebody's unanswered question, so
-    # `forced` breaks ties inside a class and never promotes across one.
+    # Class first, then forced to the front of its own class, then oldest first: `forced`
+    # breaks ties inside a class and never promotes across one (B289).
     ordered = sorted(
         candidates,
         key=lambda c: (rank(c.cls), 0 if c.forced else 1, c.created_at, int(c.issue)),
     )
 
-    # B210/B285: outside the window only the carry item and forced items may run. When nothing
-    # can, the plan says so.
+    # Outside the window only the carry item and forced items may run (B210).
     forced_ids = {int(c.issue) for c in candidates if c.forced}
     if not window_open and not carry_ok and not forced_ids:
         return Plan(start=(), reason=_window_reason(config), skipped={})
@@ -227,7 +215,7 @@ def plan(
         start.append(int(candidate.issue))
 
     pct = remaining / weekly_cap * 100.0
-    # B211: the D2 shape, with the observed utilizations appended when they are known.
+    # The observed utilizations are appended when they are known (B211).
     reason = (
         f"budget {pct:.0f}% remaining, {len(start)} of max {max_slots} slots"
         f"{_usage_suffix(ledger)}"

@@ -1,9 +1,4 @@
-"""SQLite persistence: schema, migrations and every query (I-5: no SQL outside this module).
-
-Delivery 1's ``harness/store.py`` moved here verbatim (RUN-DECISIONS-D2 R-A) and extended for the
-store seam: the twelve Delivery 2 states, the unified transition table, ``publish_proposal``,
-``merged_issues`` and ``reconcile_stale_running`` (B147).
-"""
+"""SQLite persistence: schema, migrations and every query (I-5: no SQL outside this module)."""
 
 from __future__ import annotations
 
@@ -18,20 +13,18 @@ from harness.clock import Clock, SystemClock, iso
 from harness.errors import DuplicateWorkItem, IllegalTransition, StoreError
 from harness.redact import write_redacted
 
-# The row in ``schema_version`` (HARNESS-SPEC 5.2.1, verbatim; tests B7/B8 assert it stays 1).
+# The row in ``schema_version``; it stays 1 (B7).
 SCHEMA_VERSION = 1
-# ``PRAGMA user_version``: layout 2 was Delivery 2's (twelve states, seven stages in the CHECKs);
-# layout 3 is D70's, the same tables with the two self-audit stages added to ``stage_run``.
+# ``PRAGMA user_version``: layout 2 holds twelve states and seven stages in the CHECKs; layout
+# 3 is the same tables with the two self-audit stages added to ``stage_run`` (D70).
 LAYOUT_VERSION = 3
 
-# The Delivery 1 layout (HARNESS-SPEC 5.2.1) has no constant here and is never created:
-# ``migrate()`` builds every fresh database from ``SCHEMA_SQL_V2`` below, and a database
-# already on layout 1 is widened by ``WORK_ITEM_DDL_V2``/``STAGE_RUN_DDL_V2``. The spec's
-# own fence is the record of what layout 1 said, and the only one that cannot disagree
-# with the DDL in force.
+# Layout 1 has no constant here and is never created: ``migrate()`` builds every fresh database
+# from ``SCHEMA_SQL_V2`` below, and a database already on layout 1 is widened by
+# ``WORK_ITEM_DDL_V2``/``STAGE_RUN_DDL_V2``.
 
-# Delivery 2 layout: the same tables with the widened CHECK constraints. ``{name}`` lets the
-# migration create the rebuilt table under a temporary name.
+# The current tables, with the widened CHECK constraints. ``{name}`` lets the migration create
+# the rebuilt table under a temporary name.
 WORK_ITEM_DDL_V2 = """
 CREATE TABLE {name} (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,9 +138,7 @@ STATES: tuple[str, ...] = (
     "abandoned",
 )
 
-#: B264/D56 - `stage:` says where a work item is and, for two of them, whose move it is.
-#: The state machine is unchanged; only the label strings moved. `harness:proposed` and
-#: `harness:shipped` both meant "somebody must act" and neither said who.
+#: `stage:` says where a work item is and, for two of them, whose move it is (B264).
 LABELS: dict[str, str] = {
     "discovered": "stage:queued",
     "proposing": "stage:planning",
@@ -163,9 +154,8 @@ LABELS: dict[str, str] = {
     "abandoned": "stage:dropped",
 }
 
-#: What the labels were before B264. Still read, never written, so an issue opened before the
-#: rename keeps resolving until `harness relabel` has been run -- and after, since a human may
-#: re-apply an old one by hand.
+#: The older label spellings: read, never written, so an issue `harness relabel` has not
+#: reached keeps resolving, and so does one a person re-labels by hand.
 LEGACY_LABELS: dict[str, str] = {
     "discovered": "harness:queued",
     "proposing": "harness:proposing",
@@ -181,15 +171,15 @@ LEGACY_LABELS: dict[str, str] = {
     "abandoned": "harness:abandoned",
 }
 
-#: B264/D56 - `kind:` says what the thing is. There is no `kind:harness`: I-18 (D61) means the
-#: harness never works on its own repository, so that kind of work does not exist.
+#: `kind:` says what the thing is. There is no `kind:harness`, because the harness never works
+#: on its own repository, so that kind of work does not exist (I-18).
 KIND_LABELS: dict[str, str] = {
     "product": "kind:product",
     "audit": "kind:audit",
     "ops": "kind:ops",
 }
 
-#: B264/D56 - `via:` says how it got here.
+#: `via:` says how it got here.
 VIA_LABELS: dict[str, str] = {
     "assigned": "via:assigned",
     "requested": "via:requested",
@@ -221,12 +211,9 @@ LABEL_SPECS: dict[str, tuple[str, str]] = {
     "via:audit": ("ededed", "promoted from an audit's findings"),
 }
 
-# The one transition table, shared by both stores: RUN-DECISIONS-D2 section 3 minus the three
-# pairs Delivery 1 pins illegal (B11: discovered->blocked, approved->blocked,
-# shipped->abandoned), plus revising->approved, which RUN-DECISIONS-D3 "Handoff and continue"
-# step 6 requires ("transition the item to `approved` from whichever of
-# `implementing`/`packaged`/`revising` it is in"). ``"new"`` is the pseudo-state of a row that
-# does not exist yet.
+# The one transition table, shared by both stores. discovered->blocked, approved->blocked and
+# shipped->abandoned are illegal (B11), and revising->approved is what a handoff needs to hand
+# an item back. ``"new"`` is the pseudo-state of a row that does not exist yet.
 TRANSITIONS: dict[str, frozenset[str]] = {
     "new": frozenset({"discovered"}),
     "discovered": frozenset({"proposing", "proposed", "abandoned"}),
@@ -304,9 +291,8 @@ class WorkItem:
     attempts: int
     created_at: str
     updated_at: str
-    #: B264/D56: how the item arrived, from its `via:` label. Not a column -- the label is the
-    #: record on the backend that has labels, and the sqlite backend has no outward surface for
-    #: one to have come from. `requested` is the honest default: a person caused it.
+    #: How the item arrived: the `via:` label on the GitHub backend, the `via` column on the
+    #: SQLite one (B264). `requested` is the default, since a person caused it.
     via: str = "requested"
 
     @property
@@ -424,10 +410,10 @@ class SqliteStore:
     # ----------------------------------------------------------------- migration
 
     def migrate(self) -> None:
-        """Create the schema (layout 2) or upgrade a layout-1 database. Idempotent (B7, B8).
+        """Create the schema or upgrade an older database. Idempotent (B7).
 
-        The ``schema_version`` row stays ``1`` (5.2.1 verbatim); the Delivery 2 layout is stamped
-        in ``PRAGMA user_version`` and recognised from the CHECK constraints themselves.
+        The ``schema_version`` row stays ``1``; the layout is stamped in ``PRAGMA user_version``
+        and recognised from the CHECK constraints themselves.
         """
         conn = self.conn
         row = conn.execute(
@@ -442,8 +428,8 @@ class SqliteStore:
                 raise StoreError(f"migration failed: {exc}") from exc
             conn.execute("PRAGMA foreign_keys=ON")
             return
-        # D4: `via` arrives as an ADD COLUMN rather than a rebuild -- it is additive, has a
-        # default, and every existing row's honest value is that default.
+        # `via` is additive and has a default that is right for every existing row, so it
+        # arrives as an ADD COLUMN rather than a rebuild.
         if "via " not in self._table_sql("work_item"):
             try:
                 conn.execute(
@@ -453,9 +439,8 @@ class SqliteStore:
                 raise StoreError(f"migration failed adding work_item.via: {exc}") from exc
         if self._table_sql("work_item").find("'merged'") < 0:
             self._rebuild("work_item", WORK_ITEM_DDL_V2, WORK_ITEM_COLUMNS, "idx_work_item_state")
-        # D70: probe for the newest stage, not `'deliver'`, which every layout-2 database already
-        # carries -- that probe would leave an existing database on the old CHECK, and the first
-        # self-audit call would then raise.
+        # Probe for the newest stage: every layout-2 database already carries `'deliver'`, so
+        # probing for that would leave it on the old CHECK and the first self-audit would raise.
         if self._table_sql("stage_run").find("'selfaudit_fix'") < 0:
             self._rebuild("stage_run", STAGE_RUN_DDL_V2, STAGE_RUN_COLUMNS, "idx_stage_run_item")
         current = conn.execute("PRAGMA user_version").fetchone()
@@ -555,7 +540,7 @@ class SqliteStore:
         return [_work_item(r) for r in rows]
 
     def transition(self, item_id: int, to_state: str, *, reason: str) -> None:
-        """Move an item between states per 5.2.2 / RUN-DECISIONS-D2 section 3 (B10-B12)."""
+        """Move an item between states along ``TRANSITIONS`` (B10-B12)."""
         item = self.get_work_item(item_id)
         if item is None:
             raise StoreError(f"no work item {item_id}")
@@ -652,7 +637,7 @@ class SqliteStore:
         ).fetchone()
         return row is not None
 
-    # ------------------------------------------------------------- delivery 2 seam
+    # --------------------------------------------------------------- the store seam
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
         """Write ``<proposals_dir>/<filename>`` redacted and move the item to ``proposed``.
@@ -884,7 +869,7 @@ class SqliteStore:
         return int(row["n"]) if row is not None else 0
 
 
-# Delivery 1 name for the class; ``harness.store.Store`` is bound to it too (RUN-DECISIONS-D2 R-A).
+# The older name for the class; ``harness.store.Store`` is bound to it too.
 Store = SqliteStore
 
 

@@ -1,4 +1,4 @@
-"""Conventional-commit generation and validation under the 100-char rules (SPEC §5.11)."""
+"""Conventional-commit generation and validation under the 100-character rules."""
 
 from __future__ import annotations
 
@@ -52,8 +52,8 @@ def _fit_subject(prefix_len: int, subject: str) -> str:
 def _wrap_block(text: str) -> list[str]:
     """Wrap each paragraph to 100, preserving blank-line separation.
 
-    Long unbroken tokens (URLs, file paths, shas) are left intact — splitting one to satisfy a
-    line-length rule produces a message that is shorter and wrong.
+    Long unbroken tokens (URLs, file paths, shas) are left intact, since splitting one to
+    satisfy a line-length rule breaks it.
     """
     lines: list[str] = []
     paragraphs = re.split(r"\n\s*\n", (text or "").strip())

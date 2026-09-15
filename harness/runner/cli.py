@@ -1,4 +1,4 @@
-"""The ``claude`` CLI backend (SPEC 5.4.3; D2 §6.1 and §6.3; D3 the usage stream, B200-B202)."""
+"""The ``claude`` CLI backend, including the usage stream (B200-B202)."""
 
 from __future__ import annotations
 
@@ -24,16 +24,16 @@ from harness.runner.base import (
     usage_rejected,
 )
 
-#: Removed from the child environment (B26). Delivery 1 is subscription-backed;
-#: a stray key would silently move the spend to the API billing pool.
+#: Removed from the child environment (B26): the harness runs on a subscription, and a stray
+#: key would silently move its calls to the API billing pool.
 STRIPPED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY",)
 
 #: How much of stderr survives into ``RunResult.error``.
 STDERR_TAIL_CHARS = 2000
 
 #: The error of a refusal that came with no words at all: the usage signal said ``rejected``
-#: and the CLI printed nothing else (D71). Better than the subtype, which on a refusal is
-#: "success".
+#: and the CLI printed nothing else (D71). The subtype on a refusal reads "success", which
+#: says nothing.
 REFUSED_ERROR = "the subscription refused the call (rate_limit_event status: rejected)"
 
 #: Synthetic exit codes for the cases where the process never reported one.
@@ -41,11 +41,11 @@ EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 127
 EXIT_ARGV_TOO_LONG = 126
 
-#: The prompt travels on stdin, never in argv (D35). What is left is flags plus the system
-#: prompt, and that still has to fit: on Windows ``claude`` is an npm ``.CMD`` shim, so the
-#: whole command line passes through ``cmd.exe``, whose hard ceiling is 8191 characters --
-#: about a quarter of the 32767 ``CreateProcess`` allows. Over it, cmd.exe prints "The command
-#: line is too long." and exits non-zero, which reads like a model failure and is not one.
+#: The prompt travels on stdin, never in argv (D35). The flags and the system prompt still have
+#: to fit: on Windows ``claude`` is an npm ``.CMD`` shim, so the whole command line passes
+#: through ``cmd.exe``, whose ceiling is 8191 characters, about a quarter of the 32767
+#: ``CreateProcess`` allows. Over it, cmd.exe prints "The command line is too long." and exits
+#: non-zero, which reads like a model failure.
 ARGV_LIMIT_WINDOWS = 8191
 ARGV_LIMIT_POSIX = 131072
 
@@ -71,9 +71,9 @@ def argv_limit() -> int:
 def argv_too_long(argv: Sequence[str]) -> str | None:
     """A legible refusal when `argv` cannot be spawned, else ``None`` (B216).
 
-    Names the offender, because the only argument that can realistically grow past the ceiling
-    is ``--system-prompt`` -- and ``prompts/system.md`` is pinned, so the fix is a prompt edit
-    and a re-pin, not a code change.
+    It names the longest argument. The one that can realistically grow past the ceiling is
+    ``--system-prompt``, and ``prompts/system.md`` is pinned, so the fix is a prompt edit and a
+    re-pin.
     """
     limit = argv_limit()
     # One separator per gap, matching how the OS assembles the line.
@@ -97,9 +97,8 @@ def argv_too_long(argv: Sequence[str]) -> str | None:
 def deny_settings(paths: Sequence[str]) -> str | None:
     """``--settings`` JSON denying Read on `paths`, or ``None`` when there is nothing to deny.
 
-    B218/D36. The rule form that the CLI actually enforces is a bare absolute path -- a
-    ``//``-prefixed one is accepted and silently matches nothing, and a relative glob such as
-    ``**/.env`` matches nothing either. Both were measured, not assumed.
+    The CLI enforces a bare absolute path only (B218): a ``//``-prefixed rule is accepted and
+    silently matches nothing, and so is a relative glob such as ``**/.env``.
     """
     rules = [f"Read({path})" for path in paths if str(path).strip()]
     if not rules:
@@ -141,13 +140,13 @@ def _normalise_iso(raw: str) -> str:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-#: The stream event that carries the subscription windows (D3 "Why").
+#: The stream event that carries the subscription windows.
 RATE_LIMIT_EVENT = "rate_limit_event"
 
-#: The two unified windows the CLI reports, in the order they are stored.
-#: One fact, stated in two places: ``harness.ledger.USAGE_WINDOWS`` is the consumer's copy and
-#: must stay equal to this one (pinned by tests/test_ledger.py). The runner imports no domain
-#: module by design, so the shared home is ``harness/runner/base.py``, beside ``RunResult.usage``.
+#: The two unified windows the CLI reports, in the order they are stored. One fact in two
+#: places: ``harness.ledger.USAGE_WINDOWS`` is the consumer's copy and must stay equal to this
+#: one (tests/test_ledger.py pins it). The runner imports no domain module, so neither
+#: definition can import the other.
 USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
 
 
@@ -170,8 +169,8 @@ def _reset_iso(value: object) -> str | None:
 def usage_from_event(event: Mapping[str, Any]) -> dict | None:
     """One ``rate_limit_event`` as the :attr:`RunResult.usage` shape, or ``None``.
 
-    Tolerant on purpose (B114): anything missing simply drops out, and an event with no
-    recognisable window is no observation at all rather than a zero one.
+    Tolerant (B114): anything missing drops out, and an event with no recognisable window is no
+    observation at all rather than a zero one.
     """
     if not isinstance(event, Mapping):
         return None
@@ -201,9 +200,9 @@ def usage_from_event(event: Mapping[str, Any]) -> dict | None:
     if isinstance(status, str) and status:
         usage["status"] = status
     if status == USAGE_REJECTED:
-        # Kept on a rejection only, so an `allowed` reading keeps its shape. B403: the CLI does
-        # not block a call running on extra usage. B404: the limit that refused may be none of
-        # the unified windows (`seven_day_opus`, `overage`, ...), and this is its reset.
+        # Kept on a rejection only, so an `allowed` reading keeps its shape. The CLI does not
+        # block a call running on extra usage, and the limit that refused may be none of the
+        # unified windows (`seven_day_opus`, `overage`), so its own reset is recorded (B404).
         if info.get("isUsingOverage") is True or info.get("overageInUse") is True:
             usage[USAGE_OVERAGE_IN_USE] = True
         limit_reset = _reset_iso(info.get("resetsAt"))
@@ -218,10 +217,10 @@ def usage_from_event(event: Mapping[str, Any]) -> dict | None:
 def parse_stream(stdout: str) -> tuple[dict | None, dict | None]:
     """``(result object, usage)`` from ``--output-format stream-json`` output (B201).
 
-    Pure. The LAST line whose ``type`` is ``"result"`` is the result object (the same fields
-    the non-streaming JSON carries); every ``rate_limit_event`` updates the usage and the last
-    one wins. Lines that are not JSON objects are ignored, and no result line at all is
-    ``(None, usage)`` — the caller treats that as unparseable output (B30).
+    Pure. The last line whose ``type`` is ``"result"`` is the result object, carrying the same
+    fields as the non-streaming JSON; every ``rate_limit_event`` updates the usage and the last
+    one wins. Lines that are not JSON objects are ignored, and no result line at all gives
+    ``(None, usage)``, which the caller treats as unparseable output.
     """
     result: dict | None = None
     usage: dict | None = None
@@ -262,22 +261,22 @@ class ClaudeCliRunner:
     ) -> None:
         self.claude_bin = claude_bin
         self.spawn = spawn if spawn is not None else _spawn_resolved
-        #: B200: ask for the JSON-lines stream so every ``rate_limit_event`` is visible.
-        #: Off by default, which keeps the Delivery 2 argv byte-for-byte.
+        #: Ask for the JSON-lines stream, so every ``rate_limit_event`` is visible (B200). Off
+        #: by default, which keeps the plain ``--output-format json`` argv.
         self.capture_usage = bool(capture_usage)
 
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """The order frozen in SPEC 5.4.3 (B25), plus ``--max-budget-usd`` after ``--max-turns``.
+        """The frozen argv order (B25), with ``--max-budget-usd`` after ``--max-turns``.
 
-        B200: with ``capture_usage`` the ``--output-format json`` pair becomes
-        ``--output-format stream-json --verbose`` in that same position; nothing else moves.
+        With ``capture_usage`` the ``--output-format json`` pair becomes ``--output-format
+        stream-json --verbose`` in that same position, and nothing else moves.
 
-        B216/D35: the prompt is NOT here. ``claude --print`` reads it from stdin, and every
-        flag below is bounded while the prompt is not -- an implement prompt carries a diff and
-        a gate log. The option terminator went with it: nothing follows the flags, so a prompt
-        beginning with ``-`` can no longer be read as one.
+        The prompt is not here: ``claude --print`` reads it from stdin, because every flag below
+        is bounded while a prompt carrying a diff and a gate log is not. The option terminator
+        went with it, and nothing follows the flags, so a prompt beginning with ``-`` cannot be
+        read as one.
         """
         output_format: list[str] = (
             ["--output-format", "stream-json", "--verbose"]
@@ -285,10 +284,9 @@ class ClaudeCliRunner:
             else ["--output-format", "json"]
         )
         argv: list[str] = [self.claude_bin, "--print", *output_format]
-        # B225: what the session *is* (format, model, effort) precedes what it may spend
-        # (turns, budget), what it may do (permission mode, tools) and what it may read
-        # (settings, system prompt, add-dir). Both are omitted when unset, so the Delivery 2
-        # argv shape is what a request without them still produces.
+        # What the session is (format, model, effort) precedes what it may spend (turns,
+        # budget), what it may do (permission mode, tools) and what it may read (settings,
+        # system prompt, add-dir). Model and effort are omitted when unset (B225).
         if request.model:
             argv.append("--model")
             argv.append(str(request.model))
@@ -313,8 +311,8 @@ class ClaudeCliRunner:
             argv.append(",".join(request.disallowed_tools))
         settings = deny_settings(request.deny_read)
         if settings is not None:
-            # B218: `--setting-sources` first, so the operator's own ~/.claude and the
-            # repository's .claude/ cannot widen what this call may touch; then the deny rules.
+            # An empty `--setting-sources` first, so the operator's own ~/.claude and the
+            # repository's .claude/ cannot widen what this call may touch, then the deny rules.
             argv.append("--setting-sources")
             argv.append("")
             argv.append("--settings")
@@ -338,9 +336,8 @@ class ClaudeCliRunner:
         argv = self.build_argv(request)
         too_long = argv_too_long(argv)
         if too_long is not None:
-            # B216: refused here, legibly, rather than as cmd.exe's bare "The command line is
-            # too long." on stderr -- which arrives as a non-zero exit and reads like a failed
-            # model call. Nothing is spent.
+            # Refused here, with a readable reason and nothing spent, rather than as cmd.exe's
+            # bare "The command line is too long." on a non-zero exit (B216).
             return self._failure(request, EXIT_ARGV_TOO_LONG, too_long)
         env = self.build_env()
         try:
@@ -368,18 +365,18 @@ class ClaudeCliRunner:
         stderr = _as_text(getattr(proc, "stderr", ""))
         exit_code = int(getattr(proc, "returncode", 0) or 0)
         data, usage = self.parse_stdout(stdout)
-        # D71/B396: the subscription's own verdict. When it refuses, the CLI exits 0 with
+        # The subscription's own verdict (B396). On a refusal the CLI can exit 0 with
         # `is_error: true` and `subtype: "success"`, so this is the one signal that cannot be
-        # misread. Additive (B114): without it, the wording below still classifies.
+        # misread; without it, the wording below still classifies.
         rejected = usage_rejected(usage)
         reported_error = isinstance(data, dict) and bool(data.get("is_error"))
 
         if exit_code != 0:
-            # B119: exhaustion is an outcome with a reset time, not a generic failure.
-            # B405/D71: with a result line, the wording and the reset are read from the CLI's
-            # own message and stderr, the same rule as at exit 0. The stream also carries tool
-            # output, and a D19 budget stop whose tool output mentions a limit beside a date is
-            # still a budget stop. Without a result line the whole output is all there is.
+            # Exhaustion is an outcome with a reset time (B119). With a result line, the
+            # wording and the reset are read from the CLI's own message and stderr, as at exit
+            # 0: the stream also carries tool output, and a budget stop whose tool output
+            # mentions a limit is still a budget stop. Without one, the whole output is all
+            # there is.
             if isinstance(data, dict):
                 haystack = f"{_as_str(data.get('result')) or ''}\n{stderr}"
             else:
@@ -397,8 +394,9 @@ class ClaudeCliRunner:
                     reset_at=reset_at,
                     usage=usage,
                 )
-            # A budget stop (D19: `subtype` error_max_budget_usd) exits 1 with a complete JSON
-            # result; keep its cost, turns and reason rather than dumping the JSON as the error.
+            # A budget stop (`subtype` error_max_budget_usd) exits 1 with a complete JSON
+            # result, so keep its cost, turns and reason instead of dumping the JSON as the
+            # error.
             if reported_error:
                 return self._from_json(request, data, stderr, exit_code, usage=usage)
             return self._failure(request, exit_code, stderr or stdout, usage=usage)
@@ -420,8 +418,8 @@ class ClaudeCliRunner:
             )
 
         if reported_error:
-            # B397: a refusal at exit 0. Matched against the CLI's own message only, never the
-            # whole stream: a successful reply that talks about limits is still a reply (B119).
+            # A refusal at exit 0, matched against the CLI's own message and never the whole
+            # stream: a successful reply that talks about limits is still a reply (B397).
             message = _as_str(data.get("result")) or ""
             if rejected or RATE_LIMIT_PATTERN.search(message):
                 return self._from_json(
@@ -466,10 +464,9 @@ class ClaudeCliRunner:
         is_error = bool(data.get("is_error", False))
         error = None
         if is_error:
-            # B395/D71: what the CLI SAID, first. It carries its message in `result` and often
-            # leaves stderr empty, and on a refusal the subtype is "success" -- which is how
-            # issue #43 came to read "triage ranking failed: success". Then stderr; then the
-            # subtype, which is all a budget stop (error_max_budget_usd, D19) reports.
+            # What the CLI said, first: it carries its message in `result` and often leaves
+            # stderr empty, and on a refusal the subtype reads "success". Then stderr, then the
+            # subtype, which is all a budget stop (error_max_budget_usd) reports (B395).
             message = (_as_str(data.get("result")) or "").strip()
             subtype = str(data.get("subtype") or "")
             if message:
@@ -477,7 +474,7 @@ class ClaudeCliRunner:
             elif stderr:
                 error = redact(stderr[-STDERR_TAIL_CHARS:])
             elif usage_rejected(usage):
-                # B405: only when the signal really said `rejected`; a reset alone is not that.
+                # Only when the signal said `rejected`; a reset alone is not a refusal (B405).
                 error = REFUSED_ERROR
             else:
                 error = subtype or "claude reported is_error"

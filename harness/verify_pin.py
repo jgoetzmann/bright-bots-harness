@@ -1,4 +1,4 @@
-"""The pin over the result-defining files (handoff §10.4, B142/B143): --check, --print, --write."""
+"""The pin over the result-defining files (B142): --check, --print, --write."""
 
 from __future__ import annotations
 
@@ -58,12 +58,11 @@ def pinned_files(repo_root: Path) -> list[str]:
 def normalise(data: bytes) -> bytes:
     """CRLF and CR collapsed to LF (B217).
 
-    The pin is a pin on *content*, not on bytes. Git rewrites line endings on checkout:
-    ``core.autocrlf`` defaults to true on Git for Windows and ``actions/checkout``
-    inherits it, so one commit lands as CRLF on a Windows runner and LF on a Linux one.
-    Hashing raw bytes made the pin fail closed on every Windows checkout -- a false alarm,
-    not the tamper the pin exists to catch. A line ending is not a semantic change to
-    Python source or to a prompt, so it is folded away here; everything else still counts.
+    The pin covers content rather than bytes. Git rewrites line endings on checkout:
+    ``core.autocrlf`` defaults to true on Git for Windows and ``actions/checkout`` inherits it,
+    so one commit lands as CRLF on a Windows runner and LF on a Linux one, and hashing raw
+    bytes would fail the pin on every Windows checkout. A line ending carries no meaning in
+    Python source or in a prompt, so it is folded away here; everything else still counts.
     """
     return data.replace(CRLF, LF).replace(CR, LF)
 
@@ -109,7 +108,7 @@ def _write_pin(repo_root: Path) -> Path:
     digest = compute(root)
     path = root / PIN_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Orchestrator-only: a plain open, on purpose, outside every harness write root (B143).
+    # A plain open: `.harness/` is outside every harness write root (B143).
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(f"{digest}\n")
     return path

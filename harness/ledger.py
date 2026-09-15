@@ -1,4 +1,4 @@
-"""The USD spend ledger (handoff §6.2): one JSON file, append-only history, rebuildable (B117)."""
+"""The spend ledger: one JSON file, an append-only history, rebuildable from comments (B117)."""
 
 from __future__ import annotations
 
@@ -49,22 +49,20 @@ _TRANSITION_COMMENT = re.compile(
 )
 
 
-#: The window keys D3 adds. Both are absent until something is observed or carried, and
-#: both read as ``None`` while absent, so a Delivery 2 ledger file and a Delivery 2
-#: comparison of the window dict are unchanged by their arrival.
+#: Window keys that stay absent until something is observed or carried; both read as ``None``
+#: while absent, so an older ledger file round-trips unchanged.
 OPTIONAL_WINDOW_KEYS: tuple[str, ...] = ("usage", "carry")
 
-#: The two unified windows the CLI reports, in the order they are stored (D3 "Why").
-#: One fact, stated in two places: ``harness.runner.cli.USAGE_WINDOWS`` is the producer's copy
-#: and must stay equal to this one (pinned by tests/test_ledger.py). The runner deliberately
-#: imports no domain module, so neither can import the other; the shared home is
-#: ``harness/runner/base.py``, next to the ``RunResult.usage`` field whose shape this describes.
+#: The two unified windows the CLI reports, in the order they are stored. One fact in two
+#: places: ``harness.runner.cli.USAGE_WINDOWS`` is the producer's copy and must stay equal to
+#: this one (tests/test_ledger.py pins it). The runner imports no domain module, so neither
+#: definition can import the other.
 USAGE_WINDOWS: tuple[str, ...] = ("five_hour", "seven_day")
 
 
 class _Window(dict):
-    """The window mapping: ``window["usage"]`` and ``window["carry"]`` are ``None``, not a
-    ``KeyError``, before anything has been observed or carried (D3 "Ledger")."""
+    """The window mapping: ``window["usage"]`` and ``window["carry"]`` read as ``None`` before
+    anything has been observed or carried."""
 
     def __missing__(self, key: str):
         if key in OPTIONAL_WINDOW_KEYS:
@@ -98,10 +96,10 @@ def _normalise_usage(usage: dict, now_iso: str = "") -> dict:
     them, then ``observed_at``.
 
     :meth:`Ledger.observe_usage` applies it to what a stage observed and :meth:`Ledger.from_json`
-    applies it to what a file carries, so :meth:`Ledger.to_json` can write what it holds rather
-    than sanitising a second time. ``resetsAt`` is accepted for ``resets_at`` because a
-    hand-edited or pre-D3 file may carry the CLI's own spelling; ``observed_at`` falls back to
-    ``now_iso`` and is omitted when neither is known.
+    applies it to what a file carries, so :meth:`Ledger.to_json` writes what it holds.
+    ``resetsAt`` is accepted for ``resets_at``, because a hand-edited or older file may carry
+    the CLI's own spelling; ``observed_at`` falls back to ``now_iso`` and is omitted when
+    neither is known.
     """
     stored: dict = {}
     for name in USAGE_WINDOWS:
@@ -123,13 +121,12 @@ def _normalise_usage(usage: dict, now_iso: str = "") -> dict:
 
 
 def window_has_reset(window: object, now: datetime | str) -> bool:
-    """True once ``now`` is at or past the window's own ``resets_at`` (B399/D71).
+    """True once ``now`` is at or past the window's own ``resets_at`` (B399).
 
-    An observation describes its window until that window resets, and nothing after. Without
-    this, a 100% reading outlived its reset: the stop it caused refused the very call that
-    would have brought a fresh reading, and only the harness's own weekly roll -- on a different
-    day and hour from the subscription's -- could lift it. ``False`` when the reset is missing
-    or unreadable: an observation with no stated end is kept, as it was.
+    An observation describes its window until that window resets, and nothing after; a stop it
+    caused would otherwise outlive its reset and refuse the call that would refresh it.
+    ``False`` when the reset is missing or unreadable, so an observation with no stated end is
+    kept.
     """
     if not isinstance(window, dict):
         return False
@@ -176,7 +173,7 @@ class Ledger:
             self._recompute(name)
 
     def _fold_overflow(self) -> set[str]:
-        """B116: drop the oldest entries past the cap, folding them into ``observations``."""
+        """Drop the oldest entries past the cap, folding them into ``observations`` (B116)."""
         if len(self.history) <= HISTORY_CAP:
             return set()
         excess = len(self.history) - HISTORY_CAP
@@ -249,16 +246,16 @@ class Ledger:
         self.window["calls"] = 0
         return True
 
-    # -- usage (D3, B204/B205) -------------------------------------------------------------
+    # -- usage -----------------------------------------------------------------------------
 
     def observe_usage(self, usage: dict | None, now_iso: str) -> None:
         """Store the subscription signal, rolling the window when the week has reset (B204).
 
-        ``None`` is not an observation and never erases the last one: B114 survives as "no
-        decision may DEPEND on the signal", so a fake-backed call simply leaves what the last
-        real call saw. When the newly reported ``seven_day.resets_at`` differs from the one
-        already stored and ``now`` is at or past that stored reset, the subscription week has
-        turned over: the window restarts at the reset instant and ``carry`` survives it (B205).
+        ``None`` is not an observation and never erases the last one, so a fake-backed call
+        leaves what the last real call saw. When the newly reported ``seven_day.resets_at``
+        differs from the one already stored and ``now`` is at or past that stored reset, the
+        subscription week has turned over: the window restarts at the reset instant and
+        ``carry`` survives it.
         """
         if not isinstance(usage, dict) or not usage:
             return
@@ -319,7 +316,7 @@ class Ledger:
         (given ``now``) when that window has reset since it was observed (B399)."""
         return self._utilization("five_hour", now)
 
-    # -- carry (D3, B214/B215) -------------------------------------------------------------
+    # -- carry -----------------------------------------------------------------------------
 
     def set_carry(self, issue: int, since: str, reason: str) -> None:
         """Mark one item as carried across the window: it resumes before anything else."""
@@ -344,13 +341,13 @@ class Ledger:
     # -- the commanded halt ------------------------------------------------------------------
 
     def request_halt(self, actor: str, reason: str, at: str) -> None:
-        """Stop the harness SPENDING, on a level-3 `/harness halt`.
+        """Stop the harness spending, on a level-3 `/harness halt`.
 
-        Deliberately not the same thing as either file switch. `.harness/HALT` is committed and
-        stops the workflows before they start; `HALT_FILE` stops a local run. This one lives in
-        the ledger, which every runner fetches, so a comment can stop the fleet without a commit
-        -- and it gates the model calls rather than the job, so the sweep keeps listening and
-        `/harness resume` can lift it the same way it went on.
+        The third of the three switches. `.harness/HALT` is committed and stops the workflows
+        before they start; `HALT_FILE` stops a local run. This one lives in the ledger, which
+        every runner fetches, so a comment stops the fleet without a commit, and it gates the
+        model calls rather than the job, so the sweep keeps listening and `/harness resume`
+        lifts it the same way it went on.
         """
         self.window["halt"] = {
             "by": str(actor),
@@ -365,15 +362,13 @@ class Ledger:
     def clear_halt(self) -> None:
         self.window.pop("halt", None)
 
-    # -- force (B283/D62) --------------------------------------------------------------------
+    # -- force -------------------------------------------------------------------------------
 
     def force(self, item_id: int) -> None:
-        """Mark an item window-exempt. Kept here, beside the carry, and not on the item itself.
+        """Mark an item window-exempt, in the ledger beside the carry (B283).
 
-        `--force` is a scheduling exemption, not a property of the work: the same item forced on
-        Thursday and left alone on Friday is the same piece of work. B209's carry is the exact
-        precedent and lives in the same place, which also means neither store backend needs a
-        column for it.
+        `--force` is a scheduling exemption rather than a property of the work, so it lives
+        with the carry and neither store backend needs a column for it.
         """
         forced = self.cursors.setdefault("forced", [])
         if int(item_id) not in forced:
@@ -384,7 +379,7 @@ class Ledger:
         return tuple(int(n) for n in rows) if isinstance(rows, list) else ()
 
     def unforce(self, item_id: int) -> None:
-        """Spend the exemption. It starts the item once; it does not make it permanent."""
+        """Spend the exemption: it starts the item once."""
         rows = self.cursors.get("forced")
         if isinstance(rows, list) and int(item_id) in rows:
             rows.remove(int(item_id))
@@ -406,23 +401,21 @@ class Ledger:
     # -- serialisation ---------------------------------------------------------------------
 
     def to_json(self) -> str:
-        """Render with the handoff's key order, ``indent=2``, trailing newline."""
+        """Render in the fixed key order, ``indent=2``, with a trailing newline."""
         window = {
             "period_start": self.window.get("period_start", EPOCH),
             "spent_usd": _usd(self.window.get("spent_usd", 0.0)),
             "calls": int(self.window.get("calls", 0)),
             "rate_limited_until": self.window.get("rate_limited_until"),
         }
-        # D3: usage and carry are written once they exist. A ledger that never saw the
-        # signal is byte-identical to the Delivery 2 file it was before.
+        # Usage, halt and carry are written only once they exist, so a ledger that has never
+        # seen one is byte-identical to the file it was before.
         usage = self.window.get("usage")
         if isinstance(usage, dict) and usage:
             # Already normalised, by observe_usage or by from_json: write what is held.
             window["usage"] = dict(usage)
         halt = self.halt_request()
         if halt is not None:
-            # Written only once set, so a ledger that has never been halted by comment is
-            # byte-identical to the file it was before.
             window["halt"] = {
                 "by": str(halt.get("by", "")),
                 "reason": str(halt.get("reason", "")),
@@ -452,11 +445,9 @@ class Ledger:
                 str(k): int(v) for k, v in dict(self.cursors.get("keyword_denied", {})).items()
             },
         }
-        # D4 adds two, written only once they hold something -- a ledger that has never forced
-        # an item or answered a question stays byte-identical to the D3 file it was. They are
-        # rendered explicitly rather than by copying `self.cursors` wholesale, because this
-        # function is the schema: a key that is not named here does not survive a save, and
-        # finding that out from a lost cursor is expensive.
+        # `forced` and `ask_calls` are written only once they hold something. Every cursor is
+        # rendered explicitly rather than by copying `self.cursors`, because this function is
+        # the schema: a key not named here does not survive a save.
         forced = self.forced()
         if forced:
             cursors["forced"] = [int(n) for n in forced]
@@ -491,12 +482,12 @@ class Ledger:
         schema = raw.get("schema") if isinstance(raw, dict) else None
         if schema != SCHEMA:
             raise HarnessError(f"ledger schema must be {SCHEMA}; got {schema!r}")
-        # D3: a file written before the usage keys existed simply has neither; both then
-        # read as None through the window's own default.
+        # A file written without the usage keys has neither; both then read as None through
+        # the window's own default.
         window = _empty_window(EPOCH)
         window.update(dict(raw.get("window") or {}))
-        # A file is the one usage source that never went through observe_usage, so it is
-        # normalised here — the only place a hand-edited or pre-D3 block needs sanitising.
+        # A file's usage block never went through observe_usage, so it is normalised here, and
+        # here only.
         loaded_usage = window.get("usage")
         if isinstance(loaded_usage, dict) and loaded_usage:
             window["usage"] = _normalise_usage(dict(loaded_usage))
@@ -536,7 +527,7 @@ def load(path: Path) -> Ledger:
 
 
 def save(ledger: Ledger, path: Path) -> None:
-    """B115: write a temp file beside ``path`` through the write guard, then ``os.replace``."""
+    """Write a temp file beside ``path`` through the write guard, then ``os.replace`` (B115)."""
     target = Path(path)
     temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     guarded_write(temp, ledger.to_json())
@@ -550,7 +541,7 @@ def save(ledger: Ledger, path: Path) -> None:
         raise
 
 
-# -- rebuild (B117) --------------------------------------------------------------------------
+# -- rebuild ---------------------------------------------------------------------------------
 
 
 def parse_transition_comment(body: str) -> tuple[str, str, str, float] | None:

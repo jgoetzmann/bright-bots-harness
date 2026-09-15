@@ -1,4 +1,4 @@
-"""Runner protocol, the two frozen result shapes, and the backend factory (SPEC 5.4.1)."""
+"""Runner protocol, the request and result shapes, and the backend factory."""
 
 from __future__ import annotations
 
@@ -15,10 +15,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from harness.config import Config
 
 
-#: The CLI's usage-limit signature (D2 handoff §6.3, B119). Matched case-insensitively against
-#: stdout and stderr of a non-zero exit, and against the message of an ``is_error`` result at
-#: any exit (B397/D71); a hit is an outcome with a reset time, not a failure. ``hit your ...
-#: limit`` is the CLI's newer wording.
+#: The CLI's usage-limit signature (B119). Matched case-insensitively against stdout and stderr
+#: of a non-zero exit, and against the message of an ``is_error`` result at any exit; a hit is
+#: an outcome with a reset time. ``hit your ... limit`` is the CLI's newer wording.
 RATE_LIMIT_PATTERN = re.compile(
     r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in)"
     r"|hit your (?:\w+ )?limit)"
@@ -26,7 +25,7 @@ RATE_LIMIT_PATTERN = re.compile(
 
 #: The ``status`` a ``rate_limit_event`` carries when the subscription refused the call (D71).
 #: The CLI then exits 0 with ``is_error: true`` and ``subtype: "success"``, so neither the exit
-#: code nor the subtype says what happened; this does.
+#: code nor the subtype says what happened, and only this status does.
 USAGE_REJECTED = "rejected"
 
 
@@ -42,10 +41,10 @@ USAGE_REJECTED_RESETS_AT = "rejected_resets_at"
 def usage_rejected(usage: Mapping[str, Any] | None) -> bool:
     """True when the usage signal says the subscription refused the call (B396).
 
-    The CLI's own rule, not a stricter one (B403): its "not blocked" test in 2.1.272 is
+    It applies the CLI's own "not blocked" test in 2.1.272,
     ``status !== "rejected" || isUsingOverage || overageInUse``. A call that went ahead on extra
-    usage and then failed for another reason (max turns, an API error) was not refused, and
-    classifying it as a rate limit would return the item instead of reporting the failure.
+    usage and then failed for another reason, such as max turns, was not refused; classifying
+    it as a rate limit would return the item instead of reporting the failure.
     """
     return (
         isinstance(usage, Mapping)
@@ -69,11 +68,11 @@ def _iso_instant(raw: object) -> tuple[datetime, str] | None:
 def exhausted_reset(usage: Mapping[str, Any] | None) -> str | None:
     """When the refusal lifts: the ``resets_at`` of the window at or over 1.0 (B396).
 
-    The earliest one when several are, because that is the soonest a call can be tried again
-    and the next refusal would say so. When no unified window is exhausted -- a model-specific
-    weekly limit such as ``seven_day_opus`` refused while both unified readings are below 1.0 --
-    the event's own top-level reset is used (B404). ``None`` when neither is readable; the
-    stage then falls back to its default delay.
+    The earliest one when several are, because that is the soonest a call can be tried again.
+    When no unified window is exhausted, which happens when a model-specific weekly limit such
+    as ``seven_day_opus`` refused while both unified readings are below 1.0, the event's own
+    top-level reset is used. ``None`` when neither is readable; the stage then falls back to
+    its default delay.
     """
     if not isinstance(usage, Mapping):
         return None
@@ -108,15 +107,15 @@ class RunRequest:
     cwd: Path
     timeout_s: int
     add_dirs: tuple[Path, ...] = ()
-    #: ``claude --max-budget-usd``; omitted from argv when ``None`` (D2 §6.1, B119).
+    #: ``claude --max-budget-usd``; omitted from argv when ``None`` (B119).
     max_budget_usd: float | None = None
-    #: Absolute paths the model must not read (B218/D36). Each becomes one ``permissions.deny``
-    #: rule passed through ``--settings``. ``Read`` is NOT confined to ``cwd`` by the CLI: with
-    #: ``--permission-mode acceptEdits`` it will read any absolute path it is given, including
-    #: the harness's own ``.env``. A directory is written with a trailing ``/**``.
+    #: Absolute paths the model must not read (B218). Each becomes one ``permissions.deny``
+    #: rule passed through ``--settings``. The CLI does not confine ``Read`` to ``cwd``: under
+    #: ``--permission-mode acceptEdits`` it reads any absolute path it is given, including the
+    #: harness's own ``.env``. A directory is written with a trailing ``/**``.
     deny_read: tuple[str, ...] = ()
-    #: ``claude --model`` and ``--effort`` (B225). Omitted from argv when ``None``, which is
-    #: what the fake backend and the Delivery 2 argv shape both expect.
+    #: ``claude --model`` and ``--effort``, omitted from argv when ``None``, which is what the
+    #: fake backend expects (B225).
     model: str | None = None
     effort: str | None = None
 
@@ -140,12 +139,12 @@ class RunResult:
     transcript: tuple[dict, ...]
     error: str | None
     #: When the call was refused for exhaustion: an ISO-Z timestamp, or a relative ISO
-    #: duration such as ``"+PT30M"`` for the stage to add to its clock (D2 §12). ``None``
-    #: on every other outcome.
+    #: duration such as ``"+PT30M"`` for the stage to add to its clock. ``None`` on every
+    #: other outcome.
     reset_at: str | None = None
-    #: The subscription usage the CLI reported alongside the call (D3, B200-B203):
+    #: The subscription usage the CLI reported alongside the call:
     #: ``{"five_hour": {"utilization": float, "resets_at": iso}, "seven_day": {...},
-    #: "status": str}``. ``None`` whenever the backend saw no signal — no decision may
+    #: "status": str}``. ``None`` whenever the backend saw no signal, and no decision may
     #: depend on it being there (B114).
     usage: dict | None = None
 
@@ -159,11 +158,11 @@ class Runner(Protocol):
 
 
 def is_rate_limited(result: RunResult) -> bool:
-    """True when a failed result is the CLI saying "come back later", not "I failed".
+    """True when a failed result is the CLI saying "come back later" (D71).
 
-    Three signals, any one enough: a reset time, the limit wording in the error, or (D71) a
-    failed call whose usage signal says ``rejected``. The last is additive: B114 still holds,
-    because a result without the signal is classified by the first two exactly as before.
+    Three signals, any one enough: a reset time, the limit wording in the error, or a failed
+    call whose usage signal says ``rejected``. A result carrying no usage signal is classified
+    by the first two alone.
     """
     if result.reset_at is not None or RATE_LIMIT_PATTERN.search(result.error or ""):
         return True
@@ -177,8 +176,8 @@ def get_runner(config: "Config") -> Runner:
     if backend == "cli":
         from harness.runner.cli import ClaudeCliRunner
 
-        # B202: the real backend always asks for the usage stream; the flag stays off by
-        # default so a hand-built runner keeps the Delivery 2 argv.
+        # The real backend always asks for the usage stream (B202). The flag stays off by
+        # default, so a hand-built runner keeps the plain ``--output-format json`` argv.
         return ClaudeCliRunner(capture_usage=True)
     if backend == "fake":
         from harness.runner.fake import FakeRunner

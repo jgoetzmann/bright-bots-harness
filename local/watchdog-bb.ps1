@@ -1,15 +1,14 @@
-# Host-side watchdog for the bb container (docs/delivery/DELIVERY-2-HANDOFF.md section 10;
-# platform section 6.5).
-# Hand-written; never machine-generated. Polls every 10 s from OUTSIDE the container (P10):
+# Host-side watchdog for the bb container (docs/LOCAL-MODE.md).
+# Hand-written; never machine-generated. Polls every 10 s from outside the container:
 #   soft limits pause  - on battery, or non-container host CPU high and sustained (docker pause)
 #   one limit kills    - stale HEARTBEAT, after a startup grace period (docker kill; the restart
 #                        policy heals it and the gate re-runs)
 #   hard limits stop   - free disk under the floor, weekly spend over the cap (docker stop; operator)
-#   every N minutes    - push the branches the container committed. This process is the ONLY
-#                        publisher in local mode (P5: the container commits, the host pushes).
+#   every N minutes    - push the branches the container committed. This process is the only
+#                        publisher in local mode: the container commits, the host pushes.
 # Pause state is derived from docker inspect on every poll, never from this process's variables.
-# Coexistence (A44): this file is named so that rk's wildcard process kill cannot match it, and
-# everything that looks for this process matches the FULL path of this file, never a wildcard.
+# Coexistence with rk: this file is named so that rk's wildcard process kill cannot match it,
+# and everything that looks for this process matches its full path, never a wildcard.
 #   .\local\watchdog-bb.ps1            persistent (bb-start.ps1 launches it minimised)
 #   .\local\watchdog-bb.ps1 -Once      one pass: push what is owed, check once, exit
 param(

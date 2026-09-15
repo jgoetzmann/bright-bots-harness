@@ -25,12 +25,14 @@ Thumbs.db
 .fullsend/
 runs/
 HALT
-# The repo-level kill switch (D2 B149) is committed on purpose; only the root HALT is scratch.
+# .harness/HALT is the committed kill switch; only the root HALT is scratch.
 !.harness/HALT
 harness.db
 *.egg-info/
-.venv/
 
-# Delivery 2 — local mode working state and the container env file
+# Local mode working state and the container env file
 bb-work/
 local/.env
+
+# Written by `harness setup`
+/HUMAN.md

@@ -1,13 +1,12 @@
 #!/bin/sh
-# Container entrypoint - the gate, in the FROZEN order of
-# docs/delivery/DELIVERY-2-HANDOFF.md section 10.3 (platform section 5.2). Baked into the image
-# (P3); the package it gates is mounted read-only at /harness (P1). Hand-written; never
+# Container entrypoint: the startup gate, in a fixed order (docs/LOCAL-MODE.md). Baked into the
+# image; the package it gates is mounted read-only at /harness. Hand-written; never
 # machine-generated.
 #   1. HEARTBEAT immediately          4. /work, /data, /work/.env, .harness/config.json exist and parse,
 #                                        and BB_LOOP_SECONDS is a whole number of seconds
 #   2. /harness must be read-only     5. the fast test subset: tests/test_invariants.py, under ~10 s
 #   3. pinned hash check (B142)       6. exec the loop
-# Every step fails closed with exit 1 (A45). The gate runs on every start, restarts included.
+# Every step fails closed with exit 1. The gate runs on every start, restarts included.
 set -eu
 
 HARNESS="${BB_HARNESS_DIR:-/harness}"
@@ -66,12 +65,11 @@ python -m pytest -q -p no:cacheprovider -o cache_dir=/tmp/pc tests/test_invarian
   || { echo "FATAL: tests/test_invariants.py failed; refusing to run" >&2; exit 1; }
 elapsed=$(( $(date +%s) - start ))
 echo "gate 5/5: invariants green in ${elapsed}s"
-[ "$elapsed" -le 10 ] || echo "WARN: the gate took ${elapsed}s; keep it under 10 s (platform section 5.2)" >&2
+[ "$elapsed" -le 10 ] || echo "WARN: the gate took ${elapsed}s; keep it under 10 s" >&2
 
-# Heartbeat sidecar (P7: once before the gate, then every 10 s). The loop writes HEARTBEAT at each
-# unit boundary but may spend many minutes inside one unit, and nothing under harness/ may start a
-# thread (RUN-DECISIONS-D2 section 17). This shell loop dies with PID 1, so it guards exactly what a
-# daemon thread would: process death, not slow work.
+# Heartbeat sidecar, every 10 s. The loop writes HEARTBEAT at each unit boundary but may spend many
+# minutes inside one unit, and nothing under harness/ may start a thread. This shell loop dies with
+# PID 1, so it guards process death, as a daemon thread would.
 ( while :; do sleep 10; date -u +"%Y-%m-%dT%H:%M:%SZ" > "$WORK/HEARTBEAT" 2>/dev/null || true; done ) &
 
 # 6. exec: the loop is PID 1 and receives signals directly. STOP is polled at each unit boundary

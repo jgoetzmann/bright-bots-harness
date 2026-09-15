@@ -107,7 +107,7 @@ jobs:
               if (s) failingStep = s.name;
             }
 
-            // --- last 50 log lines, redacted ---------------------------------------------
+            // --- last 50 log lines, and the harness's own error lines, redacted -----------
             const redact = (line) => line
               .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, '[REDACTED:token]')
               .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '[REDACTED:token]')
@@ -115,15 +115,41 @@ jobs:
               .replace(/(Authorization\s*:\s*)(Bearer|token|Basic)\s+\S+/gi, '$1$2 [REDACTED]')
               .replace(/(https?:\/\/)[^\/\s:@]+:[^@\s]+@/g, '$1[REDACTED]@')
               .replace(/([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*)\S+/g, '$1[REDACTED]');
+            // B401/D71: the tail alone missed the one line that mattered. Issue #43's fifty lines
+            // were artifact-upload noise, and `error: triage ranking failed` sat above them. So
+            // the lines in the harness's own error forms are carried too, wherever they fell:
+            // `error:` (harness/__main__.py), `::error::` / `##[error]` (the workflows, as echoed
+            // and as Actions renders them), `rate limited` and `budget exhausted`. Skipped: the
+            // script listing Actions prints under each `##[group]Run ...`, which quotes every
+            // `echo "::error::..."` in the step whether or not it ran. Bounded in count and width.
+            const ERROR_LINE_RE = /(^|\s)error:|##\[error\]|::error::|rate limited|budget exhausted/i;
+            const ERROR_LINES_MAX = 20;
+            const ERROR_LINE_CHARS = 500;
             let tail = '(log unavailable)';
+            let errorLines = '(log unavailable)';
             if (failedJob) {
               try {
                 const r = await github.rest.actions.downloadJobLogsForWorkflowRun({ owner, repo, job_id: failedJob.id });
                 const text = typeof r.data === 'string' ? r.data : Buffer.from(r.data).toString('utf8');
                 const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
                 tail = lines.slice(-50).map(redact).join('\n');
+                const found = [];
+                let inListing = false;
+                for (const line of lines) {
+                  const body = line.replace(/^\d{4}-\d{2}-\d{2}T\S*Z\s/, '');
+                  if (body.startsWith('##[group]Run ')) { inListing = true; continue; }
+                  if (inListing) {
+                    if (body.startsWith('##[endgroup]')) inListing = false;
+                    continue;
+                  }
+                  if (ERROR_LINE_RE.test(body)) found.push(redact(body).slice(0, ERROR_LINE_CHARS));
+                }
+                errorLines = found.length
+                  ? found.slice(-ERROR_LINES_MAX).join('\n')
+                  : '(no line in the harness error forms)';
               } catch (e) {
                 tail = `(log unavailable: ${e.message})`;
+                errorLines = tail;
               }
             }
 
@@ -229,6 +255,13 @@ jobs:
               `- failing step runs before any spend: ${preSpend ? 'yes' : 'no'}`,
               `- attempts: ${attempt} of ${MAX_ATTEMPTS}${alreadyRetried ? ' (this issue has seen a retry before)' : ''}`,
               `- action: ${action}`,
+              ``,
+              `<details open><summary>error lines (redacted, the last ${ERROR_LINES_MAX} in the harness error forms)</summary>`,
+              ``,
+              '```',
+              errorLines,
+              '```',
+              `</details>`,
               ``,
               `<details><summary>last 50 log lines (redacted)</summary>`,
               ``,

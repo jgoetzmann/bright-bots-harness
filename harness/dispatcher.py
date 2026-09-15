@@ -64,7 +64,9 @@ def estimate_usd(ledger: Ledger, stage: str) -> float:
     return float(STATIC_USD[stage])
 
 
-def usage_stop(ledger: Ledger, config: Config, carry: bool = False) -> str | None:
+def usage_stop(
+    ledger: Ledger, config: Config, carry: bool = False, now: datetime | None = None
+) -> str | None:
     """The usage stop for this ledger, or ``None`` when nothing observed stops work (B206).
 
     Pure, and the single implementation of the rule: :meth:`harness.governor.Governor.
@@ -74,9 +76,12 @@ def usage_stop(ledger: Ledger, config: Config, carry: bool = False) -> str | Non
 
     ``carry=True`` is the item carried across a weekly reset: it may keep going until weekly
     usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
+
+    ``now`` expires an observation whose window has reset since (B399/D71): a 100% reading
+    stops work until its ``resets_at`` and not a second longer. Both callers pass their clock.
     """
-    weekly = ledger.weekly_utilization()
-    session = ledger.session_utilization()
+    weekly = ledger.weekly_utilization(now)
+    session = ledger.session_utilization(now)
     if weekly is not None:
         if carry:
             leeway = float(config.overrun_pct)
@@ -94,7 +99,11 @@ def usage_stop(ledger: Ledger, config: Config, carry: bool = False) -> str | Non
 
 
 def _usage_suffix(ledger: Ledger) -> str:
-    """``"; weekly 49%, session 7%"`` once both utilizations are known, else nothing (B211)."""
+    """``"; weekly 49%, session 7%"`` once both utilizations are known, else nothing (B211).
+
+    The last readings as observed, deliberately without B399's expiry: this is a report of what
+    was seen, not a decision. The stops above are the decisions, and they expire at the reset.
+    """
     weekly = ledger.weekly_utilization()
     session = ledger.session_utilization()
     if weekly is None or session is None:
@@ -143,9 +152,9 @@ def plan(
     # B209: an item carried across a weekly reset resumes before anything else, on the
     # overrun leeway rather than the weekly stop, and even outside the run window.
     carry_id = ledger.carry_issue()
-    carry_ok = carry_id is not None and usage_stop(ledger, config, carry=True) is None
+    carry_ok = carry_id is not None and usage_stop(ledger, config, carry=True, now=now) is None
 
-    stopped = usage_stop(ledger, config)
+    stopped = usage_stop(ledger, config, now=now)
     if stopped is not None and not carry_ok:
         return Plan(start=(), reason=stopped, skipped={})
 

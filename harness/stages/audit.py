@@ -249,7 +249,9 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
     # read at all. This gate was the one arriving late.
     from harness import priority
 
-    refused = priority.admit("audit", store=ctx.store, ledger=ctx.ledger, config=ctx.config)
+    refused = priority.admit(
+        "audit", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
+    )
     if refused:
         raise BudgetExhausted(refused)
 

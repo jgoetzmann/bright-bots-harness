@@ -306,6 +306,7 @@ jobs:
             runs/dispatch-plan.json
             runs/**/*.md
             runs/**/*.json
+            runs/**/*.jsonl
             runs/**/*.log
             runs/**/*.txt
             !runs/**/node_modules/**

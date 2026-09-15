@@ -13,7 +13,13 @@ from typing import Any
 
 from harness.config import environ_snapshot
 from harness.redact import redact
-from harness.runner.base import RATE_LIMIT_PATTERN, RunRequest, RunResult
+from harness.runner.base import (
+    RATE_LIMIT_PATTERN,
+    RunRequest,
+    RunResult,
+    exhausted_reset,
+    usage_rejected,
+)
 
 #: Removed from the child environment (B26). Delivery 1 is subscription-backed;
 #: a stray key would silently move the spend to the API billing pool.
@@ -21,6 +27,11 @@ STRIPPED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY",)
 
 #: How much of stderr survives into ``RunResult.error``.
 STDERR_TAIL_CHARS = 2000
+
+#: The error of a refusal that came with no words at all: the usage signal said ``rejected``
+#: and the CLI printed nothing else (D71). Better than the subtype, which on a refusal is
+#: "success".
+REFUSED_ERROR = "the subscription refused the call (rate_limit_event status: rejected)"
 
 #: Synthetic exit codes for the cases where the process never reported one.
 EXIT_TIMEOUT = 124
@@ -105,6 +116,16 @@ def parse_reset_at(text: str) -> str | None:
         unit = match.group(2).lower()
         return f"+PT{amount}H" if unit.startswith("h") else f"+PT{amount}M"
     return None
+
+
+def _refusal_reset(usage: Mapping[str, Any] | None, rejected: bool, text: str) -> str | None:
+    """The reset of a refusal: the exhausted window's own reset when the signal said
+    ``rejected`` (B396), else whatever the wording carries (B119)."""
+    if rejected:
+        found = exhausted_reset(usage)
+        if found is not None:
+            return found
+    return parse_reset_at(text)
 
 
 def _normalise_iso(raw: str) -> str:
@@ -332,31 +353,63 @@ class ClaudeCliRunner:
         stderr = _as_text(getattr(proc, "stderr", ""))
         exit_code = int(getattr(proc, "returncode", 0) or 0)
         data, usage = self.parse_stdout(stdout)
+        # D71/B396: the subscription's own verdict. When it refuses, the CLI exits 0 with
+        # `is_error: true` and `subtype: "success"`, so this is the one signal that cannot be
+        # misread. Additive (B114): without it, the wording below still classifies.
+        rejected = usage_rejected(usage)
+        reported_error = isinstance(data, dict) and bool(data.get("is_error"))
 
         if exit_code != 0:
             # B119: exhaustion is an outcome with a reset time, not a generic failure.
             combined = f"{stdout}\n{stderr}"
-            if RATE_LIMIT_PATTERN.search(combined):
+            if rejected or RATE_LIMIT_PATTERN.search(combined):
+                reset_at = _refusal_reset(usage, rejected, combined)
+                if reported_error:
+                    return self._from_json(
+                        request, data, stderr, exit_code, usage=usage, reset_at=reset_at
+                    )
                 return self._failure(
                     request,
                     exit_code,
-                    stderr or stdout,
-                    reset_at=parse_reset_at(combined),
+                    stderr or stdout or REFUSED_ERROR,
+                    reset_at=reset_at,
                     usage=usage,
                 )
             # A budget stop (D19: `subtype` error_max_budget_usd) exits 1 with a complete JSON
             # result; keep its cost, turns and reason rather than dumping the JSON as the error.
-            if isinstance(data, dict) and data.get("is_error"):
+            if reported_error:
                 return self._from_json(request, data, stderr, exit_code, usage=usage)
             return self._failure(request, exit_code, stderr or stdout, usage=usage)
 
         if not isinstance(data, dict):
+            if rejected:
+                return self._failure(
+                    request,
+                    exit_code,
+                    stderr or REFUSED_ERROR,
+                    reset_at=exhausted_reset(usage),
+                    usage=usage,
+                )
             return self._failure(
                 request,
                 exit_code,
                 stderr or "claude produced unparseable stdout",
                 usage=usage,
             )
+
+        if reported_error:
+            # B397: a refusal at exit 0. Matched against the CLI's own message only, never the
+            # whole stream: a successful reply that talks about limits is still a reply (B119).
+            message = _as_str(data.get("result")) or ""
+            if rejected or RATE_LIMIT_PATTERN.search(message):
+                return self._from_json(
+                    request,
+                    data,
+                    stderr,
+                    exit_code,
+                    usage=usage,
+                    reset_at=_refusal_reset(usage, rejected, message),
+                )
 
         return self._from_json(request, data, stderr, exit_code, usage=usage)
 
@@ -380,6 +433,7 @@ class ClaudeCliRunner:
         exit_code: int,
         *,
         usage: dict | None = None,
+        reset_at: str | None = None,
     ) -> RunResult:
         """Every JSON field is optional; a missing one is ``None`` (B28, B29)."""
         text = _as_str(data.get("result"))
@@ -390,11 +444,20 @@ class ClaudeCliRunner:
         is_error = bool(data.get("is_error", False))
         error = None
         if is_error:
-            # The CLI names the reason in `subtype` (e.g. error_max_budget_usd, D19) and often
-            # leaves stderr empty; the subtype is what a diagnose cycle or an operator needs to see.
+            # B395/D71: what the CLI SAID, first. It carries its message in `result` and often
+            # leaves stderr empty, and on a refusal the subtype is "success" -- which is how
+            # issue #43 came to read "triage ranking failed: success". Then stderr; then the
+            # subtype, which is all a budget stop (error_max_budget_usd, D19) reports.
+            message = (_as_str(data.get("result")) or "").strip()
             subtype = str(data.get("subtype") or "")
-            fallback = subtype or "claude reported is_error"
-            error = redact(stderr[-STDERR_TAIL_CHARS:]) if stderr else fallback
+            if message:
+                error = redact(message[-STDERR_TAIL_CHARS:])
+            elif stderr:
+                error = redact(stderr[-STDERR_TAIL_CHARS:])
+            elif reset_at is not None or usage_rejected(usage):
+                error = REFUSED_ERROR
+            else:
+                error = subtype or "claude reported is_error"
         return RunResult(
             ok=not is_error,
             text=text,
@@ -410,6 +473,7 @@ class ClaudeCliRunner:
                 {"raw": data},
             ),
             error=error,
+            reset_at=reset_at,
             usage=usage,
         )
 

@@ -275,6 +275,14 @@ jobs:
             echo "::error::harness discover exited ${status}"
             exit "${status}"
           fi
+          # B398/D71: a refusal from the subscription exits 0 and prints
+          # {"rate_limited_until": ...}. The ledger step below records the reset, and the next
+          # dispatch holds until it; there is nothing to propose and nothing to page anyone about.
+          until="$(jq -r '.rate_limited_until // empty' runs/discover.out 2>/dev/null || true)"
+          if [ -n "${until}" ]; then
+            echo "rate limited until ${until}; nothing proposed this run"
+            exit 0
+          fi
           ids="$(jq -r '[.created[]?] | map(tostring) | join(" ")' runs/discover.out)"
           if [ -z "${ids// }" ]; then
             echo "no discovered items to propose"
@@ -357,6 +365,7 @@ jobs:
             runs/discover.out
             runs/**/*.md
             runs/**/*.json
+            runs/**/*.jsonl
             runs/**/*.log
             runs/**/*.txt
             !runs/**/node_modules/**

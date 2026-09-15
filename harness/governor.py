@@ -172,7 +172,8 @@ class Governor:
         """
         if self.ledger is None:
             return None
-        return usage_stop(self.ledger, self.config, carry=carry)
+        # B399: through the clock, so a reading whose window has reset no longer refuses.
+        return usage_stop(self.ledger, self.config, carry=carry, now=self.clock.now())
 
     def _is_carry(self, work_item_id: int) -> bool:
         if self.ledger is None:

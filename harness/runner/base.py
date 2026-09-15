@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from harness.errors import ConfigError
 
@@ -14,10 +16,56 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 
 
 #: The CLI's usage-limit signature (D2 handoff §6.3, B119). Matched case-insensitively against
-#: stdout and stderr of a non-zero exit; a hit is an outcome with a reset time, not a failure.
+#: stdout and stderr of a non-zero exit, and against the message of an ``is_error`` result at
+#: any exit (B397/D71); a hit is an outcome with a reset time, not a failure. ``hit your ...
+#: limit`` is the CLI's newer wording.
 RATE_LIMIT_PATTERN = re.compile(
-    r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in))"
+    r"(?i)(usage limit|rate limit|too many requests|limit reached|resets? (at|in)"
+    r"|hit your (?:\w+ )?limit)"
 )
+
+#: The ``status`` a ``rate_limit_event`` carries when the subscription refused the call (D71).
+#: The CLI then exits 0 with ``is_error: true`` and ``subtype: "success"``, so neither the exit
+#: code nor the subtype says what happened; this does.
+USAGE_REJECTED = "rejected"
+
+
+def usage_rejected(usage: Mapping[str, Any] | None) -> bool:
+    """True when the usage signal says the subscription refused the call (B396)."""
+    return isinstance(usage, Mapping) and usage.get("status") == USAGE_REJECTED
+
+
+def exhausted_reset(usage: Mapping[str, Any] | None) -> str | None:
+    """When the refusal lifts: the ``resets_at`` of the window at or over 1.0 (B396).
+
+    The earliest one when several are, because that is the soonest a call can be tried again
+    and the next refusal would say so. ``None`` when no window is exhausted or none carries a
+    readable reset -- the stage then falls back to its default delay.
+    """
+    if not isinstance(usage, Mapping):
+        return None
+    found: list[tuple[datetime, str]] = []
+    for window in usage.values():
+        if not isinstance(window, Mapping):
+            continue
+        utilization = window.get("utilization")
+        if isinstance(utilization, bool) or not isinstance(utilization, (int, float)):
+            continue
+        if utilization < 1.0:
+            continue
+        raw = window.get("resets_at")
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        found.append((parsed, parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    if not found:
+        return None
+    return min(found)[1]
 
 
 @dataclass(frozen=True)
@@ -84,8 +132,15 @@ class Runner(Protocol):
 
 
 def is_rate_limited(result: RunResult) -> bool:
-    """True when a failed result is the CLI saying "come back later", not "I failed"."""
-    return result.reset_at is not None or bool(RATE_LIMIT_PATTERN.search(result.error or ""))
+    """True when a failed result is the CLI saying "come back later", not "I failed".
+
+    Three signals, any one enough: a reset time, the limit wording in the error, or (D71) a
+    failed call whose usage signal says ``rejected``. The last is additive: B114 still holds,
+    because a result without the signal is classified by the first two exactly as before.
+    """
+    if result.reset_at is not None or RATE_LIMIT_PATTERN.search(result.error or ""):
+        return True
+    return not result.ok and usage_rejected(result.usage)
 
 
 def get_runner(config: "Config") -> Runner:

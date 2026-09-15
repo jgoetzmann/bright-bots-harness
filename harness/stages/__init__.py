@@ -221,6 +221,7 @@ def run_model(
         store=ctx.store,
         ledger=ctx.ledger,
         config=ctx.config,
+        now=ctx.clock.now(),
     )
     if refused is not None:
         raise BudgetExhausted(refused)

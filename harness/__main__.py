@@ -1614,7 +1614,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     # Spelled out rather than left as "reason, or null". An operator reading this wants to know
     # whether suggested work may run, and a bare `null` reads as "no suggestion" rather than as
     # "nothing is stopping it".
-    blocked = priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config)
+    blocked = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+    )
     payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
@@ -1771,7 +1773,7 @@ def _usage_report(ctx, config, now) -> str:
     # Utilization first, and dollars in small print underneath. See `links.usage_headline`
     # for why round that way: the dollar total is an estimate nobody bills, and it hides the
     # fact that the allowance is shared with everything else this subscription does.
-    lines.extend(links.usage_headline(led, config))
+    lines.extend(links.usage_headline(led, config, now))
     lines.append("")
     lines.append(links.spend_estimate(led, config))
     lines.append("")
@@ -1794,7 +1796,7 @@ def _usage_report(ctx, config, now) -> str:
         lines.append(f"- …and {len(rows) - 10} more")
     lines.append("")
 
-    blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config)
+    blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config, now=now)
     lines.append("**Next**")
     if halt is not None:
         lines.append(
@@ -1813,7 +1815,7 @@ def _usage_report(ctx, config, now) -> str:
         lines.append(f"- suggested work: {blocked or 'admitted'}")
     # The other gate denominated in the allowance. Reported for the same reason: a maintainer
     # whose audit was declined has to be able to find out why without reading the source.
-    audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config)
+    audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config, now=now)
     lines.append(f"- audits: {audit_blocked or 'admitted'}")
     return "\n".join(lines)
 
@@ -3034,7 +3036,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BUDGET
     except RateLimited as exc:
         # B120: the stage already returned the item to its prior state.
-        print(f"rate limited until {exc.reset_at or 'unknown'}")
+        if _wants_json(args):
+            # B398/D71: `--json` promises a JSON document on stdout, and discover.yml tees it
+            # into a file jq reads. A bare line there made jq fail under `set -e`, so a refusal
+            # that exits 0 still turned the step red.
+            print(json.dumps({"rate_limited_until": exc.reset_at}, indent=2))
+        else:
+            print(f"rate limited until {exc.reset_at or 'unknown'}")
         return EXIT_OK
     except ForkDiverged as exc:
         print(f"fork diverged: {exc}", file=sys.stderr)

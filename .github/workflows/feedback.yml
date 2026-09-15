@@ -319,6 +319,7 @@ jobs:
             runs/sweep.jsonl
             runs/**/*.md
             runs/**/*.json
+            runs/**/*.jsonl
             runs/**/*.log
             runs/**/*.txt
             !runs/**/node_modules/**

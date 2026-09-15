@@ -122,6 +122,28 @@ def _normalise_usage(usage: dict, now_iso: str = "") -> dict:
     return stored
 
 
+def window_has_reset(window: object, now: datetime | str) -> bool:
+    """True once ``now`` is at or past the window's own ``resets_at`` (B399/D71).
+
+    An observation describes its window until that window resets, and nothing after. Without
+    this, a 100% reading outlived its reset: the stop it caused refused the very call that
+    would have brought a fresh reading, and only the harness's own weekly roll -- on a different
+    day and hour from the subscription's -- could lift it. ``False`` when the reset is missing
+    or unreadable: an observation with no stated end is kept, as it was.
+    """
+    if not isinstance(window, dict):
+        return False
+    raw = window.get("resets_at")
+    if not raw:
+        return False
+    try:
+        boundary = parse_iso(str(raw))
+        current = parse_iso(now) if isinstance(now, str) else as_utc(now)
+    except ValueError:
+        return False
+    return current >= boundary
+
+
 def _empty_cursors() -> dict:
     return {"notifications_last_seen": None, "seen_comment_ids": [], "keyword_denied": {}}
 
@@ -268,7 +290,7 @@ class Ledger:
         value = window.get("resets_at")
         return str(value) if value else None
 
-    def _utilization(self, name: str) -> float | None:
+    def _utilization(self, name: str, now: datetime | str | None = None) -> float | None:
         usage = self.window.get("usage")
         if not isinstance(usage, dict):
             return None
@@ -283,15 +305,19 @@ class Ledger:
         window = usage.get(name)
         if not isinstance(window, dict):
             return None
+        if now is not None and window_has_reset(window, now):
+            return None
         return _fraction(window.get("utilization"))
 
-    def weekly_utilization(self) -> float | None:
-        """The seven-day utilization as a fraction; ``None`` when it predates this window."""
-        return self._utilization("seven_day")
+    def weekly_utilization(self, now: datetime | str | None = None) -> float | None:
+        """The seven-day utilization as a fraction; ``None`` when it predates this window, or
+        (given ``now``) when that window has reset since it was observed (B399)."""
+        return self._utilization("seven_day", now)
 
-    def session_utilization(self) -> float | None:
-        """The five-hour utilization as a fraction; ``None`` when it predates this window."""
-        return self._utilization("five_hour")
+    def session_utilization(self, now: datetime | str | None = None) -> float | None:
+        """The five-hour utilization as a fraction; ``None`` when it predates this window, or
+        (given ``now``) when that window has reset since it was observed (B399)."""
+        return self._utilization("five_hour", now)
 
     # -- carry (D3, B214/B215) -------------------------------------------------------------
 

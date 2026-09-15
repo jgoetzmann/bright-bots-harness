@@ -267,11 +267,12 @@ on the way.
 | 1. `/harness work` is heard | minutes on the inbox, up to three hours on brightboost. It opens a `stage:queued` item and **only queues it** |
 | 2. The plan | the next `discover` run — **11:07 UTC every day** — proposes everything queued, unless Jack runs one sooner |
 | 3. Gate 1 | whenever Jack merges the proposal |
-| 4. The code | only inside the run window, **11:00 to 15:00 UTC every day** (3–4 a.m. to 7–8 a.m. Pacific, depending on daylight time). A merge inside it is built straight away; a merge outside it waits for the next morning's 11:23 UTC run. Only Jack can make it sooner (`--force`, or starting the build by hand) |
+| 4. The code | only inside the run window, **11:00 to 15:00 UTC every day** (3–4 a.m. to 7–8 a.m. Pacific, depending on daylight time). A merge inside it is built straight away; a merge outside it waits for the next morning's 11:23 UTC run. Only Jack can make it sooner: `--force` together with a merge, or starting the build by hand |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
-Each scheduled build run starts one item, and while the window is open the three-hourly sweep also
-builds everything approved, one after another. So the window is not a fixed number of slots: what
+Each scheduled build run starts one item, and on weekdays the 12:41 UTC sweep, inside the window,
+also builds everything approved, one after another. So the window is not a fixed number of
+slots: what
 limits a busy morning is the subscription session, which the harness stops using at 80%.
 
 **A request, worst case, nothing stopped and nothing ahead of it:** queued just after the 11:07 UTC

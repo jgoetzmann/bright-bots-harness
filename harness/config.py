@@ -31,6 +31,7 @@ __all__ = [
     "RUN_WINDOW_PATTERN",
     "WINDOW_DAYS",
     "in_run_window",
+    "is_daily_window",
     "run_window_label",
     "EFFORT_LEVELS",
 ]
@@ -772,6 +773,13 @@ def in_run_window(config: Config, now: datetime) -> bool:
     if start[0] <= end[0]:
         return start[0] <= current < end[0]
     return current >= start[0] or current < end[0]
+
+
+def is_daily_window(config: Config) -> bool:
+    """True when both run-window endpoints are ``daily`` (D72, B413)."""
+    start = _window_minute(getattr(config, "run_window_start", ""))
+    end = _window_minute(getattr(config, "run_window_end", ""))
+    return start is not None and end is not None and start[1] and end[1]
 
 
 def run_window_label(config: Config) -> str:

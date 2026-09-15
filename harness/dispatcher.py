@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Collection, Sequence
 
 from harness.clock import iso
-from harness.config import Config, in_run_window, run_window_label
+from harness.config import Config, in_run_window, is_daily_window, run_window_label
 from harness.ledger import Ledger
 
 __all__ = ["STATIC_USD", "Candidate", "Plan", "plan", "usage_stop", "estimate_usd"]
@@ -37,7 +37,7 @@ class Candidate:
     depends_on: tuple[int, ...] = ()
     stage: str = "implement"
     created_at: str = ""
-    #: B285/D62: the operator said start this now rather than on Monday. Exactly like the B209
+    #: B285/D62: the operator said start this now rather than later. Exactly like the B209
     #: carry, and for the same reason -- the window governs when the harness chooses work on
     #: its own, not whether work may happen when a person has asked for it.
     forced: bool = False
@@ -154,9 +154,17 @@ def plan(
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
     # B209: an item carried across a weekly reset resumes before anything else, on the
-    # overrun leeway rather than the weekly stop, and even outside the run window.
+    # overrun leeway rather than the weekly stop, and even outside a weekly run window.
+    # B413/D72: not outside a daily one. A daily window is one subscription session a day, a
+    # carry is what that session's stop leaves behind, and the leeway binds only on a weekly
+    # reading -- so exempting it would resume the item in the operator's own daytime session.
+    window_open = in_run_window(config, now)
     carry_id = ledger.carry_issue()
-    carry_ok = carry_id is not None and usage_stop(ledger, config, carry=True, now=now) is None
+    carry_ok = (
+        carry_id is not None
+        and (window_open or not is_daily_window(config))
+        and usage_stop(ledger, config, carry=True, now=now) is None
+    )
 
     stopped = usage_stop(ledger, config, now=now)
     if stopped is not None and not carry_ok:
@@ -190,7 +198,6 @@ def plan(
 
     # B210/B285: outside the window only the carry item and forced items may run. When nothing
     # can, the plan says so.
-    window_open = in_run_window(config, now)
     forced_ids = {int(c.issue) for c in candidates if c.forced}
     if not window_open and not carry_ok and not forced_ids:
         return Plan(start=(), reason=_window_reason(config), skipped={})

@@ -19,7 +19,7 @@ from harness import __version__, keywords, links, verify_pin
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
-from harness.config import in_run_window, load_config, run_window_label
+from harness.config import in_run_window, is_daily_window, load_config, run_window_label
 from harness.context import build_context
 from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
 from harness.errors import (
@@ -1257,7 +1257,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         # stops are the governor's, and every stage still passes through them.
         if not in_run_window(config, listing_ctx.clock.now()):
             window = _window_text(config)
-            item_ids = [i for i in item_ids if carry is not None and int(i) == int(carry)]
+            # B413/D72: a daily window holds the carried item back too (see dispatcher.plan).
+            carry_exempt = carry is not None and not is_daily_window(config)
+            item_ids = [i for i in item_ids if carry_exempt and int(i) == int(carry)]
             if not item_ids:
                 _emit(
                     {
@@ -1836,7 +1838,7 @@ def _forced(ctx, cmd, item_id: int | None) -> str:
         return ""
     # The exemption itself, not just the sentence about it. Without these two lines the reply
     # claimed the item was window-exempt while `ledger.forced()` stayed empty, so the dispatcher
-    # never saw it and a forced item waited for Monday exactly like an unforced one.
+    # never saw it and a forced item waited for the next window exactly like an unforced one.
     ctx.ledger.force(int(item_id))
     ctx.store.append_event(
         int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"

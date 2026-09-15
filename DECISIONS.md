@@ -1296,7 +1296,7 @@ and its reset comes from `resolve_reset`, which returns `now + 1h` when the runn
 - Expiry needs a stated `resets_at`. A reading without one is kept, and a caller that passes no
   clock sees what it saw before.
 
-## D72 / B409–B412 — one subscription session a day, opened before dawn
+## D72 / B409–B413 — one subscription session a day, opened before dawn
 
 **The change of plan.** On 2026-09-15 the operator moved the Claude account to an enterprise plan.
 It has no weekly limit. It has a five-hour session limit about the size of a Pro plan's, and that
@@ -1317,22 +1317,33 @@ weekly reset that no longer exists and left six days of sessions unused.
   80. `discover.yml` runs at `7 11 * * *` and `implement.yml` at `23 11-14 * * *`; a test fails the
   build when a daily window stops containing those crons, so the schedule and the window cannot
   drift apart the way D3 warned they could.
+- **B413.** Outside a daily window the carried item waits too, in the plan and in `harness run`.
+  D33 exempted it because a weekly window closed at the weekly reset and the carry was that week's
+  unfinished work. Under a daily window the carry is what a session stop left behind, and
+  `OVERRUN_PCT` binds only on a weekly reading, so the exemption would resume the item at the next
+  feedback sweep, in the operator's daytime session. A weekly window keeps D33's behaviour.
+  (Found by the adversarial review of the first cut.)
 
-**Why these hours.** GitHub cron is UTC only. 11:00 UTC is 04:00 PDT and 03:00 PST, so the session
-opens between 3 and 4 a.m. Pacific all year and nothing moves at a clock change. Discover's triage
-call at 11:07 opens the session; if it makes no call, the 11:23 implement run does. Starts end at
-15:00, an hour before that session ends, because an implement run may take up to its 120-minute
-timeout: the typical item finishes inside the session, and the worst case runs into the next one
-by under an hour. 80% leaves the operator a fifth of the session if they are up early.
+**Why these hours.** GitHub cron is UTC only. 11:00 UTC is 04:00 PDT and 03:00 PST, so the window
+opens between 3 and 4 a.m. Pacific all year and nothing moves at a clock change. A session opens
+with its first model call. That is discover's triage call at 11:07 when something is queued or the
+suggested pool is admitted, and otherwise the first item a build starts. On a day with neither, the
+session opens later — a gate-1 merge at 14:50 UTC starts a build whose session runs to 19:50 UTC —
+and this schedule does not prevent that. Starts end at 15:00 because an implement run may take up
+to its 120-minute timeout: in a session discover opened, the typical item finishes inside it and
+the worst case overruns by under an hour. 80% leaves the operator a fifth of the session if they
+are up early.
 
 **What did not change.**
 
 - `WEEKLY_USAGE_STOP_PCT` stays 90. With no seven-day reading it never binds. If the token in
   Actions still belongs to a weekly-limited account, it keeps protecting that account.
 - `feedback.yml` (`41 */3 * * 1-5`), its watchdog and the heartbeat keep their schedules. Outside
-  the window the sweep starts no item, because `harness run` without `--item` is window-gated. It
-  spends only on a `/harness` command a person sent, which should not wait for the next morning.
-- The carry path and `OVERRUN_PCT` are untouched.
+  the window the sweep starts no item, because `harness run` without `--item` is window-gated —
+  with B413, the carried item included. It spends only on a `/harness` command a person sent,
+  which should not wait for the next morning.
+- `--force` works as before, but every scheduled run is now inside the window, so the exemption
+  matters only for a gate-1 merge or a manual dispatch outside it.
 
 **Rejected.**
 

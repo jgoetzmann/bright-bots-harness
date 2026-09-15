@@ -1991,6 +1991,37 @@ def test_B210_run_outside_the_run_window_starts_nothing_and_names_the_window(
     assert not list((tmp_path / "packages").iterdir())
 
 
+def test_B413_run_outside_a_daily_window_holds_the_carried_item_back(
+    tmp_path, monkeypatch, capsys
+):
+    """B413 (D72): `harness run` without `--item` is what feedback's sweep and a merge-triggered
+    implement run call. Outside a daily window it starts nothing, the carried item included,
+    because under a daily window a carry is what the session stop left behind."""
+    at = datetime(2026, 9, 2, 18, 41, tzinfo=timezone.utc)   # Wednesday 11:41 PDT
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, RUN_WINDOW_START="daily 11:00", RUN_WINDOW_END="daily 15:00")
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_spec(tmp_path, item_id)
+    write_carry_ledger(tmp_path, carry_issue=item_id)
+    align_ledger_window(tmp_path, at)
+    freeze_run_clock(monkeypatch, at)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_everything(monkeypatch)  # a clone or a request here would be the bug
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"a closed window is exit 0; got {rc}: {captured}"
+    assert "outside run window (daily 11:00-15:00 UTC); nothing started" in captured.out, (
+        captured.out
+    )
+    assert ran == [], f"the carried item may not start outside a daily window: {ran}"
+    assert item_state(tmp_path, item_id) == "approved"
+
+
 def test_B209_run_inside_the_run_window_starts_the_approved_item(
     tmp_path, monkeypatch, capsys
 ):

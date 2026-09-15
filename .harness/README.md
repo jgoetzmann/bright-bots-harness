@@ -31,9 +31,9 @@ DECISIONS D31). Full procedure in [`docs/OPERATIONS.md`](../docs/OPERATIONS.md) 
 | --- | --- | --- | --- |
 | `WEEKLY_USAGE_STOP_PCT` | `90` | `0 < x <= 100` | Nothing new starts once the seven-day utilization reaches this. Lower it to leave more of the week for interactive use; raise it to spend nearer the wall. |
 | `SESSION_USAGE_STOP_PCT` | `70` | `0 < x <= 100` | The same for the rolling five-hour window. The tighter of the two stops wins. This file sets `80`: the harness has one session a day to itself (D72). |
-| `OVERRUN_PCT` | `10` | `0 <= x < WEEKLY_USAGE_STOP_PCT` | Leeway granted to a **carried** item after a weekly reset, so a half-finished branch reaches a delivery PR instead of being abandoned. Applies to that one item; everything else still waits for `WEEKLY_USAGE_STOP_PCT`. |
+| `OVERRUN_PCT` | `10` | `0 <= x < WEEKLY_USAGE_STOP_PCT` | Leeway granted to a **carried** item after a weekly reset, so a half-finished branch reaches a delivery PR instead of being abandoned. Applies to that one item; everything else still waits for `WEEKLY_USAGE_STOP_PCT`. Under a daily run window the carried item also waits for the window, and without a weekly reading the leeway never binds (D72). |
 | `RUN_WINDOW_START` | `mon 08:00` | `^(mon\|tue\|wed\|thu\|fri\|sat\|sun\|daily) HH:MM$`, UTC | Opens the window in which new items may start: weekly with a weekday, every day with `daily` (D72). This file sets `daily 11:00`. |
-| `RUN_WINDOW_END` | `tue 20:00` | same shape and the same kind as the start; a weekly window may wrap past Sunday, a daily one past midnight | Closes it. This file sets `daily 15:00`, an hour before the session discover opens at 11:07 ends. Both empty = always open. |
+| `RUN_WINDOW_END` | `tue 20:00` | same shape and the same kind as the start; a weekly window may wrap past Sunday, a daily one past midnight | Closes it. This file sets `daily 15:00`, an hour before a session opened by discover's 11:07 call would end. Both empty = always open. |
 
 Changing `RUN_WINDOW_START`/`RUN_WINDOW_END` does **not** move the schedule: the crons in
 `.github/workflows/implement.yml` are the times GitHub wakes the job up, and the window is what the

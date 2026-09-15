@@ -3,7 +3,7 @@
 Before this, the dispatcher governed exactly one thing: which *approved items* may start. Every
 other model call — a sweep-triggered `revise`, a `propose` from `discover.yml`, and now `ask` and
 `audit` — happened the moment its trigger fired, ordered by nothing but when the comment arrived.
-A busy Monday of review comments could spend the session's allowance on revisions before the run
+A busy morning of review comments could spend the session's allowance on revisions before the run
 window's real work began, and the usage stops only found out afterwards. They are honest, but they
 are a brake, not a steering wheel.
 

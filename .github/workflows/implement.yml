@@ -1,27 +1,22 @@
-# implement.yml — three runs inside the subscription's weekly window, on dispatch, and on a
-# merged proposal: drain the approved queue.
+# implement.yml — four runs inside the daily run window, on dispatch, and on a merged proposal:
+# drain the approved queue.
 # Spends capacity (implement is the expensive stage). Handoff §7.2; RUN-DECISIONS-D2 §15,
-# RUN-DECISIONS-D3 "Workflows".
+# RUN-DECISIONS-D3 "Workflows", D72.
 # Frozen step order: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
 name: implement
 
 on:
   schedule:
-    # RUN-DECISIONS-D3 "Workflows": the schedule follows the run window
-    # (RUN_WINDOW_START=mon 08:00 UTC → RUN_WINDOW_END=tue 20:00 UTC) instead of grinding
-    # round the clock. Three passes: Monday morning/afternoon/evening, Tuesday overnight and
-    # morning, and one wrap-up after the weekly reset. Minutes are non-zero and non-round (B124).
+    # D72: the schedule follows the run window (RUN_WINDOW_START=daily 11:00 UTC →
+    # RUN_WINDOW_END=daily 15:00 UTC). The subscription has no weekly limit, only a five-hour
+    # session shared with the operator, so the harness takes one session a day while the
+    # operator sleeps: discover opens it at 11:07 and these four passes start work until the
+    # window closes. Starts end an hour before the session does so a late item can finish.
+    # B412 fails the build if a row leaves the window. Minutes are non-zero and non-round (B124).
     #
-    # DST drift, deliberately not corrected: GitHub cron is always UTC and never shifts, but the
-    # account's weekly reset is quoted in Pacific time (13:00 PT). While Pacific is on daylight
-    # time (PDT, UTC−7) that is 20:00 UTC and the last row fires 23 minutes after the reset, as
-    # intended. When Pacific returns to standard time (PST, UTC−8) the reset moves to 21:00 UTC
-    # and the same row fires 37 minutes *before* it — the wrap-up then sees the old window, spends
-    # nothing extra, and the next Monday row picks the new one up. The cost is one skipped wrap-up
-    # per winter; the fix, if it ever matters, is to move this row and RUN_WINDOW_END together.
-    - cron: "17 8,14,20 * * 1"    # Mon 08:17 / 14:17 / 20:17 UTC — the window opens Mon 08:00
-    - cron: "17 2,8,14 * * 2"     # Tue 02:17 / 08:17 / 14:17 UTC — the run-up to the reset
-    - cron: "23 20 * * 2"         # Tue 20:23 UTC — the wrap-up run after the weekly reset
+    # DST: GitHub cron is always UTC. 11:00 UTC is 04:00 PDT and 03:00 PST, so the session opens
+    # between 3 and 4 a.m. Pacific all year; there is nothing to move when the clocks change.
+    - cron: "23 11-14 * * *"      # 11:23 / 12:23 / 13:23 / 14:23 UTC, every day
   workflow_dispatch:
     inputs:
       issue:

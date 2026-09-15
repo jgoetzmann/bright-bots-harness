@@ -27,9 +27,11 @@ __all__ = [
     "CLASSIC_TOKEN_SHAPE",
     "CONFIG_JSON_KEYS",
     "CONFIG_JSON_RELATIVE",
+    "DAILY",
     "RUN_WINDOW_PATTERN",
     "WINDOW_DAYS",
     "in_run_window",
+    "run_window_label",
     "EFFORT_LEVELS",
 ]
 
@@ -171,8 +173,13 @@ _TOKEN_SHAPES: tuple[re.Pattern[str], ...] = (FINE_GRAINED_TOKEN_SHAPE, CLASSIC_
 #: The run window's three-letter UTC weekday names, in ``datetime.weekday()`` order (D3).
 WINDOW_DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
-#: A run-window endpoint: a lowercase weekday and a 24-hour UTC time (D3 config table).
-RUN_WINDOW_PATTERN = re.compile(r"^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):[0-5]\d$")
+#: A run-window endpoint: a lowercase weekday, or ``daily``, and a 24-hour UTC time (D3, D72).
+RUN_WINDOW_PATTERN = re.compile(
+    r"^(mon|tue|wed|thu|fri|sat|sun|daily) ([01]\d|2[0-3]):[0-5]\d$"
+)
+
+#: The endpoint word for a window that repeats every day instead of once a week (D72).
+DAILY = "daily"
 
 #: Minutes in one day, for the wrap-aware window comparison.
 _DAY_MINUTES = 24 * 60
@@ -322,14 +329,15 @@ def _require_repo(values: Mapping[str, str], key: str) -> str:
 
 
 def _require_window(values: Mapping[str, str], key: str) -> str:
-    """One run-window endpoint: ``"mon 08:00"`` (UTC) or ``""`` for "no window" (D3)."""
+    """One run-window endpoint: ``"mon 08:00"`` or ``"daily 11:00"`` (UTC), or ``""`` for "no
+    window" (D3, D72)."""
     raw = values.get(key, "").strip()
     if not raw:
         return ""
     if RUN_WINDOW_PATTERN.match(raw) is None:
         raise ConfigError(
-            f"{key} must be a UTC weekday and time such as 'mon 08:00', or empty; "
-            f"got {values.get(key, '')!r}"
+            f"{key} must be a UTC weekday or 'daily' and a time, such as 'mon 08:00' or "
+            f"'daily 11:00', or empty; got {values.get(key, '')!r}"
         )
     return raw
 
@@ -598,6 +606,14 @@ def load_config(
             "RUN_WINDOW_START and RUN_WINDOW_END must both be set or both be empty; got "
             f"RUN_WINDOW_START={run_window_start!r}, RUN_WINDOW_END={run_window_end!r}"
         )
+    # B409: "mon 08:00 to daily 15:00" has no single honest reading, so it is refused.
+    if run_window_start and (
+        run_window_start.startswith(f"{DAILY} ") != run_window_end.startswith(f"{DAILY} ")
+    ):
+        raise ConfigError(
+            "RUN_WINDOW_START and RUN_WINDOW_END must both be 'daily' or both name a weekday; "
+            f"got RUN_WINDOW_START={run_window_start!r}, RUN_WINDOW_END={run_window_end!r}"
+        )
 
     if permission_tier == 2:
         if store_backend != "github":
@@ -720,35 +736,54 @@ def load_config(
     return config
 
 
-def _window_minute(point: str) -> int | None:
-    """``"mon 08:00"`` -> the minute of the UTC week; ``None`` when unparseable."""
+def _window_minute(point: str) -> tuple[int, bool] | None:
+    """``"mon 08:00"`` -> ``(minute of the UTC week, False)``; ``"daily 11:00"`` -> ``(minute of
+    the UTC day, True)``; ``None`` when unparseable."""
     text = (point or "").strip().lower()
     if not text or RUN_WINDOW_PATTERN.match(text) is None:
         return None
     day, _, clock = text.partition(" ")
     hour, _, minute = clock.partition(":")
-    return WINDOW_DAYS.index(day) * _DAY_MINUTES + int(hour) * 60 + int(minute)
+    of_day = int(hour) * 60 + int(minute)
+    if day == DAILY:
+        return of_day, True
+    return WINDOW_DAYS.index(day) * _DAY_MINUTES + of_day, False
 
 
 def in_run_window(config: Config, now: datetime) -> bool:
-    """True when ``now`` (UTC) falls inside ``[run_window_start, run_window_end)`` (D3).
+    """True when ``now`` (UTC) falls inside ``[run_window_start, run_window_end)`` (D3, D72).
 
-    Pure and wrap-aware: a window whose end is earlier in the week than its start runs past
-    Sunday into the next week. Both endpoints empty means the window is always open, and so
-    does an endpoint the harness cannot parse — the window narrows what runs, it never
-    invents a stop.
+    Pure and wrap-aware: a weekly window whose end is earlier in the week than its start runs
+    past Sunday into the next week, and a daily one whose end is earlier in the day runs past
+    midnight (B410). Both endpoints empty means the window is always open, and so does an
+    endpoint the harness cannot parse, or a weekday paired with ``daily`` — the window narrows
+    what runs, it never invents a stop.
     """
     start = _window_minute(getattr(config, "run_window_start", ""))
     end = _window_minute(getattr(config, "run_window_end", ""))
-    if start is None or end is None:
+    if start is None or end is None or start[1] != end[1]:
         return True
     moment = as_utc(now)
-    # 0..10079: weekday() is 0..6, so this cannot reach a week. The wrap past Sunday is the
-    # ``start > end`` branch below, not arithmetic here.
-    current = moment.weekday() * _DAY_MINUTES + moment.hour * 60 + moment.minute
-    if start <= end:
-        return start <= current < end
-    return current >= start or current < end
+    of_day = moment.hour * 60 + moment.minute
+    # A daily window compares the minute of the day; a weekly one the minute of the week,
+    # 0..10079 (weekday() is 0..6, so this cannot reach a week). The wrap past Sunday or past
+    # midnight is the ``start > end`` branch below, not arithmetic here.
+    current = of_day if start[1] else moment.weekday() * _DAY_MINUTES + of_day
+    if start[0] <= end[0]:
+        return start[0] <= current < end[0]
+    return current >= start[0] or current < end[0]
+
+
+def run_window_label(config: Config) -> str:
+    """``mon 08:00-tue 20:00`` or ``daily 11:00-15:00`` (B411); ``""`` when always open."""
+    start = str(getattr(config, "run_window_start", "") or "").strip()
+    end = str(getattr(config, "run_window_end", "") or "").strip()
+    if not start or not end:
+        return ""
+    prefix = f"{DAILY} "
+    if start.startswith(prefix) and end.startswith(prefix):
+        return f"{start}-{end[len(prefix):]}"
+    return f"{start}-{end}"
 
 
 def github_token() -> str:

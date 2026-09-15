@@ -20,7 +20,7 @@ Five kinds of thing arrive. Four of them want something from you.
 
 | What arrives | Where | What you do |
 |---|---|---|
-| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run — Sunday 07:17 UTC, unless you dispatch one sooner. Relabel or comment `/harness stop` if you disagree with the pick |
+| An issue labelled `stage:queued` | this repo | Nothing. It becomes a proposal on the next `discover` run — 11:07 UTC every day, unless you dispatch one sooner. Relabel or comment `/harness stop` if you disagree with the pick |
 | A PR adding `proposals/<issue>-<slug>.md` | this repo | **Gate 1.** Merge it to approve. Close it to withhold approval. This is the cheapest place to disagree |
 | A PR from a `jgoetzmann-bot:harness/…` branch | the product repo | **Gate 2.** Review it and merge, or steer it with a `/harness` comment. The harness cannot merge it |
 | A comment on issue #2, every Monday ~09:05 UTC | this repo | Skim it. It carries the queue depth per label, the last observed subscription usage, the last successful run of each workflow, and how far the fork has drifted from upstream. **Its absence is the alarm** |
@@ -224,8 +224,8 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 
 | Workflow | Runs on its own | Inputs | What it does |
 |---|---|---|---|
-| `discover` | `17 7 * * 0` — Sunday 07:17 UTC | `mode`, `target`, `lens`, `ignore_allowlist` | Finds work and proposes every item it created, in one run. Spends |
-| `implement` | `17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2` — inside the run window; and on any push to `proposals/**` on `main` | `issue` | Approves merged proposals, asks the dispatcher, then implements, packages and delivers. The expensive one |
+| `discover` | `7 11 * * *` — 11:07 UTC every day, opening the harness's session | `mode`, `target`, `lens`, `ignore_allowlist` | Finds work and proposes every item it created, in one run. Spends |
+| `implement` | `23 11-14 * * *` — inside the daily run window; and on any push to `proposals/**` on `main` | `issue` | Approves merged proposals, asks the dispatcher, then implements, packages and delivers. The expensive one |
 | `feedback` | `41 */3 * * 1-5`; and on any `/harness` comment here | none | Sweeps notifications for keyword commands, then reconciles items stranded in `stage:building` |
 | `heartbeat` | `5 9 * * 1` — Monday 09:05 UTC | none | Posts the weekly comment on issue #2. Spends nothing: fake backend, tier 0, no model call |
 | `selftest` | every pull request here | none | Checks `.harness/PIN` when present, then the whole pytest suite under `BACKEND=fake`, on Linux and Windows. No secrets |
@@ -237,7 +237,7 @@ Actions → pick the workflow on the left → **Run workflow** → choose the br
 
 **The sweep applies no label filter.** `--mode assigned` queues every open issue assigned to the account, `intern-starter` and friends included. The exclusion for `intern-starter`, `large` and `architecture` lives in triage's candidate filter, which this mode does not call — so in triage an assigned issue survives the allowlist but those three labels still exclude it, while the sweep would queue it anyway. Treat the assignment itself as the decision: do not assign the bot to an issue you would not hand it.
 
-**It only queues.** The proposal comes from the next `discover` run, which ranks the queue and proposes every item in it — so an assigned issue becomes a proposal on the Sunday cron unless you dispatch `discover` by hand.
+**It only queues.** The proposal comes from the next `discover` run, which ranks the queue and proposes every item in it — so an assigned issue becomes a proposal on the next morning's 11:07 UTC cron unless you dispatch `discover` by hand.
 
 To make either happen now rather than on the schedule, run `feedback` from the Actions tab, or `discover` with `mode: assigned`:
 
@@ -260,7 +260,7 @@ That yields an issue here labelled `stage:queued`, then a proposal PR against th
 
 ### Triage, and the `harness-ok` pool
 
-`mode: triage` (the default, and what the Sunday 07:17 UTC schedule runs) has two halves, and the order matters:
+`mode: triage` (the default, and what the daily 11:07 UTC schedule runs) has two halves, and the order matters:
 
 - If **anything** here is already `stage:queued`, triage ranks those and reads nothing from the product repo. No new issues are created; the ids that went in come back, best first, and the same run proposes each.
 - Otherwise it may **suggest**, but only when nothing anybody asked for is outstanding — no requested, assigned or promoted item queued, planning, approved, building, packaged, revising, or waiting at either gate (`priority.OUTSTANDING_STATES`) — and weekly subscription usage is under `SUGGEST_MIN_HEADROOM_PCT` (50), or has never been observed. An open delivery PR counts as outstanding; brightboost#868 does not, because its work item is closed and predates the `stage:` labels. When both hold, it looks at brightboost and drops issues assigned to **someone other than the machine account**, issues claimed by an in-flight branch or PR title, issues labelled `intern-starter`, `large` or `architecture`, issues that have ever had a work item here, in any state (B332) — and everything **not** carrying the allowlist label `harness-ok` (`ALLOWLIST_LABEL` in `.env`). An issue assigned to `@jgoetzmann-bot` survives and needs no allowlist label.
@@ -376,19 +376,19 @@ that is not an error. No real model call has yet reported utilization into this 
 
 ### The run window is a separate thing
 
-`RUN_WINDOW_START=mon 08:00` to `RUN_WINDOW_END=tue 20:00`, UTC. Outside it no new item starts and the plan reads:
+`RUN_WINDOW_START=daily 11:00` to `RUN_WINDOW_END=daily 15:00`, UTC — 3–4 a.m. to 7–8 a.m. Pacific, depending on daylight time. Outside it no new item starts and the plan reads:
 
 ```json
 {
   "start": [],
-  "reason": "outside run window (mon 08:00-tue 20:00 UTC)",
+  "reason": "outside run window (daily 11:00-15:00 UTC)",
   "skipped": {}
 }
 ```
 
 The window is not the schedule. The crons in `implement.yml` are when GitHub wakes the job up; the window is what the dispatcher enforces once it is awake. Move both together or the job wakes to find nothing eligible. `implement.yml`'s `issue` input and `harness run --item N` bypass the window deliberately; **nothing** bypasses the usage stops.
 
-The window closes at this account's weekly reset (Tue 20:00 UTC = 13:00 PT), which is why the last cron is a wrap-up 23 minutes after it.
+The window sits inside one five-hour subscription session a day, which `discover` opens at 11:07 UTC. Starts end at 15:00 so an item started late can finish before that session does, and `SESSION_USAGE_STOP_PCT` (80) stops new calls before it is spent (D72).
 
 ### Carry and handoff
 

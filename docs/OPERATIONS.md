@@ -53,7 +53,7 @@ harness doctor            # every config key with its value; exit 3 names any mi
 `harness dispatch` is pure: run twice against an unchanged ledger it prints byte-identical
 plans. Its `reason` string is the fastest diagnosis in the system — `halted`, `reserve`,
 `rate limited until …`, `weekly usage 91% >= 90%`, `session usage 72% >= 70%`,
-`carry leeway 10% reached`, `outside run window (mon 08:00-tue 20:00 UTC)`, or
+`carry leeway 10% reached`, `outside run window (daily 11:00-15:00 UTC)`, or
 `budget N% remaining, k of max n slots` (with `; weekly 49%, session 7%` appended when the
 subscription's utilization is known). The last four are §13.
 
@@ -128,8 +128,8 @@ reconciliation step that returns such items to their previous state label (B147,
 tick that reaches it is `feedback.yml`'s: its last step before the ledger commit is a bare
 `harness run`, there for exactly this, on `41 */3 * * 1-5` — every three hours, Monday to
 Friday. `implement.yml` reconciles too, but only on a tick where the dispatcher gives it an
-item to start, and its three crons are Monday and Tuesday only (§13.3) — so on a Wednesday
-`feedback.yml` is the one that reaches it.
+item to start, and its crons fall only inside the 11:00–15:00 UTC window (§13.3) — so at
+other hours `feedback.yml` is the one that reaches it.
 
 To do it now:
 
@@ -558,21 +558,25 @@ harness for the same allowance.
 
 ### 13.3 The run window
 
-`RUN_WINDOW_START=mon 08:00` and `RUN_WINDOW_END=tue 20:00` are UTC, lowercase three-letter weekday,
-and may wrap past Sunday. Outside the window **no new item starts**; the plan's reason is
-`outside run window (mon 08:00-tue 20:00 UTC)`. Both keys empty means always open.
+`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 15:00`
+(D72). Both ends are UTC and take either a lowercase three-letter weekday — a weekly window that may
+wrap past Sunday, which is the `.env.example` default `mon 08:00` → `tue 20:00` — or `daily`, a
+window that repeats every day and may wrap past midnight. Mixing the two is a startup error.
+Outside the window **no new item starts**; the plan's reason is
+`outside run window (daily 11:00-15:00 UTC)`. Both keys empty means always open.
 
-The window is not the schedule. `.github/workflows/implement.yml` carries three crons —
-`17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2` — which are when GitHub wakes the job up; the
-window is what the dispatcher enforces once it is awake. **Move both together**, or the job wakes to
-find nothing eligible and burns a minute of Actions time saying so.
+The window is not the schedule. `.github/workflows/discover.yml` carries `7 11 * * *` and
+`implement.yml` carries `23 11-14 * * *`: the times GitHub wakes the jobs up. The window is what
+the dispatcher enforces once they are awake. **Move both together**: `tests/test_invariants.py`
+(B412) fails the build when a daily window stops containing those crons.
 
-The last cron is the wrap-up run, 23 minutes after this account's weekly reset (Tue 20:00 UTC =
-13:00 PT). GitHub cron is always UTC and never shifts, while the reset is quoted in Pacific time, so
-when Pacific leaves daylight time the reset moves to 21:00 UTC and that row fires before it rather
-than after: one skipped wrap-up per winter, no spend, and the following Monday picks the new window
-up. The comment in `implement.yml` says the same thing. Correcting it means moving that row and
-`RUN_WINDOW_END` by an hour, together.
+Why these hours. The subscription has no weekly limit, only a five-hour session about the size of
+a Pro plan's, and that session is shared with your own use. Discover's triage call at 11:07 opens a
+session while you sleep, items start until 15:00, and `SESSION_USAGE_STOP_PCT` — 80 here — stops
+new calls before the session is spent. Starts end an hour before the session does because an
+implement run may take up to its 120-minute timeout. GitHub cron is always UTC; 11:00 UTC is 04:00
+PDT and 03:00 PST, so the session opens between 3 and 4 a.m. Pacific all year and there is nothing
+to move when the clocks change.
 
 `harness run --item N` bypasses the window on purpose — that is how you drive one item by hand on a
 Thursday. It does **not** bypass the usage stops.

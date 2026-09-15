@@ -40,7 +40,7 @@ the bot is *excluded* if triage considers it and *queued* if the sweep finds it 
 assignment is the decision — there is no second gate behind it on this path.
 
 It also only queues. The proposal comes from the next `discover` run, which ranks the queue and
-proposes every item in it, so an assigned issue becomes a proposal on the Sunday cron unless you
+proposes every item in it, so an assigned issue becomes a proposal the next morning unless you
 dispatch `discover` yourself.
 
 The account it looks for is derived from
@@ -233,7 +233,7 @@ proposal so the gate can be judged without opening the diff. The item moves to `
 Merging that pull request is gate 1. `implement.yml` triggers on a push to `main` touching
 `proposals/**`, reads the numeric prefix off each added or modified filename and runs `harness
 approve <n>`. The item is then `approved` and waits for the dispatcher — which, outside
-`RUN_WINDOW_START=mon 08:00` to `RUN_WINDOW_END=tue 20:00` UTC, returns an empty plan whose reason
+`RUN_WINDOW_START`/`RUN_WINDOW_END` (daily 11:00–15:00 UTC), returns an empty plan whose reason
 names the window. To start it anyway, dispatch `implement.yml` with the harness issue number in its
 `issue` input: the job then runs `harness run --item N`, which bypasses the window and only the
 window — the usage stops are the governor's and every stage still passes through them. The one other

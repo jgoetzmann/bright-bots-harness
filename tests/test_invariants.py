@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import json
 import re
 from pathlib import Path
 
@@ -470,12 +471,12 @@ ADDED_WORKFLOWS = {
 }
 ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # RUN-DECISIONS-D2 §15 / handoff §7.1 — the frozen crons. ops.yml and selftest.yml have none.
-# Delivery 3 replaced implement.yml's single every-6h cron with the three that bound the
-# Mon 08:00 -> Tue 20:00 UTC run window (RUN-DECISIONS-D3 "Workflows"), so each entry is the
-# full expected list rather than one string.
+# Delivery 3 bound implement.yml's crons to the weekly Mon 08:00 -> Tue 20:00 UTC run window
+# (RUN-DECISIONS-D3 "Workflows"); D72 moved discover and implement into the daily 11:00 -> 15:00
+# UTC window, one subscription session a day. Each entry is the full expected list.
 FROZEN_CRONS = {
-    "discover.yml": ["17 7 * * 0"],
-    "implement.yml": ["17 8,14,20 * * 1", "17 2,8,14 * * 2", "23 20 * * 2"],
+    "discover.yml": ["7 11 * * *"],
+    "implement.yml": ["23 11-14 * * *"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
     # D65/B294. Offset from feedback's in BOTH fields on purpose: a watchdog sharing a cron
@@ -1731,6 +1732,39 @@ def test_b124_crons_are_exactly_the_frozen_schedule(name):
         assert crons == [], f"{name} must not be scheduled (handoff §7.1): {crons}"
 
 
+def _cron_hours(field: str) -> list[int]:
+    """The hours a cron hour field names: digits, commas and ``a-b`` ranges (D72)."""
+    hours: list[int] = []
+    for part in field.split(","):
+        low, _, high = part.partition("-")
+        hours.extend(range(int(low), int(high or low) + 1))
+    return hours
+
+
+@pytest.mark.parametrize("name", ["discover.yml", "implement.yml"])
+def test_b412_the_spending_crons_fire_inside_the_daily_run_window(name):
+    """B412 (D72): `.harness/config.json`'s daily window contains every discover and implement
+    cron, every day. The cron is when GitHub wakes the job and the window is what the dispatcher
+    enforces once it is awake, so a row outside the window wakes to nothing it may start."""
+    config = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    start, end = str(config["RUN_WINDOW_START"]), str(config["RUN_WINDOW_END"])
+    assert start.startswith("daily ") and end.startswith("daily "), (start, end)
+
+    def minute_of_day(point: str) -> int:
+        hour, _, minute = point.split(" ", 1)[1].partition(":")
+        return int(hour) * 60 + int(minute)
+
+    low, high = minute_of_day(start), minute_of_day(end)
+    assert low < high, "a daily window wrapping past midnight needs its own check here"
+    crons = _cron_values(_d2_workflow(name))
+    assert crons, f"{name} carries no cron"
+    for cron in crons:
+        minute, hour, day, month, weekday = cron.split()
+        assert (day, month, weekday) == ("*", "*", "*"), f"{name}: {cron!r} is not daily"
+        for at in (h * 60 + int(minute) for h in _cron_hours(hour)):
+            assert low <= at < high, f"{name}: {cron!r} fires outside {start}-{end} UTC"
+
+
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b125_every_job_sets_a_timeout_of_at_most_120_minutes(name):
     """B125 (handoff §7.1, D2-R7.2): `timeout-minutes` on every `jobs.<id>`, <= 120."""
@@ -2082,35 +2116,33 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 # Appended by the D3 spec-tester (T2); additions only, nothing above was edited.
 # ======================================================================================
 
-# RUN-DECISIONS-D3 "Workflows": implement.yml follows the run window
-# (RUN_WINDOW_START=mon 08:00 → RUN_WINDOW_END=tue 20:00 UTC) instead of grinding round the
-# clock, with one wrap-up run after the weekly reset. The other three are unchanged.
-D3_IMPLEMENT_CRONS = ["17 8,14,20 * * 1", "17 2,8,14 * * 2", "23 20 * * 2"]
-D3_UNCHANGED_CRONS = {
-    "discover.yml": "17 7 * * 0",
+# RUN-DECISIONS-D3 "Workflows" bound implement.yml to the weekly Mon 08:00 → Tue 20:00 UTC
+# window. D72 replaced it with the daily 11:00 → 15:00 UTC window — one subscription session a
+# day — and moved discover to 11:07 to open that session. feedback and heartbeat are unchanged.
+D72_IMPLEMENT_CRONS = ["23 11-14 * * *"]
+D72_UNCHANGED_CRONS = {
     "feedback.yml": "41 */3 * * 1-5",
     "heartbeat.yml": "5 9 * * 1",
 }
 
 
-def test_b215_implement_yml_carries_exactly_the_three_d3_crons():
-    """RUN-DECISIONS-D3 "Workflows" (the schedule B209–B215's run window and carry loop are
-    built on): implement.yml is scheduled three times and only three times — Monday inside
-    the window, the run-up to the Tuesday reset, and the wrap-up run after it."""
+def test_b215_implement_yml_carries_exactly_the_d72_crons():
+    """D72, superseding RUN-DECISIONS-D3 "Workflows" (the schedule B209–B215's run window and
+    carry loop are built on): implement.yml is scheduled as four hourly passes, 11:23 to 14:23
+    UTC every day, and nothing else."""
     crons = _cron_values(_d2_workflow("implement.yml"))
-    assert crons == D3_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D3_IMPLEMENT_CRONS}"
+    assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 
 
-def test_b215_the_d3_implement_crons_stay_inside_the_run_window():
-    """RUN-DECISIONS-D3 "Workflows": every scheduled implement run falls on Monday or Tuesday
-    — the days RUN_WINDOW_START/END span — and the last one is the post-reset wrap-up."""
+def test_b215_the_implement_crons_stay_inside_the_run_window():
+    """D72: every scheduled implement run fires every day, and B412 checks each firing against
+    the window `.harness/config.json` actually sets."""
     crons = _cron_values(_d2_workflow("implement.yml"))
+    assert crons, "implement.yml carries no cron"
     for cron in crons:
         minute, hour, dom, month, dow = cron.split()
-        assert dom == "*" and month == "*", f"implement.yml: unexpected date field in {cron!r}"
-        assert dow in ("1", "2"), f"implement.yml: {cron!r} runs outside Mon–Tue"
-    assert crons[-1].split()[4] == "2", "the wrap-up run must be on Tuesday"
-    assert crons[-1].split()[1] == "20", "the wrap-up run must follow the 20:00 UTC reset"
+        assert (dom, month, dow) == ("*", "*", "*"), f"implement.yml: {cron!r} is not daily"
+    test_b412_the_spending_crons_fire_inside_the_daily_run_window("implement.yml")
 
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
@@ -2120,7 +2152,7 @@ def test_b124_d3_every_cron_minute_is_still_non_zero_and_not_a_quarter_hour(name
     hour, so the harness never joins the crowd GitHub queues at :00."""
     crons = _cron_values(_d2_workflow(name))
     if name == "implement.yml":
-        assert len(crons) == 3, f"implement.yml must carry the three D3 crons: {crons}"
+        assert crons == D72_IMPLEMENT_CRONS, f"implement.yml must carry the D72 crons: {crons}"
     for cron in crons:
         fields = cron.split()
         assert len(fields) == 5, f"{name}: malformed cron {cron!r}"
@@ -2130,10 +2162,10 @@ def test_b124_d3_every_cron_minute_is_still_non_zero_and_not_a_quarter_hour(name
         assert int(minute) not in ROUND_MINUTES, f"{name}: cron minute is round: {cron!r}"
 
 
-def test_b215_d3_changed_only_the_implement_schedule():
-    """RUN-DECISIONS-D3 "Workflows": discover.yml, feedback.yml and heartbeat.yml are
-    unchanged, and the two event-driven workflows are still unscheduled."""
-    for name, cron in D3_UNCHANGED_CRONS.items():
+def test_b215_d72_changed_only_the_discover_and_implement_schedules():
+    """D72: feedback.yml and heartbeat.yml keep their schedules, and the two event-driven
+    workflows are still unscheduled."""
+    for name, cron in D72_UNCHANGED_CRONS.items():
         assert _cron_values(_d2_workflow(name)) == [cron], name
     for name in ("ops.yml", "selftest.yml"):
         assert _cron_values(_d2_workflow(name)) == [], name

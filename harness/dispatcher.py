@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Collection, Sequence
 
 from harness.clock import iso
-from harness.config import Config, in_run_window
+from harness.config import Config, in_run_window, run_window_label
 from harness.ledger import Ledger
 
 __all__ = ["STATIC_USD", "Candidate", "Plan", "plan", "usage_stop", "estimate_usd"]
@@ -124,8 +124,8 @@ def rank(cls: str) -> int:
 
 
 def _window_reason(config: Config) -> str:
-    """The exact B210 reason naming the configured window."""
-    return f"outside run window ({config.run_window_start}-{config.run_window_end} UTC)"
+    """The exact B210 reason naming the configured window; a daily one once (B411)."""
+    return f"outside run window ({run_window_label(config)} UTC)"
 
 
 def plan(

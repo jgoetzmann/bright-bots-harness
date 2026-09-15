@@ -1,6 +1,6 @@
-# ops.yml — on a failed spending run: open or update the ops issue, retry transient causes up to twice.
-# Spends nothing. Handoff §11.2 (B145, B146); RUN-DECISIONS-D2 §15.
-# The harness package may not shell out to `gh`; a workflow may use actions/github-script, and this one does.
+# ops.yml: when a spending run fails, open or update its ops issue and retry a transient failure
+# up to twice; when it succeeds, close its ops issue. Spends nothing (B145).
+# The harness package may not shell out to `gh`; this workflow uses actions/github-script.
 name: ops
 
 on:
@@ -12,10 +12,7 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
-  # An ops issue is opened by a failure and, until now, closed by nobody. They accumulated: a
-  # workflow that failed once in August still had an open issue in September, long after the
-  # cause was fixed, and the pile made the real ones harder to see. A green run of the same
-  # workflow is the most reliable evidence its ops issue is stale, and it costs one API call.
+  # A green run of a workflow closes that workflow's open ops issue.
   recovered:
     name: ops recovered
     if: github.event.workflow_run.conclusion == 'success'
@@ -45,14 +42,10 @@ jobs:
               await github.rest.issues.createComment({
                 owner, repo, issue_number: issue.number,
                 body: [
-                  `Closed automatically: **${run.name}** completed successfully.`,
+                  `Closed: **${run.name}** succeeded in ${run.html_url}`
+                    + ` (event \`${run.event}\`, sha \`${run.head_sha}\`).`,
                   ``,
-                  `- recovering run: ${run.html_url} (event \`${run.event}\`, sha \`${run.head_sha}\`)`,
-                  ``,
-                  `A green run is evidence the cause is gone, not proof it was understood. If this`,
-                  `failure mattered, the diagnosis belongs in a commit or a decision record rather`,
-                  `than an open issue — reopen this one if it recurs, and the next failure opens a`,
-                  `fresh issue in any case.`,
+                  `Reopen if the failure needs a diagnosis; the next failure opens a new issue.`,
                 ].join('\n'),
               });
               await github.rest.issues.update({
@@ -80,17 +73,9 @@ jobs:
             const wfName = run.name;
             const attempt = run.run_attempt || 1;
 
-            // Three attempts, so two automatic retries. One was not enough: the failures that
-            // actually happen here are network and registry blips, and those cluster -- a
-            // single retry lands inside the same bad minute often enough to be no retry at all.
-            //
-            // Counted from `run_attempt`, which GitHub increments, rather than from a label on
-            // the ops issue. The label version capped retries per ISSUE, so one transient
-            // failure in August spent the retry for every failure of that workflow afterwards,
-            // until a human closed the issue. Nobody did.
-            //
-            // What this does NOT loosen is the model-and-gate rule below. Those cost money and
-            // fail for reasons a retry cannot fix, so they still never retry at all.
+            // Three attempts, so two retries: network and registry blips cluster, and a single
+            // retry often lands in the same bad minute. Counted from `run_attempt`, which GitHub
+            // increments per run, so the cap applies to each run on its own.
             const MAX_ATTEMPTS = 3;
 
             // --- what failed -------------------------------------------------------------
@@ -115,13 +100,10 @@ jobs:
               .replace(/(Authorization\s*:\s*)(Bearer|token|Basic)\s+\S+/gi, '$1$2 [REDACTED]')
               .replace(/(https?:\/\/)[^\/\s:@]+:[^@\s]+@/g, '$1[REDACTED]@')
               .replace(/([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*)\S+/g, '$1[REDACTED]');
-            // B401/D71: the tail alone missed the one line that mattered. Issue #43's fifty lines
-            // were artifact-upload noise, and `error: triage ranking failed` sat above them. So
-            // the lines in the harness's own error forms are carried too, wherever they fell:
-            // `error:` (harness/__main__.py), `::error::` / `##[error]` (the workflows, as echoed
-            // and as Actions renders them), `rate limited` and `budget exhausted`. Skipped: the
-            // script listing Actions prints under each `##[group]Run ...`, which quotes every
-            // `echo "::error::..."` in the step whether or not it ran. Bounded in count and width.
+            // Besides the tail, carry every line in the harness's error forms, wherever it fell:
+            // `error:`, `::error::`, `##[error]`, `rate limited` and `budget exhausted`. The
+            // script listing under each `##[group]Run ...` is skipped, because it quotes every
+            // `echo "::error::..."` in the step whether or not it ran (B401).
             const ERROR_LINE_RE = /(^|\s)error:|##\[error\]|::error::|rate limited|budget exhausted/i;
             const ERROR_LINES_MAX = 20;
             const ERROR_LINE_CHARS = 500;
@@ -154,34 +136,10 @@ jobs:
             }
 
             // --- classification (B146) ---------------------------------------------------
-            // An ALLOW-LIST, and the difference matters more than it looks.
-            //
-            // `reRunWorkflowRunFailedJobs` re-runs the whole JOB, and all three spending
-            // workflows are a single job. So "did the failing STEP spend?" is the wrong
-            // question -- the right one is "had the job spent anything by the time it failed?",
-            // because a re-run starts at the top and does it all again.
-            //
-            // The step that makes a run durable, `Commit state/ledger.json`, runs AFTER the
-            // spend and matches no model-or-gate pattern. A denial list let it through: a push
-            // to `harness-state` losing its connection meant a retry that reloaded the
-            // PRE-RUN ledger, found the same comment unseen (B135's guard lives in
-            // `seen_comment_ids`, which only reaches the branch through that push), and paid
-            // for the same model call a second time -- invisibly to WEEKLY_CAP_USD, because the
-            // ledger recording the first attempt was exactly what failed to save.
-            //
-            // So: retry only steps known to run before anything is spent. Anything else, named
-            // or not, is left for a human. A step added later is not retried until somebody
-            // decides it is safe, which is the right default for a workflow that spends money.
-            //
-            // This is B146 made stronger, not replaced. B146's rule was "never retry a failure
-            // inside a model call or a gate" -- a red gate is information, not a transient, and
-            // `revise` and `propose` fail for reasons a retry cannot fix. Everything that rule
-            // refused, this refuses; what it adds is everything that runs AFTER those, which the
-            // old word list could not see.
-            // Every one of these is a real step name from discover.yml, implement.yml and
-            // feedback.yml, and every step in those three files is classified one way or the
-            // other by a test -- so a step added later fails the suite until somebody decides
-            // which side it is on, rather than defaulting to "retry a job that spends".
+            // `reRunWorkflowRunFailedJobs` re-runs the whole job, and each spending workflow is
+            // one job, so only a failure in a step listed here, all of which run before anything
+            // is spent, is retried. Model calls (propose, revise), gates and every later step,
+            // the ledger commit included, are left for a human. A test classifies every step.
             const RETRYABLE_STEPS = [
               'HALT check (.harness/HALT on the default branch)',
               'Checkout',
@@ -197,8 +155,6 @@ jobs:
               'harness dispatch',
             ];
             const preSpend = RETRYABLE_STEPS.includes(failingStep);
-            // Kept under its old name because the message below reads better for the case it
-            // actually describes, which is still the commonest reason a step is not retryable.
             const modelOrGate = !preSpend;
             const transientRe = new RegExp([
               'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'socket hang up',
@@ -217,19 +173,15 @@ jobs:
               try { await github.rest.issues.getLabel({ owner, repo, name }); }
               catch (e) { if (e.status === 404) await github.rest.issues.createLabel({ owner, repo, name, color, description }); else throw e; }
             };
-            // D4/B264: `kind:ops` is the D4 name, and its colour and description match LABEL_SPECS
-            // so `harness init --labels` and this workflow cannot disagree about it.
+            // Colour and description match LABEL_SPECS, which `harness init --labels` uses (B264).
             await ensureLabel('kind:ops', 'e11d21', 'a failed run');
-            // `ensureLabel` only CREATES a missing label, so a description changed here never
-            // reaches a label that already exists. Left accurate for a fresh repository; the
-            // live one carries the old wording and the issue body is the authority anyway.
+            // `ensureLabel` only creates a missing label; an existing one keeps its description.
             await ensureLabel('retried', 'fbca04', 'harness: automatically retried at least once');
             const open = await github.paginate(github.rest.issues.listForRepo, {
               owner, repo, state: 'open', labels: 'kind:ops', per_page: 100,
             });
             let issue = open.find(i => !i.pull_request && i.title === title) || null;
-            // A MARKER, not a gate: it says "this has been retried at least once" to anybody
-            // scanning the issue list. The cap itself is `run_attempt` above.
+            // The `retried` label only tells readers of the issue list; the cap is `run_attempt`.
             const alreadyRetried = !!(issue && issue.labels.some(l => (l.name || l) === 'retried'));
 
             const willRetry = transient && attempt < MAX_ATTEMPTS;
@@ -240,7 +192,8 @@ jobs:
             } else if (transient) {
               action = `transient failure on attempt ${attempt}: ${MAX_ATTEMPTS} attempts is the cap; left for a human.`;
             } else if (modelOrGate) {
-              action = `failure inside "${failingStep}", which is not on the list of steps known to run before anything is spent: a re-run would redo the whole job, so this is left for a human (B146).`;
+              action = `failed in "${failingStep}", which may run after spending; `
+                + 'not retried, left for a human.';
             } else {
               action = 'not classified as transient: left for a human.';
             }
@@ -282,7 +235,7 @@ jobs:
               core.info(`opened ops issue #${issue.number}`);
             }
 
-            // --- bounded retry (B145 step 2, B146) --------------------------------------
+            // --- bounded retry (B146) ---------------------------------------------------
             if (willRetry) {
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['retried'] });
               await github.rest.actions.reRunWorkflowRunFailedJobs({ owner, repo, run_id: run.id });

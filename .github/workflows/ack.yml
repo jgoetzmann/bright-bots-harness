@@ -1,12 +1,6 @@
-# ack.yml — say "working on it" within seconds of a /harness comment, before the work starts.
-# Spends nothing: no model call, no clone, no secret beyond GITHUB_TOKEN. B293.
-#
-# Why this is its own workflow rather than a first step of feedback.yml: it has to be FAST, and
-# feedback.yml cannot be. That one installs the package, runs doctor, syncs the fork and takes a
-# concurrency lock shared with every other spending workflow — so it can sit queued behind an
-# implement run for many minutes before its first step executes. An acknowledgement that waits
-# for a lock is not an acknowledgement. This one takes no lock, installs nothing, and reads only
-# the checked-out source.
+# ack.yml: acknowledge a /harness comment within seconds, before feedback.yml does the work.
+# Separate from feedback.yml so it takes no lock and installs nothing. Spends nothing: no model
+# call, no clone, no secret beyond GITHUB_TOKEN (B293).
 name: ack
 
 on:
@@ -15,15 +9,9 @@ on:
   pull_request_review_comment:
     types: [created]
 
-# Deliberately NOT `group: harness-ledger`. This job writes no state, so it has no business
-# queueing behind the workflows that do — which is the whole point of it existing separately.
-#
-# Keyed per COMMENTER rather than per comment. Per comment the key is unique every time, so the
-# block was a structural no-op: someone posting "/harness" sixty times got sixty parallel jobs,
-# which fills the account's concurrent-job allowance and queues the spending workflows behind
-# them — an acknowledgement mechanism starving the work it acknowledges. Per commenter, one
-# person's comments serialise and everybody else is unaffected. `feedback.yml` had this
-# throttle by accident, through the ledger lock; this one has it on purpose.
+# Outside the `harness-ledger` group, since this job writes no state. Keyed per commenter: a
+# per-comment key is unique every time and throttles nothing, while a per-commenter key makes one
+# person's comments serialise, so they cannot fill the account's concurrent-job allowance.
 concurrency:
   group: ack-${{ github.event.comment.user.login }}
   cancel-in-progress: false
@@ -34,16 +22,10 @@ env:
 jobs:
   ack:
     name: ack
-    # A cost filter on runner minutes, not a security gate: trust (B131) and parsing (B133)
-    # happen inside `harness ack`, using the same code the sweep uses, so the two cannot drift
-    # into disagreeing about who is allowed to say what.
-    #
-    # The second clause is the one that matters for cost. Every comment the harness writes ends
-    # up quoting `/harness` at somebody — the reply pointer, and this workflow's own "working on
-    # it" is a LIST of commands — so without it the harness would wake itself, for ever. The
-    # marker is on the body rather than the login because this expression cannot read
-    # `.harness/config.json`, and the machine account is an ordinary user, not a `Bot` type.
-    # `harness ack` refuses that login too; this is the half that saves the runner minute.
+    # Saves runner minutes only; `harness ack` applies trust and parsing with the sweep's code.
+    # The second clause skips the harness's own comments, which name `/harness` commands and would
+    # wake this workflow for ever. It tests the body's marker because this expression cannot read
+    # `.harness/config.json` and the machine account is an ordinary user, not a `Bot` type.
     if: >-
       contains(github.event.comment.body, '/harness')
       && (!contains(github.event.comment.body, '<!-- bright-bots-harness -->')
@@ -56,12 +38,9 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout
-        # `ref` pinned, and this is not belt-and-braces. On `pull_request_review_comment`
-        # GitHub sets GITHUB_REF to `refs/pull/N/merge`, so a bare checkout lands the PULL
-        # REQUEST'S tree -- and the next steps then run that tree's `harness/` code. On a public
-        # repository that is a stranger's Python executing on the runner; on this workflow it
-        # would also be a stranger's parser deciding who is trusted, which is exactly the drift
-        # a shared subcommand exists to prevent.
+        # `ref` is pinned: on `pull_request_review_comment` GitHub sets GITHUB_REF to
+        # `refs/pull/N/merge`, so a bare checkout would run the pull request's `harness/` code,
+        # including its trust parser.
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -72,10 +51,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Not installed: the harness is stdlib-only, so PYTHONPATH is enough and a pip step is
-      # ~20s this job does not have to spend. The .env is the example file with the two
-      # identities filled in — `ack` reads SELF_REPO, TRUST_FILE and the machine account and
-      # nothing else, and can neither authenticate nor spend at tier 0.
+      # Not installed: the harness is stdlib-only, so PYTHONPATH is enough. `ack` reads only
+      # SELF_REPO, TRUST_FILE and the machine account, and at tier 0 cannot authenticate or spend.
       - name: Write a read-only .env
         shell: bash
         run: |
@@ -96,10 +73,8 @@ jobs:
           pathlib.Path(".env").write_text("\n".join(out) + "\n", encoding="utf-8")
           PY
 
-      # Written to a file rather than interpolated into a shell command: a comment body is
-      # untrusted text on a public repository, and `${{ }}` is substituted before bash ever sees
-      # the line — which is how a backtick in somebody's comment becomes a command on the
-      # runner. The body reaches python through the environment, never through a shell.
+      # The body is untrusted and `${{ }}` is substituted before bash parses the line, so it
+      # reaches python through the environment and is written to a file.
       - name: Capture the comment body
         shell: bash
         env:
@@ -107,19 +82,15 @@ jobs:
         run: |
           python -c 'import os,pathlib; pathlib.Path("comment.txt").write_text(os.environ["COMMENT_BODY"], encoding="utf-8")'
 
-      # Two decisions, both made by the harness rather than by this file: whether the sweep is
-      # going to act at all (worth a reaction), and whether it will take long enough to be worth
-      # a comment as well. Every failure mode here ends in "say nothing" — never in a red run on
-      # somebody's thread — so the call cannot fail the step and the parse has a `{}` fallback.
+      # `harness ack` decides whether to react and whether to comment as well. Every failure ends
+      # in saying nothing, so the call cannot fail the step and the parse falls back to `{}`.
       - name: Decide what to say
         id: ack
         shell: bash
         env:
           PYTHONPATH: .
           ACTOR: ${{ github.event.comment.user.login }}
-          # D68: the numeric account id. A trust.txt line may vouch for one exact account, which
-          # the sweep checks against `user.id` in the REST payload; without this the ack would
-          # refuse somebody the sweep then answers.
+          # The numeric account id, which a `vouch:` line in trust.txt is pinned to (D68).
           ACTOR_ID: ${{ github.event.comment.user.id }}
           ASSOCIATION: ${{ github.event.comment.author_association }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
@@ -137,10 +108,8 @@ jobs:
           print("say=" + ("true" if comment.strip() else "false"))
           PY
 
-      # The reaction goes on whenever the harness is going to act at all, including for the fast
-      # verbs that get no comment. It is the cheapest possible "heard you" and costs the thread
-      # nothing — no notification, no scrollback. `continue-on-error` because a reaction that
-      # fails must not turn somebody's comment into a red X.
+      # Reacts whenever the harness will act, including fast verbs that get no comment.
+      # `continue-on-error`, so a failed reaction never puts a red X on somebody's comment.
       - name: React
         if: steps.ack.outputs.react == 'true'
         continue-on-error: true
@@ -155,10 +124,8 @@ jobs:
               : github.rest.reactions.createForIssueComment;
             await fn({ owner, repo, comment_id: id, content: 'eyes' });
 
-      # `continue-on-error` for the same reason as the reaction above, and the step comment
-      # further up claims it: `issues.createComment` 403s on a locked issue, on a fork pull
-      # request's read-only token, and on GitHub's secondary content-creation limit. Any of
-      # those would put a red cross on the thread of somebody who did nothing wrong.
+      # `continue-on-error` too: `issues.createComment` 403s on a locked issue, on a fork pull
+      # request's read-only token and at GitHub's secondary content-creation limit.
       - name: Say it
         if: steps.ack.outputs.say == 'true'
         continue-on-error: true

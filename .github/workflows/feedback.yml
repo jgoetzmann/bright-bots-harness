@@ -1,19 +1,19 @@
-# feedback.yml — every 3h on weekdays, and on keyword comments here: notifications + keywords,
-# then reconciliation of items stranded in harness:running. Handoff §7.1, §8.3, §9.2, §11.2; RUN-DECISIONS-D2 §15.
-# Frozen step order: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
+# feedback.yml: every 3h on weekdays and on /harness comments here, sweep notifications and
+# keywords, queue assigned issues and reconcile stranded items. Step order: HALT check,
+# checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
 name: feedback
 
 on:
   schedule:
     - cron: "41 */3 * * 1-5"      # B124: non-zero, non-round minute
   workflow_dispatch: {}
-  # B134: on THIS repository, /harness commands are event-driven and act within the same run.
+  # On this repository, /harness commands are event-driven and act within the same run (B134).
   issue_comment:
     types: [created]
   pull_request_review_comment:
     types: [created]
 
-# B118: every workflow that writes state/ledger.json shares one group and never cancels a run.
+# Every workflow that writes state/ledger.json shares one group and never cancels a run (B118).
 concurrency:
   group: harness-ledger
   cancel-in-progress: false
@@ -25,21 +25,10 @@ env:
 jobs:
   feedback:
     name: feedback
-    # Comment events only wake the job when the body carries a /harness command. This is a cost
-    # filter on runner minutes; trust (B131) and parsing (B133) happen inside harness/keywords.py.
-    #
-    # `contains()` is case-insensitive, which is what makes `/Harness` (a phone autocapitalising
-    # the first word) reach the parser that now accepts it. If that ever changed, the command
-    # would not be lost -- the three-hourly schedule still picks it up through notifications --
-    # it would only be slow. The parser is the authority on the form; this is an optimisation.
-    #
-    # The second clause skips the harness's own comments. Every reply it writes ends with a
-    # pointer naming `/harness status` and two others, so without it each reply woke another
-    # full run of this workflow — checkout, install, doctor, sync-fork, sweep — which found
-    # nothing, because `keywords.commands_from` skips the machine account, and posted nothing,
-    # having taken the ledger lock to do it. Four such runs in 27 seconds were observed on the
-    # live inbox. A marker rather than a login test because this expression cannot read
-    # `.harness/config.json`, and the machine account is an ordinary user, not a `Bot` type.
+    # Comment events wake the job only for a /harness command, to save runner minutes; trust and
+    # parsing happen in harness/keywords.py. `contains()` is case-insensitive, so `/Harness` gets
+    # through. The second clause skips the harness's own replies, which name `/harness` commands;
+    # it tests the marker because this expression cannot read the machine login from config.
     if: >-
       (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment')
       || (contains(github.event.comment.body, '/harness')
@@ -52,7 +41,7 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: sweep actions (revise/propose) may call the model
     steps:
-        # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+        # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
         id: halt
         shell: bash
@@ -76,23 +65,16 @@ jobs:
 
       - name: Checkout
         if: steps.halt.outputs.halted != 'true'
-        # `ref` pinned, and this is not belt-and-braces. On `pull_request_review_comment`
-        # GitHub sets GITHUB_REF to `refs/pull/N/merge`, so a bare checkout lands the PULL
-        # REQUEST'S tree -- and the next steps then run that tree's `harness/` code. On a public
-        # repository that is a stranger's Python executing on the runner; on this workflow it
-        # would also be a stranger's parser deciding who is trusted, which is exactly the drift
-        # a shared subcommand exists to prevent.
-        #
-        # Worse here than next door: this job keeps its credentials and writes HARNESS_GITHUB_TOKEN
-        # into `.env`, so an unpinned checkout would hand the machine account's PAT to whatever
-        # code the pull request happened to contain.
+        # `ref` is pinned: on `pull_request_review_comment` GitHub sets GITHUB_REF to
+        # `refs/pull/N/merge`, so a bare checkout would run the pull request's `harness/` code
+        # beside the machine account's PAT, which this job writes into `.env`.
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-        # D28: the ledger lives on the unprotected `harness-state` branch (main requires a reviewed PR,
-        # B113, which the Actions token cannot satisfy for B115's direct commit). Load the latest copy.
+        # The ledger lives on the unprotected `harness-state` branch, because main requires a
+        # reviewed PR and the Actions token commits directly (D28).
       - name: Load state/ledger.json from harness-state
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -184,19 +166,10 @@ jobs:
         shell: bash
         run: harness doctor
 
-        # B105: fast-forward only; a diverged fork pushes nothing.
-        #
-        # NOT fatal to the job. A fork that cannot be fast-forwarded stops DELIVERY -- it does
-        # not stop the harness hearing you. When this step failed hard it took `dispatch`, the
-        # keyword sweep, the assigned-issue sweep and the reconciler down with it, none of which
-        # touch the fork, and the sweep is the entire command surface. A stale fork must not
-        # deafen the harness.
-        #
-        # Since D67 the PAT carries the `workflow` scope, so an upstream change to
-        # `.github/workflows/**` no longer refuses the fast-forward outright. What is left is
-        # transient (the network, GitHub) or a token rotated without `workflow`, which is a
-        # standing condition until someone re-grants it -- `harness doctor`, above, warns about
-        # the missing scope by name -- and must not mean permanent silence either.
+        # Fast-forward only; a diverged fork pushes nothing (B105). A failure here is not fatal:
+        # it skips implementing this run, while dispatch, the sweep and the assigned-issue queue
+        # still run. Remaining causes are transient, or a token missing the `workflow` scope,
+        # which doctor names.
       - name: harness sync-fork
         id: syncfork
         if: steps.halt.outputs.halted != 'true'
@@ -212,7 +185,7 @@ jobs:
           upstream. Reading routes (sweep, ask, usage) still work; implementing is skipped this \
           run, because a clone of a stale fork would silently base the work on the wrong commit."
 
-        # B121/B122: printed for the record; the sweep and the reconciler act on their own rules.
+        # Printed for the record; the sweep and the reconciler apply their own rules (B122).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -220,9 +193,9 @@ jobs:
           mkdir -p runs
           harness dispatch | tee runs/dispatch-plan.json
 
-        # B140/B141: one notifications call since the ledger cursor; keywords are authorised (B131)
-        # before they are parsed (B133) and acted on at most once (B135). The sweep itself spends
-        # nothing; the actions it enqueues (revise/propose) are budgeted by the stages they call.
+        # One notifications call since the ledger cursor; keywords are authorised before they are
+        # parsed, and acted on at most once (B135). The sweep spends nothing itself; the revise
+        # and propose actions it enqueues are budgeted by their stages.
       - name: Sweep keywords (harness sweep; may run revise/propose)
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -231,10 +204,9 @@ jobs:
           mkdir -p runs
           harness sweep | tee runs/sweep.jsonl
 
-        # B233: assigning the machine account to an issue on the product repository is how a
-        # maintainer hands it a ticket. The harness gets no events from that repository, so it
-        # asks — one request, no model call, every three hours on a weekday. An issue that is
-        # already a work item is left alone, so this is safe to run as often as it likes.
+        # A maintainer hands the harness a ticket by assigning the machine account to a product
+        # issue. No events arrive from that repository, so this polls: one request, no model
+        # call. An issue that is already a work item is left alone (B233).
       - name: Queue issues assigned to the bot (harness discover --mode assigned)
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -245,7 +217,7 @@ jobs:
             echo "assigned sweep ok"
           else
             status=$?
-            # A budget stop is a normal outcome (D33/B120), and this step spends nothing anyway.
+            # A budget stop is a normal outcome, and this step spends nothing anyway (B120).
             if [ "${status}" -eq 4 ]; then
               echo "budget exhausted; nothing queued this run"
             else
@@ -254,17 +226,16 @@ jobs:
             fi
           fi
 
-        # B147: reconciliation lives at the entry of `harness run` — items in harness:running (and
-        # revising/proposing) with no live workflow run for 3 hours go back to their previous label.
-        # Skipped when the fork is stale: `implement` clones the fork at tier 2, so running it
-        # here would base the diff, the gates and the pull request on a commit that is not
-        # upstream's HEAD and report it as though it were (D40).
+        # Reconciliation runs at the entry of `harness run`: items left building, revising or
+        # proposing with no live workflow run for 3 hours go back to their previous label (B147).
+        # Skipped when the fork is stale, since implementing would base the work on a commit that
+        # is not upstream's HEAD.
       - name: Reconcile stale harness:running items (harness run)
         if: steps.halt.outputs.halted != 'true' && steps.syncfork.outcome == 'success'
         shell: bash
         run: harness run
 
-        # B115/B118: commit the ledger with [skip ci]; runs even when a step failed, never when halted.
+        # Commits the ledger with [skip ci]; runs even when a step failed, never when halted.
       - name: Commit state/ledger.json
         if: always() && steps.halt.outputs.halted != 'true'
         shell: bash

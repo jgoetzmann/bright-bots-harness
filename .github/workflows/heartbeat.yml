@@ -68,6 +68,41 @@ jobs:
           print("read-only .env written")
           PY
 
+      # B402/D71: the live ledger is on `harness-state` (D28); the checkout carries only main's
+      # seed. Reading the seed, the heartbeat of Monday 2026-09-14 said "not measured yet" while
+      # the live ledger held a 100% refusal. Read through the contents API, as the HALT check in
+      # the spending workflows reads .harness/HALT, so no git credentials are needed here.
+      - name: Load state/ledger.json from harness-state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          mkdir -p state runs/heartbeat
+          # B408: curl prints `000` itself when it cannot connect and then exits non-zero, so the
+          # fallback sits outside the substitution (inside it, `|| echo 000` made "000000").
+          code="$(curl -sS -o state/ledger.json.new -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${REPO}/contents/state/ledger.json?ref=harness-state")" || true
+          code="${code:-000}"
+          why=""
+          if [ "${code}" != "200" ]; then
+            why="HTTP ${code}"
+          elif ! python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' state/ledger.json.new 2>/dev/null; then
+            why="HTTP 200 but not valid JSON"
+          fi
+          if [ -z "${why}" ]; then
+            mv state/ledger.json.new state/ledger.json
+            echo "harness-state" > runs/heartbeat/ledger-source
+            echo "ledger loaded from harness-state"
+          else
+            rm -f state/ledger.json.new
+            echo "the checked-in seed (harness-state unreadable: ${why})" > runs/heartbeat/ledger-source
+            echo "::warning::could not read state/ledger.json from harness-state (${why}); reporting the checked-in seed"
+          fi
+
       - name: harness status --json and harness ledger --json
         shell: bash
         run: |
@@ -89,7 +124,9 @@ jobs:
             const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (e) { return ''; } };
             const parse = (t) => { try { return JSON.parse(t); } catch (e) { return null; } };
             const cfg = parse(read('.harness/config.json')) || {};
+            // Loaded from harness-state by the step above; `ledger-source` says whether it was.
             const ledger = parse(read('state/ledger.json')) || {};
+            const ledgerSource = read('runs/heartbeat/ledger-source').trim() || 'unknown';
             const ledgerCli = read('runs/heartbeat/ledger.json').trim();
             const statusCli = read('runs/heartbeat/status.json').trim();
 
@@ -204,12 +241,16 @@ jobs:
               (u && typeof u.utilization === 'number' && typeof stop === 'number')
                 ? `${Math.round((stop - u.utilization * 100) * 10) / 10} points to go`
                 : 'unknown';
+            // B399: a reading describes its window until that window resets, and nothing after.
+            const over = (u) => !!(u && u.resets_at && Date.parse(u.resets_at) <= Date.now());
+            const overNote = (u) => (over(u) ? ' — **that window has reset since**; this reading no longer stops anything' : '');
             lines.push('### allowance (shared with everything else this account does)');
+            lines.push(`- ledger read from: ${ledgerSource}`);
             if (usage && !stale) {
               const week = usage.seven_day || {};
               const session = usage.five_hour || {};
-              lines.push(`- this week: ${pct(week)} used — ${room(week, Number(cfg.WEEKLY_USAGE_STOP_PCT))} before the ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% stop; resets ${fmt(week.resets_at)}`);
-              lines.push(`- this session: ${pct(session)} used — ${room(session, Number(cfg.SESSION_USAGE_STOP_PCT))} before the ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% stop; resets ${fmt(session.resets_at)}`);
+              lines.push(`- this week: ${pct(week)} used — ${room(week, Number(cfg.WEEKLY_USAGE_STOP_PCT))} before the ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% stop; resets ${fmt(week.resets_at)}${overNote(week)}`);
+              lines.push(`- this session: ${pct(session)} used — ${room(session, Number(cfg.SESSION_USAGE_STOP_PCT))} before the ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% stop; resets ${fmt(session.resets_at)}${overNote(session)}`);
               lines.push(`- status: ${fmt(usage.status)}, observed ${fmt(usage.observed_at)}`);
             } else if (stale) {
               lines.push(`- not measured yet this window: the last reading (${fmt(usage.observed_at)}) predates ${fmt(w.period_start)}, so it is last window's and is not shown.`);

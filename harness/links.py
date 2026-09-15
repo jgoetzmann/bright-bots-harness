@@ -48,7 +48,7 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("resume", "lift a halt"),
 )
 
-def usage_headline(ledger: Any, config: Any) -> list[str]:
+def usage_headline(ledger: Any, config: Any, now: Any = None) -> list[str]:
     """How much of the subscription is left, in the units the subscription is actually sold in.
 
     The harness spent a delivery reporting dollars, and dollars are the wrong number. Nothing
@@ -65,10 +65,13 @@ def usage_headline(ledger: Any, config: Any) -> list[str]:
     Dollars are kept, below and in smaller print, for the three things they are still good for:
     a sense of scale, the `--max-budget-usd` flag the runner really does enforce per call, and
     being the only signal at all before a real call has ever been made.
+
+    ``now`` drops a reading whose window has reset since (B399/D71), so a refusal that has
+    lifted is not reported as "at or past the stop — nothing will start".
     """
     lines = ["**Allowance**"]
-    weekly = _utilization(ledger, "seven_day")
-    session = _utilization(ledger, "five_hour")
+    weekly = _utilization(ledger, "seven_day", now)
+    session = _utilization(ledger, "five_hour", now)
     weekly_stop = float(getattr(config, "weekly_usage_stop_pct", 90.0))
     session_stop = float(getattr(config, "session_usage_stop_pct", 70.0))
 
@@ -126,7 +129,7 @@ def spend_estimate(ledger: Any, config: Any) -> str:
 _LEDGER_ACCESSOR = {"seven_day": "weekly_utilization", "five_hour": "session_utilization"}
 
 
-def _utilization(ledger: Any, key: str) -> float | None:
+def _utilization(ledger: Any, key: str, now: Any = None) -> float | None:
     """`key`'s utilization as a percentage, or None when it is unknown for THIS window.
 
     Unknown covers three cases and they are all the same answer: never observed, not reported,
@@ -136,14 +139,14 @@ def _utilization(ledger: Any, key: str) -> float | None:
     """
     accessor = getattr(ledger, _LEDGER_ACCESSOR[key], None)
     if callable(accessor):
-        fraction = accessor()
+        fraction = accessor() if now is None else accessor(now)
         return None if fraction is None else float(fraction) * 100.0
     # A ledger-shaped object without the accessors. Apply the same guard by hand rather than
     # trusting the raw field, so a test double cannot be more permissive than the real thing.
-    return _raw_utilization(getattr(ledger, "window", {}) or {}, key)
+    return _raw_utilization(getattr(ledger, "window", {}) or {}, key, now)
 
 
-def _raw_utilization(window: Any, key: str) -> float | None:
+def _raw_utilization(window: Any, key: str, now: Any = None) -> float | None:
     """`_utilization`'s fallback: the same rule, applied to a plain window mapping."""
     if not isinstance(window, dict):
         return None
@@ -156,6 +159,10 @@ def _raw_utilization(window: Any, key: str) -> float | None:
     reported = usage.get(key)
     if not isinstance(reported, dict):
         return None
+    resets_at = reported.get("resets_at")
+    if now is not None and resets_at and hasattr(now, "strftime"):
+        if now.strftime("%Y-%m-%dT%H:%M:%SZ") >= str(resets_at):
+            return None  # B399: the window this reading describes has reset
     raw = reported.get("utilization")
     if raw is None:
         return None

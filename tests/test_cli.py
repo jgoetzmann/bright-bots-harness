@@ -2363,11 +2363,18 @@ USAGE_SAMPLE = {
 
 
 def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monkeypatch, capsys):
-    """B221: the two D3 stops are computed from these numbers, so the ledger must show them."""
+    """B221: the two D3 stops are computed from these numbers, so the ledger must show them.
+
+    The clock is frozen between USAGE_SAMPLE's observation and its first reset. Unfrozen, this
+    test read the host's clock, and B406 marks a reading whose window has reset since -- which
+    every real date after 2026-09-04T11:00Z is."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
     write_ledger(tmp_path, spent_usd=1.22, calls=1, usage=USAGE_SAMPLE)
+    reading_time = datetime(2026, 9, 4, 10, 30, tzinfo=timezone.utc)
+    freeze_run_clock(monkeypatch, reading_time)
+    align_ledger_window(tmp_path, reading_time)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 

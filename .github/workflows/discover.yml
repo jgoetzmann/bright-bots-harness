@@ -275,6 +275,14 @@ jobs:
             echo "::error::harness discover exited ${status}"
             exit "${status}"
           fi
+          # B398/D71: a refusal from the subscription exits 0 and prints
+          # {"rate_limited_until": ...}. The ledger step below records the reset, and the next
+          # dispatch holds until it; there is nothing to propose and nothing to page anyone about.
+          until="$(jq -r '.rate_limited_until // empty' runs/discover.out 2>/dev/null || true)"
+          if [ -n "${until}" ]; then
+            echo "rate limited until ${until}; nothing proposed this run"
+            exit 0
+          fi
           ids="$(jq -r '[.created[]?] | map(tostring) | join(" ")' runs/discover.out)"
           if [ -z "${ids// }" ]; then
             echo "no discovered items to propose"
@@ -284,13 +292,20 @@ jobs:
           failed=0
           for n in $ids; do
             echo "::group::harness propose ${n}"
-            if harness propose "$n"; then
+            if harness propose "$n" | tee "runs/propose-${n}.txt"; then
               status=0
             else
               status=$?
             fi
             echo "::endgroup::"
-            if [ "${status}" -eq 0 ]; then
+            # B407/D71: a refusal exits 0 as well (B120) and prints `rate limited until <reset>`.
+            # That is not a proposal, and the next item would be refused the same way: stop, as
+            # a budget stop does, and leave the rest discovered for the next run.
+            limited="$(sed -n 's/^rate limited until //p' "runs/propose-${n}.txt" | tail -n 1)"
+            if [ "${status}" -eq 0 ] && [ -n "${limited}" ]; then
+              echo "rate limited at item ${n} until ${limited}; the rest stay discovered for the next run"
+              break
+            elif [ "${status}" -eq 0 ]; then
               echo "item ${n}: proposed"
             elif [ "${status}" -eq "${EXIT_BUDGET}" ]; then
               echo "budget exhausted at item ${n}; the rest stay discovered for the next run"
@@ -357,6 +372,7 @@ jobs:
             runs/discover.out
             runs/**/*.md
             runs/**/*.json
+            runs/**/*.jsonl
             runs/**/*.log
             runs/**/*.txt
             !runs/**/node_modules/**

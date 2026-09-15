@@ -63,7 +63,10 @@ subscription's utilization is known). The last four are §13.
 
 `ops.yml` fires on every completed run of the three spending workflows. On `failure` it
 opens (or updates) an issue here titled `ops: <workflow> failed`, labelled `kind:ops`,
-with the run URL, the failing step name, and the last 50 log lines redacted. If the failure
+with the run URL, the failing step name, the failing job's lines in the harness's own error forms
+(`error:`, `::error::`, `rate limited`, `budget exhausted`; up to 20, B401/D71) and the last 50
+log lines, all redacted. The error lines come first because the tail is often upload noise: on
+issue #43 it missed the one line that mattered. If the failure
 is in the transient set — network reset, npm registry 5xx, GitHub 5xx, runner eviction — and
 it is the first retry for that run, it re-dispatches once (B145). It never retries a job
 whose failing step name contains `run`, `revise`, `propose`, or `gate` (B146): a red gate is
@@ -519,7 +522,14 @@ git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the 
 ```
 
 The weekly heartbeat comment prints the same numbers under **subscription usage (last observed)**,
-so the tracking issue is the phone-readable view.
+so the tracking issue is the phone-readable view. It reads the live copy on `harness-state`, not
+the seed checked in on `main`, and says which one it read (B402/D71).
+
+A reading describes its window until that window's `resets_at` and nothing after (B399/D71). A
+100% seven-day reading stops work until the reset and then stops nothing, with no command needed;
+a refused call also sets `rate_limited_until` to the same instant (B396), which lifts with it.
+`harness ledger` and `harness status` then print `window reset since; no longer stops anything`
+for that window instead of STOPPED (B406).
 
 **Nothing depends on the signal.** With `usage` absent — a fake backend, an older CLI, a call that
 never reached inference — every decision falls back to the USD path (`WEEKLY_CAP_USD`,

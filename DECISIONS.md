@@ -1151,6 +1151,150 @@ Nothing here changes the gate: the level cap per verb, fail-closed on a malforme
 unvouched handles, and "no new access to the repository for anybody" are all exactly as D69 left
 them. What changed is that four more kinds of line, and two commands, stopped failing quietly.
 
+## D71 / B395–B408 — a refusal is an outcome, and it ends at its reset
+
+**The incident.** The scheduled discover on Sunday 2026-09-13 (run 34757951628) failed with
+`error: triage ranking failed: success`, and ops opened issue #43. The live ledger on
+`harness-state` recorded the cause at the failing second:
+`window.usage = {five_hour: 0.0 (resets 2026-09-13T17:40Z), seven_day: 1.0 (resets
+2026-09-15T20:00Z), status: "rejected", observed_at: 2026-09-13T12:45:53Z}`, plus a history entry
+for the discover call costing 0.0. The call took about two seconds, and `rate_limited_until` stayed
+null.
+
+**The root cause is the allowance, not the harness or the CLI.** The weekly subscription allowance
+was exhausted, and it is **shared with the operator's own interactive use** of the same account.
+The harness spent almost none of it; D66 said this would happen, and this time it did. The CLI was
+2.1.270. A 2.1.266 call on 09-09 had succeeded, but the changelog shows nothing relevant between
+them, so the version is not the cause. What the harness got wrong is how it *read* the refusal,
+and six things followed from that.
+
+**1. The error said "success" (B395).** On a refusal the CLI exits 0 and prints a result line with
+`subtype: "success"`, `is_error: true` and its message in `result`. `_from_json` used stderr, which
+was empty, and then fell back to the subtype. The error is now the redacted `result` message,
+bounded like the stderr tail, then stderr, then the subtype. A budget stop's `result` is empty, so
+D19's `error_max_budget_usd` still comes through. A refusal with no words at all names the
+rejection rather than "success".
+
+**2. The refusal was not a rate limit (B396, B397).** `is_rate_limited` read only `reset_at` and
+`RATE_LIMIT_PATTERN` over the error, and `run()` looked for the pattern only on a non-zero exit. So
+this refusal went through as an ordinary failure, `run_model` raised nothing, and discover raised
+`HarnessError`. There are two fixes:
+
+- **B396.** A failed result whose usage status is `rejected` is rate-limited. Its `reset_at` is the
+  `resets_at` of the window at or over 1.0, the earliest if several are, which here is
+  2026-09-15T20:00Z. That applies at any exit code, with or without a result line.
+- **B397.** An `is_error` result whose message matches `RATE_LIMIT_PATTERN` is rate-limited at exit
+  0 too. The pattern is matched against the message only, never the whole stream (and since
+  B405, the same holds at a non-zero exit whenever there is a result line), so B119's
+  "a successful reply that mentions limits is a reply" still holds. The pattern also gains the
+  CLI's newer `hit your … limit` wording. The exact 2.1.270 message was not captured (item 4), so
+  the status is the primary signal, not the wording.
+
+B120 then does what it was built for: the item returns to its entry state, `rate_limited_until`
+is set, and the command exits 0. A *successful* call beside a `rejected` event keeps its result,
+and the stored reading stops the next call through B206.
+
+**B398 is the part the green suite hid.** `harness --json discover` printed the plain line
+`rate limited until …` on stdout. discover.yml tees that into the file jq parses, so under
+`set -e` a refusal that exited 0 still turned the step red. With `--json`, the refusal is now the
+document `{"rate_limited_until": …}`, and the workflow ends green before the id harvest. The
+ledger step still records the reset.
+
+**3. A stored refusal outlived its reset (B399). This was verified, and it was wrong.** A reading
+expired only when `period_start` moved past its `observed_at`, and only the governor moves
+`period_start`. It does so in `_ensure_window`, which `authorize` reaches *after* the usage stop
+has already refused, and the plan never rolls at all. So once the week turned, the 100% reading
+refused the one call that could have brought a fresh one. It would have kept doing that until
+some unrelated command rolled and saved the window, and that roll follows the harness's own
+`WEEKLY_RESET_DAY` rather than the subscription's reset. `Ledger.weekly_utilization(now)` and
+`session_utilization(now)` now drop a window's reading once `now` is at or past that window's own
+`resets_at`. `dispatcher.usage_stop` (both plan calls), `Governor.usage_stop_reason`,
+`priority.admit` and `headroom_pct` pass their clocks, as do `run_model`, discover, audit, dispatch
+and the status reply. `links.usage_headline` does too, so the headline stops saying "nothing will
+start". Each window expires at its own reset. The tests freeze the clock one second before and at
+the reset, and at the next scheduled discover.
+
+*Kept without expiry:* the dispatcher's `; weekly N%, session N%` suffix. It reports what was
+observed and decides nothing, and B211 pins it.
+
+*Rejected alternatives:*
+- **Rolling the window inside the plan.** The plan is pure (A33).
+- **Treating an expired reading as 0%.** Unknown is not zero, which is the D66/B295 rule.
+- **A separate "rejected means stop" rule in the dispatcher.** `rate_limited_until` already holds
+  until the same instant and lifts with it.
+
+**4. The evidence was discarded (B400).** A call's transcript is written to
+`runs/<run id>/transcript/<stage>.jsonl`, and no upload list named `.jsonl`. Item transcripts sit
+under `runs/item-N/`, which the `runs/item-*/` include already uploaded, so implement.yml lost
+nothing. The gaps were discover.yml's `runs/discover/transcript/`, which held the CLI's raw result
+object for #43, and feedback.yml's `runs/sweep/transcript/`: that workflow kept only
+`runs/sweep.jsonl`, the sweep's stdout. All three now upload `runs/**/*.jsonl`, which covers every
+run directory and is harmless in implement.yml.
+Transcripts are written through `redact.write_redacted`, and B398's test puts a key-shaped token in
+the refusal message and asserts it is not in the file.
+
+**5. The ops issue missed the error line (B401).** Issue #43's last 50 lines were artifact-upload
+noise. ops.yml keeps the tail and now also carries, first, the failing job's lines in the harness's
+own error forms: `error:`, `::error::` or `##[error]`, `rate limited` and `budget exhausted`. They
+are redacted, capped at 20 lines of 500 characters, and skip the `##[group]Run …` script listing,
+which quotes every `echo "::error::…"` whether or not it ran.
+
+**6. The heartbeat read the seed (B402).** heartbeat.yml read `state/ledger.json` from the
+checkout, which is main's seed, so on Monday it said "not measured yet" beside a 100% refusal. It
+now loads the live copy from `harness-state` through the contents API, the same way the spending
+workflows' HALT check reads `.harness/HALT`, because this job has no git credentials. The live copy
+replaces the seed only after it parses. The comment names which ledger it read, and marks a window
+that has reset since the reading.
+
+**The adversarial review (B403–B408).** An independent review of the first cut found six more
+problems, and each is fixed with a test:
+
+- **B403. A rejection on extra usage is not a refusal.** The CLI's own "not blocked" rule in
+  2.1.272 is `status !== "rejected" || isUsingOverage || overageInUse`. The first cut read
+  `rejected` alone, so a call that ran on extra usage and then failed for another reason (max
+  turns, an API 500) became a rate limit and returned the item. A rejected reading now keeps
+  `overage_in_use`, and `usage_rejected` follows the CLI's rule. This operator's events carry
+  `overageStatus: rejected` (no extra usage provisioned), so today it matters only if extra usage
+  is turned on.
+- **B404. The limit that refused may not be a unified window.** `rateLimitType` also takes
+  `seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included` and `overage`, and
+  `.env.example` sets `MODEL=opus`. With both unified readings below 1.0 the reset was `None`, so
+  the one-hour default applied and every run after the hour made another refused call. A
+  rejected reading now also keeps the event's top-level `resetsAt` as `rejected_resets_at`, and
+  `rateLimitType` as `rate_limit_type`. `exhausted_reset` falls back to that reset when no unified
+  window is exhausted. An `allowed` reading keeps its shape.
+- **B405. Tool output is not the CLI's message, at any exit code.** At a non-zero exit the wording
+  and the reset were still matched over the whole stream-json stdout, which carries tool results.
+  So a D19 budget stop whose tool output mentioned a limit beside a date became a rate limit, with
+  its reset taken from that date. The misread predates D71, but the first cut had also labelled
+  it `REFUSED_ERROR`. With a result line, the match now reads the result message and stderr only,
+  the same rule as at exit 0. The label is used only when the status really said `rejected`.
+- **B406. `harness ledger` and `harness status` said STOPPED after the reset.** `_usage_lines`
+  had no clock. It now takes the command's clock and prints `window reset since; no longer stops
+  anything` for a window whose `resets_at` has passed. The tests check it against `usage_stop` on
+  both sides of each window's reset.
+- **B407. The propose loop logged a refusal as a proposal.** `harness propose` exits 0 on a
+  refusal (B120), and discover.yml's loop read only the exit code, so it printed `item N:
+  proposed`. It now tees the output to `runs/propose-N.txt`, and a `rate limited until` line
+  breaks the loop the way a budget stop does.
+- **B408. The heartbeat's fallback warning named the wrong code.** `|| echo 000` inside the
+  substitution turned a connection failure into `HTTP 000000`, and an unparseable 200 printed a
+  traceback and read as `HTTP 200`. The fallback is now outside the substitution, and a bad body
+  has its own message.
+
+*Rejected:* the claim that B398's guard in discover.yml misses `{"rate_limited_until": null}`.
+That document cannot be printed. `RateLimited` is raised in one place, `stages._rate_limited`,
+and its reset comes from `resolve_reset`, which returns `now + 1h` when the runner has none.
+
+**What B114 still guarantees.** No decision *depends* on the usage signal:
+
+- A result without a `rate_limit_event` is classified exactly as before by `reset_at` and the
+  wording, now also over an `is_error` message at exit 0. The USD path governs as it did.
+- The status adds a classification only for failed results whose status is exactly `rejected` and
+  which were not running on extra usage (B403). `allowed` and `allowed_warning` change nothing,
+  and the D19 budget stop stays a budget stop at any exit code (B405).
+- Expiry needs a stated `resets_at`. A reading without one is kept, and a caller that passes no
+  clock sees what it saw before.
 ## D70 / B359– — an adversarial self-audit before delivery
 
 The operator's brief, verbatim: "Add an adversarial self-audit before delivery. After the gate

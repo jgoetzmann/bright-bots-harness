@@ -131,11 +131,12 @@ def _is_suggested(item: Any) -> bool:
     return via_of(item) == "suggested"
 
 
-def headroom_pct(ledger: Any) -> float | None:
+def headroom_pct(ledger: Any, now: Any = None) -> float | None:
     """Weekly subscription usage as a percentage, or None when nothing has been observed.
 
     None is not zero. An unobserved allowance is unknown, and treating unknown as "plenty left"
-    is how a system spends a week it did not have.
+    is how a system spends a week it did not have. Given ``now``, a reading whose seven-day
+    window has reset since is unknown too (B399/D71): it describes a week that is over.
     """
     # Through the ledger's own accessor, which applies the staleness guard: `roll_window` moves
     # `period_start` and zeroes the spend but LEAVES the last observation in place, so a raw read
@@ -145,7 +146,7 @@ def headroom_pct(ledger: Any) -> float | None:
     # moment there is the most room.
     accessor = getattr(ledger, "weekly_utilization", None)
     if callable(accessor):
-        fraction = accessor()
+        fraction = accessor() if now is None else accessor(now)
         return None if fraction is None else float(fraction) * 100.0
     window = getattr(ledger, "window", {}) or {}
     usage = window.get("usage")
@@ -161,6 +162,11 @@ def headroom_pct(ledger: Any) -> float | None:
     weekly = usage.get("seven_day")
     if not isinstance(weekly, dict):
         return None
+    if now is not None and weekly.get("resets_at"):
+        from harness.ledger import window_has_reset
+
+        if window_has_reset(weekly, now):
+            return None
     utilization = weekly.get("utilization")
     if utilization is None:
         return None
@@ -176,8 +182,11 @@ def admit(
     store: Any,
     ledger: Any,
     config: Any,
+    now: Any = None,
 ) -> str | None:
     """None when a call of this class may proceed, else the reason it may not (B290/B295).
+
+    ``now`` is the caller's clock, so a reading whose window has reset stops refusing (B399).
 
     Two classes are refused here, and for different reasons.
 
@@ -195,7 +204,7 @@ def admit(
     """
     if cls == "audit":
         floor = float(getattr(config, "audit_min_headroom_pct", 75.0) or 0.0)
-        used = headroom_pct(ledger)
+        used = headroom_pct(ledger, now)
         if used is not None and used >= floor:
             return (
                 f"weekly subscription usage is {used:.0f}%, at or above the {floor:.0f}% ceiling "
@@ -216,7 +225,7 @@ def admit(
         )
 
     limit = float(getattr(config, "suggest_min_headroom_pct", 50.0) or 0.0)
-    used = headroom_pct(ledger)
+    used = headroom_pct(ledger, now)
     if used is None:
         # Unobserved is not "no headroom". The signal arrives on the headers of a real model
         # call, so a fresh ledger, a Tier 0 run and every local run have none -- refusing here

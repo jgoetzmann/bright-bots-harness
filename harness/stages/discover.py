@@ -250,7 +250,7 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
     # Checked before the GitHub reads as well as before the model call, because the refusal is
     # the same either way and the reads are not free.
     refused = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
     )
     if refused is not None:
         ctx.record_decision(f"triage suggested nothing: {refused}")

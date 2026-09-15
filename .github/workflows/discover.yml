@@ -1,18 +1,16 @@
-# discover.yml — daily, first in the harness's session: triage queued issues into proposal PRs.
-# Spends capacity (propose is a model call). Handoff §7.1/§7.2; RUN-DECISIONS-D2 §15; D72.
-# Order is frozen: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
+# discover.yml: daily, and on dispatch, triage queued issues into proposal PRs. Spends
+# subscription capacity (triage and propose are model calls). Step order: HALT check,
+# checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
 name: discover
 
 on:
   schedule:
-    # D72: 11:07 UTC every day (04:07 PDT / 03:07 PST). Its triage call opens the five-hour
-    # subscription session the run window sits in. B124: non-zero, non-round minute.
+    # 11:07 UTC every day (04:07 PDT, 03:07 PST). Its triage call opens the five-hour
+    # subscription session the run window sits in (D72).
     - cron: "7 11 * * *"
   workflow_dispatch:
-    # B228/D48: steering, from the Actions tab. `triage` ranks whatever is already queued here
-    # and then, if that is empty, the product repo's allowlisted issues. `directed` aims the
-    # harness at ONE named product issue and is the route that works today, because nothing on
-    # the product repository carries the `harness-ok` allowlist label yet.
+    # Steering from the Actions tab: `triage` ranks what is queued here, then the product repo's
+    # allowlisted issues; `directed` aims the harness at one named product issue (B228).
     inputs:
       mode:
         description: "triage (rank the queue), directed (one named issue), assigned (every issue assigned to the bot), audit (one findings issue, no work items)"
@@ -34,7 +32,7 @@ on:
         default: false
         type: boolean
 
-# B118: every workflow that writes state/ledger.json shares one group and never cancels a run.
+# Every workflow that writes state/ledger.json shares one group and never cancels a run (B118).
 concurrency:
   group: harness-ledger
   cancel-in-progress: false
@@ -53,7 +51,7 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: passed through to the claude CLI
     steps:
-        # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+        # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
         id: halt
         shell: bash
@@ -81,8 +79,8 @@ jobs:
         with:
           fetch-depth: 0
 
-        # D28: the ledger lives on the unprotected `harness-state` branch (main requires a reviewed PR,
-        # B113, which the Actions token cannot satisfy for B115's direct commit). Load the latest copy.
+        # The ledger lives on the unprotected `harness-state` branch, because main requires a
+        # reviewed PR and the Actions token commits directly (D28).
       - name: Load state/ledger.json from harness-state
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -180,20 +178,10 @@ jobs:
         shell: bash
         run: harness sync-fork
 
-        # B121/B122: the dispatcher is pure. discover uses its reason as a spend gate.
-        # The stop set is every reason harness/dispatcher.py can return that means "capacity is
-        # gone": rate limited / halted / reserve (D2) and the D3 usage stops — "weekly usage
-        # N% >= M%", "session usage N% >= M%", "carry leeway N% reached". Proceeding through one
-        # of those would reach Governor.authorize, raise BudgetExhausted, exit 4 and page an
-        # operator for the scheduler working as designed (D33). "outside run window (...)" is
-        # deliberately NOT in the set: the window bounds implement.yml, whose own crons keep it,
-        # and discovery is one cheap triage call that is not window-gated (D32).
-        #
-        # EVERY pattern here is a prefix match, and that is not tidiness. `halted` was once bare,
-        # so `halted by @someone` fell through to proceed=true and spent a discover call on a
-        # harness a human had just stopped. B295 did the same to `reserve` by appending the
-        # subscription reading to it. A reason gains detail; the token it starts with is the
-        # contract.
+        # Stops on every dispatcher reason that means capacity is gone, which would otherwise
+        # exit 4 and page an operator for a normal stop. "outside run window" proceeds: the window
+        # bounds implement.yml, and discovery is not window-gated. Every pattern is a prefix
+        # match, because a reason can gain detail after its leading token (D33).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
@@ -226,18 +214,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p runs
-          # One contract, both halves: the global --json flag must precede the subcommand,
-          # and `harness --json discover` prints exactly {"created": [<id>, ...]} (cmd_discover,
-          # harness/__main__.py). Without --json it prints one bare id per line, which is not
-          # JSON at all — the reader below must never be asked to parse that.
-          # D33 / B120: a budget stop is a normal outcome, not a failure. A red run here would
-          # page an operator for the scheduler working as designed, so the two commands below
-          # that can hit the governor exit 0 on it. harness/__main__.py maps BudgetExhausted to
-          # this code; RateLimited already exits 0 there, and .harness/HALT exits 0 too.
+          # The global --json flag goes before the subcommand: `harness --json discover` prints
+          # {"created": [<id>, ...]}, and without it the output is bare ids, one per line.
+          # A budget stop is a normal outcome, so both commands below that can reach the
+          # governor exit 0 on EXIT_BUDGET; a rate limit and .harness/HALT already exit 0 (B120).
           EXIT_BUDGET=4
-          # B228: the dispatch inputs, defaulted for the scheduled run, where they are
-          # absent. Written as `if` rather than `[ ... ] && ...`: under `set -e` a false
-          # test in the second form is a non-zero command and would abort the job.
+          # The dispatch inputs, defaulted for the scheduled run. Conditionals use `if`, because
+          # under `set -e` a false test in `[ ... ] && ...` would abort the job (B228).
           mode="${INPUT_MODE:-triage}"
           args=(--mode "${mode}")
           if [ "${mode}" = "directed" ]; then
@@ -247,9 +230,8 @@ jobs:
             fi
             args+=(--target "${INPUT_TARGET}")
           elif [ "${mode}" = "audit" ]; then
-            # B256: refused in the stage too, before any GitHub read and any model call. Named
-            # here as well so the operator learns it from the Actions tab rather than from a
-            # failed run: "audit everything" is the one scope the budget cannot bound.
+            # The stage refuses an empty lens too; checking here shows the reason in the Actions
+            # tab before any GitHub read or model call (B256).
             if [ -z "${INPUT_LENS// }" ]; then
               echo "::error::mode=audit needs a lens: what should it look for?"
               exit 2
@@ -277,9 +259,8 @@ jobs:
             echo "::error::harness discover exited ${status}"
             exit "${status}"
           fi
-          # B398/D71: a refusal from the subscription exits 0 and prints
-          # {"rate_limited_until": ...}. The ledger step below records the reset, and the next
-          # dispatch holds until it; there is nothing to propose and nothing to page anyone about.
+          # A subscription refusal exits 0 and prints {"rate_limited_until": ...}. The ledger step
+          # records the reset, and the next dispatch holds until it (B398).
           until="$(jq -r '.rate_limited_until // empty' runs/discover.out 2>/dev/null || true)"
           if [ -n "${until}" ]; then
             echo "rate limited until ${until}; nothing proposed this run"
@@ -300,9 +281,8 @@ jobs:
               status=$?
             fi
             echo "::endgroup::"
-            # B407/D71: a refusal exits 0 as well (B120) and prints `rate limited until <reset>`.
-            # That is not a proposal, and the next item would be refused the same way: stop, as
-            # a budget stop does, and leave the rest discovered for the next run.
+            # A refusal also exits 0 and prints `rate limited until <reset>`. Stop, as a budget
+            # stop does, and leave the rest discovered for the next run (B407).
             limited="$(sed -n 's/^rate limited until //p' "runs/propose-${n}.txt" | tail -n 1)"
             if [ "${status}" -eq 0 ] && [ -n "${limited}" ]; then
               echo "rate limited at item ${n} until ${limited}; the rest stay discovered for the next run"
@@ -319,7 +299,7 @@ jobs:
           done
           exit "$failed"
 
-        # B115/B118: commit the ledger with [skip ci]; runs even when a propose failed, never when halted.
+        # Commits the ledger with [skip ci]; runs even when a propose failed, never when halted.
       - name: Commit state/ledger.json
         if: always() && steps.halt.outputs.halted != 'true'
         shell: bash

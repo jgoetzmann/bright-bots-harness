@@ -1,21 +1,15 @@
-# implement.yml — four runs inside the daily run window, on dispatch, and on a merged proposal:
-# drain the approved queue.
-# Spends capacity (implement is the expensive stage). Handoff §7.2; RUN-DECISIONS-D2 §15,
-# RUN-DECISIONS-D3 "Workflows", D72.
-# Frozen step order: HALT check → checkout/setup → doctor → sync-fork → dispatch → work → ledger → artifacts.
+# implement.yml: four passes inside the daily run window, on dispatch, and on a merged proposal,
+# drain the approved queue. Spends subscription capacity. Step order: HALT check,
+# checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
 name: implement
 
 on:
   schedule:
-    # D72: the schedule follows the run window (RUN_WINDOW_START=daily 11:00 UTC →
-    # RUN_WINDOW_END=daily 15:00 UTC). The subscription has no weekly limit, only a five-hour
-    # session shared with the operator, so the harness takes one session a day while the
-    # operator sleeps: discover opens it at 11:07 and these four passes start work until the
-    # window closes. Starts end an hour before the session does so a late item can finish.
-    # B412 fails the build if a row leaves the window. Minutes are non-zero and non-round (B124).
-    #
-    # DST: GitHub cron is always UTC. 11:00 UTC is 04:00 PDT and 03:00 PST, so the session opens
-    # between 3 and 4 a.m. Pacific all year; there is nothing to move when the clocks change.
+    # The run window is daily 11:00 to 15:00 UTC: discover opens the day's five-hour session at
+    # 11:07, and these passes start work until an hour before it ends, so a late item can
+    # finish. A test (B412) fails if a row leaves the window (D72).
+    # DST: GitHub cron is always UTC, so the session opens at 04:00 PDT or 03:00 PST and nothing
+    # moves when the clocks change.
     - cron: "23 11-14 * * *"      # 11:23 / 12:23 / 13:23 / 14:23 UTC, every day
   workflow_dispatch:
     inputs:
@@ -27,7 +21,7 @@ on:
     branches: [main]
     paths: ["proposals/**"]       # a merged proposal = approval (gate 1)
 
-# B118: every workflow that writes state/ledger.json shares one group and never cancels a run.
+# Every workflow that writes state/ledger.json shares one group and never cancels a run (B118).
 concurrency:
   group: harness-ledger
   cancel-in-progress: false
@@ -46,7 +40,7 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: passed through to the claude CLI
     steps:
-        # B149/B150: the very first thing a spending job does — before checkout, before doctor, before the dispatcher.
+        # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
         id: halt
         shell: bash
@@ -74,8 +68,8 @@ jobs:
         with:
           fetch-depth: 0
 
-        # D28: the ledger lives on the unprotected `harness-state` branch (main requires a reviewed PR,
-        # B113, which the Actions token cannot satisfy for B115's direct commit). Load the latest copy.
+        # The ledger lives on the unprotected `harness-state` branch, because main requires a
+        # reviewed PR and the Actions token commits directly (D28).
       - name: Load state/ledger.json from harness-state
         if: steps.halt.outputs.halted != 'true'
         shell: bash
@@ -83,8 +77,7 @@ jobs:
           set -euo pipefail
           if git fetch --quiet origin harness-state 2>/dev/null; then
             mkdir -p state
-            # Not `git show ... > state/ledger.json`: redirection truncates the target before
-            # git runs, so a failed show would leave an empty ledger behind.
+            # Written to a temporary file first: a redirect truncates its target before git runs.
             git show FETCH_HEAD:state/ledger.json > state/ledger.json.new
             mv state/ledger.json.new state/ledger.json
             echo "ledger loaded from harness-state"
@@ -176,7 +169,7 @@ jobs:
         shell: bash
         run: harness sync-fork
 
-        # §4.2: implement.yml sets harness:approved on proposal merge. proposals/<issue>-<slug>.md names the item.
+        # A merged proposal approves its item, named by proposals/<issue>-<slug>.md.
       - name: Approve merged proposals (push to proposals/**)
         if: steps.halt.outputs.halted != 'true' && github.event_name == 'push'
         shell: bash
@@ -202,7 +195,7 @@ jobs:
             fi
           done
 
-        # B121/B122: the dispatcher is pure and starts nothing; this job acts on its plan.
+        # The dispatcher starts nothing; this job acts on its plan (B122).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
@@ -247,7 +240,7 @@ jobs:
           done
           exit "$failed"
 
-        # B115/B118: commit the ledger with [skip ci]; runs even when an item failed, never when halted.
+        # Commits the ledger with [skip ci]; runs even when an item failed, never when halted.
       - name: Commit state/ledger.json
         if: always() && steps.halt.outputs.halted != 'true'
         shell: bash

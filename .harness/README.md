@@ -40,6 +40,12 @@ Changing `RUN_WINDOW_START`/`RUN_WINDOW_END` does **not** move the schedule: the
 dispatcher enforces once it is awake. Move both together, or the job wakes to find nothing eligible.
 `harness run --item N` bypasses the window on purpose; it never bypasses the usage stops.
 
+### The self-audit knob (D70)
+
+| Knob | Ships as | Range | What changing it does |
+| --- | --- | --- | --- |
+| `MAX_SELF_AUDIT_CYCLES` | `3` (in `.env`, not in `config.json`) | integer `>= 0` | How many times a separate model call audits an item's diff against its approved work package once the gates are green; blocking findings get one fix pass per cycle, and the gates re-run after it. `0` turns the audit off: no model call, no record, no line in the pull request. Findings are a model's opinion and never block delivery. |
+
 `FORK_REPO` and `TRACKING_ISSUE` ship empty/`null` in `.env.example`. Fill them in here once the
 machine account's fork exists and the pinned tracking issue is open (HUMAN.md items 3 and 12). The workflows also
 accept repository variables `FORK_REPO` and `TRACKING_ISSUE` and use them only where this file
@@ -59,8 +65,8 @@ change, reviewed as one (B112):
   `harness/keywords.py`).
 
 Adding such a key to `config.json` does not silently take effect: `load_config` rejects any key
-outside the list above (`config.CONFIG_JSON_KEYS`, twenty-four keys since B295 added the
-audit headroom floor),
+outside the list above (`config.CONFIG_JSON_KEYS`, twenty-five keys since D70 added the
+self-audit cycle cap),
 so the run fails at `harness doctor` naming the key (A30).
 
 ## Notes

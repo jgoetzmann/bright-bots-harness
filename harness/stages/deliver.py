@@ -61,6 +61,11 @@ MAX_COMMENT_CHARS = 60000
 #: How much of the run's reasoning the handoff carries forward (B213).
 DECISION_TAIL_LINES = 20
 
+#: D70: ``runs/<run-id>/selfaudit.json``, written by implement's self-audit loop.
+SELFAUDIT_NAME = "selfaudit.json"
+#: D70: how many blocking findings, and how many cycle outcomes, the PR body lists.
+MAX_SELF_AUDIT_LISTED = 5
+
 #: B214: the states a half-finished item can be handed off from. Anything else is either
 #: already parked (blocked, needs-human) or already gone (shipped, merged, abandoned).
 HANDOFF_FROM_STATES: tuple[str, ...] = ("implementing", "packaged", "revising")
@@ -267,6 +272,81 @@ def _checklist(evidence: str) -> str:
     )
 
 
+def load_self_audit(run_dir: Path) -> dict | None:
+    """D70: the self-audit record this run wrote, or ``None`` when there is none to read."""
+    raw = _read(Path(run_dir) / SELFAUDIT_NAME).strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _inline(value: Any, limit: int) -> str:
+    """Model text made safe for one line of a public PR body: no fences, tags or mentions."""
+    text = " ".join(str(value if value is not None else "").split())[:limit]
+    return text.replace("`", "'").replace("<", "&lt;").replace("@", "@​")
+
+
+def _count(n: int, noun: str) -> str:
+    """``1 note``, ``2 notes``: the status line is read by a person, so it counts in English."""
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def self_audit_block(record: Any, tip: str) -> str:
+    """D70: the self-audit's status line, and what it found, for the delivery PR body.
+
+    ``tip`` is `_tip_sha` of the branch being delivered; the line describes the record's last
+    cycle only when that cycle audited this exact tip. Findings are a model's opinion and are
+    labelled so; notes are counted, not listed; the full list is in the package DECISIONS.md.
+    """
+    history = record.get("history") if isinstance(record, dict) else None
+    last = history[-1] if isinstance(history, list) and history else None
+    if not isinstance(last, dict) or not tip or str(last.get("tip") or "") != tip:
+        return "**Self-audit: not run for this revision.**"
+
+    status = str(last.get("status") or "")
+    findings = [f for f in (last.get("findings") or []) if isinstance(f, dict)]
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    notes = len(findings) - len(blocking)
+    lines: list[str] = []
+    if status != "ok":
+        reason = status[len("not run:"):].strip() if status.startswith("not run:") else status
+        lines.append(f"**Self-audit: not run — {_inline(reason or 'unknown', 200)}.**")
+    elif not findings:
+        lines.append(f"**Self-audit at `{tip}`: clean.**")
+    elif not blocking:
+        lines.append(f"**Self-audit at `{tip}`: no blocking findings, {_count(notes, 'note')}.**")
+    else:
+        lines.append(
+            f"**Self-audit at `{tip}`: {_count(len(blocking), 'blocking finding')} "
+            f"(+{_count(notes, 'note')})** — "
+            "a model reviewing its own diff; an opinion, not a gate result."
+        )
+        lines.append("")
+        for finding in blocking[:MAX_SELF_AUDIT_LISTED]:
+            lines.append(
+                f"- `{_inline(finding.get('where'), 120)}` — {_inline(finding.get('claim'), 300)}"
+            )
+        if len(blocking) > MAX_SELF_AUDIT_LISTED:
+            lines.append(f"- and {len(blocking) - MAX_SELF_AUDIT_LISTED} more")
+
+    outcomes = [
+        f"- Cycle {_inline(entry.get('cycle'), 6)}: {_inline(entry.get('outcome'), 160)}."
+        for entry in history
+        if isinstance(entry, dict) and str(entry.get("outcome") or "").strip()
+    ]
+    if outcomes:
+        lines.append("")
+        lines.extend(outcomes[-MAX_SELF_AUDIT_LISTED:])
+    if findings:
+        lines.append("")
+        lines.append("Every finding, notes included, is in the review package's `DECISIONS.md`.")
+    return "\n".join(lines)
+
+
 def build_pr_body(
     package_dir: Path,
     *,
@@ -279,6 +359,7 @@ def build_pr_body(
     upstream_issue: int | None = None,
     config: Any = None,
     trusted: Iterable[str] | None = None,
+    self_audit: str | None = None,
 ) -> str:
     """B108/B232: the pull request a reviewer actually reads.
 
@@ -382,6 +463,8 @@ def build_pr_body(
                 evidence_digest(evidence),
             ),
             "",
+            # D70: after the gate results, and absent altogether when the audit is off.
+            *([self_audit, ""] if self_audit is not None else []),
             _collapsed(
                 "The review package, verbatim",
                 readme or "_README.md was missing from the package._",
@@ -451,6 +534,10 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     pkg = parse_work_package(spec_text)
     upstream_issue = item.issue_number if item.external_ref.startswith("issue:") else None
     title = build_pr_title(pkg.title, item.title, upstream_issue)
+    # D70: read before the rebase below, so the tip compared is the one the audit saw.
+    self_audit = None
+    if int(getattr(ctx.config, "max_self_audit_cycles", 0) or 0) > 0:
+        self_audit = self_audit_block(load_self_audit(ctx.run_dir), _tip_sha(the_lease))
     body = build_pr_body(
         package_dir,
         upstream_repo=upstream,
@@ -462,6 +549,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         upstream_issue=upstream_issue,
         config=ctx.config,
         trusted=ctx.trusted,
+        self_audit=self_audit,
     )
     head = f"{fork_owner}:{the_lease.branch}"
     record: dict[str, Any] = {

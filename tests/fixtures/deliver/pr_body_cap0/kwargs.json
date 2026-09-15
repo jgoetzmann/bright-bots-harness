@@ -1,0 +1,15 @@
+{
+  "upstream_repo": "Bright-Bots-Initiative/brightboost",
+  "fork_repo": "jgoetzmann-bot/brightboost",
+  "branch": "harness/fix-633-bundle-size",
+  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+  "self_repo": "jgoetzmann/bright-bots-harness",
+  "item_id": 4,
+  "upstream_issue": 633,
+  "config": {
+    "self_repo": "jgoetzmann/bright-bots-harness",
+    "upstream_repo": "Bright-Bots-Initiative/brightboost",
+    "fork_repo": "jgoetzmann-bot/brightboost"
+  },
+  "trusted": ["jgoetzmann", "BrightBoost-Tech"]
+}

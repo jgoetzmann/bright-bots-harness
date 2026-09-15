@@ -130,6 +130,8 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("ASK_MAX_PER_DAY", "ask_max_per_day"),
     ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
     ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
+    # D70: how many audit/fix cycles run before delivery; 0 is off.
+    ("MAX_SELF_AUDIT_CYCLES", "max_self_audit_cycles"),
 )
 
 # B147: an item left in a running state longer than this with no live run is reset.

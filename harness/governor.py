@@ -35,6 +35,9 @@ STATIC_ESTIMATES: dict[str, float] = {
     "package": 0.5,
     "ask": 0.2,
     "audit": 4.0,
+    # D70: priced like the stages whose shape they share (dispatcher.STATIC_USD says the same).
+    "selfaudit": 2.0,
+    "selfaudit_fix": 4.0,
 }
 
 #: Stages whose per-call ceiling is their own key rather than `PER_CALL_CAP_USD` (B248/B275).
@@ -56,6 +59,9 @@ _TURNS_FALLBACK: dict[str, str] = {
     # An answer is one read and one paragraph; an audit reads a repository and writes a list.
     "ask": "package",
     "audit": "propose",
+    # D70: fallbacks rather than new MAX_TURNS_* keys, which every complete .env would need.
+    "selfaudit": "propose",
+    "selfaudit_fix": "implement",
 }
 
 

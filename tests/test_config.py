@@ -566,6 +566,7 @@ D2_ENV: dict[str, str] = {
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
+    "MAX_SELF_AUDIT_CYCLES": "3",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -988,6 +989,8 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "ASK_MAX_PER_DAY": 9,
     "SUGGEST_MIN_HEADROOM_PCT": 40,
     "AUDIT_MIN_HEADROOM_PCT": 65,
+    # D70.
+    "MAX_SELF_AUDIT_CYCLES": 1,
 }
 
 
@@ -1026,6 +1029,9 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
     assert config.overrun_pct == pytest.approx(5.0)
     assert config.run_window_start == "wed 09:30"
     assert config.run_window_end == "thu 21:45"
+    # D70: the value check above predates this knob; without this line its override is
+    # exercised by the key-set assertion and asserted by nothing.
+    assert config.max_self_audit_cycles == 1
 
 
 def test_b112_the_config_json_overrides_all_differ_from_the_env_values(tmp_path, write_d2_env):

@@ -80,6 +80,7 @@ DEFAULT_ENV: dict[str, str] = {
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
+    "MAX_SELF_AUDIT_CYCLES": "3",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }

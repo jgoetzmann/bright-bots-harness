@@ -37,8 +37,7 @@ from harness.halt import check_halt
 from harness.redact import redact, redact_json, write_redacted
 from harness.store import WorkItem
 from harness.stages import data_block, load_prompt, run_model
-# D70: module-level, for the handoff and `_tip_sha`. `deliver` imports `implement` lazily, so
-# this is no cycle; `revise` already imports both at module level.
+# `deliver` imports `implement` lazily, so this module-level import is no cycle.
 from harness.stages import deliver as deliver_mod
 from harness.stages.propose import (
     PROPOSALS_DIR,
@@ -69,22 +68,20 @@ ALLOWED_TOOLS = ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
 DISALLOWED_TOOLS = ("WebFetch", "WebSearch")
 TIMEOUT_S = 3600
 
-#: D70: the auditor reads and may run read-only commands, and may not edit. `Bash` is the
-#: operator's ruling and widens the credential surface (docs/SAFETY.md); anything it writes to
-#: the clone, and any move of its branch, is undone by the tree guard in `_run_self_audit`.
-#: To make it read-only, use
-#: `ask.py`'s tuples here.
+#: The auditor reads and runs commands; it may not edit. `Bash` widens the credential surface
+#: (docs/SAFETY.md), so the tree guard in `_run_self_audit` undoes anything it writes to the
+#: clone and any move of its branch (D70).
 SELFAUDIT_ALLOWED_TOOLS = ("Read", "Glob", "Grep", "Bash")
 SELFAUDIT_DISALLOWED_TOOLS = ("Edit", "Write", "WebFetch", "WebSearch")
 SELFAUDIT_TIMEOUT_S = 1800
-#: D70: the fix pass is one more implementation pass, with implement's own tools.
+#: The fix pass is one more implementation pass, with implement's own tools.
 SELFAUDIT_FIX_ALLOWED_TOOLS = ALLOWED_TOOLS
 SELFAUDIT_FIX_DISALLOWED_TOOLS = DISALLOWED_TOOLS
 
-#: D70: how much of the diff the auditor is shown, in the style of `revise.MAX_FEEDBACK_CHARS`.
-#: A finding is judged against the full change list, never the paths in the cut text.
+#: How much of the diff the auditor is shown. A finding is judged against the full change
+#: list, not against the paths left in the cut text.
 MAX_DIFF_CHARS = 60_000
-#: D70: the most findings one audit may carry, and how much of each is kept.
+#: The most findings one audit may carry, and how much of each is kept.
 MAX_SELF_AUDIT_FINDINGS = 20
 MAX_FINDING_CLAIM_CHARS = 500
 MAX_FINDING_WHERE_CHARS = 200
@@ -92,7 +89,7 @@ MAX_FINDING_EVIDENCE_CHARS = 1000
 SELFAUDIT_SEVERITIES = ("blocking", "note")
 SELFAUDIT_VERDICTS = ("clean", "findings")
 
-#: Paths that keep a proposal off the fullsend path (F4) — infrastructure others depend on.
+#: Paths that keep a proposal off the fullsend path (F4): infrastructure others depend on.
 FULLSEND_FORBIDDEN_PATHS = (
     "/prisma/",
     "/migrations/",
@@ -100,9 +97,8 @@ FULLSEND_FORBIDDEN_PATHS = (
     "/.github/workflows/",
 )
 
-#: Paths no harness diff may ever contain (B64). D67: the one set, defined beside the push
-#: guard in `clone.py` and widened there from `.github/workflows/` to all of `.github/`; the
-#: name stays because B64 and its documents cite it.
+#: Paths no harness diff may contain (B64): an alias of the push guard's set in `clone.py`,
+#: which covers all of `.github/`. The name is kept because B64's documents cite it.
 FORBIDDEN_DIFF_PATHS = PROTECTED_PUSH_PATHS
 
 #: Substrings that, when *added* by the diff, widen or disable a check (B64).
@@ -145,19 +141,19 @@ def _commit(clone: Path, message: str) -> None:
         raise HarnessError(f"git commit failed in {clone}: {(err or out).strip()}")
 
 
-#: D70: every git call the self-audit makes to change the clone. No hooks, and literal paths,
-#: so a filename cannot be read as pathspec magic.
+#: The prefix for every git call the self-audit makes to change the clone: no hooks, and
+#: literal pathspecs, so a filename cannot be read as pathspec magic.
 _SELFAUDIT_GIT: tuple[str, ...] = (
     *GUARD_GIT, "-c", f"core.hooksPath={HOOKS_OFF}", "--literal-pathspecs",
 )
 
 
 def _unified_diff(lease: Lease) -> tuple[str, bool]:
-    """D70: the committed change as the auditor reads it, cut at ``MAX_DIFF_CHARS``.
+    """The committed change as the auditor reads it, cut at ``MAX_DIFF_CHARS``.
 
-    `GUARD_GIT`, and no external diff or textconv driver: the clone's `.git/config` is a file a
-    model holding Bash could have edited, and a driver named there would decide what the audit
-    saw. Raises when git cannot produce the diff; the caller records the audit as not run.
+    Runs under `GUARD_GIT` with no external diff or textconv driver, since a model holding Bash
+    could have named one in the clone's `.git/config` and it would decide what the audit saw.
+    Raises when git cannot produce the diff; the caller records the audit as not run.
     """
     code, out, err = gates.run_command(
         [*GUARD_GIT, "diff", "--no-ext-diff", "--no-textconv", "--no-color",
@@ -178,7 +174,7 @@ def _unified_diff(lease: Lease) -> tuple[str, bool]:
 
 
 def _reset_to(clone: Path, sha: str) -> None:
-    """D70: put the branch HEAD names, the index and the tree back on ``sha``. Raises when git
+    """Put the branch HEAD names, the index and the tree back on ``sha``; raises when git
     refuses. It resets whichever branch HEAD names, so `_put_head` goes first when a model may
     have switched branches."""
     code, out, err = gates.run_command([*_SELFAUDIT_GIT, "reset", "--hard", "--quiet", sha], clone)
@@ -189,11 +185,11 @@ def _reset_to(clone: Path, sha: str) -> None:
 
 
 def _head_state(clone: Path) -> str:
-    """D70: ``"<ref> <sha>"``, the branch HEAD names (``-`` when detached) and its full commit.
+    """``"<ref> <sha>"``: the branch HEAD names (``-`` when detached) and its full commit.
 
-    The tree guard's second half. Paths alone miss a call that ran `git commit --amend`, `git
-    reset --soft` or `git update-ref` and left the tree as it found it; the sha alone misses a
-    switch to another branch at the same commit. ``""`` when HEAD cannot be read.
+    The tree guard reads this as well as the paths, because `git commit --amend`, `git reset
+    --soft` or `git update-ref` can leave the tree as it found it, and a switch to another
+    branch at the same commit keeps the sha. ``""`` when HEAD cannot be read.
     """
     code, sha, _ = gates.run_command(
         [*_SELFAUDIT_GIT, "rev-parse", "--verify", "--quiet", "HEAD"], clone
@@ -205,8 +201,8 @@ def _head_state(clone: Path) -> str:
 
 
 def _put_head(clone: Path, state: str) -> None:
-    """D70: HEAD back to a `_head_state` -- its branch, naming its commit -- with the index and
-    the tree left exactly as they are. Raises when ``state`` is empty or git refuses."""
+    """Point HEAD back at a `_head_state`, its branch naming its commit, with the index and
+    the tree left as they are. Raises when ``state`` is empty or git refuses."""
     ref, _, sha = state.partition(" ")
     if not ref or not sha:
         raise HarnessError(f"cannot put HEAD back in {clone}: its state was never read")
@@ -223,12 +219,12 @@ def _put_head(clone: Path, state: str) -> None:
 
 
 def _restore_paths(clone: Path, tip: str, paths: Sequence[str]) -> None:
-    """D70: make each path what it is at ``tip``; a path the tip does not hold is removed.
+    """Make each path what it is at ``tip``; a path the tip does not hold is removed.
 
-    The tree guard: whatever the auditor (or an unfinished fix pass) left in the clone would
-    otherwise be committed by the next `git add -A` or by a handoff's work-in-progress commit.
-    Each path is used exactly as `prettier.all_changed_paths` read it with `-z`: never stripped,
-    since a name may begin with a space.
+    Whatever the auditor or an unfinished fix pass left in the clone would otherwise be
+    committed by the next `git add -A` or by a handoff's work-in-progress commit. Each path is
+    used as `prettier.all_changed_paths` read it with `-z`, never stripped, since a name may
+    begin with a space.
     """
     root = Path(clone).resolve()
     for raw in paths:
@@ -257,16 +253,16 @@ def _restore_paths(clone: Path, tip: str, paths: Sequence[str]) -> None:
             shutil.rmtree(target)
 
 
-# Module-level injectables. Tests replace these; production uses the real thing.
+# Module-level injectables, replaced by tests.
 GATE_RUNNER = gates.run_sequence
 PREPARE = gates.prepare
 PRETTIER = prettier.write_and_check
-#: B222/D42: the change set, deletions included. prettier gets the surviving subset only
-#: (`_format_and_commit`), because formatting a path that no longer exists is an error.
+#: The change set, deletions included. `_format_and_commit` passes prettier only the paths
+#: that still exist, because formatting one that is gone is an error (B222).
 CHANGED_PATHS = prettier.all_changed_paths
 COMMIT = _commit
-#: D70 (handoff §4.12): the git operations the self-audit loop uses. The test rig's clone is a
-#: plain directory, so each one is replaceable.
+#: The git operations the self-audit loop uses, each replaceable because the test rig's clone
+#: is a plain directory.
 TIP_SHA = deliver_mod._tip_sha  # the 12-character tip, "" when it cannot be read
 UNIFIED_DIFF = _unified_diff  # (text, truncated)
 RESET_TO = _reset_to
@@ -300,8 +296,8 @@ FULLSEND_REASONS = {
 }
 
 
-#: D67: moved to `clone.normalise_repo_path`, beside the path set it serves; kept by this name
-#: for `_fullsend_forbidden` and anything that imported it from here.
+#: `clone.normalise_repo_path`, beside the path set it serves, under the name callers here
+#: import.
 _normalise = normalise_repo_path
 
 
@@ -323,8 +319,8 @@ def implement(ctx: Context, item_id: int) -> Lease:
     if item is None:
         raise HarnessError(f"no work item {item_id}")
 
-    # §12 Q2: the harness cannot claim an issue, so collision is re-checked immediately before
-    # implementation begins, not only at selection time.
+    # The harness cannot claim an issue, so collision is re-checked here as well as at
+    # selection time.
     _recheck_collision(ctx, item)
 
     blockers = ctx.clones.preflight()
@@ -335,7 +331,7 @@ def implement(ctx: Context, item_id: int) -> Lease:
     try:
         return _implement_leased(ctx, item_id, item, lease)
     except Halted:
-        # R7.7 / A10: a halt mid-stage releases the clone and leaves the item resumable.
+        # A halt mid-stage releases the clone and leaves the item resumable.
         _release_on_halt(ctx, item_id, lease)
         raise
 
@@ -348,8 +344,8 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
         f"acquired clone {lease.path} on branch {lease.branch} at base {lease.base_sha}"
     )
 
-    # Dependencies first, or every gate is vacuously red on a fresh clone. Not a gate; recorded
-    # in the evidence as what it is.
+    # Dependencies first, or every gate is vacuously red on a fresh clone. It is an install
+    # step, recorded as one.
     prep = list(PREPARE(lease.path))
     _write_gates(ctx, "prepare", prep)
     ctx.check_halt()
@@ -362,7 +358,7 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
     else:
         ctx.record_decision("no package-lock.json in the clone; dependency install skipped")
 
-    # B62: the untouched tree is measured before anything changes, and recorded separately.
+    # The untouched tree is measured before anything changes, and recorded separately (B62).
     baseline = list(GATE_RUNNER(lease.path, baseline=True))
     _write_gates(ctx, "baseline", baseline)
     ctx.check_halt()
@@ -402,10 +398,8 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
 
     changed = _guarded_changed_paths(ctx, lease)
     if not changed:
-        # B223/D43: an implement call that changed nothing has failed, and it must say so.
-        # Without this the run committed nothing, packaged zero patches, printed "implemented
-        # item N" and exited 0 -- a silent success, which is the one outcome a reviewer cannot
-        # catch by reading the exit code. Blocking keeps the clone for inspection.
+        # An implement call that changed nothing has failed, and says so rather than
+        # exiting 0 with an empty package. Blocking keeps the clone for inspection (B223).
         reason = "the implementation call left the tree unchanged"
         if pkg.touched_paths:
             reason += "; the work package expected " + ", ".join(pkg.touched_paths[:5])
@@ -427,8 +421,8 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
             break
         signature = gates.signature(new_failures)
         if signature in seen:
-            # B63: a repeated signature means the diagnose loop is going nowhere. Stop now
-            # rather than burning the remaining retries on the same wall.
+            # A repeated signature means the diagnose loop is going nowhere, so stop here
+            # with the remaining retries unused (B63).
             ctx.record_decision(
                 f"gate failure signature {signature[:12]} repeated; stopping immediately "
                 f"with {ctx.config.max_retries_gates - attempts} retries unused"
@@ -457,21 +451,21 @@ def _implement_leased(ctx: Context, item_id: int, item: WorkItem, lease: Lease) 
             f"item {item_id} blocked: gates red after {attempts} diagnose cycles: {names}"
         )
 
-    # D70: the gates have no new failures, by the `_new_failures` rule and never by "every gate
-    # exits 0", which would skip every known-red item. 0 cycles: no call, no record, no line.
+    # Reached when `_new_failures` is empty, so an item with pre-existing reds is audited too.
+    # A cap of 0 makes no call and writes no record (D70).
     if ctx.config.max_self_audit_cycles > 0:
         final, handed_off = _run_self_audit(
             ctx, item_id, item, lease, pkg, spec_text, baseline, final
         )
         if handed_off:
-            # §4.6: halted inside the loop. The work is committed and on the fork, the item is
-            # approved with a carry, and the run's next halt check stops it.
+            # Halted inside the loop and handed off: the item is approved with a carry, and
+            # the run's next halt check stops it.
             return lease
 
     ctx.store.update_work_item(item_id, attempts=item.attempts + 1)
     still_red = sorted({r.name for r in final if r.exit_code != 0})
     if still_red:
-        # Pre-existing reds are carried, not cured. Saying "green" here would be a lie.
+        # Pre-existing reds are carried, so the record does not call the sequence green.
         ctx.record_decision(
             f"no new gate failures versus baseline for item {item_id} on {lease.branch} "
             f"after {attempts} diagnose cycles; the sequence is NOT green: "
@@ -530,7 +524,7 @@ def _fullsend_decision(ctx: Context, pkg: WorkPackage) -> bool:
     result = evaluate_fullsend_gate(pkg, ctx.config)
     for key in ("F1", "F2", "F3", "F4", "F5"):
         if not result[key]:
-            # B61: each individual failure is recorded, not just the verdict.
+            # Each failed condition is recorded, as well as the verdict (B61).
             ctx.record_decision(f"fullsend gate {key} failed: {FULLSEND_REASONS[key]}")
     passed = all(result[key] for key in ("F1", "F2", "F3", "F4", "F5"))
     ctx.record_decision(
@@ -571,10 +565,10 @@ def _guarded_changed_paths(ctx: Context, lease: Lease) -> list[str]:
 def _reject_forbidden_diff(
     ctx: Context, item_id: int, lease: Lease, changed: Sequence[str]
 ) -> None:
-    """B64. A diff that widens a check is rejected whole; the item is blocked.
+    """Reject a diff that widens a check, whole, and block the item (B64).
 
-    D67: the path arm asks `clone.protected_paths_in`, the predicate the push guard uses too,
-    so the two cannot drift apart -- the whole of `.github/`, deletions included (D42).
+    The path arm asks `clone.protected_paths_in`, the predicate the push guard uses, so the two
+    cannot drift apart: the whole of `.github/`, deletions included.
     """
     violations: list[str] = [
         f"{path} is under .github/, which steers CI and review, and may never be modified"
@@ -613,7 +607,7 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
     """Added and removed lines of the working diff, plus every line of each untracked file."""
     added: list[str] = []
     removed: list[str] = []
-    # B312/D67: `GUARD_GIT`, so a `refs/replace/` entry for the base cannot hide what was added.
+    # `GUARD_GIT`, so a `refs/replace/` entry for the base cannot hide what was added (B312).
     code, out, _ = gates.run_command(
         [*GUARD_GIT, "diff", "--unified=0", lease.base_sha], lease.path
     )
@@ -626,8 +620,8 @@ def _diff_lines(lease: Lease, changed: Sequence[str]) -> tuple[list[str], list[s
             elif line.startswith("-"):
                 removed.append(line[1:])
 
-    # D70: `-z`, as `prettier._diff_names` reads it. Line by line, git C-quotes a name holding a
-    # control character, and the quoted form names no file, so its lines went unscanned (B390).
+    # `-z`, as `prettier._diff_names` reads it: line by line, git C-quotes a name holding a
+    # control character, and the quoted form names no file (B390).
     code, out, _ = gates.run_command(
         [*GUARD_GIT, "ls-files", "-z", "--others", "--exclude-standard"], lease.path
     )
@@ -674,7 +668,7 @@ def _format_and_commit(
 ) -> None:
     if not changed:
         return
-    # B222: `changed` now carries deletions, and prettier cannot format a file that is gone.
+    # `changed` carries deletions, and prettier cannot format a file that is gone (B222).
     formattable = [path for path in changed if (Path(lease.path) / path).exists()]
     ok, output = PRETTIER(lease.path, formattable)
     deleted = len(changed) - len(formattable)
@@ -815,7 +809,7 @@ def _block(ctx: Context, item_id: int, lease: Lease, reason: str) -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# D70: the adversarial self-audit before delivery
+# the adversarial self-audit before delivery (D70)
 # --------------------------------------------------------------------------------------------
 
 _SELFAUDIT_OPEN = re.compile(r"<!--\s*selfaudit:\s*")
@@ -860,13 +854,12 @@ def parse_self_audit(
     n_acceptance: int,
     n_behaviors: int,
 ) -> tuple[list[dict] | None, list[str]]:
-    """D70: ``(findings, problems)`` from the auditor's first line.
+    """``(findings, problems)`` from the selfaudit block the auditor's answer opens with.
 
-    Styled on `propose.validate_proposal`: closed enums, a capped count. ``findings`` is
-    ``None`` when there is no readable block, and ``problems`` then says why; otherwise it
-    names every finding that was discarded. A finding's `where` must name a path in the full
-    change list, a path in the work package's touched paths, or a valid `acceptance:<n>` or
-    `behavior:<n>` index -- the last two are how an omission is reported.
+    ``findings`` is ``None`` when there is no readable block, and ``problems`` then says why;
+    otherwise ``problems`` names every finding that was discarded. A finding's `where` must
+    name a path in the full change list, a path in the work package's touched paths, or a valid
+    `acceptance:<n>` or `behavior:<n>` index, which is how an omission is reported.
     """
     raw = (text or "").lstrip()
     opening = _SELFAUDIT_OPEN.match(raw)
@@ -917,8 +910,8 @@ def parse_self_audit(
                 "touched path, and no valid acceptance or behavior index"
             )
             continue
-        # Redacted whole, then cut: a token cut at a cap is shorter than any pattern matches,
-        # and no longer equal to a live secret, so it would be stored as it stands (B392).
+        # Redact before cutting: a token cut at a cap matches no pattern and no longer equals
+        # a live secret, so it would be stored as it stands (B392).
         kept.append(
             {
                 "severity": severity,
@@ -931,7 +924,7 @@ def parse_self_audit(
 
 
 def _finding_signature(findings: Sequence[Mapping[str, Any]]) -> str:
-    """D70: a stable hash of what was found, so the loop never re-enters on the same findings."""
+    """A stable hash of what was found, so the loop never re-enters on the same findings."""
     parts = sorted(
         f"{_squash(f.get('where')).lower()}\x1f{_squash(f.get('claim')).lower()}"
         for f in findings
@@ -958,7 +951,7 @@ def _entry(cycle: int, tip: str, status: str = "ok") -> dict:
 
 
 def _not_run(ctx: Context, entry: dict, reason: str, detail: str = "") -> dict:
-    """Fail closed, fail quiet: an audit that cannot answer has no findings and blocks nothing."""
+    """Record an audit that could not answer: no findings, and nothing blocked."""
     entry["status"] = f"not run: {reason}"
     entry["findings"] = []
     ctx.record_decision(
@@ -1099,12 +1092,12 @@ def _discard_since(
     """Back to ``tip`` on the branch ``head`` named: that commit, its index, its tree, and
     nothing untracked left behind but ``keep``, the paths that were there before the call.
 
-    Checked afterwards, not trusted. Whatever is left would be committed by the next `git add
+    The result is checked afterwards. Whatever is left would be committed by the next `git add
     -A` or by a handoff's work-in-progress commit, so a clone that cannot be put back is blocked
     and kept for a person (B391).
     """
     if not tip or lease.base_sha.startswith(tip):
-        # Never the base: a reset there deletes the committed implementation (preflight).
+        # Never the base: a reset there deletes the committed implementation.
         raise HarnessError(f"refusing to reset {lease.branch} to its base {lease.base_sha}")
     kept = set(keep)
     try:
@@ -1131,7 +1124,7 @@ def _left_behind(lease: Lease, tip: str, head: str, before: set[str]) -> str:
 
     Both halves of the tree guard: a path that differs from ``tip`` now and did not before the
     call, and a HEAD that no longer names the branch and commit it did. A commit, an amend or a
-    `reset --soft` moves the branch and may leave no path behind at all (B387).
+    `reset --soft` moves the branch and may leave no path behind (B387).
     """
     moved = HEAD_STATE(lease.path)
     introduced = sorted(set(CHANGED_PATHS(lease.path, tip)) - before)
@@ -1146,10 +1139,9 @@ def _left_behind(lease: Lease, tip: str, head: str, before: set[str]) -> str:
 def _record_self_audit(ctx: Context, history: Sequence[dict]) -> Path:
     """`runs/<run-id>/selfaudit.json`: every cycle, each with the tip it audited.
 
-    Every string is redacted *before* it is serialised. `write_redacted` alone runs its patterns
-    over the JSON text, and `token=\\S+` read past the closing quote of a finding whose evidence
-    quoted a credential, so the record stopped parsing and the pull request said the audit had
-    not run (B382). The text pass still runs, and finds nothing left to take.
+    Every string is redacted before it is serialised, because a pattern such as `token=\\S+` run
+    over the JSON text instead consumes the closing quote of a finding that quoted a credential
+    and leaves the record unparseable (B382). The text pass still runs afterwards.
     """
     payload = {
         "schema": 1,
@@ -1171,12 +1163,11 @@ def _run_self_audit(
     baseline: Sequence[Any],
     final: list[Any],
 ) -> tuple[list[Any], bool]:
-    """D70: audit, fix, re-gate, up to the cap. ``(final gate results, handed off)``.
+    """Audit, fix and re-gate, up to the cap. Returns ``(final gate results, handed off)``.
 
-    Advisory throughout: findings that survive go to the human, a fix pass that breaks a gate
-    is reverted, and an audit that cannot answer is recorded as not run. Two things block: a fix
-    pass whose diff B64 rejects, like any other forbidden diff, and a clone the loop cannot put
-    back on its tip (B391).
+    Advisory throughout: findings that survive go to the human, a fix pass that breaks a gate is
+    reverted, and an audit that cannot answer is recorded as not run. Two things block: a fix
+    pass whose diff B64 rejects, and a clone the loop cannot put back on its tip (B391).
     """
     cap = int(ctx.config.max_self_audit_cycles)
     history: list[dict] = []
@@ -1204,15 +1195,15 @@ def _run_self_audit(
                     ctx, item_id, lease, pkg, spec_text, baseline, final, tip, cycle
                 )
             except RateLimited:
-                # Raised after the model ran, so the guard runs here too (preflight finding 3).
+                # Raised after the model ran, so the guard runs here too.
                 history.append(_entry(cycle, tip, "not run: rate limited"))
                 if _left_behind(lease, tip, head, before):
                     _discard_since(ctx, item_id, lease, tip, head, keep=before)
                 raise
             left = _left_behind(lease, tip, head, before)
             if left:
-                # §4.5: an auditor holding Bash wrote to the clone or moved its branch. What it
-                # did is undone, and its audit is discarded (B379, B387).
+                # An auditor holding Bash wrote to the clone or moved its branch: undo what it
+                # did, and discard its audit (B387).
                 history.append(
                     _not_run(ctx, _entry(cycle, tip), "the auditor modified the tree", left)
                 )
@@ -1258,10 +1249,9 @@ def _run_self_audit(
                 break
             moved = HEAD_STATE(lease.path)
             if moved != head:
-                # The prompt says the harness commits. A pass that committed, reset or switched
-                # branches anyway has the branch put back on the tip with its edits left in the
-                # tree, where B64, the formatter, the commit message and the gates all see them,
-                # and a `reset --soft` cannot pass for "changed nothing" (B388).
+                # The prompt says the harness commits. A pass that committed, reset or
+                # switched branches anyway has the branch put back on the tip with its edits
+                # left in the tree, where B64, the formatter and the gates see them (B388).
                 try:
                     PUT_HEAD(lease.path, head)
                 except HarnessError as exc:
@@ -1276,15 +1266,15 @@ def _run_self_audit(
                     f"self-audit fix pass moved HEAD to {moved or '(unreadable)'}; put "
                     f"{lease.branch} back on {tip} with the pass's edits kept in the tree"
                 )
-            # revise's pattern: the model does not commit, so its edits are the diff against
-            # the tip it was given.
+            # The model does not commit, so its edits are the diff against the tip it was
+            # given.
             if not CHANGED_PATHS(lease.path, tip):
                 unverified = ""
                 entry["outcome"] = "fix pass changed nothing"
                 ctx.record_decision("self-audit fix pass changed nothing; findings carried")
                 break
             changed = _guarded_changed_paths(ctx, lease)
-            _reject_forbidden_diff(ctx, item_id, lease, changed)  # blocks: the one exception
+            _reject_forbidden_diff(ctx, item_id, lease, changed)  # the one outcome that blocks
             _format_and_commit(
                 ctx, pkg, item, lease, changed, first=False,
                 subject=f"address self-audit findings for {item.external_ref}",
@@ -1310,8 +1300,8 @@ def _run_self_audit(
                 f"self-audit fix pass committed on {lease.branch}; the gate sequence re-ran "
                 "with no new failures"
             )
-            # Preflight: the one halt check in the loop outside a model call, placed where the
-            # tree is gate-verified or already reverted.
+            # The loop's one halt check outside a model call, placed where the tree is
+            # gate-verified.
             ctx.check_halt()
     except Halted as exc:
         if unverified:
@@ -1325,8 +1315,8 @@ def _run_self_audit(
         current = TIP_SHA(lease) or lease.base_sha[:12]
         last = history[-1] if history else None
         if last is not None and last["tip"] == current and last["status"] == "ok":
-            # The halt beat the fix pass, so this cycle's findings still describe this exact
-            # tip. They stay the record's last word rather than giving way to "not run" (B389).
+            # The halt came before the fix pass, so this cycle's findings still describe this
+            # tip and stay the record's last entry (B389).
             last["outcome"] = "halted before the fix pass; findings carried"
         else:
             history.append(_entry(len(history) + 1, current, "not run: halted"))

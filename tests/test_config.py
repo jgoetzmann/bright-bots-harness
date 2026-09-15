@@ -1742,6 +1742,120 @@ def test_d3_in_run_window_is_pure(window_config):
 
 
 # --------------------------------------------------------------------------
+# D72 - a daily window: "daily HH:MM" on both ends
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "start, end", [("daily 11:00", "daily 15:00"), ("daily 00:00", "daily 23:59")]
+)
+def test_b409_a_daily_window_is_accepted(tmp_path, write_d3_env, start, end):
+    """B409 (D72): `daily HH:MM` on both ends is a window that repeats every day."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=start, RUN_WINDOW_END=end)
+
+    config = load_config(env_path=path, environ={})
+
+    assert (config.run_window_start, config.run_window_end) == (start, end)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Daily 11:00", "DAILY 11:00", "day 11:00", "daily 11", "daily 24:00", "daily11:00",
+     "everyday 11:00", "daily 11:00 UTC"],
+)
+def test_b409_a_malformed_daily_endpoint_raises_naming_the_key(tmp_path, write_d3_env, value):
+    """B409: the daily form is held to the same frozen shape as the weekday one."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=value, RUN_WINDOW_END="daily 15:00")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    assert "RUN_WINDOW_START" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "start, end", [("daily 11:00", "tue 20:00"), ("mon 08:00", "daily 15:00")]
+)
+def test_b409_a_weekday_paired_with_daily_is_a_startup_error(tmp_path, write_d3_env, start, end):
+    """B409: "mon 08:00 to daily 15:00" has no single honest reading, so none is guessed."""
+    path = write_d3_env(tmp_path / ".env", RUN_WINDOW_START=start, RUN_WINDOW_END=end)
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+
+    message = str(excinfo.value)
+    assert "RUN_WINDOW_START" in message and "RUN_WINDOW_END" in message
+    assert "daily" in message
+
+
+def test_b410_a_daily_window_is_open_the_same_hours_every_day(window_config):
+    """B410 (D72): daily 11:00 → 15:00 opens at 11:00 and closes at 15:00 on every day of the
+    week, weekends included, and is shut either side."""
+    from harness.config import in_run_window
+
+    config = window_config("daily 11:00", "daily 15:00")
+
+    for day in range(7, 14):                                  # Monday 7th to Sunday 13th
+        assert in_run_window(config, utc(day, 11, 0)) is True     # the start
+        assert in_run_window(config, utc(day, 14, 59)) is True    # the last open minute
+        assert in_run_window(config, utc(day, 10, 59)) is False   # a minute early
+        assert in_run_window(config, utc(day, 15, 0)) is False    # the end is exclusive
+        assert in_run_window(config, utc(day, 2, 0)) is False     # the middle of the night
+
+
+def test_b410_a_daily_window_wraps_past_midnight(window_config):
+    """B410: a daily window whose end is earlier in the day than its start runs overnight."""
+    from harness.config import in_run_window
+
+    config = window_config("daily 22:00", "daily 03:00", name="night")
+
+    assert in_run_window(config, utc(9, 22, 0)) is True       # the start
+    assert in_run_window(config, utc(9, 23, 59)) is True
+    assert in_run_window(config, utc(10, 0, 0)) is True       # past midnight
+    assert in_run_window(config, utc(10, 2, 59)) is True
+    assert in_run_window(config, utc(10, 3, 0)) is False      # the end
+    assert in_run_window(config, utc(9, 21, 59)) is False
+    assert in_run_window(config, utc(9, 12, 0)) is False
+
+
+def test_b410_a_mixed_window_that_never_went_through_load_config_stays_open():
+    """B410: in_run_window never invents a stop. load_config refuses a weekday paired with
+    `daily`; a config built some other way is treated as unparseable, which means open."""
+    from types import SimpleNamespace
+
+    from harness.config import in_run_window
+
+    config = SimpleNamespace(run_window_start="daily 11:00", run_window_end="tue 20:00")
+
+    assert in_run_window(config, utc(9, 2, 0)) is True
+
+
+@pytest.mark.parametrize(
+    "start, end, label, name",
+    [
+        ("daily 11:00", "daily 15:00", "daily 11:00-15:00", "daily"),
+        ("mon 08:00", "tue 20:00", "mon 08:00-tue 20:00", "weekly"),
+        ("", "", "", "always"),
+    ],
+)
+def test_b411_the_window_is_named_the_way_an_operator_reads_it(
+    window_config, start, end, label, name
+):
+    """B411 (D72): the dispatcher's reason and `harness run` name a daily window once —
+    `daily 11:00-15:00 UTC` — and keep the weekly wording exactly as B210 pins it."""
+    from harness.__main__ import _window_text
+    from harness.config import run_window_label
+    from harness.dispatcher import _window_reason
+
+    config = window_config(start, end, name=name)
+
+    assert run_window_label(config) == label
+    assert _window_text(config) == (f"{label} UTC" if label else "always open")
+    if label:
+        assert _window_reason(config) == f"outside run window ({label} UTC)"
+
+
+# --------------------------------------------------------------------------
 # A7 - the shipped .env.example carries the five keys and the raised USD cap
 # --------------------------------------------------------------------------
 

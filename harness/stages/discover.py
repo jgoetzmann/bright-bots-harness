@@ -273,7 +273,7 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
     # carry the issue's ref; `_ensure_item` would hand that old id back, it would take one of
     # the SUGGEST_MAX_PER_RUN slots, and discover.yml's `harness propose <id>` would refuse it
     # (`_enter` accepts only a queued item) and turn the run red. Worse, a maintainer's
-    # `/harness stop` would be undone by the next Sunday's ranking. One store read, not one per
+    # `/harness stop` would be undone by the next day's ranking. One store read, not one per
     # issue: `find_by_ref` on the GitHub store pages every issue each time it is called.
     known = {
         str(getattr(item, "external_ref", "") or "") for item in ctx.store.list_work_items()

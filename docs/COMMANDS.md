@@ -87,7 +87,7 @@ Work reaches the queue four ways, and **three of the four are somebody asking**:
 
 The fourth is the harness's own idea, and it is fenced:
 
-**`via:suggested`** — weekly discovery (`discover`'s Sunday 07:17 UTC run, in triage mode), and
+**`via:suggested`** — daily discovery (`discover`'s 11:07 UTC run, in triage mode), and
 the only route the harness starts by itself. Three conditions, all required: nothing anybody asked
 for is outstanding — a delivery pull request awaiting review counts — weekly usage is under
 `SUGGEST_MIN_HEADROOM_PCT` (50), and the issue carries `ALLOWLIST_LABEL` (`harness-ok`). That label
@@ -195,7 +195,7 @@ already carries only gives them a way to be wrong.
 ```
 
 Opens an issue in the harness repository, queued, and replies in the thread with a link to it.
-**It only queues.** The plan comes from the next `discover` run — Sunday 07:17 UTC, unless the
+**It only queues.** The plan comes from the next `discover` run — 11:07 UTC every day, unless the
 operator dispatches one sooner — and the code from the first run-window `implement` run after the
 proposal is merged. [FOR-MAINTAINERS.md §9](FOR-MAINTAINERS.md#9-how-long-one-request-takes) walks
 through a Wednesday request end to end.
@@ -358,7 +358,7 @@ Two exceptions, one each way, because the state machine decides where an item *c
   `stage:queued`, `stage:ready`, `stage:blocked` and `stage:needs-human` have no edge to `blocked`.
   The reply says it ended the item. Asking again with the same link, or the same person using the
   same words, finds the ended item rather than opening a new one. A fresh `/harness work` sits in
-  `stage:queued` until Sunday, so this is the likeliest `stop` a maintainer makes.
+  `stage:queued` for up to a day, so this is the likeliest `stop` a maintainer makes.
 
 #### `go` — proceed with this
 
@@ -429,11 +429,11 @@ in total — see [the table below](#three-kill-switches-and-what-each-one-stops)
 /harness go --force
 ```
 
-Exempts the item from the run window (Mon 08:00 → Tue 20:00 UTC). Recorded on the item and in the
-ledger and named in the reply, so "why did this run on a Thursday" has an answer in the issue. The
-exemption is honoured by `implement`'s next run — a gate-1 merge starts one, so does the Tue
-20:23 UTC cron, or the operator dispatches it — not by the three-hourly sweep, whatever the
-reply's "next sweep" says (D68). It
+Exempts the item from the run window (daily 11:00 → 15:00 UTC). Recorded on the item and in the
+ledger and named in the reply, so "why did this run at midday" has an answer in the issue. The
+exemption is honoured by `implement`'s next run — a gate-1 merge starts one, so does the next
+morning's 11:23 UTC cron, or the operator dispatches it — not by the three-hourly sweep, whatever
+the reply's "next sweep" says (D68). It
 proposes nothing sooner: a forced `/harness work` still waits for `discover` and for the merge.
 
 **Level 3 only.** Below that the flag is ignored, the command still stands, and the reply says why it

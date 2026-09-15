@@ -19,7 +19,7 @@ from harness import __version__, keywords, links, verify_pin
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
-from harness.config import in_run_window, load_config
+from harness.config import in_run_window, load_config, run_window_label
 from harness.context import build_context
 from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
 from harness.errors import (
@@ -391,10 +391,10 @@ def _carry_issue(ledger) -> int | None:
 
 
 def _window_text(config) -> str:
-    """The run window as the dispatcher names it in a reason: ``mon 08:00-tue 20:00 UTC``."""
-    start = str(getattr(config, "run_window_start", "") or "")
-    end = str(getattr(config, "run_window_end", "") or "")
-    return f"{start}-{end} UTC" if start and end else "always open"
+    """The run window as the dispatcher names it in a reason: ``mon 08:00-tue 20:00 UTC`` or
+    ``daily 11:00-15:00 UTC`` (B411)."""
+    label = run_window_label(config)
+    return f"{label} UTC" if label else "always open"
 
 
 def _is_carried(config, item, carry: int | None) -> bool:

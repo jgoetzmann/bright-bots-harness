@@ -127,7 +127,7 @@ choose for itself. Take the label off and it is out. That is a gesture on your o
 command, no reply; the harness reads the labels when it next looks. Jack is labelling a first
 batch of about forty, mostly `pod: build`.
 
-It looks **once a week**, on `discover`'s Sunday 07:17 UTC run (or when Jack runs one by hand), and
+It looks **once a day**, on `discover`'s 11:07 UTC run (or when Jack runs one by hand), and
 even then suggests nothing unless both of these hold:
 
 - **Nothing anybody asked for is still open.** Any requested, assigned or promoted item that is
@@ -135,13 +135,14 @@ even then suggests nothing unless both of these hold:
   includes a delivery pull request waiting for your review. brightboost#868 does not count: its
   work item is closed and predates the `stage:` labels, so the pool is open now.
 - **The week has room.** Subscription usage under 50% for the week (`SUGGEST_MIN_HEADROOM_PCT`).
-  The back half is kept for work somebody asked for.
+  The back half is kept for work somebody asked for. While no weekly figure has been observed
+  this condition does not apply; the session stop still does.
 
 Then one model call ranks the pool and **at most five** (`SUGGEST_MAX_PER_RUN`) become work items.
 A labelled issue is skipped if it is assigned to anyone but the bot, if a branch or open pull
 request already names it, if it carries `intern-starter`, `large` or `architecture` — those
 three beat the label — or if it has ever had a work item, in any state. So a suggestion you turned
-down is not offered again the next Sunday.
+down is not offered again the next morning.
 
 Each suggestion is proposed in the same run, and the harness comments once on its brightboost
 issue saying it has a plan and has not started. **Nothing is built until Jack merges the proposal
@@ -196,8 +197,8 @@ refused with a reply saying so. Your `stop` parks instead wherever there is some
 
 `halt`, `resume`, `reject` and `--force` are level 3 (Jack only).
 
-`--force` exempts one item from the run window — Monday 08:00 to Tuesday 20:00 UTC — which is the
-main thing standing between an enthusiastic week and an exhausted allowance. You can queue as much
+`--force` exempts one item from the run window — daily, 11:00 to 15:00 UTC — which is what keeps
+an enthusiastic afternoon out of the operator's own session. You can queue as much
 work as you like; whether it happens tonight is the operator's call, because it is the operator's
 subscription.
 
@@ -250,8 +251,8 @@ only way to see that half without asking someone to test it for you.
 ## 9. How long one request takes
 
 **Being heard.** On the **harness repository**, a comment wakes the job directly: a 👀 within
-seconds, the answer in minutes. The exception is while a build is running — normally Monday and
-Tuesday — because builds and replies take turns on one lock, so the answer can wait up to two hours
+seconds, the answer in minutes. The exception is while a build is running — normally 11:00–17:00
+UTC — because builds and replies take turns on one lock, so the answer can wait up to two hours
 for the build to finish; the 👀 still comes at once. On **brightboost**, the harness gets no events
 — it is not a collaborator there, and it must not be — so it reads its notifications every three
 hours on weekdays (00:41, 03:41 … 21:41 UTC). A comment left after Friday 21:41 waits until Monday
@@ -264,19 +265,19 @@ on the way.
 | Step | When |
 |---|---|
 | 1. `/harness work` is heard | minutes on the inbox, up to three hours on brightboost. It opens a `stage:queued` item and **only queues it** |
-| 2. The plan | the next `discover` run — **Sunday 07:17 UTC** — proposes everything queued, unless Jack runs one sooner |
+| 2. The plan | the next `discover` run — **11:07 UTC every day** — proposes everything queued, unless Jack runs one sooner |
 | 3. Gate 1 | whenever Jack merges the proposal |
-| 4. The code | only inside the run window, **Monday 08:00 to Tuesday 20:00 UTC**. A merge inside it is built straight away; a merge outside it waits for Monday 08:17. Only Jack can make it sooner (`--force`, or starting the build by hand) |
+| 4. The code | only inside the run window, **11:00 to 15:00 UTC every day** (3–4 a.m. to 7–8 a.m. Pacific, depending on daylight time). A merge inside it is built straight away; a merge outside it waits for the next morning's 11:23 UTC run. Only Jack can make it sooner (`--force`, or starting the build by hand) |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
 Each scheduled build run starts one item, and while the window is open the three-hourly sweep also
 builds everything approved, one after another. So the window is not a fixed number of slots: what
-limits a busy week is the week's subscription usage.
+limits a busy morning is the subscription session, which the harness stops using at 80%.
 
-**A Wednesday request, worst case, nothing stopped and nothing ahead of it:** queued on Wednesday,
-planned Sunday morning, built Monday morning if Jack has merged the plan by then — **five days** to
-a delivery pull request. If his merge misses Tuesday 20:00, the build waits for the next Monday:
-**twelve days**. Longer only if something is halted, a usage stop is hit, or other work is ahead.
+**A request, worst case, nothing stopped and nothing ahead of it:** queued just after the 11:07 UTC
+run, planned the next morning, merged by Jack during his day — after the window has closed — and
+built the morning after that: **about two days** to a delivery pull request. A merge before 15:00
+UTC saves a day. Longer only if something is halted, a usage stop is hit, or other work is ahead.
 
 ## 10. If something looks wrong
 
@@ -291,8 +292,8 @@ out of brightboost; how final it is depends on where the item is.
   at Jack's — and the reply says so. Asking again in the same words, or with the same link, finds
   the ended item rather than opening a new one.
 
-A fresh `/harness work` sits in `stage:queued` until Sunday, so that is the stop you are most likely
-to make. If you only want it later rather than never, tell Jack instead.
+A fresh `/harness work` sits in `stage:queued` for up to a day, so that is the stop you are most
+likely to make. If you only want it later rather than never, tell Jack instead.
 
 **To stop everything, ask Jack.** Both fleet-wide switches are his. `/harness halt` is level 3.
 The other is a commit of `.harness/HALT` on the harness repository's `main`, and that needs write

@@ -1295,3 +1295,49 @@ and its reset comes from `resolve_reset`, which returns `now + 1h` when the runn
   and the D19 budget stop stays a budget stop at any exit code (B405).
 - Expiry needs a stated `resets_at`. A reading without one is kept, and a caller that passes no
   clock sees what it saw before.
+
+## D72 / B409–B412 — one subscription session a day, opened before dawn
+
+**The change of plan.** On 2026-09-15 the operator moved the Claude account to an enterprise plan.
+It has no weekly limit. It has a five-hour session limit about the size of a Pro plan's, and that
+session is shared with the operator's own use. D32's window, Mon 08:00 → Tue 20:00 UTC, closed at a
+weekly reset that no longer exists and left six days of sessions unused.
+
+**Decision.**
+
+- **B409.** A run-window endpoint may be `daily HH:MM`, on both ends. A weekday paired with
+  `daily` is a startup error naming both keys: "mon 08:00 to daily 15:00" has no single honest
+  reading. The weekday form is unchanged and stays the `.env.example` default.
+- **B410.** A daily window compares the minute of the UTC day, is the same on every day of the
+  week, and may wrap past midnight. `in_run_window` still never invents a stop: a mixed pair that
+  did not come through `load_config` reads as unparseable, which means open.
+- **B411.** A daily window is named once — `outside run window (daily 11:00-15:00 UTC)` — by the
+  dispatcher and by `harness run`. The weekly wording B210 pins is untouched.
+- **B412.** `.harness/config.json` sets `daily 11:00` → `daily 15:00` and `SESSION_USAGE_STOP_PCT`
+  80. `discover.yml` runs at `7 11 * * *` and `implement.yml` at `23 11-14 * * *`; a test fails the
+  build when a daily window stops containing those crons, so the schedule and the window cannot
+  drift apart the way D3 warned they could.
+
+**Why these hours.** GitHub cron is UTC only. 11:00 UTC is 04:00 PDT and 03:00 PST, so the session
+opens between 3 and 4 a.m. Pacific all year and nothing moves at a clock change. Discover's triage
+call at 11:07 opens the session; if it makes no call, the 11:23 implement run does. Starts end at
+15:00, an hour before that session ends, because an implement run may take up to its 120-minute
+timeout: the typical item finishes inside the session, and the worst case runs into the next one
+by under an hour. 80% leaves the operator a fifth of the session if they are up early.
+
+**What did not change.**
+
+- `WEEKLY_USAGE_STOP_PCT` stays 90. With no seven-day reading it never binds. If the token in
+  Actions still belongs to a weekly-limited account, it keeps protecting that account.
+- `feedback.yml` (`41 */3 * * 1-5`), its watchdog and the heartbeat keep their schedules. Outside
+  the window the sweep starts no item, because `harness run` without `--item` is window-gated. It
+  spends only on a `/harness` command a person sent, which should not wait for the next morning.
+- The carry path and `OVERRUN_PCT` are untouched.
+
+**Rejected.**
+
+- A local-time window through `zoneinfo`. The cron that wakes the job cannot follow it, so the
+  window and the schedule would disagree for half the year.
+- Every session, round the clock. The daytime sessions are the operator's.
+- Moving feedback into the window. Human requests would wait up to a day, and the watchdog's
+  weekday-slot arithmetic would need reworking for no saving on an idle sweep.

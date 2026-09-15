@@ -15,6 +15,9 @@ from harness.config import environ_snapshot
 from harness.redact import redact
 from harness.runner.base import (
     RATE_LIMIT_PATTERN,
+    USAGE_OVERAGE_IN_USE,
+    USAGE_REJECTED,
+    USAGE_REJECTED_RESETS_AT,
     RunRequest,
     RunResult,
     exhausted_reset,
@@ -197,6 +200,18 @@ def usage_from_event(event: Mapping[str, Any]) -> dict | None:
     status = info.get("status")
     if isinstance(status, str) and status:
         usage["status"] = status
+    if status == USAGE_REJECTED:
+        # Kept on a rejection only, so an `allowed` reading keeps its shape. B403: the CLI does
+        # not block a call running on extra usage. B404: the limit that refused may be none of
+        # the unified windows (`seven_day_opus`, `overage`, ...), and this is its reset.
+        if info.get("isUsingOverage") is True or info.get("overageInUse") is True:
+            usage[USAGE_OVERAGE_IN_USE] = True
+        limit_reset = _reset_iso(info.get("resetsAt"))
+        if limit_reset is not None:
+            usage[USAGE_REJECTED_RESETS_AT] = limit_reset
+        limit_type = info.get("rateLimitType")
+        if isinstance(limit_type, str) and limit_type:
+            usage["rate_limit_type"] = limit_type
     return usage
 
 
@@ -361,9 +376,16 @@ class ClaudeCliRunner:
 
         if exit_code != 0:
             # B119: exhaustion is an outcome with a reset time, not a generic failure.
-            combined = f"{stdout}\n{stderr}"
-            if rejected or RATE_LIMIT_PATTERN.search(combined):
-                reset_at = _refusal_reset(usage, rejected, combined)
+            # B405/D71: with a result line, the wording and the reset are read from the CLI's
+            # own message and stderr, the same rule as at exit 0. The stream also carries tool
+            # output, and a D19 budget stop whose tool output mentions a limit beside a date is
+            # still a budget stop. Without a result line the whole output is all there is.
+            if isinstance(data, dict):
+                haystack = f"{_as_str(data.get('result')) or ''}\n{stderr}"
+            else:
+                haystack = f"{stdout}\n{stderr}"
+            if rejected or RATE_LIMIT_PATTERN.search(haystack):
+                reset_at = _refusal_reset(usage, rejected, haystack)
                 if reported_error:
                     return self._from_json(
                         request, data, stderr, exit_code, usage=usage, reset_at=reset_at
@@ -371,7 +393,7 @@ class ClaudeCliRunner:
                 return self._failure(
                     request,
                     exit_code,
-                    stderr or stdout or REFUSED_ERROR,
+                    (stderr or REFUSED_ERROR) if rejected else (stderr or stdout),
                     reset_at=reset_at,
                     usage=usage,
                 )
@@ -454,7 +476,8 @@ class ClaudeCliRunner:
                 error = redact(message[-STDERR_TAIL_CHARS:])
             elif stderr:
                 error = redact(stderr[-STDERR_TAIL_CHARS:])
-            elif reset_at is not None or usage_rejected(usage):
+            elif usage_rejected(usage):
+                # B405: only when the signal really said `rejected`; a reset alone is not that.
                 error = REFUSED_ERROR
             else:
                 error = subtype or "claude reported is_error"

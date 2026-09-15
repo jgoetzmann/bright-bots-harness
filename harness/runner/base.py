@@ -30,17 +30,50 @@ RATE_LIMIT_PATTERN = re.compile(
 USAGE_REJECTED = "rejected"
 
 
+#: The runner's name for the CLI's ``isUsingOverage`` / ``overageInUse``, kept on a rejected
+#: reading only (B403).
+USAGE_OVERAGE_IN_USE = "overage_in_use"
+
+#: The runner's name for a rejected event's top-level ``resetsAt``: the reset of the limit that
+#: refused, whichever type it is (B404).
+USAGE_REJECTED_RESETS_AT = "rejected_resets_at"
+
+
 def usage_rejected(usage: Mapping[str, Any] | None) -> bool:
-    """True when the usage signal says the subscription refused the call (B396)."""
-    return isinstance(usage, Mapping) and usage.get("status") == USAGE_REJECTED
+    """True when the usage signal says the subscription refused the call (B396).
+
+    The CLI's own rule, not a stricter one (B403): its "not blocked" test in 2.1.272 is
+    ``status !== "rejected" || isUsingOverage || overageInUse``. A call that went ahead on extra
+    usage and then failed for another reason (max turns, an API error) was not refused, and
+    classifying it as a rate limit would return the item instead of reporting the failure.
+    """
+    return (
+        isinstance(usage, Mapping)
+        and usage.get("status") == USAGE_REJECTED
+        and usage.get(USAGE_OVERAGE_IN_USE) is not True
+    )
+
+
+def _iso_instant(raw: object) -> tuple[datetime, str] | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed, parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def exhausted_reset(usage: Mapping[str, Any] | None) -> str | None:
     """When the refusal lifts: the ``resets_at`` of the window at or over 1.0 (B396).
 
     The earliest one when several are, because that is the soonest a call can be tried again
-    and the next refusal would say so. ``None`` when no window is exhausted or none carries a
-    readable reset -- the stage then falls back to its default delay.
+    and the next refusal would say so. When no unified window is exhausted -- a model-specific
+    weekly limit such as ``seven_day_opus`` refused while both unified readings are below 1.0 --
+    the event's own top-level reset is used (B404). ``None`` when neither is readable; the
+    stage then falls back to its default delay.
     """
     if not isinstance(usage, Mapping):
         return None
@@ -53,19 +86,13 @@ def exhausted_reset(usage: Mapping[str, Any] | None) -> str | None:
             continue
         if utilization < 1.0:
             continue
-        raw = window.get("resets_at")
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-        try:
-            parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        found.append((parsed, parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
-    if not found:
-        return None
-    return min(found)[1]
+        instant = _iso_instant(window.get("resets_at"))
+        if instant is not None:
+            found.append(instant)
+    if found:
+        return min(found)[1]
+    instant = _iso_instant(usage.get(USAGE_REJECTED_RESETS_AT))
+    return None if instant is None else instant[1]
 
 
 @dataclass(frozen=True)

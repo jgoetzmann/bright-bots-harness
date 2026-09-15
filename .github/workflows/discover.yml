@@ -292,13 +292,20 @@ jobs:
           failed=0
           for n in $ids; do
             echo "::group::harness propose ${n}"
-            if harness propose "$n"; then
+            if harness propose "$n" | tee "runs/propose-${n}.txt"; then
               status=0
             else
               status=$?
             fi
             echo "::endgroup::"
-            if [ "${status}" -eq 0 ]; then
+            # B407/D71: a refusal exits 0 as well (B120) and prints `rate limited until <reset>`.
+            # That is not a proposal, and the next item would be refused the same way: stop, as
+            # a budget stop does, and leave the rest discovered for the next run.
+            limited="$(sed -n 's/^rate limited until //p' "runs/propose-${n}.txt" | tail -n 1)"
+            if [ "${status}" -eq 0 ] && [ -n "${limited}" ]; then
+              echo "rate limited at item ${n} until ${limited}; the rest stay discovered for the next run"
+              break
+            elif [ "${status}" -eq 0 ]; then
               echo "item ${n}: proposed"
             elif [ "${status}" -eq "${EXIT_BUDGET}" ]; then
               echo "budget exhausted at item ${n}; the rest stay discovered for the next run"

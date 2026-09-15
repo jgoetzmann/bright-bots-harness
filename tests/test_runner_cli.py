@@ -1873,11 +1873,16 @@ def test_b396_the_earliest_exhausted_window_sets_the_reset():
 
 
 def test_b396_a_rejection_with_no_exhausted_window_is_still_a_rate_limit(tmp_path):
-    """B396: the status is the verdict; a reset is a detail. Without one the stage applies its
-    default delay (resolve_reset), and the call is still not a failure."""
+    """B396/B404: the status is the verdict; a reset is a detail. With no unified window at 1.0
+    and no top-level `resetsAt` either, there is no reset and the stage applies its default
+    delay (resolve_reset), and the call is still not a failure."""
     from harness.runner.base import is_rate_limited
 
-    stdout = refusal_stdout(REFUSAL_MESSAGE_UNWORDED, seven_day=0.97)
+    event = rate_limit_event(five_hour=0.0, seven_day=0.97, status="rejected",
+                             seven_day_resets=REFUSAL_SEVEN_DAY_EPOCH)
+    del event["rate_limit_info"]["resetsAt"]
+    result_line = stream_result(subtype="success", is_error=True, result=REFUSAL_MESSAGE_UNWORDED)
+    stdout = stream_stdout(event, result_line)
     runner = ClaudeCliRunner(spawn=SpawnRecorder(stdout=stdout), capture_usage=True)
 
     result = runner.run(minimal_request(tmp_path))
@@ -2064,3 +2069,186 @@ def test_b395_stderr_is_the_fallback_when_the_message_is_empty(tmp_path):
 
     assert with_stderr.run(minimal_request(tmp_path)).error == "node: out of memory\n"
     assert without.run(minimal_request(tmp_path)).error == "error_during_execution"
+
+
+# --------------------------------------------------------------------------
+# D71 review — B403-B405. Three places the first cut read more into the stream than the CLI
+# meant: a rejection on extra usage, a rejection by a limit that is not a unified window, and
+# limit wording in tool output beside a budget stop.
+# --------------------------------------------------------------------------
+
+#: 2026-09-17T00:00:00Z, a model-specific weekly reset that no unified window carries.
+OPUS_WEEKLY_EPOCH = 1789603200
+
+
+def overage_rejection(**info_overrides) -> dict:
+    """A `rejected` event while extra usage carries the call, as the 2.1.272 schema spells it."""
+    event = rate_limit_event(five_hour=1.0, seven_day=0.6, status="rejected",
+                             five_hour_resets=REFUSAL_FIVE_HOUR_EPOCH,
+                             seven_day_resets=REFUSAL_SEVEN_DAY_EPOCH)
+    event["rate_limit_info"].update({"isUsingOverage": True, "overageStatus": "allowed"})
+    event["rate_limit_info"].update(info_overrides)
+    return event
+
+
+@pytest.mark.parametrize(
+    ("returncode", "result_line", "expected_error"),
+    [
+        (1, {"subtype": "error_max_turns", "is_error": True, "result": ""}, "error_max_turns"),
+        (0, {"subtype": "success", "is_error": True, "result": "API Error: 500 Internal"},
+         "API Error: 500 Internal"),
+    ],
+    ids=["max-turns-exit-1", "api-500-exit-0"],
+)
+def test_b403_a_rejection_on_extra_usage_is_not_a_refusal(
+    tmp_path, returncode, result_line, expected_error
+):
+    """B403: the CLI's own rule is `status !== "rejected" || isUsingOverage || overageInUse`.
+    A call that ran on extra usage and then failed for another reason is that failure, with its
+    own reason -- not a rate limit that returns the item and names the exhausted window."""
+    from harness.runner.base import is_rate_limited
+
+    stdout = stream_stdout(overage_rejection(), stream_result(**result_line))
+    runner = ClaudeCliRunner(spawn=SpawnRecorder(returncode=returncode, stdout=stdout),
+                             capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert is_rate_limited(result) is False
+    assert result.reset_at is None
+    assert result.error == expected_error
+    assert result.usage["status"] == "rejected" and result.usage["overage_in_use"] is True
+
+
+def test_b403_the_refusal_rule_follows_both_overage_flags():
+    """B403: pure. `overageInUse` counts as well as `isUsingOverage`; neither means refused."""
+    from harness.runner.base import usage_rejected
+    from harness.runner.cli import usage_from_event
+
+    assert usage_rejected(usage_from_event(overage_rejection())) is False
+    in_use = overage_rejection(isUsingOverage=False, overageInUse=True)
+    assert usage_rejected(usage_from_event(in_use)) is False
+    neither = overage_rejection(isUsingOverage=False, overageStatus="rejected")
+    assert usage_rejected(usage_from_event(neither)) is True
+    assert "overage_in_use" not in usage_from_event(neither)
+
+
+def test_b403_an_allowed_reading_keeps_its_shape():
+    """B403/B404: the extra fields ride on a rejection only, so an `allowed` reading -- the one
+    the ledger stores on every ordinary call -- is exactly what it was."""
+    from harness.runner.cli import usage_from_event
+
+    usage = usage_from_event(rate_limit_event())
+
+    assert set(usage) == {"five_hour", "seven_day", "status"}
+
+
+def test_b404_a_model_specific_weekly_rejection_resets_at_the_events_own_reset(tmp_path):
+    """B404: `rateLimitType: seven_day_opus` refused while both unified windows are below 1.0.
+    The reset is the event's top-level `resetsAt`, not the one-hour default, so the harness is
+    not refused again every hour until the real reset days later."""
+    from harness.runner.base import is_rate_limited
+
+    event = rate_limit_event(five_hour=0.3, seven_day=0.8, status="rejected",
+                             five_hour_resets=REFUSAL_FIVE_HOUR_EPOCH,
+                             seven_day_resets=REFUSAL_SEVEN_DAY_EPOCH)
+    event["rate_limit_info"].update({"rateLimitType": "seven_day_opus",
+                                     "resetsAt": OPUS_WEEKLY_EPOCH})
+    result_line = stream_result(subtype="success", is_error=True, result="You've hit your limit")
+    runner = ClaudeCliRunner(spawn=SpawnRecorder(stdout=stream_stdout(event, result_line)),
+                             capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert is_rate_limited(result) is True
+    assert result.reset_at == "2026-09-17T00:00:00Z"
+    assert result.usage["rate_limit_type"] == "seven_day_opus"
+    assert result.usage["rejected_resets_at"] == "2026-09-17T00:00:00Z"
+
+
+def test_b404_an_exhausted_unified_window_still_comes_first():
+    """B404/B396: the fallback is a fallback. With a unified window at 1.0, its reset wins."""
+    from harness.runner.base import exhausted_reset
+
+    usage = {
+        "seven_day": {"utilization": 1.0, "resets_at": REFUSAL_RESET},
+        "status": "rejected",
+        "rejected_resets_at": "2026-09-17T00:00:00Z",
+    }
+    assert exhausted_reset(usage) == REFUSAL_RESET
+    usage["seven_day"]["utilization"] = 0.8
+    assert exhausted_reset(usage) == "2026-09-17T00:00:00Z"
+    usage["rejected_resets_at"] = "not a time"
+    assert exhausted_reset(usage) is None
+
+
+def tool_output(text: str) -> dict:
+    """A stream-json `user` line carrying a tool result, which the stream does include."""
+    return {
+        "type": "user",
+        "message": {"role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": text}]},
+    }
+
+
+@pytest.mark.parametrize(
+    "tool_text",
+    ["// rate limit added 2024-03-02T10:00:00Z", "retry: the rate limit resets in 15 minutes"],
+    ids=["iso-date", "relative"],
+)
+def test_b405_limit_wording_in_tool_output_does_not_make_a_budget_stop_a_rate_limit(
+    tmp_path, tool_text
+):
+    """B405: at exit 1 with a result line, only the CLI's message and stderr are read, as at
+    exit 0. Tool output that mentions a limit beside a date left the D19 budget stop classified
+    as a rate limit with a reset from the tool output, and labelled a refusal that never was."""
+    from harness.runner.base import is_rate_limited
+
+    event = rate_limit_event(five_hour=0.3, seven_day=0.6, status="allowed")
+    result_line = stream_result(subtype="error_max_budget_usd", is_error=True, result="",
+                                total_cost_usd=0.153)
+    stdout = stream_stdout(event, tool_output(tool_text), result_line)
+    runner = ClaudeCliRunner(spawn=SpawnRecorder(returncode=1, stdout=stdout),
+                             capture_usage=True)
+
+    result = runner.run(budgeted_request(tmp_path, 0.001))
+
+    assert result.ok is False
+    assert is_rate_limited(result) is False
+    assert result.reset_at is None
+    assert result.error == "error_max_budget_usd"
+    assert result.error != cli_mod.REFUSED_ERROR
+
+
+def test_b405_stderr_wording_still_classifies_beside_a_result_line(tmp_path):
+    """B405/B119: narrowing the haystack keeps stderr in it, so the CLI's usage-limit line on
+    stderr at exit 1 is still a rate limit with its reset, whatever the result line says."""
+    from harness.runner.base import is_rate_limited
+
+    result_line = stream_result(subtype="error_during_execution", is_error=True, result="")
+    spawn = SpawnRecorder(returncode=1, stdout=stream_stdout(result_line),
+                          stderr=USAGE_LIMIT_STDERR)
+    runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert is_rate_limited(result) is True
+    assert result.reset_at == RESET_AT
+
+
+def test_b405_a_rejection_with_no_result_line_names_the_refusal_at_any_exit(tmp_path):
+    """B405/B396: a rejected event and nothing else, at exit 1, is named as the refusal rather
+    than dumped as the raw stream; the label is used only because the status said `rejected`."""
+    from harness.runner.base import is_rate_limited
+
+    event = rate_limit_event(five_hour=0.0, seven_day=1.0, status="rejected",
+                             seven_day_resets=REFUSAL_SEVEN_DAY_EPOCH)
+    runner = ClaudeCliRunner(spawn=SpawnRecorder(returncode=1, stdout=stream_stdout(event)),
+                             capture_usage=True)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert is_rate_limited(result) is True
+    assert result.reset_at == REFUSAL_RESET
+    assert result.error == cli_mod.REFUSED_ERROR

@@ -528,6 +528,8 @@ the seed checked in on `main`, and says which one it read (B402/D71).
 A reading describes its window until that window's `resets_at` and nothing after (B399/D71). A
 100% seven-day reading stops work until the reset and then stops nothing, with no command needed;
 a refused call also sets `rate_limited_until` to the same instant (B396), which lifts with it.
+`harness ledger` and `harness status` then print `window reset since; no longer stops anything`
+for that window instead of STOPPED (B406).
 
 **Nothing depends on the signal.** With `usage` absent — a fake backend, an older CLI, a call that
 never reached inference — every decision falls back to the USD path (`WEEKLY_CAP_USD`,

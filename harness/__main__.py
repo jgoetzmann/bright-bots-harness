@@ -1149,7 +1149,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # The subscription first, because it is the thing that actually runs out. The block under
     # it is the harness's OWN accounting in budget units -- a different quantity that happens to
     # also be a percentage, which is exactly why both now say which they are.
-    lines.extend(_usage_lines(ctx.ledger, config))
+    lines.extend(_usage_lines(ctx.ledger, config, ctx.clock.now()))
     lines.append("internal allowance (budget units, not the subscription):")
     lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
     lines.append(f"  session remaining {budget['session_remaining_pct']:.2f}%")
@@ -2425,12 +2425,16 @@ def _halt_lines(led) -> list[str]:
     ]
 
 
-def _usage_lines(led, config) -> list[str]:
+def _usage_lines(led, config, now=None) -> list[str]:
     """The measured subscription usage and how far it is from each stop (B221/D41).
 
     Delivery 3 made the two stops depend on this signal, and then printed neither it nor the
     distance to it -- so the one question an operator asks the ledger ("how close am I?") had
     no answer in its output.
+
+    ``now`` marks a reading whose window has reset since (B406/D71). The governor and the
+    dispatcher stop refusing at that instant, so this view stops saying STOPPED too: after a
+    reset, `harness ledger` is the first command an operator runs.
     """
     usage = (dict(led.window).get("usage") or {}) if led.window else {}
     if not usage:
@@ -2454,7 +2458,10 @@ def _usage_lines(led, config) -> list[str]:
             lines.append(f"  {label}       (not reported)")
             continue
         pct = float(raw) * 100.0
-        verdict = "STOPPED" if pct >= stop else f"{stop - pct:.1f} to go"
+        if now is not None and ledger_mod.window_has_reset(window, now):
+            verdict = "window reset since; no longer stops anything"
+        else:
+            verdict = "STOPPED" if pct >= stop else f"{stop - pct:.1f} to go"
         lines.append(
             f"  {label}{pct:5.1f}%  stop at {stop:.0f}%  ({verdict})"
             f"  resets {window.get('resets_at') or 'unknown'}"
@@ -2582,7 +2589,7 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     )
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
     lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
-    lines.extend(_usage_lines(led, config))
+    lines.extend(_usage_lines(led, config, ctx.clock.now()))
     lines.append("observations:")
     if led.observations:
         for stage in sorted(led.observations):

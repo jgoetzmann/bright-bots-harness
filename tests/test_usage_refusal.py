@@ -399,3 +399,126 @@ def test_b402_the_heartbeat_loads_the_ledger_from_harness_state_before_reporting
     assert "ledger-source" in block and "ledger read from: ${ledgerSource}" in text
     assert "contents: read" in text and "contents: write" not in text
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in text
+
+
+# --------------------------------------------------------------------------------------
+# B406 - `harness ledger` and `harness status` stop saying STOPPED at the reset
+# --------------------------------------------------------------------------------------
+
+SESSION_RESET = "2026-09-15T14:00:00Z"
+
+
+def _cli_repo_with_a_rejected_reading(tmp_path, monkeypatch, write_env, now: datetime) -> None:
+    """A repository `cli.main` runs in: the clock frozen at `now`, GitHub refused, and a ledger
+    holding a rejected reading from inside this harness week (so no roll can hide it)."""
+    for key in KNOWN_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+    write_env(tmp_path / ".env")
+    write_env(tmp_path / ".env.example")
+    monkeypatch.setattr(context_mod, "SystemClock", lambda: FrozenClock(now))
+
+    def no_github(self, path):
+        raise GitHubError(f"no request may be issued in this test: {path}")
+
+    monkeypatch.setattr(gh_mod.GitHubReadOnly, "get", no_github)
+    assert cli.main(["init"]) == 0
+    led = Ledger.empty("2026-09-14T00:00:00Z")
+    led.observe_usage(
+        {
+            "five_hour": {"utilization": 0.85, "resets_at": SESSION_RESET},
+            "seven_day": {"utilization": 1.0, "resets_at": RESET},
+            "status": "rejected",
+        },
+        "2026-09-15T12:00:00Z",
+    )
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "ledger.json").write_text(led.to_json(), encoding="utf-8", newline="\n")
+
+
+@pytest.mark.parametrize("command", ["ledger", "status"])
+@pytest.mark.parametrize(
+    ("now", "session_stopped", "weekly_stopped"),
+    [
+        ("2026-09-15T13:59:59Z", True, True),
+        (SESSION_RESET, False, True),
+        ("2026-09-15T19:59:59Z", False, True),
+        (RESET, False, False),
+    ],
+    ids=["1s-before-session-reset", "at-session-reset", "1s-before-weekly-reset", "at-reset"],
+)
+def test_b406_the_ledger_and_status_views_agree_with_the_stop_on_both_sides_of_the_reset(
+    tmp_path, monkeypatch, capsys, write_env, command, now, session_stopped, weekly_stopped
+):
+    """B406/D71: `harness ledger` (the D41 view) and `harness status` printed STOPPED for a
+    reading whose window had already reset, while the governor and the dispatcher had stopped
+    refusing. Each window's line now follows its own reset, and says the same as the stop."""
+    frozen = at(now)
+    _cli_repo_with_a_rejected_reading(tmp_path, monkeypatch, write_env, frozen)
+    capsys.readouterr()
+
+    assert cli.main([command]) == 0
+
+    out = capsys.readouterr().out
+    session = next(line for line in out.splitlines() if line.strip().startswith("session (5h)"))
+    weekly = next(line for line in out.splitlines() if line.strip().startswith("weekly  (7d)"))
+    for line, stopped in ((session, session_stopped), (weekly, weekly_stopped)):
+        assert ("(STOPPED)" in line) is stopped, line
+        assert ("(window reset since; no longer stops anything)" in line) is (not stopped), line
+
+    cfg = load_config(env_path=tmp_path / ".env", environ={})
+    led = Ledger.from_json((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
+    assert (usage_stop(led, cfg, now=frozen) is not None) is (session_stopped or weekly_stopped)
+
+
+# --------------------------------------------------------------------------------------
+# B407 - the propose loop does not log a refusal as a proposal
+# --------------------------------------------------------------------------------------
+
+
+def test_b407_the_propose_loop_stops_at_a_refusal_instead_of_logging_a_proposal():
+    """B407/D71: `harness propose` exits 0 on a refusal (B120) and prints `rate limited until
+    <reset>`. The loop read only the exit code, so the log said `item N: proposed` for a proposal
+    that never happened. The output is kept, read before the success branch, and a refusal breaks
+    the loop the way a budget stop does -- never as a failure."""
+    text = _wf("discover.yml")
+    match = re.search(r"for n in \$ids; do\n(.*?)\n\s*done\n", text, re.S)
+    assert match, "discover.yml has no propose loop"
+    lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
+
+    call = next(line for line in lines if line.startswith("if harness propose"))
+    tee = re.search(r'\|\s*tee\s+"(runs/propose-\$\{n\}\.txt)"', call)
+    assert tee, f"propose's output must be kept for the refusal check: {call}"
+    reader = next(
+        i for i, line in enumerate(lines) if "^rate limited until" in line and tee.group(1) in line
+    )
+    guard = next(i for i, line in enumerate(lines) if '-n "${limited}"' in line)
+    proposed = lines.index('echo "item ${n}: proposed"')
+    assert reader < guard < proposed
+    assert '"${status}" -eq 0' in lines[guard]
+    handler = lines[guard + 1 : guard + 3]
+    assert "break" in handler and not any("failed=1" in line for line in handler), handler
+    assert "runs/**/*.txt" in _upload_paths(text), "the kept output is uploaded as evidence"
+
+
+# --------------------------------------------------------------------------------------
+# B408 - the heartbeat's fallback names the real HTTP code, and a bad body as a bad body
+# --------------------------------------------------------------------------------------
+
+
+def test_b408_the_heartbeat_fallback_reports_the_real_code_and_a_bad_body():
+    """B408/D71: `|| echo 000` inside the substitution appended a second 000 to the one curl
+    prints on a connection failure ("HTTP 000000"), and an unparseable 200 put a traceback in the
+    log and read as "HTTP 200". The fallback sits outside, and a bad body has its own words."""
+    text = _wf("heartbeat.yml")
+    block = text.split("- name: Load state/ledger.json from harness-state", 1)[1]
+    block = block.split("\n      - name:", 1)[0]
+
+    substitution = re.search(r'code="\$\((curl .*?)\)"', block, re.S)
+    assert substitution, "the HTTP code is read from curl's -w output"
+    assert "echo 000" not in substitution.group(1)
+    assert ')" || true' in block
+    assert 'code="${code:-000}"' in block
+    assert "HTTP 200 but not valid JSON" in block
+    parse = next(line for line in block.splitlines() if "json.load" in line)
+    assert "2>/dev/null" in parse, "a parse failure is a message, not a traceback"

@@ -1151,7 +1151,7 @@ Nothing here changes the gate: the level cap per verb, fail-closed on a malforme
 unvouched handles, and "no new access to the repository for anybody" are all exactly as D69 left
 them. What changed is that four more kinds of line, and two commands, stopped failing quietly.
 
-## D71 / B395–B402 — a refusal is an outcome, and it ends at its reset
+## D71 / B395–B408 — a refusal is an outcome, and it ends at its reset
 
 **The incident.** The scheduled discover on Sunday 2026-09-13 (run 34757951628) failed with
 `error: triage ranking failed: success`, and ops opened issue #43. The live ledger on
@@ -1184,7 +1184,8 @@ this refusal went through as an ordinary failure, `run_model` raised nothing, an
   `resets_at` of the window at or over 1.0, the earliest if several are, which here is
   2026-09-15T20:00Z. That applies at any exit code, with or without a result line.
 - **B397.** An `is_error` result whose message matches `RATE_LIMIT_PATTERN` is rate-limited at exit
-  0 too. The pattern is matched against the message only, never the whole stream, so B119's
+  0 too. The pattern is matched against the message only, never the whole stream (and since
+  B405, the same holds at a non-zero exit whenever there is a result line), so B119's
   "a successful reply that mentions limits is a reply" still holds. The pattern also gains the
   CLI's newer `hit your … limit` wording. The exact 2.1.270 message was not captured (item 4), so
   the status is the primary signal, not the wording.
@@ -1222,9 +1223,13 @@ observed and decides nothing, and B211 pins it.
 - **A separate "rejected means stop" rule in the dispatcher.** `rate_limited_until` already holds
   until the same instant and lifts with it.
 
-**4. The evidence was discarded (B400).** discover.yml's upload list had no `.jsonl`, so
-`transcript/discover.jsonl`, which holds the CLI's raw result object, was never kept. implement.yml
-had the same gap. feedback.yml kept only `runs/sweep.jsonl`. All three now upload `runs/**/*.jsonl`.
+**4. The evidence was discarded (B400).** A call's transcript is written to
+`runs/<run id>/transcript/<stage>.jsonl`, and no upload list named `.jsonl`. Item transcripts sit
+under `runs/item-N/`, which the `runs/item-*/` include already uploaded, so implement.yml lost
+nothing. The gaps were discover.yml's `runs/discover/transcript/`, which held the CLI's raw result
+object for #43, and feedback.yml's `runs/sweep/transcript/`: that workflow kept only
+`runs/sweep.jsonl`, the sweep's stdout. All three now upload `runs/**/*.jsonl`, which covers every
+run directory and is harmless in implement.yml.
 Transcripts are written through `redact.write_redacted`, and B398's test puts a key-shaped token in
 the refusal message and asserts it is not in the file.
 
@@ -1241,11 +1246,52 @@ workflows' HALT check reads `.harness/HALT`, because this job has no git credent
 replaces the seed only after it parses. The comment names which ledger it read, and marks a window
 that has reset since the reading.
 
+**The adversarial review (B403–B408).** An independent review of the first cut found six more
+problems, and each is fixed with a test:
+
+- **B403. A rejection on extra usage is not a refusal.** The CLI's own "not blocked" rule in
+  2.1.272 is `status !== "rejected" || isUsingOverage || overageInUse`. The first cut read
+  `rejected` alone, so a call that ran on extra usage and then failed for another reason (max
+  turns, an API 500) became a rate limit and returned the item. A rejected reading now keeps
+  `overage_in_use`, and `usage_rejected` follows the CLI's rule. This operator's events carry
+  `overageStatus: rejected` (no extra usage provisioned), so today it matters only if extra usage
+  is turned on.
+- **B404. The limit that refused may not be a unified window.** `rateLimitType` also takes
+  `seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included` and `overage`, and
+  `.env.example` sets `MODEL=opus`. With both unified readings below 1.0 the reset was `None`, so
+  the one-hour default applied and every run after the hour made another refused call. A
+  rejected reading now also keeps the event's top-level `resetsAt` as `rejected_resets_at`, and
+  `rateLimitType` as `rate_limit_type`. `exhausted_reset` falls back to that reset when no unified
+  window is exhausted. An `allowed` reading keeps its shape.
+- **B405. Tool output is not the CLI's message, at any exit code.** At a non-zero exit the wording
+  and the reset were still matched over the whole stream-json stdout, which carries tool results.
+  So a D19 budget stop whose tool output mentioned a limit beside a date became a rate limit, with
+  its reset taken from that date. The misread predates D71, but the first cut had also labelled
+  it `REFUSED_ERROR`. With a result line, the match now reads the result message and stderr only,
+  the same rule as at exit 0. The label is used only when the status really said `rejected`.
+- **B406. `harness ledger` and `harness status` said STOPPED after the reset.** `_usage_lines`
+  had no clock. It now takes the command's clock and prints `window reset since; no longer stops
+  anything` for a window whose `resets_at` has passed. The tests check it against `usage_stop` on
+  both sides of each window's reset.
+- **B407. The propose loop logged a refusal as a proposal.** `harness propose` exits 0 on a
+  refusal (B120), and discover.yml's loop read only the exit code, so it printed `item N:
+  proposed`. It now tees the output to `runs/propose-N.txt`, and a `rate limited until` line
+  breaks the loop the way a budget stop does.
+- **B408. The heartbeat's fallback warning named the wrong code.** `|| echo 000` inside the
+  substitution turned a connection failure into `HTTP 000000`, and an unparseable 200 printed a
+  traceback and read as `HTTP 200`. The fallback is now outside the substitution, and a bad body
+  has its own message.
+
+*Rejected:* the claim that B398's guard in discover.yml misses `{"rate_limited_until": null}`.
+That document cannot be printed. `RateLimited` is raised in one place, `stages._rate_limited`,
+and its reset comes from `resolve_reset`, which returns `now + 1h` when the runner has none.
+
 **What B114 still guarantees.** No decision *depends* on the usage signal:
 
 - A result without a `rate_limit_event` is classified exactly as before by `reset_at` and the
   wording, now also over an `is_error` message at exit 0. The USD path governs as it did.
-- The status adds a classification only for failed results whose status is exactly `rejected`.
-  `allowed` and `allowed_warning` change nothing, and the D19 budget stop stays a budget stop.
+- The status adds a classification only for failed results whose status is exactly `rejected` and
+  which were not running on extra usage (B403). `allowed` and `allowed_warning` change nothing,
+  and the D19 budget stop stays a budget stop at any exit code (B405).
 - Expiry needs a stated `resets_at`. A reading without one is kept, and a caller that passes no
   clock sees what it saw before.

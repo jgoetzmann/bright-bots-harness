@@ -80,18 +80,27 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p state runs/heartbeat
+          # B408: curl prints `000` itself when it cannot connect and then exits non-zero, so the
+          # fallback sits outside the substitution (inside it, `|| echo 000` made "000000").
           code="$(curl -sS -o state/ledger.json.new -w '%{http_code}' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${REPO}/contents/state/ledger.json?ref=harness-state" || echo 000)"
-          if [ "${code}" = "200" ] && python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' state/ledger.json.new; then
+            "https://api.github.com/repos/${REPO}/contents/state/ledger.json?ref=harness-state")" || true
+          code="${code:-000}"
+          why=""
+          if [ "${code}" != "200" ]; then
+            why="HTTP ${code}"
+          elif ! python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' state/ledger.json.new 2>/dev/null; then
+            why="HTTP 200 but not valid JSON"
+          fi
+          if [ -z "${why}" ]; then
             mv state/ledger.json.new state/ledger.json
             echo "harness-state" > runs/heartbeat/ledger-source
             echo "ledger loaded from harness-state"
           else
             rm -f state/ledger.json.new
-            echo "the checked-in seed (harness-state unreadable, HTTP ${code})" > runs/heartbeat/ledger-source
-            echo "::warning::could not read state/ledger.json from harness-state (HTTP ${code}); reporting the checked-in seed"
+            echo "the checked-in seed (harness-state unreadable: ${why})" > runs/heartbeat/ledger-source
+            echo "::warning::could not read state/ledger.json from harness-state (${why}); reporting the checked-in seed"
           fi
 
       - name: harness status --json and harness ledger --json

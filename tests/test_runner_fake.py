@@ -1,8 +1,7 @@
 """FakeRunner determinism.
 
-Section 4.3 assigns this file "Fake determinism" and gives it no B number; the
-contract is HARNESS-SPEC section 5.4.2 plus RUN-DECISIONS "Runner". B24 covers
-the one behavior number that reaches here (get_runner selecting FakeRunner).
+B24 covers the one behavior number that reaches here: get_runner selecting
+FakeRunner.
 
 The fixtures below are written inline. Nothing under `tests/fixtures/` is read.
 """
@@ -78,7 +77,7 @@ def fixtures_dir(tmp_path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - the fixture is returned verbatim
+# The fixture is returned verbatim
 # --------------------------------------------------------------------------
 
 
@@ -119,7 +118,7 @@ def test_b24_the_fake_runner_is_named_fake(fixtures_dir):
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - determinism
+# Determinism
 # --------------------------------------------------------------------------
 
 
@@ -178,7 +177,7 @@ def test_s542_each_stage_reads_its_own_fixture(fixtures_dir, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - failure paths
+# Failure paths
 # --------------------------------------------------------------------------
 
 
@@ -243,7 +242,7 @@ def test_s542_one_missing_stage_does_not_poison_the_others(fixtures_dir, tmp_pat
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - no network, no subprocess (source-level, as section 9 does it)
+# No network, no subprocess (source-level, as the invariants do it)
 # --------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""B49-B52 and the I-8 write guard: harness.redact (HARNESS-SPEC 5.8, 9 I-8)."""
+"""B49-B52 and the I-8 write guard: harness.redact (9 I-8)."""
 
 from __future__ import annotations
 

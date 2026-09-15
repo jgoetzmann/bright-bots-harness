@@ -1,7 +1,6 @@
 """Shared fixtures for the Bright Bots Harness suite.
 
-Everything here is derived from HARNESS-SPEC section 5 (``## Surface``) and from
-RUN-DECISIONS.md. No fixture inspects the implementation.
+No fixture inspects the implementation.
 
 Time is always frozen: 2026-09-01T12:00:00Z, a Tuesday. The most recent monday
 (the default ``WEEKLY_RESET_DAY``) is therefore 2026-08-31.
@@ -28,9 +27,8 @@ PERIOD_END_ISO = "2026-09-07T00:00:00Z"
 # .env
 # --------------------------------------------------------------------------
 
-# Every key named in RUN-DECISIONS "Config extras", with the safe defaults from
-# RUN-DECISIONS "Defaults for .env.example". Paths are relative so they resolve
-# against the .env file's own directory (which is tmp_path in every fixture).
+# Every required key, with the safe defaults .env.example ships. Paths are relative
+# so they resolve against the .env file's own directory (tmp_path in every fixture).
 DEFAULT_ENV: dict[str, str] = {
     "BACKEND": "fake",
     "REPO": "Bright-Bots-Initiative/brightboost",
@@ -85,7 +83,7 @@ DEFAULT_ENV: dict[str, str] = {
     "ANTHROPIC_API_KEY": "",
 }
 
-# A token whose shape satisfies RUN-DECISIONS' ^github_pat_[A-Za-z0-9_]{40,}$
+# A token whose shape satisfies ^github_pat_[A-Za-z0-9_]{40,}$
 VALID_PAT = "github_pat_" + "A1b2C3d4E5" * 5
 # A token whose shape satisfies ^ghp_[A-Za-z0-9]{30,}$
 VALID_GHP = "ghp_" + "Z9y8X7w6V5" * 4
@@ -167,8 +165,8 @@ def store(tmp_path: Path, frozen_clock):
 # Runner fixtures (written inline; nothing is read from the repo's own fixtures)
 # --------------------------------------------------------------------------
 
-# A complete section 7.1 work package: >= 1 decision, fewer than 3 slices,
-# fewer than 15 behaviors, empty open questions (RUN-DECISIONS "Runner").
+# A complete work package: >= 1 decision, fewer than 3 slices,
+# fewer than 15 behaviors, empty open questions.
 WORK_PACKAGE_816 = """# fix(scripts): bundle size check misreports esm chunks
 
 ## Issue

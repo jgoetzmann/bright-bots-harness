@@ -1,16 +1,12 @@
-"""D71: the refusal of Sunday 2026-09-13 (issue #43). B398-B402.
+"""D71: a subscription refusal is a rate limit that ends at its reset. B398-B402.
 
-The weekly subscription allowance, which is shared with the operator's own interactive use, was
-exhausted. The scheduled discover call was refused in about two seconds: a `rate_limit_event`
-with status "rejected" and seven_day at 1.0, then a result with `subtype: "success"`,
-`is_error: true` and the message in `result`, at exit 0. The run went red with "error: triage
-ranking failed: success", `rate_limited_until` stayed null, the transcript that held the CLI's
-words was never uploaded, the ops issue's tail missed the error line, and the Monday heartbeat
-read the checked-in seed and said "not measured yet".
+An exhausted weekly allowance refuses a call in about two seconds: a `rate_limit_event` with
+status "rejected" and seven_day at 1.0, then a result with `subtype: "success"`,
+`is_error: true` and the message in `result`, at exit 0.
 
 B395-B397 (the runner) live in tests/test_runner_cli.py. This file holds what happens after
 the runner: the refusal as a B120 outcome end to end (B398), a stored reading that expires at
-its own reset (B399), and the three workflows that lost the evidence (B400-B402). Every clock
+its own reset (B399), and the three workflows that carry the evidence (B400-B402). Every clock
 here is frozen, on both sides of the reset.
 """
 

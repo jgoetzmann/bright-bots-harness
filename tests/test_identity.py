@@ -1,6 +1,6 @@
-"""B79-B86: harness.identity (HARNESS-SPEC 5.12, 13).
+"""B79-B86: harness.identity.
 
-Delivery 1 is Tier 0: nothing here authenticates, and no test prints a token value.
+Tier 0: nothing here authenticates, and no test prints a token value.
 """
 
 from __future__ import annotations

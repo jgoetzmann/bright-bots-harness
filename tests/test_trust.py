@@ -1,8 +1,6 @@
-"""Spec tests for ``harness.trust`` — Delivery 2 handoff §5.5 and §8.2 (B131).
+"""Spec tests for ``harness.trust`` (B131).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §6. Fixtures are inline on purpose.
-Review selector: ``pytest tests/test_trust.py -k case`` (D2-R4.5).
+Fixtures are inline. Review selector: ``pytest tests/test_trust.py -k case``.
 """
 from __future__ import annotations
 
@@ -95,11 +93,11 @@ def test_B131_author_associations_constant_is_exactly_the_three():
 
 
 # ---------------------------------------------------------------------------
-# B131 — case-insensitive handles (D2-R4.5: -k case)
+# B131 — case-insensitive handles (-k case)
 # ---------------------------------------------------------------------------
 
 def test_B131_case_insensitive_handle_matches_trust_file(tmp_path):
-    """B131: JGoetzmann matches a trust file containing jgoetzmann (D2-R4.5)."""
+    """B131: JGoetzmann matches a trust file containing jgoetzmann."""
     trusted = load_trust(trust_file(tmp_path, "jgoetzmann\n"))
     assert is_authorised("JGoetzmann", "OWNER", trusted) is True
     assert is_authorised("JGOETZMANN", "OWNER", trusted) is True
@@ -132,11 +130,11 @@ def test_B131_case_variant_of_an_untrusted_handle_is_still_denied(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# B131 — trust file format (§5.5)
+# B131 — trust file format
 # ---------------------------------------------------------------------------
 
 def test_B131_load_trust_ignores_comment_lines_and_blank_lines(tmp_path):
-    """B131/§5.5: '#' lines and blank lines are not handles."""
+    """B131: '#' lines and blank lines are not handles."""
     text = "# operator\n\njgoetzmann\n\n   \n# nathan goes below\n\n"
     trusted = load_trust(trust_file(tmp_path, text))
     assert trusted == frozenset({"jgoetzmann"})
@@ -145,7 +143,7 @@ def test_B131_load_trust_ignores_comment_lines_and_blank_lines(tmp_path):
 
 
 def test_B131_load_trust_ignores_the_nathan_handle_placeholder(tmp_path):
-    """B131/RUN-DECISIONS-D2 §15: the shipped file's <NATHAN_HANDLE> placeholder is not a handle —
+    """B131: the shipped file's <NATHAN_HANDLE> placeholder is not a handle —
     it is neither loaded nor authorisable."""
     trusted = load_trust(trust_file(tmp_path, SHIPPED_TRUST_FILE))
     assert trusted == frozenset({"jgoetzmann"})
@@ -178,7 +176,7 @@ def test_B131_load_trust_comments_only_file_is_empty(tmp_path):
 
 
 def test_B131_load_trust_strips_surrounding_whitespace(tmp_path):
-    """B131/§5.5 'one handle per line': leading/trailing whitespace and CRLF line endings are not
+    """B131, one handle per line: leading/trailing whitespace and CRLF line endings are not
     part of the handle."""
     path = tmp_path / "trust.txt"
     path.write_bytes(b"  jgoetzmann  \r\n\tnathan\r\n")
@@ -212,7 +210,7 @@ SHIPPED_TRUST_PATH = REPO_ROOT / ".harness" / "trust.txt"
 
 
 def test_B131_the_shipped_trust_file_parses_to_real_handles_with_no_placeholder_left():
-    """B131 / handoff 5.5: the governance file as shipped. `load_trust` must return at least two
+    """B131: the governance file as shipped. `load_trust` must return at least two
     live handles - `identity.trust_file_ready()` gates tier readiness on exactly that count - and
     not one of them may still be a `<...>` placeholder. Who may command the harness is a decision;
     this is where changing it has to be made deliberately."""

@@ -538,8 +538,8 @@ def stub_implement_side_effects(
 ):
     """Replace the module-level injectables in harness.stages.implement.
 
-    D70 added the git operations the self-audit loop uses (handoff §4.12: the rig's clone is
-    not a repository). Each has a stand-in, and each may instead be given with its production
+    The git operations the self-audit loop uses are here too, because the rig's clone is not a
+    repository. Each has a stand-in, and each may instead be given with its production
     signature: `changed` a list or ``(clone, sha) -> paths``; `tip` a string, ``(lease) -> str``,
     or None to keep production's `TIP_SHA`; `commit`, `unified_diff`, `reset_to`,
     `restore_paths`, `head_state` and `put_head` callables. Every call is logged either way.
@@ -1149,7 +1149,7 @@ def _b64_rig(tmp_path, monkeypatch, changed):
     ],
 )
 def test_b296_any_path_under_github_blocks_the_item(tmp_path, monkeypatch, path):
-    """B296 / D67 (handoff 8, test 7): B64's path arm is the whole of `.github/` now, not only
+    """B296: B64's path arm is the whole of `.github/`, not only
     `.github/workflows/`. With the token's `workflow` scope granted nothing at GitHub's end
     stops a composite action, `dependabot.yml` or `CODEOWNERS` edit, and each steers CI."""
     rig, item_id = _b64_rig(tmp_path, monkeypatch, ["src/lib/bundle.ts", path])

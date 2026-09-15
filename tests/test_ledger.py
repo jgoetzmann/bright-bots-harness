@@ -1,7 +1,6 @@
-"""Spec tests for ``harness.ledger`` — Delivery 2 handoff §6.2 (B114, B115, B116, B117).
+"""Spec tests for ``harness.ledger`` (B114, B115, B116, B117).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §4; fixtures are inline on purpose.
+Fixtures are inline.
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ def spend(ledger: Ledger, *, n: int = 1, stage: str = "implement", usd: float = 
 
 def b101_comment(*, stage: str, to_state: str, run: str, usd: float, issue: int,
                  created_at: str, reason: str = "ok") -> dict:
-    """A transition comment exactly as RUN-DECISIONS-D2 §3 says GitHubStore writes it (the
+    """A transition comment exactly as GitHubStore writes it (the
     stage/run/cost record every transition leaves on the issue)."""
     body = f"**harness** `{stage}` → `{to_state}`\nrun: {run}\ncost: ${usd:.2f}\n{reason}"
     return {"body": body, "created_at": created_at, "issue": issue}
@@ -88,7 +87,7 @@ def test_B114_record_ignores_allowance_pct_from_a_runresult_shaped_payload():
 
 
 def test_B114_record_accumulates_spend_and_calls_in_the_window():
-    """B114 (§6.1 spend accounting): every record adds its usd to window.spent_usd and one to
+    """B114: every record adds its usd to window.spent_usd and one to
     window.calls — the ledger accumulates cost, it never estimates allowance."""
     ledger = fresh()
     ledger.record(ts=NOW_ISO, stage="propose", issue=816, usd=0.42, run=RUN_URL)
@@ -164,7 +163,7 @@ def test_B115_save_then_load_round_trips_exactly(state_dir: Path):
 
 
 def test_B115_to_json_key_order_indent_and_trailing_newline():
-    """B115/§6.2: the file IS the §6.2 JSON — keys in the handoff's order, indent=2, one trailing
+    """B115: the file IS the JSON — keys in that order, indent=2, one trailing
     newline, window keys in order period_start/spent_usd/calls/rate_limited_until."""
     ledger = fresh()
     text = ledger.to_json()
@@ -224,7 +223,7 @@ def test_B116_history_of_exactly_500_is_not_truncated():
 
 
 def test_B116_history_entries_have_exactly_the_five_keys_in_order():
-    """B116/§6.2: each history entry is {ts, stage, issue, usd, run} — nothing else is appended."""
+    """B116: each history entry is {ts, stage, issue, usd, run} — nothing else is appended."""
     ledger = fresh()
     ledger.record(ts=NOW_ISO, stage="revise", issue=816, usd=0.88, run=RUN_URL)
     entry = json.loads(ledger.to_json())["history"][0]
@@ -339,11 +338,11 @@ def test_B117_from_json_rejects_a_missing_schema_key():
 
 
 # ---------------------------------------------------------------------------
-# observations / median (B116 fold + §6.4 step 6 inputs)
+# observations / median (B116 fold)
 # ---------------------------------------------------------------------------
 
 def test_B116_median_usd_is_none_below_three_observations():
-    """B116/§6.4: below three observations there is no median — the dispatcher must fall back
+    """B116: below three observations there is no median — the dispatcher must fall back
     to the static table, so median_usd returns None, not 0."""
     ledger = fresh()
     assert ledger.median_usd("implement") is None
@@ -353,7 +352,7 @@ def test_B116_median_usd_is_none_below_three_observations():
 
 
 def test_B116_median_usd_after_three_observations_is_the_middle_value():
-    """B116/§6.4: with three observations the median is the middle value."""
+    """B116: with three observations the median is the middle value."""
     ledger = fresh()
     ledger.record(ts=NOW_ISO, stage="implement", issue=1, usd=0.50, run=RUN_URL)
     ledger.record(ts=NOW_ISO, stage="implement", issue=2, usd=9.00, run=RUN_URL)
@@ -363,7 +362,7 @@ def test_B116_median_usd_after_three_observations_is_the_middle_value():
 
 
 def test_B116_median_usd_for_an_unobserved_stage_is_none():
-    """B116/§6.4: a stage never recorded has no median and no observations entry."""
+    """B116: a stage never recorded has no median and no observations entry."""
     ledger = fresh()
     spend(ledger, n=3, stage="implement")
     assert ledger.median_usd("decompose") is None
@@ -414,11 +413,11 @@ def test_B121_fresh_ledger_is_not_rate_limited():
 
 
 # ---------------------------------------------------------------------------
-# window roll (§6.2 window, RUN-DECISIONS-D2 §4 roll_window)
+# window roll
 # ---------------------------------------------------------------------------
 
 def test_B116_roll_window_after_seven_days_resets_spend_and_keeps_history():
-    """B116 (append-only history) + §6.2 window: when now >= period_start + 7d the window rolls to
+    """B116 (append-only history): when now >= period_start + 7d the window rolls to
     the most recent reset day with zero spend and zero calls; history and observations survive."""
     ledger = Ledger.empty("2026-08-17T00:00:00Z")
     spend(ledger, n=3, usd=1.5, ts="2026-08-18T00:00:00Z")
@@ -434,7 +433,7 @@ def test_B116_roll_window_after_seven_days_resets_spend_and_keeps_history():
 
 
 def test_B116_roll_window_before_seven_days_is_a_no_op():
-    """§6.2 window: inside the seven-day window roll_window returns False and changes nothing."""
+    """Inside the seven-day window roll_window returns False and changes nothing."""
     ledger = fresh()
     spend(ledger, n=2, usd=2.0)
     before = ledger.to_json()
@@ -445,7 +444,7 @@ def test_B116_roll_window_before_seven_days_is_a_no_op():
 
 
 def test_B116_roll_window_at_exactly_seven_days_rolls():
-    """§6.2 window: the boundary is inclusive — now == period_start + 7d rolls."""
+    """The boundary is inclusive — now == period_start + 7d rolls."""
     ledger = Ledger.empty("2026-08-24T00:00:00Z")
     spend(ledger, usd=3.0, ts="2026-08-25T00:00:00Z")
     at_boundary = datetime(2026, 8, 24, tzinfo=timezone.utc) + timedelta(days=7)
@@ -511,7 +510,7 @@ def test_B132_count_denied_unknown_handle_is_absent():
 
 
 def test_B117_empty_ledger_shape():
-    """B117/§6.2: Ledger.empty(period_start) is the canonical zero state every rebuild and every
+    """B117: Ledger.empty(period_start) is the canonical zero state every rebuild and every
     missing-file load starts from."""
     ledger = Ledger.empty("2026-09-07T00:00:00Z")
     assert ledger.schema == 1
@@ -525,8 +524,7 @@ def test_B117_empty_ledger_shape():
 
 
 # ---------------------------------------------------------------------------
-# Delivery 3 — RUN-DECISIONS-D3 "Ledger" (B204, B205) plus carry and the
-# backward-compatible from_json. Appended by the D3 spec-tester (T1); additions only.
+# Usage, carry and the backward-compatible from_json (B204, B205).
 #
 # The signal is the CLI's rate_limit_event: utilization is a fraction 0..1 and
 # seven_day.resets_at is the subscription's weekly reset (Tuesday 20:00 UTC).
@@ -536,7 +534,7 @@ D3_FIVE_HOUR_RESET = "2026-09-04T11:00:00Z"
 D3_SEVEN_DAY_RESET = "2026-09-08T20:00:00Z"  # Tuesday 20:00 UTC
 D3_NEXT_SEVEN_DAY_RESET = "2026-09-15T20:00:00Z"
 
-# A ledger file written by Delivery 2, before window.usage and window.carry existed.
+# A ledger file without window.usage and window.carry.
 D2_LEDGER_TEXT = json.dumps(
     {
         "schema": 1,
@@ -555,7 +553,7 @@ def usage(*, weekly: float = 0.49, session: float = 0.07,
           seven_day_resets: str = D3_SEVEN_DAY_RESET,
           five_hour_resets: str = D3_FIVE_HOUR_RESET,
           status: str = "allowed", observed_at: str | None = None) -> dict:
-    """The RUN-DECISIONS-D3 usage shape as the stage hands it to observe_usage."""
+    """The usage shape as the stage hands it to observe_usage."""
     payload = {
         "five_hour": {"utilization": session, "resets_at": five_hour_resets},
         "seven_day": {"utilization": weekly, "resets_at": seven_day_resets},
@@ -754,7 +752,7 @@ def test_B205_roll_window_still_works_when_no_usage_was_ever_observed():
 # ---------------------------------------------------------------------------
 
 def test_B205_set_carry_records_issue_since_and_reason():
-    """RUN-DECISIONS-D3 "Ledger": window.carry is {"issue", "since", "reason"} and
+    """window.carry is {"issue", "since", "reason"} and
     carry_issue() reads the issue number back."""
     ledger = fresh()
     assert ledger.carry_issue() is None
@@ -765,7 +763,7 @@ def test_B205_set_carry_records_issue_since_and_reason():
 
 
 def test_B205_clear_carry_removes_it():
-    """RUN-DECISIONS-D3 "Ledger": clear_carry() drops the carried item (the continue run went
+    """clear_carry() drops the carried item (the continue run went
     green and was packaged)."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
@@ -775,7 +773,7 @@ def test_B205_clear_carry_removes_it():
 
 
 def test_B205_set_carry_replaces_a_previous_carry():
-    """RUN-DECISIONS-D3 "Ledger": one carried item at a time — the newest handoff wins."""
+    """One carried item at a time — the newest handoff wins."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
     ledger.set_carry(823, "2026-09-02T13:00:00Z", "carry leeway 10% reached")
@@ -785,14 +783,14 @@ def test_B205_set_carry_replaces_a_previous_carry():
 
 
 def test_B205_clearing_a_carry_that_was_never_set_is_a_no_op():
-    """RUN-DECISIONS-D3 "Ledger": clear_carry() on a fresh ledger neither raises nor invents."""
+    """clear_carry() on a fresh ledger neither raises nor invents."""
     ledger = fresh()
     ledger.clear_carry()
     assert ledger.carry_issue() is None
 
 
 def test_B205_carry_survives_to_json_and_from_json():
-    """RUN-DECISIONS-D3 "Ledger": the carry is persisted — the next process knows which item to
+    """The carry is persisted — the next process knows which item to
     continue."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
@@ -803,7 +801,7 @@ def test_B205_carry_survives_to_json_and_from_json():
 
 
 def test_B205_carry_is_independent_of_the_usage_observation():
-    """RUN-DECISIONS-D3 "Ledger": clearing the carry does not clear the usage, and observing
+    """Clearing the carry does not clear the usage, and observing
     usage does not clear the carry."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
@@ -814,12 +812,11 @@ def test_B205_carry_is_independent_of_the_usage_observation():
 
 
 # ---------------------------------------------------------------------------
-# from_json accepts a Delivery 2 file (no usage, no carry)
+# from_json accepts a file with no usage and no carry
 # ---------------------------------------------------------------------------
 
 def test_B204_from_json_accepts_a_file_without_the_new_keys():
-    """RUN-DECISIONS-D3 "Ledger": from_json accepts files without these keys (defaults None) —
-    the ledger written by Delivery 2 loads unchanged."""
+    """from_json accepts files without these keys (defaults None)."""
     ledger = Ledger.from_json(D2_LEDGER_TEXT)
     assert ledger.window["spent_usd"] == pytest.approx(1.5)
     assert ledger.window["calls"] == 2
@@ -832,7 +829,7 @@ def test_B204_from_json_accepts_a_file_without_the_new_keys():
 
 
 def test_B204_a_delivery_2_ledger_can_then_observe_and_carry():
-    """RUN-DECISIONS-D3 "Ledger": an upgraded file is fully usable — the first D3 run observes
+    """An upgraded file is fully usable — the first D3 run observes
     usage and sets a carry on it without a migration step."""
     ledger = Ledger.from_json(D2_LEDGER_TEXT)
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
@@ -843,7 +840,7 @@ def test_B204_a_delivery_2_ledger_can_then_observe_and_carry():
 
 
 def test_B204_load_of_a_missing_file_has_no_usage_and_no_carry(tmp_path: Path):
-    """RUN-DECISIONS-D3 "Ledger" / B117: the empty ledger a missing file yields reports no
+    """B117: the empty ledger a missing file yields reports no
     utilization and carries nothing."""
     ledger = load(tmp_path / "nope" / "ledger.json")
     assert ledger.weekly_utilization() is None
@@ -909,9 +906,9 @@ def test_B204_usage_survives_a_to_json_from_json_round_trip_byte_for_byte():
 
 
 def test_B204_a_window_reads_usage_and_carry_as_none_before_either_exists():
-    """RUN-DECISIONS-D3 "Ledger": ``from_json`` accepts files without these keys (defaults
+    """``from_json`` accepts files without these keys (defaults
     None). The window mapping guarantees it for *any* access pattern, subscript included, so
-    a reader that does not know to use ``.get()`` cannot turn a Delivery 2 file into a
+    a reader that does not know to use ``.get()`` cannot turn an older file into a
     KeyError."""
     from harness.ledger import EPOCH
 

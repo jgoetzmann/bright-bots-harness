@@ -1,12 +1,11 @@
-"""Delivery 2 - the `revise` stage.
+"""The `revise` stage.
 
-Behaviors under test: B136, B137, B138, B139, B120, and the source -> feedback mapping frozen
-in `.fullsend/RUN-DECISIONS-D2.md` section 13 (`ci` -> failing check-run log tail; `review` ->
-trusted authors only).
+Behaviors under test: B136, B137, B138, B139, B120, and the source -> feedback mapping:
+`ci` -> failing check-run log tail; `review` -> trusted authors only.
 
 The gate sequence, prettier, commit and diff seams are the module-level injectables on
 `harness.stages.implement` (revise imports GATE_RUNNER from there). The clone is a real local
-git repo so `git log -1 --format=%ae` is real. Fixtures are inline on purpose.
+git repo so `git log -1 --format=%ae` is real. Fixtures are inline.
 """
 from __future__ import annotations
 
@@ -111,7 +110,7 @@ BASE_ENV = {
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
     "MAX_SELF_AUDIT_CYCLES": "3",
-    # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
+    # The five D3 keys are required in every .env. The run
     # window is left empty (= always open) so the D2 behaviour above is unchanged.
     "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
@@ -181,7 +180,7 @@ def make_work_repo(tmp_path: Path, runs_dir: Path, item_id: int, *, tip_email: s
 
 
 class FakeGh:
-    """Stand-in for `harness.gh.GitHubClient` exposing exactly the section-7 surface.
+    """Stand-in for `harness.gh.GitHubClient` exposing exactly the client surface.
 
     Issues live in `repos[repo][number]` (labels as `[{"name": ...}]`); comments, label
     events, reviews and review comments are keyed by `(repo, number)`. Every method call is
@@ -312,7 +311,7 @@ class FakeGh:
             out.append(copy.deepcopy(issue))
         return sorted(out, key=lambda i: i["number"])
 
-    # ---- section 7 reads ----
+    # ---- reads ----
     def get(self, path: str):
         self._record("get", path=path)
         url = path
@@ -418,7 +417,7 @@ class FakeGh:
         self._record("user")
         return self.user_dict()
 
-    # ---- section 7 writes ----
+    # ---- writes ----
     def comment(self, repo, number, body) -> dict:
         self._record("comment", repo=repo, number=number, body=body)
         self._write("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
@@ -909,7 +908,7 @@ def assert_blocked_unpushed(s, needle: str) -> None:
 
 
 def test_b302_a_workflow_edit_the_model_commits_itself_blocks_the_item(tmp_path, monkeypatch):
-    """B302 / D67 (handoff 8, test 5): hole B. The model commits a `.github/workflows/` edit
+    """B302: the model commits a `.github/workflows/` edit
     with its own Bash. Read after the call, the tip WAS that commit and the diff came back
     empty; read before it, the commit is the diff. Blocked, clone kept, nothing pushed."""
     s = setup_revise(tmp_path, monkeypatch)
@@ -922,7 +921,7 @@ def test_b302_a_workflow_edit_the_model_commits_itself_blocks_the_item(tmp_path,
 
 
 def test_b302_a_committed_continue_on_error_blocks_the_item_too(tmp_path, monkeypatch):
-    """B302 (handoff 8, test 6): the same shape, but what the model commits is
+    """B302: the same shape, but what the model commits is
     `continue-on-error: true` outside `.github/` -- hole B is closed for every arm of B64, not
     only the path one."""
     s = setup_revise(tmp_path, monkeypatch)
@@ -994,11 +993,11 @@ def test_b303_a_clean_branch_passes_the_walk_and_is_pushed(tmp_path, monkeypatch
 
 
 # --------------------------------------------------------------------------------------
-# Feedback per source (section 13)
+# Feedback per source
 # --------------------------------------------------------------------------------------
 def test_ci_source_feeds_the_failing_check_log_tail_redacted(tmp_path, monkeypatch,
                                                               quiet_implement):
-    """Section 13 / handoff 9.1: `ci` feeds the failing job's log tail, redacted; not the green one."""
+    """`ci` feeds the failing job's log tail, redacted; not the green one."""
     s = setup_revise(tmp_path, monkeypatch)
     revise(s.ctx, ITEM, source="ci")
     assert s.runner.requests, "revise made no model call"
@@ -1010,7 +1009,7 @@ def test_ci_source_feeds_the_failing_check_log_tail_redacted(tmp_path, monkeypat
 
 
 def test_review_source_feeds_trusted_feedback_only(tmp_path, monkeypatch, quiet_implement):
-    """Section 13 / B133: trusted review text reaches the prompt; an untrusted author's never does."""
+    """B133: trusted review text reaches the prompt; an untrusted author's never does."""
     s = setup_revise(tmp_path, monkeypatch)
     revise(s.ctx, ITEM, source="review")
     assert s.runner.requests, "revise made no model call"
@@ -1104,7 +1103,7 @@ def test_B120_rate_limited_revise_from_needs_human_returns_to_needs_human(tmp_pa
 # --------------------------------------------------------------------------------------
 def test_revise_from_a_wrong_entry_state_raises_and_runs_nothing(tmp_path, monkeypatch,
                                                                   quiet_implement):
-    """Section 13: revise requires shipped (or needs-human with notes); approved is refused."""
+    """Revise requires shipped (or needs-human with notes); approved is refused."""
     s = setup_revise(tmp_path, monkeypatch, state="approved")
     with pytest.raises(IllegalTransition):
         revise(s.ctx, ITEM, source="ci")
@@ -1115,7 +1114,7 @@ def test_revise_from_a_wrong_entry_state_raises_and_runs_nothing(tmp_path, monke
 
 def test_revise_from_needs_human_without_notes_is_refused(tmp_path, monkeypatch,
                                                            quiet_implement):
-    """B137 / section 13: a parked item is not touched again without an explicit /harness fix."""
+    """B137: a parked item is not touched again without an explicit /harness fix."""
     s = setup_revise(tmp_path, monkeypatch, state="needs-human")
     with pytest.raises(HarnessError):
         revise(s.ctx, ITEM, source="review")
@@ -1125,7 +1124,7 @@ def test_revise_from_needs_human_without_notes_is_refused(tmp_path, monkeypatch,
 
 
 def test_revise_from_needs_human_with_notes_proceeds(tmp_path, monkeypatch, quiet_implement):
-    """Section 13: an explicit /harness fix (non-empty notes) re-opens a parked item."""
+    """An explicit /harness fix (non-empty notes) re-opens a parked item."""
     s = setup_revise(tmp_path, monkeypatch, state="needs-human")
     revise(s.ctx, ITEM, source="review", notes="/harness fix - please address the review")
     assert len(s.runner.requests) >= 1
@@ -1135,7 +1134,7 @@ def test_revise_from_needs_human_with_notes_proceeds(tmp_path, monkeypatch, quie
 
 def test_revise_reacquires_the_existing_branch_from_the_fork(tmp_path, monkeypatch,
                                                               quiet_implement):
-    """Section 13: the clone is re-acquired at item.branch_name with from_fork=True."""
+    """The clone is re-acquired at item.branch_name with from_fork=True."""
     s = setup_revise(tmp_path, monkeypatch)
     revise(s.ctx, ITEM, source="ci")
     assert s.clones.acquired, "revise never acquired a clone"
@@ -1144,9 +1143,7 @@ def test_revise_reacquires_the_existing_branch_from_the_fork(tmp_path, monkeypat
 
 
 # ======================================================================================
-# Delivery 3 additions - `revise(source="continue")` (RUN-DECISIONS-D3 "Handoff and
-# continue", B215). Appended by the D3 spec-tester (T2); additions only. Nothing above was
-# edited except the BASE_ENV data constant, which gained the five keys D3 makes required.
+# `revise(source="continue")`: the continue half of handoff (B215).
 # ======================================================================================
 
 import shutil

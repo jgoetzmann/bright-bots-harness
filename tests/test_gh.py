@@ -1,6 +1,6 @@
-"""B31-B37: harness.gh.GitHubReadOnly (HARNESS-SPEC 5.5).
+"""B31-B37: harness.gh.GitHubReadOnly.
 
-Every response is canned through the injectable `opener` fixed by RUN-DECISIONS. Nothing here
+Every response is canned through the injectable `opener`. Nothing here
 touches the network, and the clock is frozen at 2026-09-01T12:00:00Z.
 """
 
@@ -352,12 +352,12 @@ def test_B37_a_404_raises_GitHubError_and_not_RateCeilingReached(store, clock):
 
 
 # --------------------------------------------------------------------------------------
-# create_label — the write behind `harness init --labels` (handoff §16 item 11)
+# create_label — the write behind `harness init --labels`
 # --------------------------------------------------------------------------------------
 
 
 def test_create_label_posts_to_the_given_repo_labels_endpoint_redacted_and_needs_a_token(tmp_path):
-    """§5.3: a label create is a write like any other — tier-gated, redacted, recorded in `sent`."""
+    """A label create is a write like any other — tier-gated, redacted, recorded in `sent`."""
     from harness.clock import FrozenClock
     from harness.errors import TierViolation
     from harness.gh import GitHubClient
@@ -576,7 +576,7 @@ def _recorder(calls: list, code: int = 0, err: str = ""):
     "packages/app/.github/workflows/x.yml",
 ])
 def test_b296_every_path_under_github_is_protected(path):
-    """B296 / D67 (handoff 8, test 7): all of `.github/`, not only its workflows -- composite
+    """B296: all of `.github/`, not only its workflows -- composite
     actions, dependabot and CODEOWNERS steer CI and review too -- in every spelling a path can
     reach the check in, git's C-quoted form included."""
     from harness.clone import protected_paths_in
@@ -603,7 +603,7 @@ def test_b296_the_one_set_is_all_of_github_and_b64_reads_it():
 
 
 def test_b297_the_walk_stops_at_the_first_commit_the_harness_did_not_author(tmp_path):
-    """B297 (handoff 8, test 9): [upstream commit touching .github/] then [harness commit
+    """B297: [upstream commit touching .github/] then [harness commit
     touching src/]. The walk takes the harness's commit and stops at upstream's author, so
     upstream's own workflow change is relayed, not refused."""
     from harness.clone import walk_harness_commits
@@ -624,7 +624,7 @@ def test_b297_the_walk_stops_at_the_first_commit_the_harness_did_not_author(tmp_
 
 
 def test_b298_a_harness_commit_under_github_is_refused_by_sha_and_path(tmp_path):
-    """B298 (handoff 8, test 10): [harness src/] then [harness .github/]. Refused; the error
+    """B298: [harness src/] then [harness .github/]. Refused; the error
     names the commit and the path, and nothing is recorded as pushed."""
     repo = _repo(tmp_path)
     _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
@@ -651,7 +651,7 @@ def test_b298_a_github_change_below_the_tip_is_refused_too(tmp_path):
 
 
 def test_b297_a_human_commit_on_top_ends_the_walk_where_b139_takes_over(tmp_path):
-    """B297 (handoff 8, test 11): [harness commits] then [a human's commit]. The walk stops at
+    """B297: [harness commits] then [a human's commit]. The walk stops at
     once -- that commit is its author's to have pushed -- and B139 is what refuses to
     force-push over it. They agree on the one fact they share: the tip is not the harness's."""
     from harness.clone import HARNESS_AUTHOR_EMAILS, Lease, walk_harness_commits
@@ -670,7 +670,7 @@ def test_b297_a_human_commit_on_top_ends_the_walk_where_b139_takes_over(tmp_path
 
 
 def test_b297_a_root_commit_lists_its_paths(tmp_path):
-    """B297 (handoff 8, test 12): `git diff-tree` prints nothing for a root commit without
+    """B297: `git diff-tree` prints nothing for a root commit without
     `--root`; the walk's `git log --name-only` has no such gap."""
     from harness.clone import walk_harness_commits
 
@@ -686,7 +686,7 @@ def test_b297_a_root_commit_lists_its_paths(tmp_path):
 
 
 def test_b297_a_merge_commit_carries_the_paths_it_brought_in(tmp_path):
-    """B297 (handoff 8, test 13): a merge the harness made brings a `.github/` change in on its
+    """B297: a merge the harness made brings a `.github/` change in on its
     first-parent diff, and the walk sees it. Plain `git log` shows a merge no paths at all; on
     git 2.31 and later `--first-parent` alone already gives a merge its first-parent diff, so
     `--diff-merges=first-parent` is redundant there and kept for older git and for the reader --
@@ -710,7 +710,7 @@ def test_b297_a_merge_commit_carries_the_paths_it_brought_in(tmp_path):
 
 
 def test_b297_past_the_cap_the_walk_refuses_rather_than_truncates(tmp_path, monkeypatch):
-    """B297 (handoff 8, test 14): a walk that takes the cap's worth of harness commits and finds
+    """B297: a walk that takes the cap's worth of harness commits and finds
     more cannot vouch for the ones below, so the push is refused, not cut short in silence.
     The cap is 100; three runs the same code in a fraction of the commits."""
     from harness import clone
@@ -733,7 +733,7 @@ def test_b297_past_the_cap_the_walk_refuses_rather_than_truncates(tmp_path, monk
 
 @pytest.mark.parametrize("change", ["delete", "rename"])
 def test_b297_deleting_or_moving_a_workflow_is_refused(tmp_path, change):
-    """B297 (handoff 8, test 8): D42's bug at the new layer. Deleting a workflow is not milder
+    """B297: D42's bug at the new layer. Deleting a workflow is not milder
     than editing one, and `--no-renames` lists a move as the deletion it is."""
     repo = _repo(tmp_path)
     _commit(repo, DEV, {CI: "on: push\n"}, "ci: pipeline")
@@ -769,7 +769,7 @@ def test_b297_a_case_variant_of_a_harness_email_is_still_walked(tmp_path):
 
 
 def test_b298_push_ref_still_makes_exactly_one_git_call(tmp_path):
-    """B298 (handoff 8, test 15): `push_ref` -- sync-fork's relay of upstream's own main -- is
+    """B298: `push_ref` -- sync-fork's relay of upstream's own main -- is
     outside the walk, so it is still exactly one git call, and that call is the push."""
     calls: list = []
     client = _guard_client(tmp_path, dry_run=False)
@@ -781,7 +781,7 @@ def test_b298_push_ref_still_makes_exactly_one_git_call(tmp_path):
 
 
 def test_b298_push_branch_walks_through_the_injected_runner_before_it_pushes(tmp_path):
-    """B298 (handoff 8, test 16): the check runs through `git_runner`, not `run_command`, and
+    """B298: the check runs through `git_runner`, not `run_command`, and
     before the push; the fake sees both argvs, the walk first."""
     calls: list = []
     client = _guard_client(tmp_path, dry_run=False)
@@ -797,7 +797,7 @@ def test_b298_push_branch_walks_through_the_injected_runner_before_it_pushes(tmp
 
 
 def test_b298_a_walk_git_cannot_run_refuses_the_push(tmp_path):
-    """B298 (handoff 8, test 17): exit 128, no `.git` -- the walk checked nothing, so the push
+    """B298: exit 128, no `.git` -- the walk checked nothing, so the push
     is refused. It fails closed."""
     calls: list = []
     client = _guard_client(tmp_path, dry_run=False)
@@ -811,7 +811,7 @@ def test_b298_a_walk_git_cannot_run_refuses_the_push(tmp_path):
 
 
 def test_b298_without_a_token_the_walk_never_runs(tmp_path):
-    """B298 (handoff 8, test 18): `_require_write` still comes first; no subprocess at all."""
+    """B298: `_require_write` still comes first; no subprocess at all."""
     from harness.errors import TierViolation
 
     calls: list = []
@@ -824,7 +824,7 @@ def test_b298_without_a_token_the_walk_never_runs(tmp_path):
 
 
 def test_b298_a_dry_run_over_a_real_clone_still_refuses(tmp_path):
-    """B298 (handoff 8, test 19): a dry run reports the refusal it would make."""
+    """B298: a dry run reports the refusal it would make."""
     repo = _repo(tmp_path)
     _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
     _commit(repo, HARNESS, {".github/dependabot.yml": "version: 2\n"}, "chore: deps")

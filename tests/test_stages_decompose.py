@@ -1,10 +1,10 @@
-"""Delivery 2 - the `decompose` stage.
+"""The `decompose` stage.
 
 Behaviors under test: B110 (N sub-issues in THIS repository, each queued and linked to the
 parent; parent blocked with a comment listing them; never an issue on the product repo, I-14)
 and B111 (bounded by max_subissues; a sub-issue is never decomposed - depth is one).
 
-Fixtures are inline on purpose. Nothing here touches the network or the wall clock.
+Fixtures are inline. Nothing here touches the network or the wall clock.
 """
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def make_config(tmp_path: Path, **overrides):
 
 
 class FakeGh:
-    """Stand-in for `harness.gh.GitHubClient` exposing exactly the section-7 surface.
+    """Stand-in for `harness.gh.GitHubClient` exposing exactly the client surface.
 
     Issues live in `repos[repo][number]` (labels as `[{"name": ...}]`); comments, label
     events, reviews and review comments are keyed by `(repo, number)`. Every method call is
@@ -246,7 +246,7 @@ class FakeGh:
             out.append(copy.deepcopy(issue))
         return sorted(out, key=lambda i: i["number"])
 
-    # ---- section 7 reads ----
+    # ---- reads ----
     def get(self, path: str):
         self._record("get", path=path)
         url = path
@@ -352,7 +352,7 @@ class FakeGh:
         self._record("user")
         return self.user_dict()
 
-    # ---- section 7 writes ----
+    # ---- writes ----
     def comment(self, repo, number, body) -> dict:
         self._record("comment", repo=repo, number=number, body=body)
         self._write("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
@@ -565,7 +565,7 @@ def test_B110_parent_is_blocked_with_a_comment_listing_the_children(tmp_path):
 
 
 def test_B110_sub_issue_titles_and_bodies_come_from_the_numbered_lines(tmp_path):
-    """B110 / section 13: `N. <title> - <body>` lines become the sub-issues, in order."""
+    """B110: `N. <title> - <body>` lines become the sub-issues, in order."""
     s = setup_decompose(tmp_path)
     before = set(s.gh.repos[SELF_REPO])
     children = decompose(s.ctx, PARENT)
@@ -610,7 +610,7 @@ def test_B110_decompose_never_files_anything_on_the_product_repo(tmp_path):
 
 
 def test_B110_the_model_sees_the_parent_issue_and_the_bound(tmp_path):
-    """B110 / section 13: prompts/decompose.md is rendered with the issue title and body."""
+    """B110: prompts/decompose.md is rendered with the issue title and body."""
     s = setup_decompose(tmp_path)
     decompose(s.ctx, PARENT)
     assert len(s.runner.requests) == 1

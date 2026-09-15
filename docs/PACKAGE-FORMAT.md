@@ -189,7 +189,7 @@ Written with `indent=2`, keys in this order:
   "backend": "cli",
   "fullsend": false,
   "fullsend_gate": {"F1": false, "F2": false, "F3": true, "F4": true, "F5": true},
-  "stages": [{"stage": "propose", "turns": 12, "allowance_pct": 1.8}],
+  "stages": [{"stage": "propose", "turns": 12}],
   "gates": [{"name": "npm run lint", "exit_code": 0}],
   "patch_count": 1,
   "touched_paths": ["scripts/check-bundle-size.js"]
@@ -209,7 +209,7 @@ Written with `indent=2`, keys in this order:
 | `backend` | `cli` for a real model run, `fake` for a replayed one. A `fake` package is a rehearsal |
 | `fullsend` | Whether the parallel implementation path was taken |
 | `fullsend_gate` | Each of the five fitness conditions and whether it held |
-| `stages` | Every stage run: name, turns, allowance spent |
+| `stages` | Every stage run: name and turns |
 | `gates` | Every gate in the post-change sequence with its exit code |
 | `patch_count` | Number of files in `patches/` |
 | `touched_paths` | Paths the work package declared it would change |

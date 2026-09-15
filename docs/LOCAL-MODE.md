@@ -58,8 +58,8 @@ The number of items per unit is `MAX_CONCURRENT_ITEMS` (B123).
 `local/run.ps1` writes `/work/.env` on every start from the filtered host `.env`, with the
 container shape forced: `DB_PATH=/data/harness.db`, `RUNS_DIR=/work/runs`,
 `PACKAGES_DIR=/work/packages`, `HALT_FILE=/work/HALT`, `TRUST_FILE=/harness/.harness/trust.txt`,
-`PERMISSION_TIER=0`, `STORE_BACKEND=sqlite`, `MAX_CONCURRENT_ITEMS=1` and
-`MAX_CONCURRENT_CLONES=1`. It mirrors `.harness/config.json` to `bb-work/.harness/config.json`,
+`PERMISSION_TIER=0`, `STORE_BACKEND=sqlite` and `MAX_CONCURRENT_ITEMS=1`. It mirrors
+`.harness/config.json` to `bb-work/.harness/config.json`,
 so the knobs apply the same way in both modes. The process environment carries only
 `CLAUDE_CODE_OAUTH_TOKEN`, `DB_PATH` and the `BB_*` settings, so `docker exec bb env` shows no
 variable naming `GITHUB`; `load_config` reads everything else from `/work/.env`.
@@ -139,7 +139,6 @@ sha first in `runs/<item>/PUSHED`.
 | on battery | `docker pause` | automatically on AC |
 | non-container host CPU above 50 % for 30 s | `docker pause` | automatically below 30 % |
 | `HEARTBEAT` older than 180 s (never within the first 180 s of uptime) | `docker kill` | automatically: the restart policy re-runs the gate |
-| weekly spend in `state/ledger.json` above `WEEKLY_CAP_USD` | `docker stop` | operator |
 | free disk below 5 GB | `docker stop` | operator |
 | every 10 min, and on every stop | push delivered branches | |
 

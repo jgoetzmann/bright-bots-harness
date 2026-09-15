@@ -19,8 +19,8 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 | `deliver` | Opens the pull request upstream, with the gate evidence in its body | A PR on the product repository from `jgoetzmann-bot:harness/…` |
 | Gate 2 | A person reviews and merges upstream. The harness never merges anything | The PR on the product repository |
 
-Between the gates, work is bounded by two subscription-usage stops, a run window, spending caps
-with a reserve, per-stage turn ceilings, a revise cap and a pinned gate sequence.
+Between the gates, work is bounded by two subscription-usage stops, a run window, per-stage turn
+ceilings, one item at a time, a revise cap and a pinned gate sequence.
 
 ## What it will and will not do
 
@@ -80,12 +80,12 @@ nothing. A listed commenter whose level is too low gets a reply naming the level
 To add somebody, commit the line that `harness trust line` prints.
 
 Append `--force` to start something now instead of at the next run window. It is for level 3
-only and lifts only the calendar: halts, usage stops, caps and both gates still apply.
+only and lifts only the calendar: halts, usage stops, the turn caps and both gates still apply.
 
 A command is acted on once; editing the comment does not re-trigger it. Comments on this
 repository wake `feedback.yml` within minutes. The product repository sends the harness no
 events, so commands there are found by `harness sweep` on `feedback.yml`'s schedule
-(`41 */3 * * 1-5`): up to `NOTIFY_POLL_HOURS` on a weekday, and not until Monday for a comment
+(`41 */3 * * 1-5`): up to three hours on a weekday, and not until Monday for a comment
 left on Saturday. Running `feedback.yml` from the Actions tab skips the wait.
 
 ## Giving it work

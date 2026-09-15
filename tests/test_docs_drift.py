@@ -117,7 +117,7 @@ def test_codeowners_covers_the_prompts_half_of_the_pinned_set():
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("doc", ["docs/SAFETY.md", ".harness/README.md"])
+@pytest.mark.parametrize("doc", ["docs/SAFETY.md", ".harness/README.md", ".env.example"])
 def test_a_spelled_config_key_count_matches_len_config_json_keys(doc):
     """`load_config` accepts exactly `CONFIG_JSON_KEYS`. Where a document spells that number in
     words near the constant, the word must be the current count."""
@@ -196,13 +196,16 @@ def test_the_env_writers_fill_config_json_only_where_it_leaves_a_knob_empty(name
 def test_safety_i3_names_every_argv_element_the_runner_can_add():
     """I-3's note lists the flags the runner does add. With usage capture on (B200), which
     `get_runner` enables for the real backend (B202), `--output-format stream-json --verbose`
-    replaces `--output-format json`, so the note names both."""
+    replaces `--output-format json`, so the note names both. The runner passes no dollar cap, and
+    the note names none (B418)."""
     runner = _read("harness/runner/cli.py")
     safety = _read("docs/SAFETY.md")
     section = safety[safety.index("### I-3"):safety.index("### I-4")]
-    for flag in ("--max-budget-usd", "--output-format", "stream-json", "--verbose"):
+    for flag in ("--output-format", "stream-json", "--verbose"):
         assert flag in runner, f"{flag} is no longer in harness/runner/cli.py"
         assert flag in section, f"docs/SAFETY.md I-3 must name {flag}"
+    assert "--max-budget-usd" not in runner, "the runner no longer passes --max-budget-usd (D74)"
+    assert "--max-budget-usd" not in section, "docs/SAFETY.md I-3 must not name --max-budget-usd"
 
 
 # --------------------------------------------------------------------------------------

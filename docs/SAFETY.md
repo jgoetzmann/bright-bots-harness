@@ -75,7 +75,7 @@ invocation. The invariant test scans every subprocess argv construction.
 The model process always runs under the Claude CLI's own permission prompting and edit-acceptance
 rules; it is never handed a blanket bypass. The runner builds argv from a frozen template with no
 branch that can add `--dangerously-skip-permissions` or `--allow-dangerously-skip-permissions`. The
-other elements are restrictions: `--max-budget-usd <PER_CALL_CAP_USD>`, a per-call ceiling;
+other elements are restrictions: `--max-turns <MAX_TURNS_*>`, the per-call turn ceiling;
 `--output-format stream-json --verbose` in place of `--output-format json` when usage capture is on,
 so the CLI's `rate_limit_event` lines reach the governor (B200, `ClaudeCliRunner.build_argv` in
 `harness/runner/cli.py`), which `get_runner` turns on for the real `cli` backend (B202); the prompt
@@ -100,7 +100,10 @@ outside this directory", and a stage can still read an unrelated checkout on the
 
 Anything from your environment enters the program through one place. The second configuration
 source, `.harness/config.json`, is read by the same function (`load_config`) and accepts only the
-closed list of keys in `config.CONFIG_JSON_KEYS`; any other key is a startup error.
+closed list of keys in `config.CONFIG_JSON_KEYS`; any other key is a startup error. The one
+exception is `config.RETIRED_KEYS`, the keys D74 removed: they are accepted and ignored wherever a
+key is accepted, so an existing `.env` keeps loading, and `harness doctor` names each one it finds
+as a warning.
 
 **Verify:** `grep -rn "os.environ" harness/` names only `harness/config.py`.
 
@@ -169,7 +172,7 @@ constructs an `Authorization` header, and it reads the token from the `config.py
 under I-9. Nothing else imports that function.
 
 **Verify:** `grep -rn "Authorization" harness/ --include=*.py` matches in `harness/gh.py`, and in
-`harness/governor.py`, whose dataclass named `Authorization` is a budget authorisation (D4); read
+`harness/governor.py`, whose dataclass named `Authorization` admits one model call (D4); read
 those hits and confirm none sets a header.
 
 ### I-12 — The harness never merges, approves, or dismisses
@@ -454,8 +457,8 @@ the procedure, and §7 the order of steps when a credential leaks.
 
 ## The worst a single bad run can do
 
-Take one run whose model output is wrong in every respect at once. It spends within the per-call cap
-and the usage stops. It pushes a bad branch to the fork the machine account owns, and opens one pull
+Take one run whose model output is wrong in every respect at once. It runs within its turn cap and
+the usage stops. It pushes a bad branch to the fork the machine account owns, and opens one pull
 request against `Bright-Bots-Initiative/brightboost` whose body carries the output of a pinned gate
 sequence. That output cannot read green for a broken tree, because a red tree is a `blocked` item
 that never reaches `deliver`. It requests review from the trusted handles and comments on its issue

@@ -119,7 +119,7 @@ acted on once; editing it does not re-run it.
 |---|---|---|
 | `work` | open a work item | 2 |
 | `ask` | answer a question, change nothing | 1 |
-| `status` | allowance left, queue, and when the next thing happens | 1 |
+| `status` | subscription usage, queue, and when the next thing happens | 1 |
 | `audit` | read through one lens, open a findings issue | 2 |
 | `promote` | turn findings into work items | 2 |
 | `revise` | redo it with my notes | 2 |
@@ -177,7 +177,7 @@ suggested work is admitted. Changes nothing. Try it first when nothing seems to 
 ```
 
 Opens one issue: a ranked findings report labelled `kind:audit`, with no stage label, so it never
-enters the queue and creates no work. An audit cut short by its per-call cap still opens the issue,
+enters the queue and creates no work. An audit cut short by its turn cap still opens the issue,
 listing under `## Not reached` what it never opened. It is refused when seven-day usage is at or
 above `AUDIT_MIN_HEADROOM_PCT` (75), and refused before any model call when the lens is missing.
 
@@ -293,7 +293,7 @@ Exempts the item from the run window (daily 11:00 → 15:00 UTC), and says so on
 ledger and in the reply. It is honoured by `implement`'s next run outside the window (a gate-1 merge
 or the operator's dispatch), not by the sweep (D68), and proposes nothing sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, both usage stops
-(90% weekly, 80% session), the per-call caps and both human gates still apply.
+(90% weekly, 80% session), the turn caps and both human gates still apply.
 
 ## Who may run what
 
@@ -330,9 +330,9 @@ before the subcommand: `harness --json discover …`, not `harness discover --js
 
 ```bash
 harness doctor      # binaries, versions, disk, halt, config, pin, trust levels
-harness status      # queue by state, allowance remaining, what is in flight
+harness status      # queue by state, subscription usage, what is in flight
 harness dispatch    # what may start now, the priority queue, why the head is not moving
-harness ledger      # usage against each stop, per-stage medians, window state
+harness ledger      # usage against each stop, calls made, window state
 ```
 
 `dispatch` starts nothing. It answers "why is nothing happening":

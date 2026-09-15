@@ -1,17 +1,13 @@
 """D69: the trust file is the security boundary, so one line must work everywhere (B340-B358).
 
-D68 made `vouch:<id>` the way ONE account was heard without repository access. D69 makes it the
-ordinary way anybody is added, and closes the ways a hand-edited line could grant nothing while
-looking right: a trailing token nobody reads, a handle that is not a login, a placeholder that
-vanishes, a second line that silently loses to the first.
+`vouch:<id>` is the ordinary way anybody is added, and the parser closes the ways a hand-edited
+line could grant nothing while looking right: a trailing token nobody reads, a handle that is
+not a login, a placeholder that vanishes, a second line that silently loses to the first. A
+line either means what it says or is refused and named.
 
-The gate itself is unchanged. What changes is that a line either means what it says or is
-refused and named -- never accepted into something quieter than its author meant.
-
-B353-B358 are D69's adversarial pass, and every one of them is a way the first cut still ended
-in a silent refusal: a real login the parser would not read, a level column that granted or
-crashed, an account that can never comment, and a helper that needed a provisioned machine
-before it would help.
+B353-B358 cover the refusals that would otherwise stay silent: a real login the parser will not
+read, a level column that grants or crashes, an account that can never comment, and a helper
+that needs a provisioned machine before it will help.
 """
 from __future__ import annotations
 
@@ -671,11 +667,11 @@ def test_B350_the_shipped_file_still_names_the_operator_and_the_vouched_maintain
 
 
 def test_B352_the_github_store_keeps_the_levels_so_footers_name_handles():
-    """`store/__init__.py` loads a whole `Trust` and `store/github.py` used to flatten it with
-    `tuple(trusted)`, which discarded the levels. `links._who` then fell back to "level 2+" on
-    every work item and proposal pull request, while replies -- which pass `ctx.trusted` --
-    named the handles. The footer exists so a reader of a public thread can see whether their
-    own comment would be honoured without first learning what a level is.
+    """`store/__init__.py` loads a whole `Trust`, and `store/github.py` keeps the levels: flatten
+    it with `tuple(trusted)` and `links._who` falls back to "level 2+" on every work item and
+    proposal pull request, while replies -- which pass `ctx.trusted` -- name the handles. The
+    footer exists so a reader of a public thread can see whether their own comment would be
+    honoured without first learning what a level is.
 
     Checked through the store, because a fake that passes a `Trust` would hide it.
     """
@@ -732,10 +728,9 @@ def test_B352_a_store_built_without_a_trust_file_still_renders():
     ],
 )
 def test_B353_a_login_beginning_vouch_is_read_as_a_handle(handle, account):
-    """The first cut refused any handle whose first five letters were `vouch`, which is a rule
-    about a substring rather than about a shape. These logins exist; the operator would have
-    pasted a line that granted nothing, and `refusals` would have blamed the vouch -- the one
-    well-formed half -- sending them to fix the wrong end of the line.
+    """A handle is read by its shape, not by the substring `vouch`. These logins exist, and a
+    rule about the first five letters refuses a line that grants a level, then blames the vouch
+    -- the one well-formed half -- sending the operator to fix the wrong end of the line.
     """
     trusted = parse_trust(f"3 jgoetzmann\n2 {handle} vouch:{account}\n")
 

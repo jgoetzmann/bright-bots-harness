@@ -1,7 +1,6 @@
-"""Packager tests — HARNESS-SPEC §7.2, behaviors B73-B78 (with B72 overlap).
+"""Packager tests — behaviors B73-B78 (with B72 overlap).
 
-Written from the frozen HARNESS-SPEC and RUN-DECISIONS.md before any implementation
-existed. Stack: Python 3.13 standard library + pytest==8.3.4 only.
+Stack: Python 3.13 standard library + pytest==8.3.4 only.
 
 Every test drives a real local `git` against a throwaway repository created under
 `tmp_path`. Nothing here touches the network or the wall clock: time comes from
@@ -39,7 +38,7 @@ REPO_SLUG = "Bright-Bots-Initiative/brightboost"
 BRANCH = "harness/fix-816-bundle-size"
 TOUCHED_PATH = "scripts/check-bundle-size.js"
 
-# §7.2 — the review package directory listing, exactly.
+# The review package directory listing, exactly.
 PACKAGE_ENTRIES = {
     "README.md",
     "DIAGNOSIS.md",
@@ -53,7 +52,7 @@ PACKAGE_ENTRIES = {
     "transcript.jsonl",
 }
 
-# §7.2 — manifest.json keys, in the order the spec prints them.
+# manifest.json keys, in the order the spec prints them.
 MANIFEST_KEY_ORDER = [
     "schema",
     "item_id",
@@ -85,7 +84,7 @@ BASE_JS = (
 BRANCH_JS = BASE_JS.replace("const LIMIT_KB = 400;", "const LIMIT_KB = 600;")
 DIVERGENT_JS = BASE_JS.replace("const LIMIT_KB = 400;", "const LIMIT_KB = 250;")
 
-# A §7.1 work package. Markers let the tests prove content survived verbatim.
+# A work package. Markers let the tests prove content survived verbatim.
 SPEC_MD = """# fix(scripts): raise the bundle-size ceiling to match the shipped esm output
 
 ## Issue
@@ -471,7 +470,7 @@ def _manifest(state) -> dict:
 
 
 # --------------------------------------------------------------------------------------
-# B73 — the package directory contains every file in §7.2 and nothing else
+# B73 — the package directory contains every file it must and nothing else
 # --------------------------------------------------------------------------------------
 
 
@@ -796,7 +795,7 @@ TIER2_FORK = "jgoetzmann-bot/brightboost"
 
 
 def _tier2_context(state, *, fork: str = TIER2_FORK):
-    """The same context the `state` fixture built, with the tier and fork of a Delivery 2 run.
+    """The same context the `state` fixture built, at tier 2 with a fork.
     `Config` is frozen, so the tier arrives by `dataclasses.replace` rather than by rewriting
     the .env: nothing here may look at a token, and the fake GitHub client still refuses every
     call (packaging must not reach GitHub at any tier)."""
@@ -867,7 +866,7 @@ def test_b307_the_tier_2_readme_says_what_stops_a_github_change_now(state):
 
 
 def test_readme_at_tier_2_changes_nothing_else_in_the_package(state):
-    """Only the paragraph moves. The §7.2 listing, the manifest and the verification steps a
+    """Only the paragraph moves. The file listing, the manifest and the verification steps a
     reviewer follows are identical at both tiers."""
     tier0 = Path(packager.build(state.ctx, state.item_id, state.lease))
     tier0_readme = (tier0 / "README.md").read_text(encoding="utf-8")

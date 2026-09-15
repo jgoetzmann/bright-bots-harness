@@ -1,8 +1,6 @@
-"""Spec tests for ``harness.dispatcher`` — Delivery 2 handoff §6.4 (B121–B123, B107).
+"""Spec tests for ``harness.dispatcher`` (B121–B123, B107).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §5; Config keys by §2 plus Delivery 1's list.
-Fixtures are inline on purpose.
+Fixtures are inline.
 """
 from __future__ import annotations
 
@@ -25,7 +23,7 @@ PERIOD_START = "2026-08-31T00:00:00Z"
 RUN_URL = "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/1"
 BUDGET_REASON = re.compile(r"^budget \d+% remaining, (\d+) of max (\d+) slots$")
 
-# Every key Delivery 1 requires (RUN-DECISIONS "Config extras") plus every Delivery 2 §2 key.
+# Every key the config requires.
 BASE_ENV: tuple[tuple[str, str], ...] = (
     ("BACKEND", "fake"),
     ("REPO", "Bright-Bots-Initiative/brightboost"),
@@ -158,7 +156,7 @@ def test_B121_rate_limit_in_the_past_starts_work(tmp_path):
 
 
 def test_B121_rate_limit_is_checked_before_halt(tmp_path):
-    """B121/§6.4 order: step 1 (rate limit) precedes step 2 (halt) — both set, the reason is the
+    """B121: step 1 (rate limit) precedes step 2 (halt) — both set, the reason is the
     rate limit."""
     config = make_config(tmp_path)
     ledger = ledger_spent(0.0)
@@ -169,11 +167,11 @@ def test_B121_rate_limit_is_checked_before_halt(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# halt (§6.4 step 2; the CLI-level HALT exit code and ordering are tested elsewhere)
+# halt (the CLI-level HALT exit code and ordering are tested elsewhere)
 # ---------------------------------------------------------------------------
 
 def test_B122_halted_gives_empty_plan_with_reason_halted(tmp_path):
-    """B122 (§6.4 step 2): a repo-level HALT yields an empty plan with reason 'halted' even with
+    """B122: a repo-level HALT yields an empty plan with reason 'halted' even with
     budget and candidates available."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(0.0), cands(816, 823), halted=True)
@@ -183,7 +181,7 @@ def test_B122_halted_gives_empty_plan_with_reason_halted(tmp_path):
 
 
 def test_B122_halt_is_checked_before_reserve(tmp_path):
-    """B122/§6.4 order: step 2 (halt) precedes step 3 (reserve)."""
+    """B122: step 2 (halt) precedes step 3 (reserve)."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(24.0), cands(816), halted=True)
     assert result.start == ()
@@ -191,11 +189,11 @@ def test_B122_halt_is_checked_before_reserve(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# reserve (§6.4 step 3)
+# reserve
 # ---------------------------------------------------------------------------
 
 def test_B122_reserve_boundary_spent_equals_cap_times_one_minus_reserve(tmp_path):
-    """B122 (§6.4 step 3): spent_usd == weekly_cap_usd*(1-reserve_pct/100) → empty plan, reason
+    """B122: spent_usd == weekly_cap_usd*(1-reserve_pct/100) → empty plan, reason
     led by 'reserve'. 25.00 * 0.90 = 22.50.
 
     The token is pinned as a PREFIX rather than the whole string: B295 appends the subscription
@@ -213,7 +211,7 @@ def test_B122_reserve_boundary_spent_equals_cap_times_one_minus_reserve(tmp_path
 
 
 def test_B122_reserve_when_spent_exceeds_the_boundary(tmp_path):
-    """B122 (§6.4 step 3): spend past the reserve line → empty plan, reason led by 'reserve'."""
+    """B122: spend past the reserve line → empty plan, reason led by 'reserve'."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(23.10), cands(816, 823))
     assert result.start == ()
@@ -225,7 +223,7 @@ def test_B122_reserve_when_spent_exceeds_the_boundary(tmp_path):
 
 
 def test_B122_just_below_reserve_is_not_reserve_but_estimate_skips(tmp_path):
-    """B122 (§6.4 steps 3 and 6): one cent below the reserve line is not 'reserve'; the candidate
+    """B122: one cent below the reserve line is not 'reserve'; the candidate
     is instead skipped because its $2.50 static estimate exceeds the $0.50 remaining."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(22.00), cands(816))
@@ -271,7 +269,7 @@ def test_B107_fully_merged_depends_on_starts(tmp_path):
 
 
 def test_B107_dependency_skip_does_not_consume_a_slot(tmp_path):
-    """B107/§6.4 order: step 5 drops unmet dependencies before step 7 takes slots — the blocked
+    """B107: step 5 drops unmet dependencies before step 7 takes slots — the blocked
     oldest candidate does not crowd out the next one."""
     config = make_config(tmp_path)  # sqlite → one slot
     candidates = (Candidate(issue=819, depends_on=(816,), created_at="2026-09-01T10:00:00Z"),
@@ -282,11 +280,11 @@ def test_B107_dependency_skip_does_not_consume_a_slot(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# estimate vs remaining (§6.4 step 6)
+# estimate vs remaining
 # ---------------------------------------------------------------------------
 
 def test_B122_static_estimate_exceeding_remaining_is_skipped(tmp_path):
-    """B122 (§6.4 step 6): below three observations the static table applies — implement is
+    """B122: below three observations the static table applies — implement is
     $2.50; with $1.50 remaining (22.50 - 21.00) the candidate is skipped with the exact reason."""
     config = make_config(tmp_path)
     assert STATIC_USD["implement"] == pytest.approx(2.50)
@@ -298,7 +296,7 @@ def test_B122_static_estimate_exceeding_remaining_is_skipped(tmp_path):
 
 
 def test_B122_median_estimate_replaces_static_after_three_observations(tmp_path):
-    """B122 (§6.4 step 6): with three implement observations the median ($1.00) is the estimate,
+    """B122: with three implement observations the median ($1.00) is the estimate,
     which fits the $1.50 remaining where the static $2.50 would not."""
     config = make_config(tmp_path)
     ledger = Ledger.empty(PERIOD_START)
@@ -313,9 +311,9 @@ def test_B122_median_estimate_replaces_static_after_three_observations(tmp_path)
 
 
 def test_B122_static_table_values(tmp_path):
-    """B122/§6.4: the static estimates are the frozen table.
+    """B122: the static estimates are the frozen table.
 
-    Delivery 4 added two. `ask` is one read and a paragraph; `audit` reads a whole repository,
+    `ask` is one read and a paragraph; `audit` reads a whole repository,
     which is why it has a ceiling of its own (`AUDIT_CAP_USD`) rather than the per-call cap.
 
     D70 added two more: `selfaudit` reads one diff against one work package, priced like a
@@ -326,7 +324,7 @@ def test_B122_static_table_values(tmp_path):
 
 
 def test_B122_cheaper_stage_fits_where_implement_does_not(tmp_path):
-    """B122 (§6.4 step 6): the estimate is per candidate stage — a $0.50 propose fits in $1.50
+    """B122: the estimate is per candidate stage — a $0.50 propose fits in $1.50
     remaining while a $2.50 implement is skipped."""
     config = github_config(tmp_path, slots=3)
     candidates = (Candidate(issue=816, stage="implement", created_at="2026-09-01T10:00:00Z"),
@@ -375,17 +373,17 @@ def test_B123_sqlite_mode_rejects_max_concurrent_items_above_one(tmp_path):
 
 
 def test_B123_max_concurrent_items_zero_is_rejected(tmp_path):
-    """B123/§2: MAX_CONCURRENT_ITEMS must be >= 1."""
+    """B123: MAX_CONCURRENT_ITEMS must be >= 1."""
     with pytest.raises(ConfigError):
         make_config(tmp_path, MAX_CONCURRENT_ITEMS="0")
 
 
 # ---------------------------------------------------------------------------
-# ordering (§6.4 step 4)
+# ordering
 # ---------------------------------------------------------------------------
 
 def test_B122_candidates_are_taken_oldest_first_regardless_of_input_order(tmp_path):
-    """B122 (§6.4 step 4): oldest first by created_at — input order does not matter; with two
+    """B122: oldest first by created_at — input order does not matter; with two
     slots the two oldest start and the newest is 'slots full'."""
     config = github_config(tmp_path, slots=2)
     candidates = (Candidate(issue=841, created_at="2026-09-01T12:00:00Z"),
@@ -397,7 +395,7 @@ def test_B122_candidates_are_taken_oldest_first_regardless_of_input_order(tmp_pa
 
 
 def test_B122_ties_on_created_at_break_by_issue_number(tmp_path):
-    """B122/RUN-DECISIONS-D2 §5: equal created_at orders by issue number."""
+    """B122: equal created_at orders by issue number."""
     config = github_config(tmp_path, slots=1)
     candidates = (Candidate(issue=823, created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=816, created_at="2026-09-01T10:00:00Z"))
@@ -444,7 +442,7 @@ def test_B122_plan_mutates_nothing_and_starts_nothing(tmp_path):
 
 
 def test_B122_to_json_key_order_and_types(tmp_path):
-    """B122/§6.4: the plan JSON is {"start": [...], "reason": "...", "skipped": {...}} in that
+    """B122: the plan JSON is {"start": [...], "reason": "...", "skipped": {...}} in that
     order, indent=2, start as a list of ints, skipped keyed by issue-number strings."""
     config = github_config(tmp_path, slots=1)
     candidates = (Candidate(issue=816, created_at="2026-09-01T10:00:00Z"),
@@ -473,7 +471,7 @@ def test_B122_empty_candidates_give_empty_start_with_budget_reason(tmp_path):
 
 
 def test_B122_plan_fields_are_immutable_tuple_and_dict(tmp_path):
-    """B122/§5: Plan.start is a tuple of ints and Plan.skipped a dict of str→str."""
+    """B122: Plan.start is a tuple of ints and Plan.skipped a dict of str→str."""
     config = make_config(tmp_path)
     result = run_plan(config, ledger_spent(0.0), cands(816, 823))
     assert isinstance(result, Plan)
@@ -483,14 +481,13 @@ def test_B122_plan_fields_are_immutable_tuple_and_dict(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Delivery 3 — RUN-DECISIONS-D3 "Dispatcher" (B209, B210, B211) and config.in_run_window.
-# Appended by the D3 spec-tester (T1); additions only.
+# The run window (B209, B210, B211) and config.in_run_window.
 #
-# plan() order becomes: rate limit → halted → usage stop → reserve → run window → candidates.
-# NOW (2026-09-02T12:00:00Z) is a Wednesday, i.e. OUTSIDE the mon 08:00 → tue 20:00 window.
+# plan() order: rate limit → halted → usage stop → reserve → run window → candidates.
+# NOW (2026-09-02T12:00:00Z) is a Wednesday, outside the mon 08:00 → tue 20:00 window.
 # ---------------------------------------------------------------------------
 
-# RUN-DECISIONS-D3 "Config" — the five new keys with their .env.example values (inline).
+# The five new keys with their .env.example values (inline).
 D3_ENV: dict[str, str] = {
     "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
@@ -552,7 +549,7 @@ def usage_ledger(*, weekly: float = 0.49, session: float = 0.07, spent_usd: floa
 # ---------------------------------------------------------------------------
 
 def test_B211_usage_stop_reports_the_weekly_and_session_reasons(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": usage_stop(ledger, config, carry=False) is the planner's
+    """usage_stop(ledger, config, carry=False) is the planner's
     copy of the governor's rule, with the same exact reasons."""
     from harness.dispatcher import usage_stop
 
@@ -564,7 +561,7 @@ def test_B211_usage_stop_reports_the_weekly_and_session_reasons(tmp_path):
 
 
 def test_B211_usage_stop_uses_the_leeway_for_a_carried_item(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": carry=True swaps the weekly stop for OVERRUN_PCT."""
+    """carry=True swaps the weekly stop for OVERRUN_PCT."""
     from harness.dispatcher import usage_stop
 
     config = d3_config(tmp_path)
@@ -575,7 +572,7 @@ def test_B211_usage_stop_uses_the_leeway_for_a_carried_item(tmp_path):
 
 
 def test_B211_usage_stop_is_none_without_the_signal(tmp_path):
-    """RUN-DECISIONS-D3 / B114: no decision may DEPEND on the signal — a ledger that never saw a
+    """B114: no decision may DEPEND on the signal — a ledger that never saw a
     rate_limit_event never trips the usage stop."""
     from harness.dispatcher import usage_stop
 
@@ -585,7 +582,7 @@ def test_B211_usage_stop_is_none_without_the_signal(tmp_path):
 
 
 def test_B211_a_usage_stop_empties_the_plan_with_that_reason(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": the usage stop sits between halt and reserve — past the
+    """The usage stop sits between halt and reserve — past the
     weekly threshold nothing starts and the reason is the usage reason."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     result = run_plan(config, usage_ledger(weekly=0.91), cands(816, 823))
@@ -595,7 +592,7 @@ def test_B211_a_usage_stop_empties_the_plan_with_that_reason(tmp_path):
 
 
 def test_B211_the_usage_stop_is_checked_before_the_reserve(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": order — usage stop precedes reserve, so a run that is both
+    """Order — usage stop precedes reserve, so a run that is both
     out of dollars and out of allowance reports the allowance."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     result = run_plan(config, usage_ledger(weekly=0.91, spent_usd=23.10), cands(816))
@@ -604,7 +601,7 @@ def test_B211_the_usage_stop_is_checked_before_the_reserve(tmp_path):
 
 
 def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": the D2 steps keep their places — a live rate limit is
+    """The D2 steps keep their places — a live rate limit is
     still the first thing reported."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     ledger = usage_ledger(weekly=0.91)
@@ -614,7 +611,7 @@ def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
 
 
 def test_B211_halt_is_still_checked_before_the_usage_stop(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": halted still wins over the usage stop."""
+    """Halted still wins over the usage stop."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     result = run_plan(config, usage_ledger(weekly=0.91), cands(816), halted=True)
     assert result.reason == "halted"
@@ -780,8 +777,7 @@ def test_B210_a_wrapping_window_is_open_on_sunday(tmp_path):
 
 
 def test_B210_an_empty_window_is_always_open(tmp_path):
-    """B210 / RUN-DECISIONS-D3 "Config": both empty = always open — the Delivery 2 dispatcher
-    behaviour, unchanged, for a house that does not want a window."""
+    """B210: both empty = always open, for a house that does not want a window."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
 
     for moment in (WED, MON_INSIDE, SUN_NOON, TUE_INSIDE):
@@ -887,11 +883,11 @@ def test_B211_planning_still_mutates_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# in_run_window — the wrap cases (RUN-DECISIONS-D3 "Config")
+# in_run_window — the wrap cases
 # ---------------------------------------------------------------------------
 
 def test_B210_in_run_window_inside_and_outside(tmp_path):
-    """RUN-DECISIONS-D3 "Config": in_run_window(config, now) is pure and UTC — Monday 09:00 and
+    """in_run_window(config, now) is pure and UTC — Monday 09:00 and
     Tuesday 19:00 are inside mon 08:00 → tue 20:00; Wednesday noon is not."""
     from harness.config import in_run_window
 
@@ -904,7 +900,7 @@ def test_B210_in_run_window_inside_and_outside(tmp_path):
 
 
 def test_B210_in_run_window_wraps_past_sunday(tmp_path):
-    """RUN-DECISIONS-D3 "Config": the window may wrap — sat 22:00 → mon 08:00 covers Saturday
+    """The window may wrap — sat 22:00 → mon 08:00 covers Saturday
     night, all of Sunday and Monday morning, and nothing else."""
     from harness.config import in_run_window
 
@@ -919,7 +915,7 @@ def test_B210_in_run_window_wraps_past_sunday(tmp_path):
 
 
 def test_B210_an_empty_window_is_always_in(tmp_path):
-    """RUN-DECISIONS-D3 "Config": both empty = always open."""
+    """Both empty = always open."""
     from harness.config import in_run_window
 
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")

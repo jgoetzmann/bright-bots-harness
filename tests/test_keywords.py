@@ -1,8 +1,6 @@
-"""Spec tests for ``harness.keywords`` — Delivery 2 handoff §8 and §9.2 (B131–B135, B140–B141).
+"""Spec tests for ``harness.keywords`` (B131–B135, B140–B141).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §6. Fixtures are inline on purpose.
-Review selectors: ``-k denied`` (R4.2), ``-k untrusted_body`` (R4.4), ``-k replay`` (R4.7).
+Fixtures are inline. Review selectors: ``-k denied``, ``-k untrusted_body``, ``-k replay``.
 """
 from __future__ import annotations
 
@@ -156,7 +154,7 @@ def run_sweep(gh: FakeGh, ledger: Ledger, trusted=TRUSTED) -> list[Command]:
 
 
 # ---------------------------------------------------------------------------
-# B132 — silent denial (D2-R4.2: -k denied)
+# B132 — silent denial (-k denied)
 # ---------------------------------------------------------------------------
 
 def test_B132_denied_untrusted_comment_returns_none_counts_handle_and_never_reads_body():
@@ -188,7 +186,7 @@ def test_B132_denied_trusted_handle_with_wrong_association_is_counted_under_the_
 
 
 def test_B132_denied_twice_counts_twice_and_is_never_marked_seen():
-    """B132/RUN-DECISIONS-D2 §6 order: a denied comment is not marked seen (authorise precedes
+    """B132: a denied comment is not marked seen (authorise precedes
     mark_seen), so each denial is counted."""
     ledger = fresh_ledger()
     c = trapped(login="mallory", association="NONE", id=4242, node_id="IC_trap")
@@ -233,7 +231,7 @@ def test_B132_denied_in_sweep_makes_no_reply_no_reaction_no_write(caplog):
 
 
 # ---------------------------------------------------------------------------
-# B133 — parse after authorise (D2-R4.4: -k untrusted_body)
+# B133 — parse after authorise (-k untrusted_body)
 # ---------------------------------------------------------------------------
 
 def test_B133_untrusted_body_is_never_parsed_by_command_from():
@@ -280,7 +278,7 @@ def test_B133_untrusted_body_with_trusted_handle_but_wrong_association_in_sweep(
 
 
 # ---------------------------------------------------------------------------
-# B135 — at most once (D2-R4.7: -k replay)
+# B135 — at most once (-k replay)
 # ---------------------------------------------------------------------------
 
 def test_B135_replay_of_the_same_comment_returns_none_the_second_time():
@@ -326,7 +324,7 @@ def test_B135_replay_survives_a_ledger_round_trip():
 
 
 def test_B135_replay_key_prefers_node_id_when_present():
-    """B135/RUN-DECISIONS-D2 §6: the recorded id is comment["node_id"] when present."""
+    """B135: the recorded id is comment["node_id"] when present."""
     ledger = fresh_ledger()
     c = comment(login="jgoetzmann", association="OWNER", body="/harness rebase", id=8080,
                 node_id="PRRC_node8080")
@@ -337,7 +335,7 @@ def test_B135_replay_key_prefers_node_id_when_present():
 
 
 def test_B135_replay_key_falls_back_to_str_of_numeric_id():
-    """B135/RUN-DECISIONS-D2 §6: without node_id the recorded id is str(comment["id"])."""
+    """B135: without node_id the recorded id is str(comment["id"])."""
     ledger = fresh_ledger()
     c = comment(login="jgoetzmann", association="OWNER", body="/harness split", id=9090)
     cmd = command_from(c, surface="issue", number=12, trusted=TRUSTED, ledger=ledger)
@@ -348,11 +346,11 @@ def test_B135_replay_key_falls_back_to_str_of_numeric_id():
 
 
 # ---------------------------------------------------------------------------
-# parse (§8.3 verbs; B133 — parse is the post-authorisation step)
+# parse (B133 — parse is the post-authorisation step)
 # ---------------------------------------------------------------------------
 
 def test_B133_parse_each_verb():
-    """B133/§8.3: every verb in VERBS parses from a line-start '/harness <verb> <args>'."""
+    """B133: every verb in VERBS parses from a line-start '/harness <verb> <args>'."""
     from harness.keywords import ALIASES
 
     for verb in VERBS:
@@ -370,7 +368,7 @@ def test_B133_parse_each_verb():
 
 
 def test_B133_parse_unknown_verb_is_none():
-    """B133/§8.3: a verb outside VERBS is not a command."""
+    """B133: a verb outside VERBS is not a command."""
     assert parse("/harness deploy now") is None
     assert parse("/harness merge") is None
     assert parse("/harness approve") is None
@@ -378,7 +376,7 @@ def test_B133_parse_unknown_verb_is_none():
 
 
 def test_B133_parse_mid_body_not_at_line_start_is_none():
-    """B133/RUN-DECISIONS-D2 §6 regex: '/harness' must begin a line — mid-line mentions are
+    """B133: '/harness' must begin a line — mid-line mentions are
     prose, not commands."""
     assert parse("please /harness stop") is None
     assert parse("I typed `/harness fix` and nothing happened") is None
@@ -386,13 +384,13 @@ def test_B133_parse_mid_body_not_at_line_start_is_none():
 
 
 def test_B133_parse_finds_the_command_on_its_own_line_in_a_multiline_body():
-    """B133/RUN-DECISIONS-D2 §6 regex (multiline): a command on a later line is found."""
+    """B133: a command on a later line is found."""
     assert parse("Thanks for the PR.\n/harness rebase\nAlso fix the typo.") == ("rebase", "")
     assert parse("\n\n/harness fix\n") == ("revise", "")
 
 
 def test_B133_parse_allows_leading_whitespace():
-    """B133/RUN-DECISIONS-D2 §6 regex: ^\\s* permits indentation before /harness."""
+    """B133: ^\\s* permits indentation before /harness."""
     assert parse("   /harness queue") == ("go", "")
     assert parse("\t/harness stop") == ("stop", "")
 
@@ -412,10 +410,10 @@ def test_B133_parse_bare_harness_without_verb_is_none():
 
 
 def test_B133_parse_requires_a_separator_between_harness_and_verb():
-    """B133/RUN-DECISIONS-D2 §6 regex: `/harnessstop` is not a command — the verb has to be a
+    """B133: `/harnessstop` is not a command — the verb has to be a
     separate token, or any word beginning "harness" becomes one.
 
-    `/harness-stop` IS one now, reversing that clause of §6: the hyphenated spelling makes each
+    `/harness-stop` IS one: the hyphenated spelling makes each
     command a single token, which is what lets several sit in one comment without reading as a
     sentence that got away from someone."""
     assert parse("/harnessstop") is None
@@ -426,7 +424,7 @@ def test_B133_parse_requires_a_separator_between_harness_and_verb():
 
 
 def test_B133_parse_args_stop_at_the_end_of_the_command_line():
-    """B133/RUN-DECISIONS-D2 §6 regex: (.*) does not cross a newline — args are the rest of the
+    """B133: (.*) does not cross a newline — args are the rest of the
     command's line only."""
     assert parse("/harness revise line one\nline two") == ("revise", "line one")
 
@@ -449,7 +447,7 @@ def test_B131_command_from_trusted_owner_returns_the_full_command():
     c = comment(login="jgoetzmann", association="OWNER", body="/harness fix", id=42,
                 node_id="IC_abc")
     cmd = command_from(c, surface="delivery_pr", number=42, trusted=TRUSTED, ledger=ledger)
-    # B283/B270 appended `force` and `level`. The level is the actor's, recorded so a refusal
+    # B283/B270: `force` and `level`. The level is the actor's, recorded so a refusal
     # can say what it would have needed; jgoetzmann is the operator.
     assert cmd == Command(verb="revise", args="", surface="delivery_pr", number=42,
                           comment_id="IC_abc", actor="jgoetzmann", force=False, level=3)
@@ -477,7 +475,7 @@ def test_B131_authorise_trusted_owner_is_true_and_counts_nothing():
 
 
 def test_B135_command_from_trusted_comment_without_a_command_is_none_and_not_marked_seen():
-    """B135/RUN-DECISIONS-D2 §6 order: parse None → None before mark_seen, so a trusted comment
+    """B135: parse None → None before mark_seen, so a trusted comment
     with no command is not recorded as seen and is not counted as denied."""
     ledger = fresh_ledger()
     c = comment(login="jgoetzmann", association="OWNER", body="looks fine, thanks", id=50,
@@ -489,7 +487,7 @@ def test_B135_command_from_trusted_comment_without_a_command_is_none_and_not_mar
 
 
 def test_B135_command_from_already_seen_comment_is_none_before_anything_else():
-    """B135/RUN-DECISIONS-D2 §6 order: a comment already in seen_comment_ids returns None without
+    """B135: a comment already in seen_comment_ids returns None without
     authorising (no denial counted) and without parsing (trapped body untouched)."""
     ledger = fresh_ledger()
     ledger.mark_seen("IC_seen")
@@ -546,10 +544,10 @@ def test_B140_sweep_advances_the_cursor_to_now():
 
 
 def test_B242_an_upstream_issue_thread_is_a_surface_of_its_own():
-    """B242/D59: it used to yield nothing at all -- a `/harness` comment on a product issue was
-    never seen, not ignored. It is now `product_issue`, which is deliberately NOT `issue`: the
-    two repositories number independently, and `_item_for_command` maps `issue` straight to the
-    number, so calling this one `issue` would act on the harness item of the same number."""
+    """B242: a `/harness` comment on a product issue is the `product_issue` surface, never
+    `issue`: the two repositories number independently, and `_item_for_command` maps `issue`
+    straight to the number, so calling this one `issue` would act on the harness item of the
+    same number."""
     only_upstream_issue = FakeGh(
         threads=[thread(UPSTREAM, 900, "Issue", "t3")],
         comments={(UPSTREAM, 900): [comment(login="jgoetzmann", association="OWNER",
@@ -585,7 +583,7 @@ def test_B141_sweep_makes_no_write_even_when_nothing_is_found():
 
 
 def test_B140_sweep_self_repo_pull_thread_is_a_proposal_pr_command():
-    """B140/§8.3: a PR thread in this repository is the proposal-PR surface."""
+    """B140: a PR thread in this repository is the proposal-PR surface."""
     ledger = fresh_ledger(CURSOR)
     c = comment(login="jgoetzmann", association="OWNER",
                 body="/harness revise tighten the diagnosis", id=11, node_id="IC_prop33")
@@ -598,7 +596,7 @@ def test_B140_sweep_self_repo_pull_thread_is_a_proposal_pr_command():
 
 
 def test_B140_sweep_upstream_pull_conversation_comment_is_a_delivery_pr_command():
-    """B140/§8.3: a conversation (issue-style) comment on an upstream PR is a delivery-PR
+    """B140: a conversation (issue-style) comment on an upstream PR is a delivery-PR
     command too — the sweep cannot miss a thread whichever comment API it lives in."""
     ledger = fresh_ledger(CURSOR)
     c = comment(login="jgoetzmann", association="OWNER", body="/harness rebase", id=12,

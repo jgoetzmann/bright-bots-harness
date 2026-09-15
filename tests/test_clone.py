@@ -1,4 +1,4 @@
-"""B42-B48: harness.clone.CloneManager (HARNESS-SPEC 5.7).
+"""B42-B48: harness.clone.CloneManager.
 
 Clones are taken from a throwaway local git repository created under tmp_path, so nothing here
 reaches the network. The default remote URL is asserted through a recording `git_runner`.
@@ -384,7 +384,7 @@ def test_b220_tier_0_clones_the_product_repository_not_the_stale_fork(tmp_path):
 
 
 def test_b220_no_fork_configured_always_means_the_product_repository():
-    """B220: unchanged from Delivery 1 -- an empty FORK_REPO was never a clone source."""
+    """B220: an empty FORK_REPO is never a clone source."""
     from harness.clone import _source_repo
 
     for tier in (0, 2):

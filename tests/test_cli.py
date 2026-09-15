@@ -422,7 +422,7 @@ def test_B69_a_halted_run_leaves_the_item_approved_and_resumable(tmp_path, monke
 def past_hhmm() -> str:
     """A local wall-clock time that has already passed.
 
-    The CLI compares --until against the real local clock (RUN-DECISIONS), so
+    The CLI compares --until against the real local clock, so
     this is one of the two places the suite reads it; `iso_now` (below) is the
     other, and the two are the whole of the exception to conftest.py's "time is
     always frozen". One minute back, except inside the first minute of the day
@@ -496,13 +496,12 @@ def test_B69_run_exits_5_when_the_halt_file_is_present_even_with_an_empty_queue(
 
 
 # --------------------------------------------------------------------------
-# Delivery 2 — the CLI (handoff §3.2, §6.3, §6.4, §11.4; RUN-DECISIONS-D2 §9, §12, §14).
-# Appended by the D2 spec-tester (T3); additions only (D2-R12.3).
+# The CLI: halt, dispatch, doctor, ledger and sync-fork.
 # --------------------------------------------------------------------------
 
 from datetime import timezone
 
-# RUN-DECISIONS-D2 §2 — the new keys with their .env.example values.
+# The new keys with their .env.example values.
 D2_ENV_LINES = """\
 WEEKLY_CAP_USD=25.00
 PER_CALL_CAP_USD=3.00
@@ -518,7 +517,7 @@ TRACKING_ISSUE=
 STORE_BACKEND=sqlite
 """
 D2_ENV_BODY = ENV_BODY  # ENV_BODY already carries the D2 keys (DECISIONS D22)
-# Handoff §6.5 — the keys `doctor` must name (A30).
+# The keys `doctor` must name (A30).
 D2_DOCTOR_KEYS = (
     "WEEKLY_CAP_USD",
     "PER_CALL_CAP_USD",
@@ -534,7 +533,7 @@ D2_DOCTOR_KEYS = (
 FORK = "brightboost-harness/brightboost"
 RESET_AT = "2026-09-02T18:00:00Z"
 
-# RUN-DECISIONS-D2 §9 — every spending command checks .harness/HALT first (sweep is feedback.yml's
+# Every spending command checks .harness/HALT first (sweep is feedback.yml's
 # entry point, A43 "every spending entry point").
 REPO_HALT_COMMANDS = (
     ["dispatch"],
@@ -547,7 +546,7 @@ REPO_HALT_COMMANDS = (
     ["sweep"],
 )
 
-# A complete section 7.1 work package for issue 816 (inline; duplicated on purpose).
+# A complete work package for issue 816 (inline).
 SPEC_816 = """# fix(scripts): bundle size check misreports esm chunks
 
 ## Issue
@@ -641,7 +640,7 @@ def write_ledger(
     calls: int = 0,
     usage: dict | None = None,
 ) -> Path:
-    """A handoff §6.2 ledger whose window started a minute ago, so it cannot roll."""
+    """A ledger whose window started a minute ago, so it cannot roll."""
     payload = {
         "schema": 1,
         "window": {
@@ -675,7 +674,7 @@ def forbid_everything(monkeypatch) -> None:
 
 
 def rate_limited_fixture() -> dict:
-    """RUN-DECISIONS-D2 §12: a FakeRunner fixture with "rate_limited": true replays a rate limit."""
+    """A FakeRunner fixture with "rate_limited": true replays a rate limit."""
     return {
         "ok": False,
         "text": "",
@@ -713,7 +712,7 @@ def dispatch_plan(capsys) -> dict:
 def test_B149_B150_repo_halt_exits_0_before_config_is_loaded_when_dot_env_is_missing(
     tmp_path, monkeypatch, capsys, argv
 ):
-    """B149 / B150 / A43 (handoff §11.4, D2-R6.16): with .harness/HALT under the cwd every
+    """B149 / B150 / A43: with .harness/HALT under the cwd every
     spending command exits 0 and says why — even with no .env at all, which proves the check
     precedes config loading, doctor and the dispatcher."""
     monkeypatch.chdir(tmp_path)
@@ -734,7 +733,7 @@ def test_B149_B150_repo_halt_exits_0_before_config_is_loaded_when_dot_env_is_mis
 def test_B149_B150_repo_halt_spends_nothing_and_leaves_the_queue_untouched(
     tmp_path, monkeypatch, capsys, argv
 ):
-    """B149 / B150 / A43 (handoff §11.4, D2-R6.16): with a full .env and an approved item,
+    """B149 / B150 / A43: with a full .env and an approved item,
     .harness/HALT still means exit 0, the halt message, no stage run, no clone."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -754,7 +753,7 @@ def test_B149_B150_repo_halt_spends_nothing_and_leaves_the_queue_untouched(
 
 
 def test_B149_repo_halt_beats_a_config_error(tmp_path, monkeypatch, capsys):
-    """B149 / B150 (handoff §11.4): a broken .env would exit non-zero; the halt check runs first
+    """B149 / B150: a broken .env would exit non-zero; the halt check runs first
     and wins with exit 0."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, WEEKLY_CAP_USD="-1")
@@ -766,7 +765,7 @@ def test_B149_repo_halt_beats_a_config_error(tmp_path, monkeypatch, capsys):
 
 
 def test_B148_the_delivery_1_halt_file_still_exits_5_under_d2_config(tmp_path, monkeypatch, capsys):
-    """B148 (handoff §11.4) / RUN-DECISIONS-D2 §9: local mode keeps the D1 HALT semantics — exit 5,
+    """B148: local mode keeps the D1 HALT semantics — exit 5,
     nothing started, the item resumable."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -782,7 +781,7 @@ def test_B148_the_delivery_1_halt_file_still_exits_5_under_d2_config(tmp_path, m
 
 
 def test_B149_without_the_repo_halt_file_dispatch_is_not_halted(tmp_path, monkeypatch, capsys):
-    """B149 (handoff §11.4): the halt message appears only when the file exists."""
+    """B149: the halt message appears only when the file exists."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -801,7 +800,7 @@ def test_B149_without_the_repo_halt_file_dispatch_is_not_halted(tmp_path, monkey
 def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_nothing(
     tmp_path, monkeypatch, capsys
 ):
-    """A33 / B122 (handoff §6.4, D2-R6.4): `dispatch` emits {"start","reason","skipped"} in that
+    """A33 / B122: `dispatch` emits {"start","reason","skipped"} in that
     order, lists the approved item, and starts no stage run and no clone.
 
     B292 appends `queue`, `head` and `suggested` after those three. Appended, not woven in:
@@ -832,7 +831,7 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
 def test_R6_5_two_dispatches_over_an_unchanged_ledger_are_byte_identical(
     tmp_path, monkeypatch, capsys
 ):
-    """A33 / D2-R6.5 (handoff §6.4): the dispatcher is pure — same ledger, same bytes."""
+    """A33: the dispatcher is pure — same ledger, same bytes."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -851,7 +850,7 @@ def test_R6_5_two_dispatches_over_an_unchanged_ledger_are_byte_identical(
 
 
 def test_B122_dispatch_does_not_modify_the_ledger_file(tmp_path, monkeypatch, capsys):
-    """B122 (handoff §6.4): dispatch is pure; the ledger on disk is byte-identical afterwards."""
+    """B122: dispatch is pure; the ledger on disk is byte-identical afterwards."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -868,7 +867,7 @@ def test_B122_dispatch_does_not_modify_the_ledger_file(tmp_path, monkeypatch, ca
 
 
 def test_B122_dispatch_with_an_empty_queue_emits_an_empty_start_list(tmp_path, monkeypatch, capsys):
-    """B122 (handoff §6.4): no approved items means start == [] and the plan is still valid JSON."""
+    """B122: no approved items means start == [] and the plan is still valid JSON."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -884,7 +883,7 @@ def test_B122_dispatch_with_an_empty_queue_emits_an_empty_start_list(tmp_path, m
 
 
 def test_B121_dispatch_starts_nothing_while_rate_limited(tmp_path, monkeypatch, capsys):
-    """B121 (handoff §6.3, D2-R6.6): now < rate_limited_until → empty plan, the reason names
+    """B121: now < rate_limited_until → empty plan, the reason names
     the rate limit and its reset time."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -902,7 +901,7 @@ def test_B121_dispatch_starts_nothing_while_rate_limited(tmp_path, monkeypatch, 
 
 
 def test_B121_dispatch_resumes_once_the_rate_limit_has_passed(tmp_path, monkeypatch, capsys):
-    """B121 (handoff §6.3): a rate_limited_until in the past no longer blocks the plan."""
+    """B121: a rate_limited_until in the past no longer blocks the plan."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -920,7 +919,7 @@ def test_B121_dispatch_resumes_once_the_rate_limit_has_passed(tmp_path, monkeypa
 def test_R6_7_dispatch_at_the_reserve_boundary_emits_an_empty_plan_with_reason_reserve(
     tmp_path, monkeypatch, capsys
 ):
-    """B122 selection step 3 (handoff §6.4, D2-R6.7): spent >= cap × (1 − reserve/100) → empty
+    """B122 selection step 3: spent >= cap × (1 − reserve/100) → empty
     plan, reason `reserve`. Cap 25, reserve 10 %, spent 22.50."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, RESERVE_PCT="10")
@@ -938,7 +937,7 @@ def test_R6_7_dispatch_at_the_reserve_boundary_emits_an_empty_plan_with_reason_r
 
 
 def test_R6_7_dispatch_beyond_the_reserve_is_also_reserve(tmp_path, monkeypatch, capsys):
-    """B122 selection step 3 (handoff §6.4): overspend past the cap is still `reserve`."""
+    """B122 selection step 3: overspend past the cap is still `reserve`."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, RESERVE_PCT="10")
     assert cli.main(["init"]) == 0
@@ -956,7 +955,7 @@ def test_R6_7_dispatch_beyond_the_reserve_is_also_reserve(tmp_path, monkeypatch,
 def test_R6_7_dispatch_just_below_the_reserve_skips_an_unaffordable_item(
     tmp_path, monkeypatch, capsys
 ):
-    """B122 selection step 6 (handoff §6.4, RUN-DECISIONS-D2 §5): remaining 0.50 < the 2.50
+    """B122 selection step 6: remaining 0.50 < the 2.50
     static implement estimate → the item is skipped with the exact reason string."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, RESERVE_PCT="10")
@@ -975,7 +974,7 @@ def test_R6_7_dispatch_just_below_the_reserve_skips_an_unaffordable_item(
 
 
 def test_B122_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatch, capsys):
-    """B122 selection step 2 / RUN-DECISIONS-D2 §14: `halted = repo_halted(...) or
+    """B122 selection step 2: `halted = repo_halted(...) or
     halted(config.halt_file)`. The D1 HALT file is `config.halt_file`, not `.harness/HALT`,
     so `check_repo_halt` does not fire and `cmd_dispatch` returns EXIT_OK with an empty plan
     whose reason is "halted" — exit 5 belongs to the repo halt, which is a different test."""
@@ -1003,7 +1002,7 @@ def test_B122_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatc
 
 
 def test_A30_doctor_names_every_new_config_key(tmp_path, monkeypatch, capsys):
-    """A30 (handoff §6.5, D2-R6.2): `doctor` exits 0 and prints every §6.5 key with its value."""
+    """A30: `doctor` exits 0 and prints every required key with its value."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1019,7 +1018,7 @@ def test_A30_doctor_names_every_new_config_key(tmp_path, monkeypatch, capsys):
 
 
 def test_A30_doctor_exits_3_and_names_a_missing_weekly_cap(tmp_path, monkeypatch, capsys):
-    """A30 (handoff §6.5, D2-R6.3): WEEKLY_CAP_USD removed from .env → exit 3, the key named."""
+    """A30: WEEKLY_CAP_USD removed from .env → exit 3, the key named."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, WEEKLY_CAP_USD=None)
     doctor_ok(monkeypatch)
@@ -1043,7 +1042,7 @@ def test_A30_doctor_exits_3_and_names_a_missing_weekly_cap(tmp_path, monkeypatch
     ],
 )
 def test_A30_doctor_exits_3_and_names_an_out_of_range_key(tmp_path, monkeypatch, capsys, key, value):
-    """A30 (handoff §6.5): an out-of-range value is a degraded doctor naming the key."""
+    """A30: an out-of-range value is a degraded doctor naming the key."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, **{key: value})
     doctor_ok(monkeypatch)
@@ -1057,7 +1056,7 @@ def test_A30_doctor_exits_3_and_names_an_out_of_range_key(tmp_path, monkeypatch,
 
 
 def test_B112_doctor_exits_3_and_names_an_unknown_config_json_key(tmp_path, monkeypatch, capsys):
-    """A30 / B112 (handoff §5.5, §6.5): a typo'd key in .harness/config.json is a startup error
+    """A30 / B112: a typo'd key in .harness/config.json is a startup error
     doctor reports by name."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -1083,7 +1082,7 @@ def test_B112_doctor_exits_3_and_names_an_unknown_config_json_key(tmp_path, monk
 
 
 def test_ledger_json_prints_valid_json_with_the_window(tmp_path, monkeypatch, capsys):
-    """Handoff §3.2 / RUN-DECISIONS-D2 §14: `ledger --json` prints the window, observations
+    """`ledger --json` prints the window, observations
     and rate-limit state as JSON; B116's ledger shape is what comes back."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -1101,7 +1100,7 @@ def test_ledger_json_prints_valid_json_with_the_window(tmp_path, monkeypatch, ca
 
 
 def test_ledger_json_reflects_the_ledger_file(tmp_path, monkeypatch, capsys):
-    """Handoff §3.2, §6.2: the printed window is the one in state/ledger.json."""
+    """The printed window is the one in state/ledger.json."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1118,7 +1117,7 @@ def test_ledger_json_reflects_the_ledger_file(tmp_path, monkeypatch, capsys):
 
 
 def test_ledger_plain_output_mentions_the_spend_and_the_rate_limit(tmp_path, monkeypatch, capsys):
-    """Handoff §3.2 / RUN-DECISIONS-D2 §14: the human form prints spend and rate-limit state."""
+    """The human form prints spend and rate-limit state."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1139,7 +1138,7 @@ def test_ledger_plain_output_mentions_the_spend_and_the_rate_limit(tmp_path, mon
 
 
 def test_B105_sync_fork_exits_1_on_divergence_and_names_both_shas(tmp_path, monkeypatch, capsys):
-    """B105 / A36 (handoff §4.4, D2-R6.12): ForkDiverged → exit 1, both shas on stderr."""
+    """B105 / A36: ForkDiverged → exit 1, both shas on stderr."""
     from harness.errors import ForkDiverged
 
     fork_sha = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
@@ -1166,7 +1165,7 @@ def test_B105_sync_fork_exits_1_on_divergence_and_names_both_shas(tmp_path, monk
 
 
 def test_B105_sync_fork_exits_0_when_the_fork_fast_forwards(tmp_path, monkeypatch, capsys):
-    """B105 (handoff §4.4): a fast-forward (or already-equal) sync is exit 0."""
+    """B105: a fast-forward (or already-equal) sync is exit 0."""
     calls: list[dict] = []
 
     def fast_forward(config, **kwargs):
@@ -1221,7 +1220,7 @@ def test_B105_sync_fork_is_not_reached_when_the_repo_is_halted(tmp_path, monkeyp
 def test_B120_run_item_returns_the_item_to_approved_and_records_the_reset_when_rate_limited(
     tmp_path, monkeypatch, capsys
 ):
-    """B120 / A39 (handoff §6.3, D2-R6.13): a RateLimited implement call puts the item back to
+    """B120 / A39: a RateLimited implement call puts the item back to
     `approved`, writes rate_limited_until to the ledger, says so, and exits 0.
 
     The clone and the gates are faked through the D1 injection points (CloneManager.acquire,
@@ -1293,7 +1292,7 @@ def test_B120_run_item_returns_the_item_to_approved_and_records_the_reset_when_r
     "command", ["dispatch", "deliver", "revise", "decompose", "sweep", "ledger", "sync-fork"]
 )
 def test_B65_d2_every_new_subcommand_is_known_to_argparse(tmp_path, monkeypatch, capsys, command):
-    """B65 / handoff §3.2: each new subcommand parses (`--help` exits 0 from argparse)."""
+    """B65: each new subcommand parses (`--help` exits 0 from argparse)."""
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(SystemExit) as excinfo:
@@ -1304,7 +1303,7 @@ def test_B65_d2_every_new_subcommand_is_known_to_argparse(tmp_path, monkeypatch,
 
 
 def test_B65_d2_local_loop_subcommand_exists(tmp_path, monkeypatch, capsys):
-    """RUN-DECISIONS-D2 §16: `harness local-loop` is a subcommand."""
+    """`harness local-loop` is a subcommand."""
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(SystemExit) as excinfo:
@@ -1315,7 +1314,7 @@ def test_B65_d2_local_loop_subcommand_exists(tmp_path, monkeypatch, capsys):
 
 
 def test_B65_d2_the_global_dry_run_flag_parses(tmp_path, monkeypatch, capsys):
-    """RUN-DECISIONS-D2 §14: global `--dry-run` is accepted in front of any subcommand."""
+    """Global `--dry-run` is accepted in front of any subcommand."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1327,7 +1326,7 @@ def test_B65_d2_the_global_dry_run_flag_parses(tmp_path, monkeypatch, capsys):
 
 
 def test_B65_d2_init_labels_is_a_no_op_without_write_access(tmp_path, monkeypatch, capsys):
-    """RUN-DECISIONS-D2 §14: `init --labels` with no token (tier 0) exits 0 with a message and
+    """`init --labels` with no token (tier 0) exits 0 with a message and
     issues no request."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -1339,7 +1338,7 @@ def test_B65_d2_init_labels_is_a_no_op_without_write_access(tmp_path, monkeypatc
 
 
 def test_B65_d2_deliver_on_an_unknown_item_exits_1(tmp_path, monkeypatch, capsys):
-    """B65 / handoff §3.2: `deliver <id>` for an item that does not exist is exit 1."""
+    """B65: `deliver <id>` for an item that does not exist is exit 1."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1351,7 +1350,7 @@ def test_B65_d2_deliver_on_an_unknown_item_exits_1(tmp_path, monkeypatch, capsys
 
 
 def test_B65_d2_deliver_refuses_an_item_that_is_not_packaged(tmp_path, monkeypatch, capsys):
-    """Handoff §4.5 / RUN-DECISIONS-D2 §13: deliver requires state `packaged`; an approved item
+    """Deliver requires state `packaged`; an approved item
     is refused, left approved, and nothing is pushed."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -1367,7 +1366,7 @@ def test_B65_d2_deliver_refuses_an_item_that_is_not_packaged(tmp_path, monkeypat
 
 
 def test_B65_d2_deliver_requires_an_integer_id(tmp_path, monkeypatch, capsys):
-    """B65 / handoff §3.2: `deliver <id>` takes an item id; text is an argparse error."""
+    """B65: `deliver <id>` takes an item id; text is an argparse error."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
 
@@ -1379,7 +1378,7 @@ def test_B65_d2_deliver_requires_an_integer_id(tmp_path, monkeypatch, capsys):
 
 
 def test_B65_d2_revise_requires_a_source(tmp_path, monkeypatch, capsys):
-    """B65 / handoff §3.2: `revise <id> --source ci|conflict|review` — the source is mandatory."""
+    """B65: `revise <id> --source ci|conflict|review` — the source is mandatory."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
 
@@ -1391,7 +1390,7 @@ def test_B65_d2_revise_requires_a_source(tmp_path, monkeypatch, capsys):
 
 
 def test_B65_d2_revise_rejects_an_unknown_source(tmp_path, monkeypatch, capsys):
-    """B65 / handoff §3.2: the source enum is closed."""
+    """B65: the source enum is closed."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
 
@@ -1404,7 +1403,7 @@ def test_B65_d2_revise_rejects_an_unknown_source(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("source", ["ci", "conflict", "review"])
 def test_B65_d2_revise_on_an_unknown_item_exits_1(tmp_path, monkeypatch, capsys, source):
-    """B65 / handoff §3.2: every legal source parses; an unknown item is exit 1."""
+    """B65: every legal source parses; an unknown item is exit 1."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1416,7 +1415,7 @@ def test_B65_d2_revise_on_an_unknown_item_exits_1(tmp_path, monkeypatch, capsys,
 
 
 def test_B65_d2_revise_refuses_an_item_that_is_not_shipped(tmp_path, monkeypatch, capsys):
-    """Handoff §9 / RUN-DECISIONS-D2 §13: revise requires `shipped` (or `needs-human` with an
+    """Revise requires `shipped` (or `needs-human` with an
     explicit fix); an approved item is refused, untouched, and nothing is cloned."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
@@ -1432,7 +1431,7 @@ def test_B65_d2_revise_refuses_an_item_that_is_not_shipped(tmp_path, monkeypatch
 
 
 def test_B65_d2_decompose_requires_an_integer_issue(tmp_path, monkeypatch, capsys):
-    """B65 / handoff §3.2: `decompose <issue>` takes an issue number."""
+    """B65: `decompose <issue>` takes an issue number."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
 
@@ -1460,15 +1459,11 @@ def test_B65_d2_decompose_of_an_unreachable_issue_exits_1_without_a_model_call(
 
 
 # --------------------------------------------------------------------------
-# Delivery 3 — the run loop's handoff/continue routing (RUN-DECISIONS-D3
-# "Handoff and continue", B214/B215). Appended by the D3 spec-tester (T2);
-# additions only. Nothing above was edited except the ENV_BODY data constant,
-# which gained the five keys D3 makes required in every `.env` (the run window
-# is left empty there — "both empty = always open" — so D2 behaviour is
-# unchanged).
+# The run loop's handoff/continue routing (B214/B215). ENV_BODY leaves the run
+# window empty, where "both empty = always open".
 # --------------------------------------------------------------------------
 
-# RUN-DECISIONS-D3 "Config": the five new keys, with their .env.example values. ENV_BODY
+# The five new keys, with their .env.example values. ENV_BODY
 # carries them already; this is the documented list the fixtures are built from.
 D3_ENV_LINES = """\
 WEEKLY_USAGE_STOP_PCT=90
@@ -1504,7 +1499,7 @@ def write_handoff(tmp_path: Path, item_id: int, *, reason: str = D3_STOP_REASON)
 
 def write_carry_ledger(tmp_path: Path, *, carry_issue: int | None = None,
                        reason: str = D3_STOP_REASON) -> Path:
-    """A D3 ledger: the D2 window plus `usage` and `carry` (RUN-DECISIONS-D3 "Ledger")."""
+    """A D3 ledger: the D2 window plus `usage` and `carry`."""
     path = write_ledger(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["window"]["usage"] = None
@@ -1638,7 +1633,7 @@ def stage_names(ran: list) -> list[str]:
 def test_B215_run_routes_an_approved_item_with_a_handoff_to_revise_continue(
     tmp_path, monkeypatch, capsys
 ):
-    """B215 (RUN-DECISIONS-D3 `__main__.run`): an approved item that has a branch_name and a
+    """B215: an approved item that has a branch_name and a
     runs/item-N/HANDOFF.md is continued — `revise(source="continue")` runs and `implement`
     is never called."""
     monkeypatch.chdir(tmp_path)
@@ -1703,7 +1698,7 @@ def test_B215_run_still_implements_an_approved_item_with_no_handoff_and_no_carry
     tmp_path, monkeypatch, capsys
 ):
     """B215: the routing condition is exactly `branch_name and (HANDOFF.md or carry)` — a
-    fresh approved item is implemented as in Delivery 2, never continued."""
+    fresh approved item is implemented, never continued."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1735,7 +1730,7 @@ def test_B215_run_still_implements_an_approved_item_with_no_handoff_and_no_carry
 def test_B214_budget_exhausted_in_implement_is_handed_off_and_the_run_exits_zero(
     tmp_path, monkeypatch, capsys
 ):
-    """B214 (RUN-DECISIONS-D3 `__main__.run`): `BudgetExhausted` out of implement is caught,
+    """B214: `BudgetExhausted` out of implement is caught,
     `handoff(ctx, id, reason=str(exc))` is called once, and the run exits 0 — a usage stop is
     a normal outcome, like B120's rate limit."""
     from harness.errors import BudgetExhausted
@@ -1801,8 +1796,7 @@ def test_B214_budget_exhausted_hands_the_item_back_to_approved_with_a_handoff_fi
 
 
 # --------------------------------------------------------------------------
-# A30 / B112 - doctor's per-key config report: it covers Delivery 3, and each
-# verdict is whole-word (audit findings 7 and 12)
+# A30 / B112 - doctor's per-key config report, and each verdict is whole-word
 # --------------------------------------------------------------------------
 
 D3_DOCTOR_KEYS = (
@@ -1815,7 +1809,7 @@ D3_DOCTOR_KEYS = (
 
 
 def test_A30_doctor_names_every_delivery_3_config_key(tmp_path, monkeypatch, capsys):
-    """A30 with the D3 additions: OPERATIONS §13.5 sends the operator to `harness doctor` to
+    """A30: OPERATIONS sends the operator to `harness doctor` to
     confirm exactly these five knobs after a reviewed change, so doctor prints each with the
     value it loaded - in the text report and in `--json` alike."""
     monkeypatch.chdir(tmp_path)
@@ -1971,7 +1965,7 @@ def windowed_repo(tmp_path: Path, monkeypatch, at: datetime) -> int:
 def test_B210_run_outside_the_run_window_starts_nothing_and_names_the_window(
     tmp_path, monkeypatch, capsys
 ):
-    """B210 (RUN-DECISIONS-D3 `__main__.run`, D32): with `RUN_WINDOW_START=mon 08:00` and
+    """B210 (D32): with `RUN_WINDOW_START=mon 08:00` and
     `RUN_WINDOW_END=tue 20:00`, a Thursday tick starts no stage, says which window it is
     outside of, and exits 0 - a closed window is a normal outcome, not a failure."""
     item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
@@ -2049,7 +2043,7 @@ def test_B209_run_inside_the_run_window_starts_the_approved_item(
 def test_B210_run_item_bypasses_the_run_window_but_still_reaches_the_stage(
     tmp_path, monkeypatch, capsys
 ):
-    """RUN-DECISIONS-D3: "`--item` bypasses the run window but not the usage stops" - a human
+    """`--item` bypasses the run window but not the usage stops: a human
     at the keyboard on a Thursday gets the item implemented, not the window message."""
     item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
     ran: list = []

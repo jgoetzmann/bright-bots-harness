@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from pathlib import Path
 
 import pytest
@@ -1905,3 +1906,30 @@ def test_b279_the_comparison_ignores_case(tmp_path, write_d3_env):
 
     with pytest.raises(ConfigError):
         load_config(env_path=path, environ={})
+
+
+# --------------------------------------------------------------------------------------
+# B433 - the host environment is not a config source (D75)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def host_exports_a_config_key():
+    """A shell or a runner that exports `MIN_FREE_DISK_GB`. Module scope, so it is set up
+    before the function-scoped autouse fixture whose job is to clear it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("MIN_FREE_DISK_GB", "99")
+        yield
+
+
+def test_b433_a_config_key_in_the_host_environment_reaches_no_config(
+    host_exports_a_config_key, env_file
+):
+    """B433: conftest clears every known key from `os.environ` for each test, so a config that
+    reads the process environment reads the `.env` under test. Without that fixture this loads
+    99, and every test that goes through the CLI tests the host's value instead (D75)."""
+    assert "MIN_FREE_DISK_GB" not in os.environ
+
+    config = load_config(env_path=env_file)
+
+    assert config.min_free_disk_gb == pytest.approx(5.0)

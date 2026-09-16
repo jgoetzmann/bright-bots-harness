@@ -1,6 +1,7 @@
 """Shared fixtures for the Bright Bots Harness suite.
 
-No fixture inspects the implementation.
+No fixture inspects the implementation, beyond reading from `harness.config` the key names the
+host environment must not supply (D75).
 
 Time is always frozen: 2026-09-01T12:00:00Z, a Tuesday. The Monday before it is 2026-08-31,
 which is where the ledger fixtures start their window.
@@ -13,6 +14,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+# --------------------------------------------------------------------------
+# The host environment
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_config_keys_from_the_host_environment():
+    """Remove every `.env` key name from `os.environ` for the duration of one test (D75).
+
+    `load_config` merges the process environment over the file it reads, so a variable exported
+    in a shell or on a runner would otherwise decide what the suite tests. The names come from
+    `harness.config`, so a new key is covered the day it is added. This runs before the test
+    body, leaving `monkeypatch.setenv` inside a test free to put a key back.
+    """
+    from harness.config import KNOWN_KEYS, RETIRED_KEYS
+
+    with pytest.MonkeyPatch.context() as patch:
+        for key in KNOWN_KEYS + RETIRED_KEYS:
+            patch.delenv(key, raising=False)
+        yield
+
 
 # --------------------------------------------------------------------------
 # Frozen time

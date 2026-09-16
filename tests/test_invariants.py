@@ -2762,3 +2762,18 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
     assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS
+
+
+def test_B434_the_suite_imports_the_harness_that_sits_beside_it():
+    """B434: `pythonpath` puts the rootdir first on `sys.path`, ahead of the meta-path finder
+    the editable install appends, so a bare `pytest` imports this tree. A worktree that tested
+    the main checkout's source would report on a diff it never ran (D75).
+
+    `python -m pytest` puts the working directory first by itself, so under the documented
+    command the import below holds either way: the line that bites for a bare `pytest` is the
+    assertion on the setting."""
+    import harness
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["tool"]["pytest"]["ini_options"].get("pythonpath") == ["."]
+    assert Path(harness.__file__).resolve().parent == HARNESS_DIR

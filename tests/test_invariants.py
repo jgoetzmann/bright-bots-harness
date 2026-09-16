@@ -2685,9 +2685,11 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
 # D74 - no dollar machinery survives anywhere
 # --------------------------------------------------------------------------------------
 
-#: The one place a retired key name still belongs under `harness/`: the tuple that keeps an
-#: existing .env and .harness/config.json loading after D74 removed the keys it names.
+#: Two places a retired name still belongs under `harness/`: the tuple that keeps an existing
+#: .env and .harness/config.json loading after D74 removed the keys it names, and the one line
+#: that drops a pre-D74 ledger's spend field the next time the ledger is saved.
 RETIRED_KEYS_TUPLE = re.compile(r"RETIRED_KEYS[^=]*=\s*\([^)]*\)", re.S)
+LEDGER_SPEND_DROP = re.compile(r'window\.pop\("spent_usd", None\)')
 
 DOLLAR_TOKENS = (
     "max-budget-usd", "max_budget_usd", "cost_usd", "spent_usd", "static_usd", "total_cost_usd",
@@ -2696,12 +2698,16 @@ DOLLAR_TOKENS = (
 
 def test_B419_no_module_under_harness_computes_or_prints_a_dollar_figure():
     """B419: D74 removed the weekly cap, the per-call cap and every estimate, so no source
-    under harness/ names one. `config.RETIRED_KEYS` is the one exemption."""
+    under harness/ names one. The two exemptions are `config.RETIRED_KEYS` and the ledger's
+    one-line drop of a pre-D74 `spent_usd`; D74 names both, and each is exempt only in the
+    file it belongs to."""
     offenders: list[str] = []
     for path in _harness_sources():
         text = _read(path)
         if path.name == "config.py":
             text = RETIRED_KEYS_TUPLE.sub("", text)
+        if path.name == "ledger.py":
+            text = LEDGER_SPEND_DROP.sub("", text)
         lowered = text.lower()
         for token in DOLLAR_TOKENS:
             if token in lowered:

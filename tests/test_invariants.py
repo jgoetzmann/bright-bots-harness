@@ -477,6 +477,9 @@ ROUND_MINUTES = (0, 15, 30, 45)
 # Every gh.py write method (I-13's write set).
 GH_WRITE_METHODS = (
     "comment",
+    # D76: the one write that removes something. It may only ever reach a comment carrying
+    # MACHINE_MARKER, which is applied at the transport to everything the harness writes.
+    "delete_issue_comment",
     "set_labels",
     "create_issue",
     "create_pull",

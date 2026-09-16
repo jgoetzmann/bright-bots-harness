@@ -743,3 +743,155 @@ def test_the_cursor_does_not_advance_over_a_feed_that_never_arrived():
           upstream_repo=UPSTREAM, inbox_issue=0)
 
     assert ledger.cursors["notifications_last_seen"] == CURSOR, "the window must be retried"
+
+
+# --------------------------------------------------------------------------------------------
+# B435 - naming the machine account is a command
+#
+# Measured on the live inbox: two `@jgoetzmann-bot audit <lens>` comments produced two SKIPPED
+# workflow runs and complete silence. Naming the bot is the obvious thing to try, and it did
+# nothing at all.
+# --------------------------------------------------------------------------------------------
+
+MACHINE = "jgoetzmann-bot"
+
+
+def test_B435_a_mention_of_the_machine_account_followed_by_a_verb_is_a_command():
+    from harness.keywords import parse_all
+
+    assert parse_all(f"@{MACHINE} audit accessibility", mention=MACHINE) == [
+        ("audit", "accessibility")]
+    # A phone capitalises the first word; the handle is matched the way the verb is.
+    assert parse_all("@JGoetzmann-Bot Status", mention=MACHINE) == [("status", "")]
+
+
+def test_B435_a_mention_of_anybody_else_is_not_a_command():
+    """Otherwise `@nathan status` -- a sentence about Nathan -- starts a run."""
+    from harness.keywords import parse_all
+
+    assert parse_all("@nathan status", mention=MACHINE) == []
+    assert parse_all(f"@{MACHINE} status", mention="someone-else") == []
+    # And with no handle configured the mention form is simply off.
+    assert parse_all(f"@{MACHINE} status") == []
+
+
+def test_B435_a_mention_with_no_verb_parses_to_nothing():
+    from harness.keywords import mentions_without_command, parse_all
+
+    assert parse_all(f"@{MACHINE}", mention=MACHINE) == []
+    assert parse_all(f"@{MACHINE} please take a look at the cards", mention=MACHINE) == []
+    assert mentions_without_command(f"@{MACHINE} please take a look", MACHINE) is True
+
+
+def test_B435_a_mention_inside_prose_is_still_prose():
+    """The same rule `/harness` has. Naming the bot mid-sentence is talking about it."""
+    from harness.keywords import mentions_without_command, parse_all
+
+    assert parse_all(f"thanks @{MACHINE} for that", mention=MACHINE) == []
+    assert mentions_without_command(f"thanks @{MACHINE} for that", MACHINE) is False
+    fenced = f"```\n@{MACHINE} stop\n```"
+    assert parse_all(fenced, mention=MACHINE) == [], "a fenced block shows a command, not gives"
+
+
+def test_B435_the_two_forms_run_in_the_order_typed_and_a_command_is_read_once():
+    """`@bot /harness work` satisfies both patterns' prefixes, and must still be one command:
+    the mention form requires a word character after the handle, and `/` is not one."""
+    from harness.keywords import parse_all
+
+    assert parse_all(f"@{MACHINE} status\n/harness work x", mention=MACHINE) == [
+        ("status", ""), ("work", "x")]
+    assert parse_all(f"/harness status\n@{MACHINE} work x", mention=MACHINE) == [
+        ("status", ""), ("work", "x")]
+    assert parse_all(f"@{MACHINE} /harness work x", mention=MACHINE) == [("work", "x")]
+
+
+def test_B435_the_sweep_hears_a_mention_because_the_machine_account_is_already_in_hand():
+    """One parameter carries both halves: the author the sweep refuses, and the handle it
+    accepts as a mention. They cannot drift apart."""
+    ledger = fresh_ledger(None)
+    c = comment(login="jgoetzmann", association="OWNER", body="@bb-machine status", id=77,
+                node_id="IC_m77")
+
+    cmds = sweep(FakeGh(comments={(SELF_REPO, 19): [c]}), ledger=ledger, trusted=TRUSTED,
+                 now_iso=NOW_ISO, self_repo=SELF_REPO, upstream_repo=UPSTREAM, inbox_issue=19,
+                 machine="bb-machine")
+
+    assert [(x.verb, x.surface, x.number) for x in cmds] == [("status", "inbox", 19)]
+
+
+# --------------------------------------------------------------------------------------------
+# B439 - a run cancelled before it started loses nothing
+#
+# The operator read a CANCELLED `/harness status` run as a command thrown away by the `/harness
+# help` that followed it. This is the proof that it was not.
+# --------------------------------------------------------------------------------------------
+
+
+def test_B439_a_run_that_was_cancelled_before_it_started_loses_nothing():
+    """The inbox is read on every sweep, before the notifications call and independent of
+    `notifications_last_seen`, which bounds only the feed. A run cancelled while queued executes
+    no step, so it marks nothing seen -- and the next sweep finds the comment however old it is
+    and however far the cursor has moved past it."""
+    ledger = fresh_ledger(CURSOR)
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=1,
+                       node_id="IC_cancelled", created_at="2026-08-20T00:00:00Z")
+    gh = FakeGh(comments={(SELF_REPO, 19): [stranded]})
+
+    cmds = sweep(gh, ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
+                 upstream_repo=UPSTREAM, inbox_issue=19)
+
+    assert [(x.verb, x.surface) for x in cmds] == [("status", "inbox")]
+    assert gh.since_args() == [CURSOR], "the cursor bounds the feed and nothing else"
+
+
+# --------------------------------------------------------------------------------------------
+# B441/B442 - the answered marker, and why only the machine's own may set it
+# --------------------------------------------------------------------------------------------
+
+
+def answered_by(cid: str, *, login: str = "bb-machine", marked: bool = True, id: int = 2) -> dict:
+    """A reply claiming to have answered comment `cid`."""
+    from harness.gh import MACHINE_MARKER
+
+    body = f"here is the queue\n\n<!-- answered:{cid} -->"
+    if marked:
+        body = f"{body}\n\n{MACHINE_MARKER}"
+    return comment(login=login, association="NONE", body=body, id=id, node_id=f"IC_ans{id}")
+
+
+def sweep_inbox(rows, ledger=None):
+    return sweep(FakeGh(comments={(SELF_REPO, 19): rows}), ledger=ledger or fresh_ledger(None),
+                 trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO, upstream_repo=UPSTREAM,
+                 inbox_issue=19, machine="bb-machine")
+
+
+def test_B441_a_comment_already_answered_by_ack_is_not_answered_twice():
+    """`ack` answers a status-only comment in seconds; the sweep arrives minutes later and must
+    not post the same answer again. The marker rides in ack's own reply, which sits after the
+    comment it answers, so the ids are harvested in a pass of their own first."""
+    ledger = fresh_ledger(None)
+    asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=1,
+                    node_id="IC_asked")
+
+    assert sweep_inbox([asked, answered_by("IC_asked")], ledger) == []
+    assert ledger.seen("IC_asked") is True, "and it is not re-read on every sweep for ever"
+
+
+def test_B442_an_answered_marker_on_a_strangers_comment_suppresses_nothing():
+    """Without the author check the marker is a command-suppression hole: anyone could post the
+    text and silence a maintainer's command."""
+    asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=1,
+                    node_id="IC_asked")
+    forged = answered_by("IC_asked", login="mallory")
+
+    assert [x.verb for x in sweep_inbox([asked, forged])] == ["status"]
+
+
+def test_B442_an_answered_marker_without_the_machine_marker_suppresses_nothing():
+    """Both halves are required. The transport marks everything the harness writes, so an
+    unmarked comment did not come through it -- whoever the author field names."""
+    asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=1,
+                    node_id="IC_asked")
+
+    assert [x.verb for x in sweep_inbox([asked, answered_by("IC_asked", marked=False)])] == [
+        "status"]

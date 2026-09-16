@@ -138,8 +138,10 @@ answered.**
 
 ## 6. The rest of the vocabulary
 
-Commands go at the **start of a line**, after an `@mention` if you are addressing the bot, in any
-capitalisation, and several can go in one comment, one per line.
+Commands go at the **start of a line**, in any capitalisation, and several can go in one comment,
+one per line. **Naming the bot is a command too**: `@jgoetzmann-bot status` does what
+`/harness status` does, anywhere the harness reads, and naming it with no verb gets a short reply
+telling you what to say there.
 
 | Command | Where | What it does |
 |---|---|---|

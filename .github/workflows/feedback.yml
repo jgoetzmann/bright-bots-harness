@@ -25,13 +25,18 @@ env:
 jobs:
   feedback:
     name: feedback
-    # Comment events wake the job only for a /harness command, to save runner minutes; trust and
-    # parsing happen in harness/keywords.py. `contains()` is case-insensitive, so `/Harness` gets
-    # through. The second clause skips the harness's own replies, which name `/harness` commands;
+    # Comment events wake the job only for a command, to save runner minutes; trust and parsing
+    # happen in harness/keywords.py. `contains()` is case-insensitive, so `/Harness` gets through.
+    # Naming the bot is the other command form (B435/B437), and it has to be named here as well as
+    # in the parser: a job condition is evaluated before any step, so the run is skipped entirely
+    # and no parser is ever reached. The handle is hard-coded because this expression cannot read
+    # `.harness/config.json`; a drift test pins it to the owner of FORK_REPO.
+    # The last clause skips the harness's own replies, which name `/harness` commands;
     # it tests the marker because this expression cannot read the machine login from config.
     if: >-
       (github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment')
-      || (contains(github.event.comment.body, '/harness')
+      || ((contains(github.event.comment.body, '/harness')
+           || contains(github.event.comment.body, '@jgoetzmann-bot'))
           && (!contains(github.event.comment.body, '<!-- bright-bots-harness -->')
               || contains(github.event.comment.body, '> <!-- bright-bots-harness -->')))
     runs-on: ubuntu-latest
@@ -234,6 +239,17 @@ jobs:
         if: steps.halt.outputs.halted != 'true' && steps.syncfork.outcome == 'success'
         shell: bash
         run: harness run
+
+        # Rewrites the queue between the markers on the pinned tracking issue, and once a week
+        # deletes the harness's own oldest comments there and on the inbox (D76). Spends nothing:
+        # no model call, no clone. `continue-on-error`, because failing to publish a summary must
+        # not red a run that did its work. It runs before the ledger commit, so the prune cursor
+        # it moves is what gets committed.
+      - name: Publish the queue and prune old comments (harness tidy)
+        if: steps.halt.outputs.halted != 'true'
+        continue-on-error: true
+        shell: bash
+        run: harness tidy
 
         # Commits the ledger with [skip ci]; runs even when a step failed, never when halted.
       - name: Commit state/ledger.json

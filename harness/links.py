@@ -19,6 +19,8 @@ __all__ = [
     "REF_MARKER",
     "VERB_HELP",
     "DOC_LINKS",
+    "QUEUE_START",
+    "QUEUE_END",
     "repo_url",
     "issue_url",
     "issue_ref",
@@ -27,6 +29,11 @@ __all__ = [
     "quote_as_data",
     "signature",
     "reply_pointer",
+    "nudge",
+    "fast_status",
+    "queue_lines",
+    "queue_block",
+    "replace_queue_block",
     "work_item_body",
     "proposal_pr_body",
 ]
@@ -395,6 +402,119 @@ def reply_pointer(config: Any, surface: str = "") -> str:
         f"[Every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md) · "
         "`/harness-status` works too, if you prefer the hyphen."
     )
+
+
+def nudge(config: Any, surface: str = "", mention: str = "") -> str:
+    """What to say when somebody names the bot and gives it no verb (B436).
+
+    A mention is how a person asks for attention, so the answer is the two or three commands
+    that make sense where they are standing rather than the whole table of twelve.
+    """
+    hints = SURFACE_HINTS.get(surface) or ("status", "ask <question>", "work <what>")
+    offered = " · ".join(f"`/harness {hint}`" for hint in hints)
+    handle = str(mention or "").strip().lstrip("@")
+    forms = f"`/harness <verb>`, or `@{handle} <verb>`" if handle else "`/harness <verb>`"
+    lines = [
+        f"**Read — but there was no command in that.** A command is {forms}, at the start of "
+        "a line.",
+        "",
+        f"Here, these are the ones that make sense: {offered}",
+    ]
+    self_repo = str(getattr(config, "self_repo", "") or "")
+    if self_repo:
+        lines += ["", f"[Every command]({repo_url(self_repo)}/blob/main/docs/COMMANDS.md)."]
+    return "\n".join(lines)
+
+
+def fast_status(
+    config: Any,
+    ledger: Any,
+    *,
+    now: Any = None,
+    window: str = "",
+    next_sweep: str = "",
+    queue_issue: int | str = 0,
+) -> str:
+    """The answer to a `status`-only comment, given in seconds instead of minutes (B440).
+
+    Everything here comes from the ledger and the configuration, both of which `ack` can read
+    without a lock and without a credential. The queue itself needs an authenticated store
+    read that tier-0 `ack` cannot make, so the live queue is linked rather than inlined — which
+    is what the pinned issue exists to make possible (D76).
+    """
+    lines: list[str] = []
+    halt = ledger.halt_request() if hasattr(ledger, "halt_request") else None
+    if halt:
+        why = f" — {halt.get('reason')}" if halt.get("reason") else ""
+        lines.append(
+            f"> **Halted** by @{halt.get('by', 'someone')} at {halt.get('at', 'unknown')}{why}. "
+            "Nothing will spend until `/harness resume`."
+        )
+        lines.append("")
+    lines.extend(usage_headline(ledger, config, now))
+    lines.append("")
+    lines.append("**Next**")
+    if window:
+        lines.append(f"- run window {window}")
+    if next_sweep:
+        lines.append(f"- next scheduled sweep **{next_sweep}**")
+    self_repo = str(getattr(config, "self_repo", "") or "")
+    try:
+        number = int(queue_issue or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if self_repo and number > 0:
+        lines.append(
+            f"- the live queue is on [{issue_ref(self_repo, number)}]"
+            f"({issue_url(self_repo, number)}), rewritten on every sweep"
+        )
+    return "\n".join(lines)
+
+
+#: The markers bounding the harness's block on the pinned tracking issue. Everything outside
+#: them is written by a person and is never touched (D76).
+QUEUE_START = "<!-- queue:start -->"
+QUEUE_END = "<!-- queue:end -->"
+
+
+def queue_lines(rows: Iterable[Any], *, limit: int = 10) -> list[str]:
+    """The queue in priority order, as both `/harness status` and the pinned issue show it.
+
+    One renderer for both, so the answer in a thread and the answer on the pinned issue cannot
+    disagree about what is waiting. `rows` are already-computed `priority.Waiting` values, so
+    this module still imports nothing but `trust`.
+    """
+    items = list(rows)
+    lines = [f"**Queue** — {len(items)} waiting"]
+    if not items:
+        lines.append("- empty")
+    for row in items[:limit]:
+        mark = " · **forced**" if getattr(row, "forced", False) else ""
+        note = f" · {row.note}" if getattr(row, "note", "") else ""
+        lines.append(f"- `{row.cls}` {row.label}{note}{mark}")
+    if len(items) > limit:
+        lines.append(f"- …and {len(items) - limit} more")
+    return lines
+
+
+def queue_block(lines: Iterable[str]) -> str:
+    """`lines` wrapped in the two markers that bound the queue on the pinned issue."""
+    body = "\n".join(str(line) for line in lines).strip()
+    return f"{QUEUE_START}\n{body}\n{QUEUE_END}"
+
+
+def replace_queue_block(body: str, block: str) -> str | None:
+    """`body` with the span between the markers replaced, or None when either is missing.
+
+    None rather than appending: the rest of that issue is a person's prose, and a harness that
+    guesses where its own block belongs rewrites what somebody wrote (D76).
+    """
+    text = str(body or "")
+    start = text.find(QUEUE_START)
+    end = text.find(QUEUE_END, start + len(QUEUE_START)) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return None
+    return text[:start] + block + text[end + len(QUEUE_END):]
 
 
 def work_item_body(

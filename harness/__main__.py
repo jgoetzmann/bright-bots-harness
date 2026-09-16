@@ -18,10 +18,10 @@ from pathlib import Path
 from harness import __version__, keywords, links, verify_pin
 from harness import config as config_mod
 from harness import ledger as ledger_mod
-from harness.clock import iso
+from harness.clock import iso, parse_iso
 from harness.clone import Lease, sync_fork
 from harness.config import in_run_window, is_daily_window, load_config, run_window_label
-from harness.context import build_context
+from harness.context import build_context, ledger_path_for
 from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
 from harness.errors import (
     BudgetExhausted,
@@ -235,6 +235,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ack.add_argument("--repo", default="", help="repository the comment is on")
     ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
+    ack.add_argument(
+        "--comment-id",
+        default="",
+        dest="comment_id",
+        help="the comment's node id; without it ack never claims a comment (B441)",
+    )
+
+    sub.add_parser(
+        "tidy",
+        help="rewrite the queue on the pinned issue; prune the harness's own old comments",
+    )
 
     trust_cmd = sub.add_parser(
         "trust", help="print the trust.txt line for a login, or the current file interpreted"
@@ -1720,15 +1731,9 @@ def _usage_report(ctx, config, now) -> str:
         rows, readable = [], False
         lines.append(f"**Queue** — could not be read: {exc}")
     if readable:
-        lines.append(f"**Queue** — {len(rows)} waiting")
-        if not rows:
-            lines.append("- empty")
-    for row in rows[:10]:
-        mark = " · **forced**" if row.forced else ""
-        note = f" · {row.note}" if row.note else ""
-        lines.append(f"- `{row.cls}` {row.label}{note}{mark}")
-    if len(rows) > 10:
-        lines.append(f"- …and {len(rows) - 10} more")
+        # The same renderer the pinned issue uses, so the reply and the pinned queue cannot
+        # disagree about what is waiting (D76).
+        lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
     lines.append("")
 
     blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config, now=now)
@@ -2110,19 +2115,71 @@ def _ack_halt_reason(config) -> str:
     except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
         pass
     try:
-        led = ledger_mod.Ledger.load(Path(config.ledger_path))
+        # `Ledger` has no `load` and `Config` has no `ledger_path`; both raised, the bare
+        # `except` below swallowed it, and a commanded halt was never reported here (D76).
+        led = ledger_mod.load(ledger_path_for(config))
         halt = led.halt_request()
     except Exception:  # pragma: no cover - same
         return ""
     if not halt:
         return ""
-    who = str(halt.get("actor") or "someone")
+    who = str(halt.get("by") or halt.get("actor") or "someone")
     why = str(halt.get("reason") or "").strip()
     return (
         f"**The harness is halted** by @{who}"
         + (f": {why}" if why else "")
         + ". This command was read, but nothing spends until `/harness resume`."
     )
+
+
+def _ack_surface(config, args: argparse.Namespace) -> str:
+    """Which `links.SURFACE_HINTS` entry fits the thread this comment is on.
+
+    `ack` is handed a repository and a number and cannot tell an issue from a pull request, so
+    it names only the three surfaces it can tell apart; the hints fall back for the rest.
+    """
+    repo = str(getattr(args, "repo", "") or "").strip().lower()
+    self_repo = str(getattr(config, "self_repo", "") or "").strip().lower()
+    if repo and self_repo and repo != self_repo:
+        return "product_issue"
+    number = int(getattr(args, "number", 0) or 0)
+    if number and number == int(getattr(config, "inbox_issue", 0) or 0):
+        return "inbox"
+    return "issue"
+
+
+def _ack_fast_status(config, args: argparse.Namespace) -> str:
+    """The `status` answer `ack` gives without the ledger lock, or "" when it cannot (B440).
+
+    Read-only on every path, and it never saves: `ack.yml` stays outside the `harness-ledger`
+    group, so the ledger keeps exactly one writer group (B118). An unreadable ledger returns
+    "" and the ordinary acknowledgement is posted instead (B444).
+    """
+    # Without the comment's id the sweep cannot tell this was answered, and the thread would
+    # get the same answer twice. No id, no fast lane.
+    cid = str(getattr(args, "comment_id", "") or "").strip()
+    if not cid:
+        return ""
+    try:
+        led = ledger_mod.load(ledger_path_for(config))
+        now = datetime.now(timezone.utc)
+        window = (
+            f"`{config.run_window_start}` → `{config.run_window_end}` UTC"
+            + ("; open now" if in_run_window(config, now) else "; closed now")
+        )
+        text = links.fast_status(
+            config,
+            led,
+            now=now,
+            window=window,
+            next_sweep=_next_scheduled(now),
+            queue_issue=getattr(config, "tracking_issue", 0) or 0,
+        )
+    except Exception:  # pragma: no cover - a courtesy must never fail the run it precedes
+        return ""
+    if not text.strip():
+        return ""
+    return mark_machine_written(f"{text}\n\n<!-- answered:{cid} -->")
 
 
 def cmd_ack(args: argparse.Namespace) -> int:
@@ -2138,8 +2195,13 @@ def cmd_ack(args: argparse.Namespace) -> int:
     Uses the sweep's own parser and trust gate. Never spends, never writes, and exits 0 on
     every path, so it cannot fail the workflow.
     """
-    def _say(react: bool = False, comment: str = "") -> int:
-        print(json.dumps({"react": bool(react), "comment": comment}))
+    def _say(react: bool = False, comment: str = "", answered: bool = False) -> int:
+        payload = {"react": bool(react), "comment": comment}
+        if answered:
+            # Only when ack has actually answered, so every other path prints the same two
+            # keys it always has.
+            payload["answered"] = True
+        print(json.dumps(payload))
         return EXIT_OK
 
     try:
@@ -2173,14 +2235,27 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if not trust_mod.comment_authorised(as_comment, trusted):
         return _say()
 
+    # Naming the machine account is a command form of its own, so the parser is given the
+    # handle here exactly as the sweep gives it (B435).
+    parsed = keywords.parse_typed(body, mention=machine)
     # Only the verbs this actor may give: the sweep refuses the rest per `VERB_LEVEL`.
     level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
     verbs = [
-        verb for verb, _args, typed in keywords.parse_typed(body)
+        verb for verb, _args, typed in parsed
         # The typed word's level when it has one: `reject` is level 3 but resolves to `stop` (2).
         if level >= keywords.VERB_LEVEL.get(typed or verb, keywords.VERB_LEVEL.get(verb, 3))
     ]
     if not verbs:
+        # Addressed the bot and gave it no verb. `mentions_without_command` is False whenever
+        # anything parsed, so an actor whose verbs were all above their level still gets the
+        # sweep's refusal rather than a nudge that ignores what they asked for (B436).
+        if keywords.mentions_without_command(body, machine):
+            return _say(
+                react=True,
+                comment=mark_machine_written(
+                    links.nudge(config, _ack_surface(config, args), mention=machine)
+                ),
+            )
         return _say()
 
     # A halted harness does none of this. Both switches count: the committed file stops the
@@ -2190,7 +2265,7 @@ def cmd_ack(args: argparse.Namespace) -> int:
         # The gate `stages/audit` applies at entry, so the acknowledgement never promises an
         # audit the sweep will decline. Read-only and never raised.
         try:
-            led = ledger_mod.Ledger.load(Path(config.ledger_path))
+            led = ledger_mod.load(ledger_path_for(config))
             refused = priority.admit("audit", store=None, ledger=led, config=config)
         except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
             refused = None
@@ -2198,6 +2273,15 @@ def cmd_ack(args: argparse.Namespace) -> int:
             stopped = f"**Not now** — {refused}"
     if stopped:
         return _say(react=True, comment=mark_machine_written(stopped))
+
+    # The fast lane (B440). `status` costs nothing and needs no lock, so a comment asking only
+    # for it is answered here rather than queued behind whatever holds `harness-ledger`.
+    # Judged on every verb the comment carries rather than only the ones this actor may give:
+    # a mixed comment must still reach the sweep, which owns the refusal for the rest.
+    if parsed and {verb for verb, _a, _t in parsed} == {"status"}:
+        answer = _ack_fast_status(config, args)
+        if answer:
+            return _say(react=True, comment=answer, answered=True)
 
     text = links.acknowledgement(verbs)
     # The workflow posts this through `github-script`, which does not mark it the way
@@ -2229,6 +2313,171 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 break
     finally:
         _save_ledger(ctx)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
+# tidy: the pinned queue, and the harness's own old comments (D76)
+# --------------------------------------------------------------------------------------
+
+#: At most this many queue rows are listed; the rest are counted.
+QUEUE_ROWS = 10
+#: The newest machine comments kept on a swept issue, whatever their age.
+PRUNE_KEEP = 20
+#: A machine comment is a candidate for deletion only once it is older than this.
+PRUNE_AFTER_DAYS = 30
+#: How often the prune half runs. The queue half runs on every sweep.
+PRUNE_EVERY_DAYS = 7
+
+
+def _queue_block_lines(ctx, config, now) -> list[str]:
+    """What the pinned issue says: the halt, the allowance, the queue, and what happens next."""
+    led = ctx.ledger
+    lines: list[str] = []
+    halt = led.halt_request()
+    if halt is not None:
+        why = f" — {halt['reason']}" if halt.get("reason") else ""
+        lines.append(
+            f"> **Halted** by @{halt.get('by', 'someone')} at {halt.get('at', 'unknown')}{why}. "
+            "Nothing will spend until `/harness resume`."
+        )
+        lines.append("")
+    lines.extend(links.usage_headline(led, config, now))
+    lines.append("")
+    try:
+        rows = priority.queue(store=ctx.store, ledger=led)
+    except Exception as exc:  # pragma: no cover - a store that cannot answer says so
+        lines.append(f"**Queue** — could not be read: {exc}")
+    else:
+        lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
+    lines.append("")
+    lines.append("**Next**")
+    lines.append(
+        f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
+        + ("; open now" if in_run_window(config, now) else "; closed now")
+    )
+    lines.append(f"- next scheduled sweep **{_next_scheduled(now)}**")
+    lines.append("")
+    lines.append(
+        f"_Written by `harness tidy` at {iso(now)}. Anything typed between these two markers "
+        "is overwritten; the rest of this issue is yours._"
+    )
+    return lines
+
+
+def _publish_queue(ctx, config) -> str:
+    """Rewrite the span between the markers on the pinned issue. Returns what happened."""
+    number = int(getattr(config, "tracking_issue", 0) or 0)
+    if not number:
+        return "no tracking issue configured"
+    if not ctx.gh.can_write:
+        return "no write credential"
+    block = links.queue_block(_queue_block_lines(ctx, config, ctx.clock.now()))
+    try:
+        issue = ctx.gh.get(f"/repos/{config.self_repo}/issues/{number}")
+    except HarnessError as exc:
+        LOG.warning("tidy: could not read #%s: %s", number, exc)
+        return f"could not read #{number}"
+    body = str((issue or {}).get("body") or "") if isinstance(issue, dict) else ""
+    updated = links.replace_queue_block(body, block)
+    if updated is None:
+        # Never appended and never guessed at: the rest of that body is a person's prose.
+        LOG.warning("tidy: #%s carries no queue markers; nothing written", number)
+        return f"no queue markers on #{number}; nothing written"
+    if updated == body:
+        # Byte-identical, so no request and no edit in the issue's timeline.
+        return "unchanged"
+    ctx.gh.update_issue_body(config.self_repo, number, updated)
+    return f"written to #{number}"
+
+
+def _prune_machine_comments(ctx, config) -> tuple[list[int], str]:
+    """Delete the harness's own oldest comments on the two pinned issues (D76).
+
+    Only a comment carrying the machine marker is ever a candidate. That mark is applied at the
+    transport to everything the harness writes, and nothing a person writes carries it, so the
+    marker alone decides and a human comment can never be reached.
+    """
+    now = ctx.clock.now()
+    last = ctx.ledger.pruned_at()
+    if last:
+        try:
+            if now - parse_iso(last) < timedelta(days=PRUNE_EVERY_DAYS):
+                return [], f"last pruned {last}"
+        except ValueError:
+            pass  # an unreadable cursor is no reason to skip
+    if not ctx.gh.can_write:
+        return [], "no write credential"
+    numbers: list[int] = []
+    for key in ("inbox_issue", "tracking_issue"):
+        number = int(getattr(config, key, 0) or 0)
+        if number and number not in numbers:
+            numbers.append(number)
+    if not numbers:
+        return [], "no issue to prune"
+    deleted: list[int] = []
+    for number in numbers:
+        deleted.extend(_prune_one_issue(ctx, config.self_repo, number, now))
+    ctx.ledger.mark_pruned(iso(now))
+    return deleted, ""
+
+
+def _prune_one_issue(ctx, repo: str, number: int, now) -> list[int]:
+    """The machine comments on one issue that are both old enough and not recent context."""
+    from harness.gh import MACHINE_MARKER
+
+    try:
+        comments = list(ctx.gh.issue_comments(repo, number))
+    except HarnessError as exc:
+        LOG.warning("tidy: could not read comments on %s#%s: %s", repo, number, exc)
+        return []
+    mine = [row for row in comments if MACHINE_MARKER in str(row.get("body") or "")]
+    # Oldest first, so the tail is the recent context that survives whatever its age.
+    mine.sort(key=lambda row: str(row.get("created_at") or ""))
+    candidates = mine[:-PRUNE_KEEP] if len(mine) > PRUNE_KEEP else []
+    cutoff = now - timedelta(days=PRUNE_AFTER_DAYS)
+    deleted: list[int] = []
+    for comment in candidates:
+        try:
+            if parse_iso(str(comment.get("created_at") or "")) >= cutoff:
+                continue
+        except ValueError:
+            continue  # an unreadable timestamp is not evidence of age
+        ident = int(comment.get("id") or 0)
+        if ident <= 0:
+            continue
+        try:
+            ctx.gh.delete_issue_comment(repo, ident)
+        except HarnessError as exc:
+            LOG.warning("tidy: could not remove comment %s: %s", ident, exc)
+            continue
+        deleted.append(ident)
+    return deleted
+
+
+def cmd_tidy(args: argparse.Namespace) -> int:
+    """Publish the queue on the pinned issue, and prune the harness's own old comments (D76).
+
+    Spends nothing: no model call and no clone. The queue half runs on every sweep, so the
+    pinned issue is fresh within minutes of anything changing; the prune half is behind a
+    weekly cursor in the ledger.
+    """
+    check_repo_halt(_repo_root(args))
+    config = _load(args)
+    check_halt(config.halt_file)
+    ctx = _context(config, args, run_id="tidy")
+    queue = ""
+    pruned: list[int] = []
+    skipped = ""
+    try:
+        queue = _publish_queue(ctx, config)
+        pruned, skipped = _prune_machine_comments(ctx, config)
+    finally:
+        _save_ledger(ctx)
+    payload = {"queue": queue, "pruned": pruned, "skipped": skipped}
+    lines = [f"queue: {queue}"]
+    lines.append(f"pruned: {len(pruned)} comment(s)" + (f" ({skipped})" if skipped else ""))
+    _emit(payload, "\n".join(lines), args)
     return EXIT_OK
 
 
@@ -2808,6 +3057,7 @@ COMMANDS = {
     "revise": cmd_revise,
     "decompose": cmd_decompose,
     "sweep": cmd_sweep,
+    "tidy": cmd_tidy,
     "ack": cmd_ack,
     "trust": cmd_trust,
     "ledger": cmd_ledger,

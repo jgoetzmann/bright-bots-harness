@@ -436,6 +436,22 @@ class GitHubClient(GitHubReadOnly):
         )
         return data if isinstance(data, dict) else {}
 
+    def delete_issue_comment(self, repo: str, comment_id: int) -> dict:
+        """Remove one comment — only ever one the harness itself wrote and marked (D76).
+
+        Not routed through `_write`, which sends whatever it records. This verb carries no
+        body at all, so the recorded payload is the audit line and the request itself has
+        nothing in it to redact.
+        """
+        self._require_write("delete_issue_comment")
+        ident = int(comment_id)
+        payload = redact.redact_json({"repo": str(repo), "comment_id": ident})
+        self._record("DELETE", self._url(f"/repos/{repo}/issues/comments/{ident}"), payload)
+        if self.dry_run:
+            return {"deleted": ident}
+        self._send("DELETE", f"/repos/{repo}/issues/comments/{ident}", None)
+        return {"deleted": ident}
+
     def set_labels(self, repo: str, number: int, labels: Sequence[str]) -> list[dict]:
         self._require_write("set_labels")
         n = int(number)

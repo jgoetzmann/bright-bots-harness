@@ -317,6 +317,20 @@ class Ledger:
         denied = self.cursors.setdefault("keyword_denied", {})
         denied[handle] = int(denied.get(handle, 0)) + 1
 
+    # -- hygiene ---------------------------------------------------------------------------
+
+    def pruned_at(self) -> str | None:
+        """When the harness last swept its own old comments away, or None (D76).
+
+        The cursor is what keeps the prune to once a week while `harness tidy` itself runs on
+        every sweep to republish the queue.
+        """
+        value = self.cursors.get("pruned_at")
+        return str(value) if value else None
+
+    def mark_pruned(self, at: str) -> None:
+        self.cursors["pruned_at"] = str(at)
+
     # -- serialisation ---------------------------------------------------------------------
 
     def to_json(self) -> str:
@@ -365,6 +379,9 @@ class Ledger:
                 "date": str(asks.get("date", "")),
                 "count": int(asks.get("count", 0) or 0),
             }
+        pruned = self.pruned_at()
+        if pruned:
+            cursors["pruned_at"] = pruned
         history = [
             {
                 "ts": entry.get("ts", ""),

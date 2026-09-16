@@ -45,8 +45,12 @@ nothing.
 | A brightboost issue it has **touched** | yes; it commented or was assigned | up to 3 h on a weekday |
 | A **cold** brightboost issue | only if you `@`-mention the bot | up to 3 h on a weekday |
 
-- **On brightboost, `@jgoetzmann-bot` is what delivers the comment.** The harness reads its
+- **Naming the bot is a command form everywhere.** `@jgoetzmann-bot status` is the same command
+  as `/harness status`, on every thread the harness reads. Only the machine account's handle
+  counts: `@nathan status` is a sentence about Nathan.
+- **On brightboost, `@jgoetzmann-bot` is also what delivers the comment.** The harness reads its
   notifications there, and a fresh issue sends it none unless the bot is mentioned.
+- **Naming it with no verb gets a short reply** saying what to say here, rather than silence.
 - **"Up to 3 hours" is a weekday figure.** The sweep's cron is `41 */3 * * 1-5`, so a comment left
   after Friday 21:41 UTC waits until Monday 00:41. To skip the wait, post any `/harness` command on
   the inbox: it wakes the same job, and its sweep reads the notifications.
@@ -91,13 +95,17 @@ until that pull request is merged.
 
 ## Comment commands
 
-The form is either of these at the **start of a line**; the rest of the line is the argument, and
+The form is any of these at the **start of a line**; the rest of the line is the argument, and
 only that line — a multi-line note reaches the harness as its first line:
 
 ```
 /harness work make the activity cards keyboard reachable
 /harness-work make the activity cards keyboard reachable
+@jgoetzmann-bot work make the activity cards keyboard reachable
 ```
+
+The third form is the bot's own handle, and only the bot's: any other `@handle` at the start of a
+line is prose. Naming it with no verb after it gets a short reply listing what makes sense there.
 
 **Several commands go in one comment, one per line.** They run top to bottom and you get one reply,
 with each answer under its command:
@@ -408,6 +416,7 @@ harness halt                 # create the local halt file (HALT_FILE, default ./
 harness resume               # remove it
 harness resume --commanded   # also lift a halt set by `/harness halt`
 harness sweep                # poll notifications, parse /harness commands, act on them
+harness tidy                 # rewrite the queue on the pinned issue; prune old bot comments
 harness relabel              # migrate open issues from harness:* to stage:/kind:/via:
 harness sync-fork            # fast-forward the fork from upstream; loud on divergence
 harness init --labels        # create the nineteen labels
@@ -419,7 +428,15 @@ harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.
-It never spends, never writes, and always exits 0.
+It never spends, never writes, and always exits 0. It answers `/harness status` itself, so that
+one verb does not queue behind a build.
+
+`tidy` is what `feedback.yml` calls after each sweep. It rewrites the queue between the
+`<!-- queue:start -->` and `<!-- queue:end -->` markers on the pinned tracking issue, touching
+nothing else in that body and sending no request when the text has not changed. Once a week it
+also deletes the harness's **own** comments on the inbox and tracking issues, keeping the newest
+twenty and anything under thirty days old. A comment without the harness's marker is never a
+candidate, so no human comment can be reached.
 
 ## Three kill switches, and what each one stops
 

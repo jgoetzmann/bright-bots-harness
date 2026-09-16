@@ -192,8 +192,9 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
   changes in `gh.py`, `clone.py`, `stages/deliver.py`, `stages/revise.py` and the workflows. For
   example, the deliver tests never advance upstream before the rebase. A test that touches the
   host must neutralise it: fake `WHICH`/`RUN` (a runner has no `claude`), pass an explicit git
-  identity (runners have none), and compare strings ordinally (PowerShell 7's ICU comparison
-  ignores some control characters).
+  identity (runners have none), compare strings ordinally (PowerShell 7's ICU comparison
+  ignores some control characters), and write `MIN_FREE_DISK_GB=0` in any `.env` a `doctor`
+  test loads (the probe measures the drive holding `tmp_path`, which is not the repository's).
 - Adversarial pass on every harness PR: after opening the PR, have one or two independent reviews
   check the diff, with "the tests pass" ruled out as evidence. Post the findings as a PR comment,
   then fix them.

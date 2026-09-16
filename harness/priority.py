@@ -130,10 +130,9 @@ def headroom_pct(ledger: Any, now: Any = None) -> float | None:
     None means unknown and is never read as zero. Given ``now``, a reading whose seven-day
     window has reset since is unknown too, because it describes a week that is over (B399).
     """
-    # Through the ledger's own accessor, which applies the staleness guard: `roll_window` moves
-    # `period_start` and zeroes the spend but leaves the last observation in place, so a raw
-    # read reports the previous week's figure in a week nothing has been spent in, and would
-    # refuse every audit in a fresh window (B295).
+    # Through the ledger's own accessor, which applies the staleness guard: the subscription's
+    # own reset moves `period_start` and leaves the last observation in place, so a raw read
+    # reports the previous week's figure and would refuse every audit in a fresh window (B295).
     accessor = getattr(ledger, "weekly_utilization", None)
     if callable(accessor):
         fraction = accessor() if now is None else accessor(now)

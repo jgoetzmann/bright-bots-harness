@@ -31,11 +31,6 @@ def test_b1_load_config_reads_every_key_from_the_given_env_path(tmp_path, env_fi
     assert config.repo == "Bright-Bots-Initiative/brightboost"
     assert config.permission_tier == 0
     assert config.allowlist_label == "harness-ok"
-    assert config.weekly_budget_pct == pytest.approx(40.0)
-    assert config.session_budget_pct == pytest.approx(15.0)
-    assert config.reserve_pct == pytest.approx(10.0)
-    assert config.weekly_reset_day == "monday"
-    assert config.max_concurrent_clones == 1
     assert config.max_retries_gates == 2
     assert config.github_api_ceiling_per_hour == 50
     assert config.min_free_disk_gb == pytest.approx(5.0)
@@ -132,25 +127,25 @@ def test_b1_environ_override_wins_over_the_env_file(env_file):
     """B1: the environ mapping overrides .env key for key."""
     config = load_config(
         env_path=env_file,
-        environ={"WEEKLY_BUDGET_PCT": "12.5", "REPO": "other/repo", "BACKEND": "cli"},
+        environ={"MIN_FREE_DISK_GB": "12.5", "REPO": "other/repo", "BACKEND": "cli"},
     )
 
-    assert config.weekly_budget_pct == pytest.approx(12.5)
+    assert config.min_free_disk_gb == pytest.approx(12.5)
     assert config.repo == "other/repo"
     assert config.backend == "cli"
     # untouched keys still come from the file
-    assert config.session_budget_pct == pytest.approx(15.0)
+    assert config.max_retries_gates == 2
 
 
 def test_b1_an_explicit_empty_environ_ignores_the_process_environment(env_file, monkeypatch):
     """B1: environ={} means no overrides; os.environ MUST NOT leak in."""
     monkeypatch.setenv("PERMISSION_TIER", "1")
-    monkeypatch.setenv("WEEKLY_BUDGET_PCT", "99")
+    monkeypatch.setenv("MIN_FREE_DISK_GB", "99")
 
     config = load_config(env_path=env_file, environ={})
 
     assert config.permission_tier == 0
-    assert config.weekly_budget_pct == pytest.approx(40.0)
+    assert config.min_free_disk_gb == pytest.approx(5.0)
 
 
 def test_b1_relative_paths_resolve_against_the_env_file_directory(tmp_path, write_env):
@@ -195,11 +190,6 @@ def test_b1_absolute_paths_are_left_alone(tmp_path, write_env):
         "REPO",
         "PERMISSION_TIER",
         "ALLOWLIST_LABEL",
-        "WEEKLY_BUDGET_PCT",
-        "SESSION_BUDGET_PCT",
-        "RESERVE_PCT",
-        "WEEKLY_RESET_DAY",
-        "MAX_CONCURRENT_CLONES",
         "MAX_TURNS_DISCOVER",
         "MAX_TURNS_PROPOSE",
         "MAX_TURNS_IMPLEMENT",
@@ -292,67 +282,6 @@ def test_b4_a_non_zero_permission_tier_from_environ_is_also_rejected(env_file):
 
 
 # --------------------------------------------------------------------------
-# B5 - budget bounds
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("WEEKLY_BUDGET_PCT", "0"),
-        ("WEEKLY_BUDGET_PCT", "0.0"),
-        ("WEEKLY_BUDGET_PCT", "-1"),
-        ("WEEKLY_BUDGET_PCT", "100.0001"),
-        ("WEEKLY_BUDGET_PCT", "1000"),
-        ("SESSION_BUDGET_PCT", "0"),
-        ("SESSION_BUDGET_PCT", "-0.5"),
-        ("SESSION_BUDGET_PCT", "100.0001"),
-        ("RESERVE_PCT", "-0.0001"),
-        ("RESERVE_PCT", "-10"),
-        ("RESERVE_PCT", "100"),
-        ("RESERVE_PCT", "100.0001"),
-    ],
-)
-def test_b5_out_of_range_budget_values_raise_config_error(tmp_path, write_env, key, value):
-    """B5: weekly/session must be in (0, 100]; reserve must be in [0, 100)."""
-    path = write_env(tmp_path / ".env", **{key: value})
-
-    with pytest.raises(ConfigError):
-        load_config(env_path=path, environ={})
-
-
-def test_b5_the_inclusive_boundaries_are_accepted(tmp_path, write_env):
-    """B5: weekly=100, session=100 and reserve=0 are inside the ranges."""
-    path = write_env(
-        tmp_path / ".env",
-        WEEKLY_BUDGET_PCT="100",
-        SESSION_BUDGET_PCT="100",
-        RESERVE_PCT="0",
-    )
-
-    config = load_config(env_path=path, environ={})
-
-    assert config.weekly_budget_pct == pytest.approx(100.0)
-    assert config.session_budget_pct == pytest.approx(100.0)
-    assert config.reserve_pct == pytest.approx(0.0)
-
-
-def test_b5_the_smallest_admissible_budgets_are_accepted(tmp_path, write_env):
-    """B5: anything strictly above 0 is a legal budget; reserve may approach 100."""
-    path = write_env(
-        tmp_path / ".env",
-        WEEKLY_BUDGET_PCT="0.0001",
-        SESSION_BUDGET_PCT="0.0001",
-        RESERVE_PCT="99.9999",
-    )
-
-    config = load_config(env_path=path, environ={})
-
-    assert config.weekly_budget_pct == pytest.approx(0.0001)
-    assert config.reserve_pct == pytest.approx(99.9999)
-
-
-# --------------------------------------------------------------------------
 # B6 - Config is frozen
 # --------------------------------------------------------------------------
 
@@ -360,7 +289,7 @@ def test_b5_the_smallest_admissible_budgets_are_accepted(tmp_path, write_env):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("weekly_budget_pct", 1.0),
+        ("min_free_disk_gb", 1.0),
         ("permission_tier", 1),
         ("repo", "someone/else"),
         ("db_path", Path("other.db")),
@@ -383,29 +312,6 @@ def test_b6_setting_an_unknown_attribute_also_raises(sample_config):
     """B6: frozen means no new attributes either."""
     with pytest.raises(dataclasses.FrozenInstanceError):
         sample_config.invented_field = 1
-
-
-# --------------------------------------------------------------------------
-# B22 - max_concurrent_clones > 1 is a startup error (config half)
-# --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("value", ["2", "4", "16"])
-def test_b22_load_config_rejects_more_than_one_concurrent_clone(tmp_path, write_env, value):
-    """B22: concurrency above one is refused at load time."""
-    path = write_env(tmp_path / ".env", MAX_CONCURRENT_CLONES=value)
-
-    with pytest.raises(ConfigError):
-        load_config(env_path=path, environ={})
-
-
-def test_b22_exactly_one_concurrent_clone_is_accepted(tmp_path, write_env):
-    """B22: one is the only legal value, and it loads."""
-    path = write_env(tmp_path / ".env", MAX_CONCURRENT_CLONES="1")
-
-    config = load_config(env_path=path, environ={})
-
-    assert config.max_concurrent_clones == 1
 
 
 # --------------------------------------------------------------------------
@@ -531,14 +437,11 @@ import json
 
 # The new keys with their .env.example values (inline, on purpose).
 D2_ENV: dict[str, str] = {
-    "WEEKLY_CAP_USD": "25.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": "",
     "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
     "TRUST_FILE": ".harness/trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
@@ -551,10 +454,8 @@ D2_ENV: dict[str, str] = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -564,14 +465,11 @@ D2_ENV: dict[str, str] = {
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
 # Appended after github_token_shape_ok, in this order.
 D2_NEW_FIELDS_IN_ORDER = (
-    "weekly_cap_usd",
-    "per_call_cap_usd",
     "max_concurrent_items",
     "max_revise_cycles",
     "fork_repo",
     "upstream_repo",
     "trust_file",
-    "notify_poll_hours",
     "max_subissues",
     "self_repo",
     "tracking_issue",
@@ -619,15 +517,12 @@ def test_a30_every_new_key_lands_on_the_matching_config_field(tmp_path, write_d2
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_cap_usd == pytest.approx(25.0)
-    assert config.per_call_cap_usd == pytest.approx(3.0)
     assert config.max_concurrent_items == 1
     assert config.max_revise_cycles == 3
     assert config.fork_repo == ""
     assert config.upstream_repo == "Bright-Bots-Initiative/brightboost"
     assert Path(config.trust_file).is_absolute()
     assert Path(config.trust_file).resolve() == (tmp_path / ".harness" / "trust.txt").resolve()
-    assert config.notify_poll_hours == 3
     assert config.max_subissues == 8
     assert config.self_repo == "jgoetzmann/bright-bots-harness"
     assert config.tracking_issue is None
@@ -689,20 +584,11 @@ def test_a30_tracking_issue_parses_to_an_int(tmp_path, write_d2_env):
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("WEEKLY_CAP_USD", "0"),
-        ("WEEKLY_CAP_USD", "0.0"),
-        ("WEEKLY_CAP_USD", "-5"),
-        ("WEEKLY_CAP_USD", "twenty-five"),
-        ("PER_CALL_CAP_USD", "0"),
-        ("PER_CALL_CAP_USD", "-0.01"),
-        ("PER_CALL_CAP_USD", "three"),
         ("MAX_CONCURRENT_ITEMS", "0"),
         ("MAX_CONCURRENT_ITEMS", "-1"),
         ("MAX_CONCURRENT_ITEMS", "two"),
         ("MAX_REVISE_CYCLES", "-1"),
         ("MAX_REVISE_CYCLES", "many"),
-        ("NOTIFY_POLL_HOURS", "0"),
-        ("NOTIFY_POLL_HOURS", "-3"),
         ("MAX_SUBISSUES", "0"),
         ("MAX_SUBISSUES", "51"),
         ("MAX_SUBISSUES", "-8"),
@@ -720,7 +606,7 @@ def test_a30_an_out_of_range_or_malformed_new_key_raises_config_error_naming_it(
     tmp_path, write_d2_env, key, value
 ):
     """A30: out-of-range or wrong-typed values are startup
-    errors naming the key, never a silently different budget."""
+    errors naming the key, never a silently different setting."""
     path = write_d2_env(tmp_path / ".env", **{key: value})
 
     with pytest.raises(ConfigError) as excinfo:
@@ -733,21 +619,15 @@ def test_a30_the_boundary_values_are_accepted(tmp_path, write_d2_env):
     """A30: the inclusive ends of every range load."""
     path = write_d2_env(
         tmp_path / ".env",
-        WEEKLY_CAP_USD="0.01",
-        PER_CALL_CAP_USD="0.01",
         MAX_CONCURRENT_ITEMS="1",
         MAX_REVISE_CYCLES="0",
-        NOTIFY_POLL_HOURS="1",
         MAX_SUBISSUES="1",
     )
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_cap_usd == pytest.approx(0.01)
-    assert config.per_call_cap_usd == pytest.approx(0.01)
     assert config.max_concurrent_items == 1
     assert config.max_revise_cycles == 0
-    assert config.notify_poll_hours == 1
     assert config.max_subissues == 1
 
 
@@ -777,9 +657,9 @@ def test_b1_environ_overrides_the_env_file_for_a_new_key(tmp_path, write_d2_env)
     """B1 (D1 rule, unchanged) applied to A30's keys: environ overrides .env key for key."""
     path = write_d2_env(tmp_path / ".env")
 
-    config = load_config(env_path=path, environ={"WEEKLY_CAP_USD": "50", "MAX_SUBISSUES": "4"})
+    config = load_config(env_path=path, environ={"MAX_REVISE_CYCLES": "5", "MAX_SUBISSUES": "4"})
 
-    assert config.weekly_cap_usd == pytest.approx(50.0)
+    assert config.max_revise_cycles == 5
     assert config.max_subissues == 4
 
 
@@ -806,7 +686,7 @@ def test_b6_the_new_fields_are_frozen_too(tmp_path, write_d2_env):
     config = load_config(env_path=path, environ={})
 
     with pytest.raises(dataclasses.FrozenInstanceError):
-        config.weekly_cap_usd = 1.0
+        config.max_subissues = 1
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.store_backend = "github"
 
@@ -907,35 +787,31 @@ def test_b4_d2_only_tiers_0_and_2_exist(tmp_path, write_d2_env, tier):
 # --------------------------------------------------------------------------
 
 
-def test_b112_config_json_overrides_env_for_weekly_cap_usd(tmp_path, write_d2_env):
-    """B112: .harness/config.json wins over .env for WEEKLY_CAP_USD."""
-    path = write_d2_env(tmp_path / ".env", WEEKLY_CAP_USD="25.00")
-    write_config_json(tmp_path, {"WEEKLY_CAP_USD": 40.0})
+def test_b112_config_json_overrides_env_for_max_subissues(tmp_path, write_d2_env):
+    """B112: .harness/config.json wins over .env for MAX_SUBISSUES."""
+    path = write_d2_env(tmp_path / ".env", MAX_SUBISSUES="8")
+    write_config_json(tmp_path, {"MAX_SUBISSUES": 4})
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_cap_usd == pytest.approx(40.0)
+    assert config.max_subissues == 4
 
 
-def test_b112_config_json_overrides_reserve_pct_and_tracking_issue(tmp_path, write_d2_env):
-    """B112: RESERVE_PCT and TRACKING_ISSUE are among the eleven knobs."""
-    path = write_d2_env(tmp_path / ".env", RESERVE_PCT="10", TRACKING_ISSUE="")
-    write_config_json(tmp_path, {"RESERVE_PCT": 20, "TRACKING_ISSUE": 816})
+def test_b112_config_json_overrides_overrun_pct_and_tracking_issue(tmp_path, write_d2_env):
+    """B112: OVERRUN_PCT and TRACKING_ISSUE are among the knobs."""
+    path = write_d2_env(tmp_path / ".env", OVERRUN_PCT="10", TRACKING_ISSUE="")
+    write_config_json(tmp_path, {"OVERRUN_PCT": 20, "TRACKING_ISSUE": 816})
 
     config = load_config(env_path=path, environ={})
 
-    assert config.reserve_pct == pytest.approx(20.0)
+    assert config.overrun_pct == pytest.approx(20.0)
     assert config.tracking_issue == 816
 
 
 # The Config field each knob key lands on (harness/config.py, load_config's tail).
 KNOB_KEY_TO_FIELD: dict[str, str] = {
-    "WEEKLY_CAP_USD": "weekly_cap_usd",
-    "PER_CALL_CAP_USD": "per_call_cap_usd",
-    "RESERVE_PCT": "reserve_pct",
     "MAX_CONCURRENT_ITEMS": "max_concurrent_items",
     "MAX_REVISE_CYCLES": "max_revise_cycles",
-    "NOTIFY_POLL_HOURS": "notify_poll_hours",
     "MAX_SUBISSUES": "max_subissues",
     "TRACKING_ISSUE": "tracking_issue",
     "FORK_REPO": "fork_repo",
@@ -956,12 +832,8 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
 # matching assertion. `test_b112_the_config_json_overrides_all_differ_from_the_env_values`
 # holds that property; without it an override could pass while doing nothing.
 ALL_KNOB_OVERRIDES: dict[str, object] = {
-    "WEEKLY_CAP_USD": 30.0,
-    "PER_CALL_CAP_USD": 2.5,
-    "RESERVE_PCT": 15,
     "MAX_CONCURRENT_ITEMS": 2,
     "MAX_REVISE_CYCLES": 1,
-    "NOTIFY_POLL_HOURS": 6,
     "MAX_SUBISSUES": 5,
     "TRACKING_ISSUE": 42,
     "FORK_REPO": FORK,
@@ -974,10 +846,8 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "RUN_WINDOW_END": "thu 21:45",
     # Inbox, suggest, audit and ask.
     "INBOX_ISSUE": 7,
-    "AUDIT_CAP_USD": 12.5,
     "SUGGEST_MAX_PER_RUN": 3,
     "COMMENT_UPSTREAM": False,
-    "ASK_CAP_USD": 0.25,
     "ASK_MAX_PER_DAY": 9,
     "SUGGEST_MIN_HEADROOM_PCT": 40,
     "AUDIT_MIN_HEADROOM_PCT": 65,
@@ -1005,12 +875,8 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_cap_usd == pytest.approx(30.0)
-    assert config.per_call_cap_usd == pytest.approx(2.5)
-    assert config.reserve_pct == pytest.approx(15.0)
     assert config.max_concurrent_items == 2
     assert config.max_revise_cycles == 1
-    assert config.notify_poll_hours == 6
     assert config.max_subissues == 5
     assert config.tracking_issue == 42
     assert config.fork_repo == FORK
@@ -1052,16 +918,16 @@ def test_b112_config_json_is_read_from_repo_root_not_cwd(tmp_path, write_d2_env,
     """B112: the file is `repo_root/.harness/config.json`, repo_root being
     the .env directory — a config.json in the cwd is not consulted."""
     env_dir = tmp_path / "repo"
-    path = write_d2_env(env_dir / ".env", WEEKLY_CAP_USD="25.00")
-    write_config_json(env_dir, {"WEEKLY_CAP_USD": 40.0})
+    path = write_d2_env(env_dir / ".env", MAX_SUBISSUES="8")
+    write_config_json(env_dir, {"MAX_SUBISSUES": 4})
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    write_config_json(elsewhere, {"WEEKLY_CAP_USD": 99.0})
+    write_config_json(elsewhere, {"MAX_SUBISSUES": 9})
     monkeypatch.chdir(elsewhere)
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_cap_usd == pytest.approx(40.0)
+    assert config.max_subissues == 4
 
 
 @pytest.mark.parametrize(
@@ -1073,9 +939,8 @@ def test_b112_config_json_is_read_from_repo_root_not_cwd(tmp_path, write_d2_env,
         "BACKEND",
         "STORE_BACKEND",
         "SELF_REPO",
-        "WEEKLY_BUDGET_PCT",
         "HARNESS_GITHUB_TOKEN",
-        "weekly_cap_usd",
+        "max_subissues",
     ],
 )
 def test_b112_an_unknown_key_in_config_json_raises_config_error_naming_it(
@@ -1084,7 +949,7 @@ def test_b112_an_unknown_key_in_config_json_raises_config_error_naming_it(
     """B112: config.json carries operational knobs only; anything else — a gate
     key, the tier, a D1 key, a secret, a lower-cased knob — is a ConfigError naming it."""
     path = write_d2_env(tmp_path / ".env")
-    write_config_json(tmp_path, {"WEEKLY_CAP_USD": 25.0, unknown: "1"})
+    write_config_json(tmp_path, {"MAX_SUBISSUES": 8, unknown: "1"})
 
     with pytest.raises(ConfigError) as excinfo:
         load_config(env_path=path, environ={})
@@ -1095,12 +960,8 @@ def test_b112_an_unknown_key_in_config_json_raises_config_error_naming_it(
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("WEEKLY_CAP_USD", 0),
-        ("WEEKLY_CAP_USD", -1),
-        ("PER_CALL_CAP_USD", 0),
         ("MAX_SUBISSUES", 51),
         ("MAX_SUBISSUES", 0),
-        ("NOTIFY_POLL_HOURS", 0),
         ("MAX_REVISE_CYCLES", -1),
         ("MAX_CONCURRENT_ITEMS", 0),
         ("TRACKING_ISSUE", "abc"),
@@ -1131,7 +992,7 @@ def test_b112_config_json_that_is_not_json_is_a_config_error(tmp_path, write_d2_
 def test_b112_config_json_that_is_not_an_object_is_a_config_error(tmp_path, write_d2_env):
     """B112: the file must be a JSON object."""
     path = write_d2_env(tmp_path / ".env")
-    write_config_json(tmp_path, ["WEEKLY_CAP_USD", 40])
+    write_config_json(tmp_path, ["MAX_SUBISSUES", 40])
 
     with pytest.raises(ConfigError):
         load_config(env_path=path, environ={})
@@ -1858,8 +1719,7 @@ def test_b411_the_window_is_named_the_way_an_operator_reads_it(
 
 
 def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
-    """.env.example ships the five keys with the documented values,
-    and WEEKLY_CAP_USD rises to 400.00 so the USD backstop cannot bind before the usage stop."""
+    """.env.example ships the five keys with the documented values."""
     example = Path(__file__).resolve().parent.parent / ".env.example"
     target = tmp_path / ".env"
     target.write_text(example.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
@@ -1871,7 +1731,80 @@ def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
     assert config.overrun_pct == pytest.approx(10.0)
     assert config.run_window_start == "mon 08:00"
     assert config.run_window_end == "tue 20:00"
-    assert config.weekly_cap_usd == pytest.approx(400.0)
+
+
+# --------------------------------------------------------------------------------------
+# D74 - the retired keys: accepted, ignored, and never a Config field (B414-B416)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("retired", config_module.RETIRED_KEYS)
+def test_B414_a_retired_key_in_the_env_loads_and_is_ignored(tmp_path, write_env, retired):
+    """B414: a `.env` still carrying a key D74 removed loads, at any value, and reaches no
+    Config field. `retired_keys_seen()` names it so `harness doctor` can warn about it."""
+    path = write_env(tmp_path / ".env", **{retired: "999999"})
+
+    config = load_config(env_path=path, environ={})
+
+    assert not hasattr(config, retired.lower())
+    assert retired.lower() not in {f.name for f in dataclasses.fields(config)}
+    assert (retired, ".env") in config_module.retired_keys_seen()
+
+
+def test_B415_a_retired_key_in_config_json_is_ignored_but_an_unknown_one_is_still_refused(
+    tmp_path, write_d2_env
+):
+    """B415: config.json tolerates a retired key at any value shape, a nested object included,
+    because it is skipped before the scalar check; an unknown key is still a startup error."""
+    path = write_d2_env(tmp_path / ".env")
+    write_config_json(
+        tmp_path, {"WEEKLY_CAP_USD": 400.0, "RESERVE_PCT": {"nested": 1}, "MAX_SUBISSUES": 4}
+    )
+
+    config = load_config(env_path=path, environ={})
+
+    assert config.max_subissues == 4
+    seen = dict(config_module.retired_keys_seen())
+    assert seen["WEEKLY_CAP_USD"] == ".harness/config.json"
+    assert seen["RESERVE_PCT"] == ".harness/config.json"
+
+    write_config_json(tmp_path, {"MAX_SUBISSUES": 4, "NOPE": 1})
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env_path=path, environ={})
+    assert "NOPE" in str(excinfo.value)
+
+
+def test_B416_a_retired_key_in_the_environment_changes_nothing(env_file):
+    """B416: the environment is filtered to the live keys, so a retired variable is inert. The
+    retired set is disjoint from every live set, and no field is named for money."""
+    config = load_config(env_path=env_file, environ={"WEEKLY_CAP_USD": "1"})
+
+    assert config.max_subissues == 8
+    retired = set(config_module.RETIRED_KEYS)
+    assert retired.isdisjoint(config_module.FIELD_KEYS)
+    assert retired.isdisjoint(config_module.KNOWN_KEYS)
+    assert retired.isdisjoint(config_module.CONFIG_JSON_KEYS)
+    names = [f.name for f in dataclasses.fields(config)]
+    banned = ("usd", "budget", "reserve", "clones")
+    assert [n for n in names if any(word in n for word in banned)] == []
+    assert len(config_module.CONFIG_JSON_KEYS) == 19
+
+
+def test_B5_B22_the_allowance_and_clone_range_checks_are_retired_with_their_keys(
+    tmp_path, write_env
+):
+    """B5/B22: the percentage ranges and the one-clone rule went with the keys they guarded, so
+    a value that used to be a startup error now loads and is ignored."""
+    for key in ("WEEKLY_BUDGET_PCT", "SESSION_BUDGET_PCT", "RESERVE_PCT", "WEEKLY_RESET_DAY",
+                "MAX_CONCURRENT_CLONES"):
+        assert key in config_module.RETIRED_KEYS
+
+    path = write_env(tmp_path / ".env", MAX_CONCURRENT_CLONES="9", RESERVE_PCT="999")
+
+    config = load_config(env_path=path, environ={})
+
+    assert not hasattr(config, "max_concurrent_clones")
+    assert not hasattr(config, "reserve_pct")
 
 
 # --------------------------------------------------------------------------------------

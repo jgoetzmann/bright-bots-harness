@@ -107,7 +107,7 @@ def test_b399_before_the_reset_the_stored_refusal_stops_everything(config, empty
 
     assert usage_stop(led, config, now=now) == "weekly usage 100% >= 90%"
     assert _plan(config, led, now).reason == "weekly usage 100% >= 90%"
-    governor = Governor(empty_store, config, FrozenClock(now), ledger=led)
+    governor = Governor(config, FrozenClock(now), led)
     with pytest.raises(BudgetExhausted, match="weekly usage 100%"):
         governor.authorize(1, "discover")
     assert priority.admit("audit", store=empty_store, ledger=led, config=config, now=now)
@@ -135,7 +135,7 @@ def test_b399_at_the_reset_the_refusal_expires_with_no_command(config, empty_sto
     assert usage_stop(led, config, carry=True, now=now) is None
     result = _plan(config, led, now)
     assert result.start == (816,), result.reason
-    governor = Governor(empty_store, config, FrozenClock(now), ledger=led)
+    governor = Governor(config, FrozenClock(now), led)
     assert isinstance(governor.authorize(1, "discover"), Authorization)
     for cls in ("audit", "suggested"):
         assert priority.admit(cls, store=empty_store, ledger=led, config=config, now=now) is None
@@ -148,7 +148,7 @@ def test_b399_the_governor_does_not_wait_for_its_own_week_to_roll(config, empty_
     which `authorize` does AFTER the usage stop has already refused. So the stop refused the one
     call that could have brought a fresh reading, on every run, however long after the reset."""
     led = incident_ledger(rate_limited_until=None)
-    governor = Governor(empty_store, config, FrozenClock(NEXT_SUNDAY), ledger=led)
+    governor = Governor(config, FrozenClock(NEXT_SUNDAY), led)
 
     assert governor.usage_stop_reason() is None
     assert isinstance(governor.authorize(1, "discover"), Authorization)

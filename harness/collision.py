@@ -1,11 +1,11 @@
-"""Branch and title -> claimed issue numbers (spec §5.6). Pure functions, no I/O."""
+"""Branch and title -> claimed issue numbers. Pure functions, no I/O."""
 
 from __future__ import annotations
 
 import re
 from typing import Iterable
 
-# §5.6 patterns, drawn from live observation of the repository.
+# The branch shapes seen in the product repository.
 #   agent-737/qtr-ceiling                    -> 737
 #   fix-801/ci-shell-gate-isolation          -> 801
 #   agent-b/782-required-step-coverage       -> 782

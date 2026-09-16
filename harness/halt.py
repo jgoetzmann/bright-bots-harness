@@ -1,4 +1,4 @@
-"""The two kill switches: the Delivery 1 ``HALT_FILE`` (B148) and ``.harness/HALT`` (B149/B150)."""
+"""The two file kill switches: the local ``HALT_FILE`` and the committed ``.harness/HALT``."""
 
 from __future__ import annotations
 

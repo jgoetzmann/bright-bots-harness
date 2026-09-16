@@ -1,175 +1,133 @@
 # Operations
 
-What to do when something goes wrong, with the exact commands. Written for an operator who
-has the repository checked out, a configured `.env`, and access to the GitHub UI — and who
-may be reading this on a phone at the point where the only thing that matters is §8.
+The operator's runbook: how to read the state, what to do when something goes wrong, and the exact
+commands. §8 is how to stop everything.
 
-Two facts before anything else:
+Actions mode is the product and local mode is the fallback: the scheduled workflows in
+`.github/workflows/` do the work, and the `bb` container (`docs/LOCAL-MODE.md`) drains the same
+queue when the schedule is down. Two files stop everything: `.harness/HALT` committed to `main`
+stops Actions mode before it spends, and `HALT` at the repository root stops a local run at the next
+boundary.
 
-1. **Actions mode is the product; local mode is the fallback.** The scheduled workflows in
-   `.github/workflows/` do the work. The `bb` container (`docs/LOCAL-MODE.md`) does the same
-   work from the same queue when the schedule is down or you want to watch it. Nothing below
-   assumes one over the other unless it says so.
-2. **Two files stop everything.** `.harness/HALT` committed to `main` stops Actions mode
-   before it spends. `HALT` at the repository root stops a local run at the next boundary.
-   §8 has the full procedure.
-
-Commands prefixed `harness` run in a shell with the venv active, from the repository root.
-Where a step is a click in the GitHub UI, it says so. None of the commands here uses the
-`gh` CLI; the harness does not, and the procedures do not need it.
+Commands prefixed `harness` run from the repository root with the venv active. The harness never
+invokes the `gh` CLI; the `gh workflow run` lines in §11 are an optional shortcut for the Actions
+tab's **Run workflow** button.
 
 ---
 
 ## 1. Reading the state
 
-The queue is GitHub. An item is an issue in this repository carrying exactly one
-`stage:*` label, and the issue thread is the event log: every transition posts a comment
-naming the stage, the workflow run URL, the cost, and the new state (B101).
+The queue is GitHub. An item is an issue in this repository carrying exactly one `stage:*` label,
+and the issue thread is the event log: every transition posts a comment naming the stage, the
+workflow run URL and the new state (B101).
 
 | Label | Means | Who moves it on |
 |---|---|---|
 | `stage:queued` | eligible for a proposal | `discover.yml` |
 | `stage:planning` | a propose job is in flight | the job |
-| `stage:needs-approval` | a proposal PR is open — **gate 1** | you, by merging the PR |
+| `stage:needs-approval` | a proposal PR is open (gate 1) | you, by merging the PR |
 | `stage:ready` | eligible for implementation | `implement.yml` |
 | `stage:building` | an implement job is in flight | the job |
 | `stage:packaged` | package built, delivery pending | the same job |
-| `stage:needs-review` | upstream PR open — **gate 2** | Nathan or you, by merging upstream |
+| `stage:needs-review` | upstream PR open (gate 2) | a maintainer, by merging upstream |
 | `stage:revising` | a revise cycle is in flight | the job |
-| `stage:done` | upstream PR merged — terminal | — |
-| `stage:blocked` | gates red and honestly unfixable | you, by relabelling `stage:queued` or `stage:ready` |
+| `stage:done` | upstream PR merged; terminal | you, by relabelling (below) |
+| `stage:blocked` | gates red and not fixable | you, relabelling `stage:queued` or `stage:ready` |
 | `stage:needs-human` | revise cap reached | a trusted `/harness revise` |
 | `stage:dropped` | terminal | — |
 
-From your machine:
+Nothing sets `stage:done` automatically. After a delivery PR merges upstream, relabel its harness
+issue by hand: the dispatcher's `depends_on` check waits on that label, so an item left at
+`stage:needs-review` holds back every item that depends on it.
 
 ```bash
 harness status --json     # the queue as this store sees it
-harness ledger            # window spend, medians, rate-limit state, cursors
-harness dispatch          # what would start now, and why not — starts nothing
+harness ledger            # subscription usage, calls made, rate-limit state, cursors
+harness dispatch          # what would start now, and why not; starts nothing
 harness doctor            # every config key with its value; exit 3 names any missing one
 ```
 
-`harness dispatch` is pure: run twice against an unchanged ledger it prints byte-identical
-plans. Its `reason` string is the fastest diagnosis in the system — `halted`, `reserve`,
-`rate limited until …`, `weekly usage 91% >= 90%`, `session usage 72% >= 70%`,
-`carry leeway 10% reached`, `outside run window (daily 11:00-15:00 UTC)`, or
-`budget N% remaining, k of max n slots` (with `; weekly 49%, session 7%` appended when the
-subscription's utilization is known). The last four are §13.
+`harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
+`reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
+`weekly usage 91% >= 90%`, `session usage 82% >= 80%`, `carry leeway 10% reached`,
+`outside run window (daily 11:00-15:00 UTC)`, or `k of max n slots` (with
+`; weekly 49%, session 7%` appended when subscription usage is known). The usage stops, the leeway
+and the window are §13.
 
 ---
 
 ## 2. A failed run
 
-`ops.yml` fires on every completed run of the three spending workflows. On `failure` it
-opens (or updates) an issue here titled `ops: <workflow> failed`, labelled `kind:ops`,
-with the run URL, the failing step name, the failing job's lines in the harness's own error forms
-(`error:`, `::error::`, `rate limited`, `budget exhausted`; up to 20, B401/D71) and the last 50
-log lines, all redacted. The error lines come first because the tail is often upload noise: on
-issue #43 it missed the one line that mattered. If the failure
-is in the transient set — network reset, npm registry 5xx, GitHub 5xx, runner eviction — and
-it is the first retry for that run, it re-dispatches once (B145). It never retries a job
-whose failing step name contains `run`, `revise`, `propose`, or `gate` (B146): a red gate is
-information, not a transient.
+`ops.yml` fires on every completed run of the three spending workflows. On `failure` it opens or
+updates an issue here titled `ops: <workflow> failed`, labelled `kind:ops`, with the run URL, the
+failing step name, up to 20 of the failing job's lines in the harness's error forms (`error:`,
+`::error::`, `rate limited`, `budget exhausted`) and the last 50 log lines, all redacted (B401). It
+closes that issue itself on the workflow's next green run. It re-runs the failed job, up to three
+attempts in all, only when the failing step is one that runs before anything is spent (the HALT
+check, checkout and setup, `harness doctor`, `harness sync-fork`, `harness dispatch`) and the log
+matches a transient cause: a network reset, a registry or GitHub 5xx, or runner eviction (B145,
+B146). A failure in a model call, a gate or the ledger commit is left for a human.
 
-So the first thing to read is the `kind:ops` issue, not the Actions log.
+Read the `kind:ops` issue before the Actions log; the newest one names the failing step.
 
-1. Open Issues → label `kind:ops`. The newest one names the step.
-2. If the step is `doctor`: a config key is missing or out of range, or `.harness/PIN` no
-   longer matches. Run `harness doctor` locally; it exits 3 and names the key. For a pin
-   mismatch see §10.
-3. If the step is `sync-fork`: the fork diverged. §5.
-4. If the step is `harness run --item N` or `revise`: read the evidence. The run's
-   `runs/item-N/` directory was uploaded as an artifact with `if: always()` (B126) —
-   Actions → the run → Artifacts. `EVIDENCE.md` inside has verbatim gate output. The item
-   itself will be `stage:blocked` with the reason in a comment, or will be reset to its
-   previous state by the next run's reconciliation (§3).
-5. If the step is the ledger commit: `state/ledger.json` conflicted on **`harness-state`**,
-   the branch the workflows keep it on (§12, D28). Do **not** rebuild it on `main`:
-   `main`'s copy is only the initial ledger, and B113 protects `main`, so the push would be
-   refused after you had already overwritten the local file. Rebuild it on the state branch
-   with §12's worktree recipe:
+- **`doctor`**: a config key is missing or out of range, or `.harness/PIN` no longer matches. Run
+  `harness doctor` locally; it exits 3 and names the key. For a pin mismatch see §10.
+- **`sync-fork`**: the fork diverged. See §5.
+- **`harness run --item N` or `revise`**: read the evidence. The run's `runs/item-N/` directory is
+  uploaded as an artifact with `if: always()` (B126), under Actions → the run → Artifacts, and
+  `EVIDENCE.md` inside has the verbatim gate output. The item is either `stage:blocked` with the
+  reason in a comment, or reset to its previous state by the next run's reconciliation (§3).
+- **The ledger commit**: `state/ledger.json` conflicted on `harness-state`. Rebuild it there with
+  `harness ledger --rebuild` and §12's worktree recipe, never on `main`, whose copy is only the seed
+  and is protected (B113). The rebuild replays the transition comments into the history and the call
+  count and keeps the window it finds on disk: the reading, the carry, the cursors and any stored
+  rate limit (B430).
 
-   ```bash
-   git fetch origin harness-state
-   git worktree add ../hs FETCH_HEAD        # the state branch, detached; nothing else in it
-   harness ledger --rebuild                 # rewrites state/ledger.json in THIS checkout
-   cp state/ledger.json ../hs/state/ledger.json
-   git -C ../hs commit -am "ledger: rebuild [skip ci]"
-   git -C ../hs push origin HEAD:refs/heads/harness-state
-   git worktree remove ../hs
-   ```
-
-   The `[skip ci]` matters (B115); without it the push triggers a workflow. Losing the file
-   costs accuracy, not correctness (B117).
-6. Close the `ops:` issue when you have acted on it. `ops.yml` reopens or updates it if the
-   failure repeats.
-
-To re-run a single item by hand once the cause is fixed, either
-
-```bash
-harness run --item N
-```
-
-from a checkout whose `.env` has `STORE_BACKEND=github` and `PERMISSION_TIER=2`, or
-Actions → `implement.yml` → Run workflow → `issue: N`. Add `--dry-run` to the local form to
-see every write the run would send (`gh.sent`) without sending any of them.
+To re-run one item by hand once the cause is fixed, run `harness run --item N` from a checkout whose
+`.env` has `STORE_BACKEND=github` and `PERMISSION_TIER=2`, or Actions → `implement.yml` → Run
+workflow with `issue: N`. The global `--dry-run` (`harness --dry-run run --item N`) records every
+write the run would send in `gh.sent` without sending any.
 
 ---
 
 ## 3. A stuck item (`stage:building` for more than 3 hours)
 
-An implement job is capped at `timeout-minutes: 120`. An item still labelled
-`stage:building` three hours after the label was applied, with no live workflow run, was
-left mid-flight by a killed or timed-out job.
+An implement job is capped at `timeout-minutes: 120`, so an item still labelled `stage:building`
+three hours after the label was applied, with no live workflow run, was left by a killed or
+timed-out job.
 
-**The harness fixes this itself.** Every `harness run` — scheduled or manual — begins with a
-reconciliation step that returns such items to their previous state label (B147, A48). The
-tick that reaches it is `feedback.yml`'s: its last step before the ledger commit is a bare
-`harness run`, there for exactly this, on `41 */3 * * 1-5` — every three hours, Monday to
-Friday. `implement.yml` reconciles too, but only on a tick where the dispatcher gives it an
-item to start, and its crons fall only inside the 11:00–15:00 UTC window (§13.3) — so at
-other hours `feedback.yml` is the one that reaches it.
+Every `harness run`, scheduled or manual, starts by returning such items to their previous state
+label (B147). `feedback.yml` reaches them: its last step before the ledger commit is a bare
+`harness run`, on `41 */3 * * 1-5`. `implement.yml` reconciles too, but only on a tick where the
+dispatcher gives it an item, and its crons fall inside the run window (§13.3).
 
-To do it now:
+To do it now, first confirm nothing is live (Actions → `implement.yml` has no run in progress; if
+one is, wait for it to finish or time out). Then either run `implement.yml` with `issue` blank,
+which reconciles before following the dispatcher's plan, or relabel the issue by hand from
+`stage:building` to `stage:ready` — a label a human sets is honoured (B102). Finally check the fork
+for a half-pushed branch, `harness/<kind>-N-<slug>`: a run that died before `deliver` pushed
+nothing, and one that died after leaves a branch and no PR, which the next run of the item re-cuts
+from the fork's main.
 
-1. Confirm nothing is live: Actions → `implement.yml` → no run in progress. If one is in
-   progress, wait; it will finish or time out.
-2. Either trigger a run — Actions → `implement.yml` → Run workflow, `issue` blank — which
-   reconciles first and then follows the dispatcher's plan; or relabel the issue by hand:
-   remove `stage:building`, add `stage:ready`. A label a human sets is honoured, not
-   overwritten (B102).
-3. Check the fork for a half-pushed branch, `harness/<kind>-N-<slug>`. A run that died
-   before `deliver` pushed nothing. One that died after leaves a branch and no PR; the next
-   run of the item re-cuts the branch from the fork's main.
-
-If the item comes back `stage:building` and dies again at the same point, it is not stuck,
-it is failing — §2, and read the artifact.
+An item that returns to `stage:building` and dies again at the same point is failing: see §2 and
+read the artifact.
 
 ---
 
 ## 4. A rate-limited window
 
-A Claude usage-limit response is an outcome, not an incident (B119, B120). The stage returns
-the item to the label it had at entry, writes `rate_limited_until` into
-`state/ledger.json`, comments on the issue with the reset time, and the job exits 0. The
-workflow shows green. Until the reset time, `harness dispatch` prints an empty plan:
+A Claude usage-limit response is a normal outcome (B119, B120). The stage returns the item to the
+label it had at entry, writes `rate_limited_until` into `state/ledger.json`, comments the reset time
+on the issue, and the job exits 0 with a green run. Until the reset, `harness dispatch` prints an
+empty plan whose reason is `rate limited until <time>`, and every scheduled tick reads that reason
+and exits without spending (B121).
 
-```json
-{"start": [], "reason": "rate limited until 2026-09-14T03:00:00Z", "skipped": {}}
-```
-
-Nothing to do but wait. Every scheduled tick between now and then runs `dispatch`, sees the
-reason, and exits without spending (B121).
-
-If you know the limit has lifted early and want the next tick to work, clear the field on
-**`harness-state`** — the branch the ledger actually lives on (§12, D28). Editing
-`main`'s copy does nothing: it is the initial ledger, the next Actions tick reloads from
-`harness-state` anyway, and B113 refuses the push. Use §12's worktree recipe:
+If the limit lifted early, clear the field on `harness-state` (§12). Editing `main`'s copy does
+nothing, because the next Actions tick loads the ledger from `harness-state`:
 
 ```bash
 git fetch origin harness-state
-git worktree add ../hs FETCH_HEAD        # the state branch, detached; nothing else in it
+git worktree add ../hs FETCH_HEAD        # the state branch, detached
 python - <<'PY'
 import json, pathlib
 p = pathlib.Path("../hs/state/ledger.json")
@@ -182,144 +140,132 @@ git -C ../hs push origin HEAD:refs/heads/harness-state
 git worktree remove ../hs
 ```
 
-The `[skip ci]` matters (B115); without it the push would itself trigger a workflow. If the
-reset time the CLI reported was relative (`resets in 30 minutes`), the ledger holds an
-absolute time computed by the stage from its clock; the comment on the issue shows the same
-value. `harness ledger` prints the current state without editing anything.
+When the CLI reports a relative reset (`resets in 30 minutes`), the stage stores the absolute time
+computed from its clock, and the issue comment shows the same value.
 
 ---
 
 ## 5. A diverged fork
 
-`harness sync-fork` runs before every dispatch. It fast-forwards the fork's `main` from
-upstream and does nothing else (B105). When the fork's `main` holds a commit upstream does
-not, it exits 1, pushes nothing, and its message names both shas:
+`harness sync-fork` runs before every dispatch. It fast-forwards the fork's `main` from upstream and
+does nothing else (B105). When the fork's `main` holds a commit upstream does not, it exits 1,
+pushes nothing, and names both shas:
 
 ```
-$ harness sync-fork
 fork main 3f2a… is not an ancestor of upstream main 9c41…; pushed nothing
 ```
 
-Every spending workflow then fails at that step and `ops.yml` opens an `ops:` issue for it.
-
-**The harness will never repair this itself.** A non-fast-forward fork means some
-`base_sha` exists only on the fork, so every package pinned to it stops being reconstructible
-by anyone reviewing upstream. Repairing it is a human act, from your machine, using the
-machine account's credential (not yours — the fork is not yours):
+Every spending workflow then fails at that step and `ops.yml` opens an `ops:` issue. The harness
+never repairs this itself: a non-fast-forward fork means some `base_sha` exists only on the fork, so
+packages pinned to it cannot be reconstructed from upstream. Repair it from your machine, with the
+machine account's credential:
 
 ```bash
 git clone https://github.com/<machine-account>/brightboost.git fork && cd fork
 git remote add upstream https://github.com/Bright-Bots-Initiative/brightboost.git
 git fetch upstream main
-git log --oneline upstream/main..origin/main      # commits only the fork has — read them
-```
-
-Those commits are the divergence. Usually they are a workflow file GitHub added when someone
-clicked "enable Actions" on the fork, or a commit pushed to the wrong remote. Once you know
-what they are and have decided none of them matters:
-
-```bash
-git push --force origin upstream/main:main        # with the machine account's PAT
+git log --oneline upstream/main..origin/main      # commits only the fork has; read them
+git push --force origin upstream/main:main        # once you have decided none of them matters
 cd .. && harness sync-fork                        # expect exit 0 and the upstream sha
 ```
 
-Then check every `stage:needs-review` item. A delivery PR whose base commit was one of the
-discarded ones needs `/harness rebase` from a trusted account; the item re-syncs, rebases
-onto the real upstream `main`, and re-runs the full gate sequence before pushing (B136).
-
-If the fork is unrecoverable, delete it and fork again from the machine account — but every
-open work branch dies with it, so close their PRs first.
+Those commits are usually a workflow file GitHub added when someone enabled Actions on the fork, or
+a commit pushed to the wrong remote. Afterwards check every `stage:needs-review` item: a delivery PR
+whose base commit was one of the discarded ones needs `/harness rebase` from a trusted account,
+which rebases onto upstream's `main` and re-runs the full gate sequence before pushing (B136). If
+the fork is unrecoverable, close the open work PRs, delete it, and fork again from the machine
+account.
 
 ---
 
 ## 6. A disabled schedule
 
-GitHub disables every scheduled workflow in a public repository after **60 days without
-repository activity**, and does it silently. A repository whose queue happened to be empty
-for two months stops for good, and no run fails because no run starts.
+GitHub disables every scheduled workflow in a public repository after 60 days without repository
+activity, and no run fails because none starts. The weekly heartbeat is the alarm (B144):
+`heartbeat.yml` runs every Monday at 09:05 UTC (`5 9 * * 1`), spends nothing, and posts one comment
+on the tracking issue named by `TRACKING_ISSUE` in `.harness/config.json`, carrying queue depth per
+stage label, the last observed subscription usage, the run window and any carried item, the last
+successful run of each workflow, the fork's divergence from upstream, and a banner when
+`.harness/HALT` is on.
 
-**The heartbeat is the alarm, and its absence is the signal (B144, A47).** `heartbeat.yml`
-runs every Monday at 09:05 UTC (`5 9 * * 1`), spends nothing, and posts one comment on the
-tracking issue named by `TRACKING_ISSUE` in `.harness/config.json`: queue depth per state,
-spend this window, the last successful run of each workflow, and the fork's divergence from
-upstream.
+If Monday passes with no new comment on the tracking issue, the scheduler is off. Open Actions and
+click **Enable workflow** on each of `discover.yml`, `implement.yml`, `feedback.yml`,
+`heartbeat.yml` and `watchdog.yml` that shows the disabled banner, then run `heartbeat.yml` by hand:
+a comment within minutes confirms it. If the workflows are enabled and still not running, check that
+this repository is not itself a fork (forks have schedules disabled by default) and that `main` is
+the default branch.
 
-**If Monday passes and the tracking issue has no new comment**, the scheduler is off. Do not
-wait for a second Monday.
+While the schedule is down, `.\bb-start.ps1` on the Windows host drains the same queue, or run
+`implement.yml` by hand. The ledger commit at the end of every spending run counts as activity, as
+does merging a proposal PR, so a repository with work in it stays active.
 
-1. Actions → each of `discover.yml`, `implement.yml`, `feedback.yml`, `heartbeat.yml`. A
-   disabled one shows a banner ("This scheduled workflow is disabled because there has been
-   no activity…") with an **Enable workflow** button. Click it on each.
-2. Actions → `heartbeat.yml` → Run workflow. A comment appears within minutes; that is your
-   confirmation.
-3. If the workflows are enabled and still not running: check that this repository is not
-   itself a fork (forks have schedules disabled by default), and that `main` is the default
-   branch — schedules only run from it.
+### When a scheduled run never starts
 
-While the schedule is down, local mode is continuity: `.\bb-start.ps1` on the Windows host
-drains the same queue (`docs/LOCAL-MODE.md`). Or trigger `implement.yml` by hand.
+A run that fails files a `kind:ops` issue (§2). A run that never starts files nothing, and the only
+symptom is that comments on the product repository go unanswered. `watchdog.yml` runs on
+`17 */4 * * *` and, on a weekday, dispatches `feedback` when no `feedback` run of any kind has
+started in six hours.
 
-The ledger commit at the end of every spending run counts as activity, so a repository with
-any work in it will not go quiet. An idle one will. Merging a proposal PR — any commit — also
-resets the 60-day clock.
+- **GitHub dropped the cron under load:** one dispatch and no issue. Nothing to do.
+- **Four weekday slots missed in a row:** an issue titled `ops: scheduled runs are not firing`,
+  labelled `kind:ops`. Re-enable the schedule on the Actions tab.
+- **No repository activity for 60 days:** nothing from the watchdog, which GitHub disables along
+  with every other schedule. GitHub emails the repository owner, and the weekly heartbeat comment
+  stops appearing. Push any commit, then re-enable the workflows on the Actions tab.
+
+The watchdog measures missing runs only: a failed run counts as a run, and `ops.yml` handles it. It
+does not dispatch at weekends, because `feedback`'s cron is weekdays only and a comment left on
+Friday evening waits for Monday.
 
 ---
 
 ## 7. A leaked secret
 
-Two secrets exist. Each is revoked with one action, and revocation is the whole fix — the
-harness holds no other state that depends on the old value. Do the steps in this order.
+Two secrets exist. Each is revoked with one action, and the harness keeps no state that depends on
+the old value. Do the steps in this order.
 
-**First, stop spending.** GitHub UI → this repository → Add file → Create new file →
-name `.harness/HALT`, any content → Commit directly to `main`. Every spending workflow now
-exits 0 at its first step (B149). Locally, `harness halt`; for the container, `.\bb-stop.ps1`.
+**First, stop spending.** GitHub UI → this repository → Add file → Create new file → name
+`.harness/HALT`, any content → Commit directly to `main`. Every spending workflow now exits 0 at its
+first step (B149). Locally, `harness halt`; for the container, `.\bb-stop.ps1`.
 
-**If `HARNESS_GITHUB_TOKEN` leaked** — the classic PAT on `jgoetzmann-bot`:
+**If `HARNESS_GITHUB_TOKEN` leaked** (the classic PAT on `jgoetzmann-bot`):
 
 1. Sign in as the machine account → Settings → Developer settings → Personal access tokens →
-   Tokens (classic) → **Delete** the token. Every request carrying it fails from that second.
+   Tokens (classic) → **Delete** the token. Every request carrying it fails from then on.
 2. Generate a new one: classic, scopes `public_repo`, `notifications` and `workflow`, nothing
-   else (D67). All three are needed: `public_repo` pushes to the fork and opens the pull
-   request; `notifications` lets the sweep see a mention on a product issue; `workflow` lets
-   `harness sync-fork` fast-forward the fork past upstream's own CI changes, and without it
-   nothing can be delivered once upstream touches `.github/workflows/`. Leaving `workflow` off
-   does not buy back I-15 — the harness refuses to push `.github/` itself — it only stalls
-   the fork. After step 3, `harness doctor` prints the scopes it reads off the new token and
-   warns on a missing or extra one.
-3. This repository → Settings → Secrets and variables → Actions → `HARNESS_GITHUB_TOKEN`
-   → Update. And the host `.env` if local mode is in use — the container never had it
-   (R5.7), so nothing there changes.
+   else (D67). `public_repo` pushes to the fork and opens the pull request; `notifications` lets
+   the sweep see a mention on a product issue; `workflow` lets `harness sync-fork` fast-forward the
+   fork past upstream's own CI changes, and without it nothing can be delivered once upstream
+   touches `.github/workflows/`. I-15 holds either way, because the harness refuses to push
+   `.github/` itself. After step 3, `harness doctor` prints the scopes it reads off the new token
+   and warns on a missing or extra one.
+3. This repository → Settings → Secrets and variables → Actions → `HARNESS_GITHUB_TOKEN` → Update.
+   Also update the host `.env` if local mode is in use; the container never receives this token.
 
-**If `CLAUDE_CODE_OAUTH_TOKEN` leaked** — the subscription token the CLI needs:
+**If `CLAUDE_CODE_OAUTH_TOKEN` leaked** (the subscription token the CLI uses): revoke it from the
+Claude account `claude setup-token` signed you into, run `claude setup-token` again for a new value,
+then update the repository secret and the host `.env` and restart the container, which reads `.env`
+at start through `local/container_env.ps1`.
 
-1. Revoke it from the Claude account it was issued against — the same account
-   `claude setup-token` signed you into.
-2. On your machine, `claude setup-token`; it opens a browser login and prints a new value.
-3. Update the repo secret `CLAUDE_CODE_OAUTH_TOKEN`, and the host `.env`. Restart the
-   container — it reads `.env` at start, through `local/container_env.ps1`.
-
-**Then find out where it went.** The redactor should have caught it everywhere the harness
-writes; check that it did:
+**Then find out where it went.** The redactor should have caught it everywhere the harness writes:
 
 ```bash
-git log -p --all | grep -cE "ghp_|github_pat_|sk-ant-"                          # expect 0 (R5.1)
+git log -p --all | grep -cE "ghp_|github_pat_|sk-ant-"                          # expect 0
 grep -rlE "ghp_|github_pat_|sk-ant-" runs/ packages/ state/ proposals/ 2>/dev/null  # expect nothing
 ```
 
-Also read the most recent run artifacts and the comments the harness posted. If any of them
-carries the value, that is a bug against `harness/redact.py` — a pinned file — and the pin
-protects the fix: open a PR, `CODEOWNERS` routes it to you, and `.harness/PIN` is updated in
-the same PR (§10).
+Also read the most recent run artifacts and the comments the harness posted. A value in any of them
+is a bug in `harness/redact.py`, a pinned file: fix it in a PR that updates `.harness/PIN` in the
+same change (§10).
 
-**Finally**, remove `.harness/HALT` with another commit. If the leak came from a workflow
-log, also delete that run's logs (Actions → the run → ⋯ → Delete all logs).
+**Finally**, remove `.harness/HALT` with another commit. If the leak came from a workflow log, also
+delete that run's logs (Actions → the run → ⋯ → Delete all logs).
 
 ---
 
 ## 8. How to stop everything
 
-Three switches, one per place work can happen. Use all three if you are not sure which is
-running.
+Three switches, one per place work can happen. Use all three if you are not sure which is running.
 
 | Switch | Stops | How | Takes effect |
 |---|---|---|---|
@@ -332,20 +278,36 @@ running.
 git pull && echo halt > .harness/HALT
 git add .harness/HALT && git commit -m "halt" && git push
 
-# local
-harness halt          # writes HALT_FILE; `harness resume` removes it
-
-# container (PowerShell)
-.\bb-stop.ps1         # graceful within its wait window, then forced
+harness halt          # local: writes HALT_FILE; `harness resume` removes it
+.\bb-stop.ps1         # container (PowerShell): graceful, then forced
 ```
 
-A job already past its first step when `.harness/HALT` lands finishes its current item; it
-does not re-read the file mid-run. To kill it now: Actions → the run → Cancel workflow. The
-item it was holding is reset by reconciliation (§3), and the run's evidence is still uploaded
-(`if: always()`).
+`discover`, `implement` and `feedback` check `.harness/HALT` as their first step, before checkout,
+`harness doctor` and the dispatcher. The job logs `halted by .harness/HALT` and exits 0: nothing
+spent, no label moved, no comment posted, no ops issue opened. `heartbeat`, `ack`, `watchdog`, `ops`
+and `selftest` do not check it; the heartbeat comment and the `ack` reply both say the harness is
+halted.
 
-`harness dispatch` reports `halted` while either HALT file exists, so you can confirm from
-your machine without waiting for a tick.
+On the command line the two switches are checked in different places:
+
+| Command | `.harness/HALT` (exit 0) | `HALT_FILE` (exit 5) |
+|---|---|---|
+| `discover`, `propose`, `dispatch` | at entry | not checked |
+| `run` | at entry | at entry, and between stages and gate runs |
+| `deliver`, `revise`, `decompose`, `sweep` | at entry | at entry |
+| `local-loop` | at entry and before each unit | in each unit's `run` |
+| `sync-fork` | not checked | at entry |
+| `status`, `ledger` | not checked | not checked |
+
+`harness doctor` lists either switch as a problem when it is present.
+
+A job already past its first step when `.harness/HALT` lands finishes its current item; it does not
+re-read the file. To kill it now: Actions → the run → Cancel workflow. Reconciliation (§3) resets
+the item it was holding, and the run's evidence still uploads (`if: always()`).
+
+To confirm from your machine without waiting for a tick: with `.harness/HALT` present,
+`harness dispatch` prints `halted by .harness/HALT` and exits 0 before it builds a plan; with only
+`HALT_FILE` present, it prints a plan whose reason is `halted`.
 
 To resume: delete `.harness/HALT` with a commit; `harness resume`; `.\bb-start.ps1`.
 
@@ -353,27 +315,25 @@ To resume: delete `.harness/HALT` with a commit; `harness resume`; `.\bb-start.p
 
 ## 9. Why a comment on the product repository takes up to three hours
 
-This is by design (B134), and it will look like a bug the first time.
+Commands are event-driven on this repository and polled on the product repository (B134). Here,
+`issue_comment` and `pull_request_review_comment` trigger `feedback.yml`, which authorises, parses
+and acts in the same run, so latency is minutes. On the product repository the harness receives no
+events, because the machine account is not a collaborator there: `harness sweep` finds commands by
+reading the machine account's notifications since the ledger cursor (B140) on `feedback.yml`'s
+schedule, `41 */3 * * 1-5`. Latency there is up to three hours on a weekday,
+and until Monday for a comment left at the weekend.
 
-- **On this repository**, `/harness` commands are event-driven: `issue_comment` and
-  `pull_request_review_comment` trigger `feedback.yml`, which authorises, parses, and acts
-  within that same run. Latency is minutes.
-- **On the product repository**, the harness receives no events — it is not a collaborator
-  there, and it must not be. Commands on a delivery PR are found by `harness sweep`, which
-  reads the machine account's notifications since the ledger cursor (B140) on
-  `feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency is up to `NOTIFY_POLL_HOURS`
-  (three hours) on a weekday, and until Monday for a comment left on Saturday.
+So `/harness revise` on an upstream PR at 14:00 UTC on a Friday is acted on at about 15:41; at 20:00
+Friday, at about 21:41; at 22:00 Friday, not until about 00:41 Monday, the 51-hour worst case. A
+`/harness` line in an inline review comment is read the same way. A review is never a command by
+itself: its text reaches the model as feedback only once a `/harness revise` arrives, and a command
+typed in a review's summary box is not read at all (D68).
 
-So `/harness revise` on an upstream PR at 14:00 UTC Friday is acted on at about 15:41 Friday;
-at 20:00 Friday, at about 21:41 Friday; at 22:00 Friday, not until about 00:41 Monday — the
-51-hour worst case. A `/harness` line in an inline review comment is read the same way. A review
-is never a command by itself: its text reaches the model as feedback only once a
-`/harness revise` arrives, and a command typed in a review's summary box is not read at all (D68).
-
-To skip the wait: Actions → `feedback.yml` → Run workflow, or from your machine
-`harness sweep` followed by `harness dispatch`. Reading the notifications spends nothing (B141),
-but acting on what they carry can: `ask`, `audit`, `split`, `revise`, `rebase` and a re-proposal
-call the model from inside `harness sweep`, through the same budget and usage stops as any stage.
+To skip the wait, run `feedback.yml` from the Actions tab, post any `/harness` command on this
+repository (it starts the same job, whose sweep reads the notifications too), or run `harness sweep`
+then `harness dispatch` from your machine. Reading notifications spends nothing (B141), but `ask`,
+`audit`, `split`, `revise`, `rebase` and a re-proposal call the model from inside `harness sweep`,
+under the same usage stops as any stage.
 
 A command is acted on once (B135). Editing a comment does not re-trigger it; post a new one.
 
@@ -381,47 +341,34 @@ A command is acted on once (B135). Editing a comment does not re-trigger it; pos
 
 ## 10. When upstream's gate sequence changes
 
-The harness runs **the gate sequence pinned in `harness/gates.py`**, not whatever the product
-repository's `package.json` says this week. If upstream renames `npm run typecheck`, adds a
-gate, or drops one, the harness does not adapt (handoff §17.3). What you will see instead:
+The harness runs the gate sequence pinned in `harness/gates.py`, whatever the product repository's
+`package.json` says. If upstream renames `npm run typecheck`, adds a gate or drops one, the baseline
+run on the untouched tree goes red for the renamed or removed script (`npm ERR! missing script`) and
+`EVIDENCE.md` records it as pre-existing with the verbatim output. Every item then proposes with
+`gate_expectation: known-red` naming that gate, or lands `stage:blocked` when the red is not one the
+proposal declared in `baseline_red`. Nothing is loosened, skipped or swapped.
 
-- The baseline run on the untouched tree goes red for the renamed or removed script
-  (`npm ERR! missing script`), and `EVIDENCE.md` records it as **pre-existing** with the
-  verbatim output.
-- Every item then proposes with `gate_expectation: known-red` naming that gate, or lands
-  `stage:blocked` if the red is not one the proposal declared in `baseline_red`.
-- Nothing is loosened, skipped, or silently swapped. That is the invariant working.
-
-The fix is a reviewed code change here, not a config key (B112):
-
-1. Edit `harness/gates.py:_SEQUENCE` to match upstream.
-2. `python -m harness.verify_pin --print` to see the new hash, then
-   `python -m harness.verify_pin --write` to update `.harness/PIN`. This is the one command
-   in this document that only the operator runs; the harness cannot write that file (B143).
-3. One PR containing both. `CODEOWNERS` routes it to you; `selftest.yml` runs the golden
-   gate-sequence test on both OSes.
-4. After merge: Actions mode picks it up on the next tick. The container reads `harness/`
-   from the read-only mount, so a plain restart (`.\bb-stop.ps1` then `.\bb-start.ps1`) is
-   enough — its pin check will pass again.
-
-Until that PR merges, every run reports the new red honestly and nothing ships against it.
-That is correct, and it is going to be surprising the first time.
+The fix is a reviewed code change here, not a config key (B112). Edit `harness/gates.py:_SEQUENCE`
+to match upstream, run `python -m harness.verify_pin --write` to update `.harness/PIN` (only the
+operator runs this; the harness cannot write that file, B143), and open one PR containing both:
+`CODEOWNERS` routes it to you, and `selftest.yml` runs the gate-sequence test on both OSes. Actions
+mode picks the change up on the next tick after merge; the container reads `harness/` from a
+read-only mount, so `.\bb-stop.ps1` then `.\bb-start.ps1` is enough for its pin check to pass. Until
+that PR merges, every run reports the new red and nothing ships against it.
 
 ### Pin mismatch
 
-`doctor` fails (Actions) or the container exits 1 at gate step 3 (local) with a
-`PinMismatch` naming the expected and actual hash. One of `harness/gates.py`,
-`harness/packager.py`, `harness/redact.py`, or a file under `prompts/` changed without
-`.harness/PIN` changing with it.
+`doctor` fails (Actions) or the container exits 1 at gate step 3 (local) with a `PinMismatch` naming
+the expected and actual hash. One of `harness/gates.py`, `harness/packager.py`, `harness/redact.py`
+or a file under `prompts/` changed without `.harness/PIN` changing with it.
 
 ```bash
 python -m harness.verify_pin --check     # exit 1 on mismatch, 0 ok
 git log --oneline -5 -- harness/gates.py harness/packager.py harness/redact.py prompts/ .harness/PIN
 ```
 
-If the change was intended, it should have carried the pin in the same PR. If it was not — a
-prompt edited directly on `main`, say — revert it. The harness stays stopped either way,
-which is the point.
+An intended change should have carried the pin in the same PR. Revert an unintended one, such as a
+prompt edited directly on `main`. The harness stays stopped until one of the two happens.
 
 ---
 
@@ -430,177 +377,188 @@ which is the point.
 | You want to | Do |
 |---|---|
 | Queue an issue | label it `stage:queued`, or comment `/harness go` |
-| Approve a proposal | **merge** its PR. Approving without merging does nothing; merge is what `implement.yml` listens for |
+| Approve a proposal | merge its PR; `implement.yml` listens for the merge, not for a review |
 | Send a proposal back | comment `/harness revise <notes>` on the proposal PR |
 | Reject a proposal | comment `/harness stop <why>`; the PR closes, the issue goes `stage:dropped` |
 | Split a big issue | comment `/harness split`; up to `MAX_SUBISSUES` children, parent goes `stage:blocked` |
-| Get a delivery PR fixed | review it upstream, or comment `/harness revise` there (§9 for timing) |
+| Get a delivery PR fixed | comment `/harness revise <notes>` on it upstream (§9 for timing) |
 | Rebase a conflicted delivery PR | comment `/harness rebase` |
 | Drop a delivery PR | comment `/harness stop`; the PR closes, the slot is freed |
 | Un-block an item | relabel it `stage:ready` (or `stage:queued` for a fresh proposal) |
-| Wake a `stage:needs-human` item | comment `/harness revise` from a trusted account; nothing else touches it |
-| Create the twelve labels | `harness init --labels` (idempotent; a no-op message without a token) |
+| Wake a `stage:needs-human` item | comment `/harness revise` from a trusted account |
+| Create the labels | `harness init --labels`; idempotent, and a no-op without a token |
 | Add somebody to the trust file | `harness trust line <login> --level 2`, paste the line it prints into `.harness/trust.txt`, open a PR |
-| See who is trusted, and what is being refused | `harness trust show` |
+| See who is trusted, and what is refused | `harness trust show` |
 
-Every command is honoured only from a handle in `.harness/trust.txt`, at a level the verb reaches,
-**and** confirmed by GitHub — both halves, or it is read, denied and ignored with no reply (B131,
-B132). The ordinary way to add somebody is one vouched line (D69):
+Commands are honoured only from a handle in `.harness/trust.txt`, at a level the verb reaches, and
+confirmed by GitHub (B131, B132). The ordinary line is vouched (D69) and looks like
+`2 their-github-login vouch:their-numeric-account-id`; `harness trust line` prints it with the
+account id filled in. Neither `trust` command writes anything or needs a working `.env`, and the
+reviewed PR that adds the line is the security boundary. `docs/SAFETY.md` describes the gate in
+full.
 
+### Running workflows by hand
+
+Actions → pick the workflow → **Run workflow** → branch `main` → fill the inputs.
+
+| Workflow | Runs on its own | Inputs |
+|---|---|---|
+| `discover` | `7 11 * * *` | `mode`, `target`, `lens`, `ignore_allowlist` |
+| `implement` | `23 11-14 * * *`, and a push to `proposals/**` on `main` | `issue` |
+| `feedback` | `41 */3 * * 1-5`, and any `/harness` comment here | none |
+| `ack` | any `/harness` comment here | none |
+| `heartbeat` | `5 9 * * 1` | none |
+| `watchdog` | `17 */4 * * *` | none |
+| `selftest` | every pull request here | none |
+| `ops` | a completed spending run | not dispatchable |
+
+`discover` finds work and proposes each item it created; `implement` approves merged proposals, asks
+the dispatcher, then implements, packages and delivers; `feedback` sweeps notifications for
+commands, queues issues assigned to the bot and reconciles stuck items. Those three spend, and
+refuse to start while `.harness/HALT` exists (§8). `ack` replies within seconds that a command was
+read; `heartbeat` posts the weekly comment (§6); `watchdog` restarts a stalled `feedback` schedule
+(§6); `selftest` runs the pin check and the suite under `BACKEND=fake` on Linux and Windows; `ops`
+files or closes the `ops:` issue (§2).
+
+```bash
+# one product issue: queued and proposed in the same run
+gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=directed -f target=633
+# every open product issue assigned to the machine account
+gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=assigned
+# triage without the harness-ok allowlist label; the other filters still apply
+gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
+  -f mode=triage -f ignore_allowlist=true
+# one item now, by harness issue number; bypasses the run window, not the usage stops
+gh workflow run implement.yml -R jgoetzmann/bright-bots-harness -f issue=4
+gh workflow run feedback.yml  -R jgoetzmann/bright-bots-harness   # act on upstream comments now
+gh run list -R jgoetzmann/bright-bots-harness -w implement -L 5    # what happened
 ```
-2 their-github-login vouch:their-numeric-account-id
-```
 
-`harness trust line <login> --level 2` prints exactly that, account id and all; `harness trust show`
-prints the file as the gate reads it, including every line being refused. Neither writes anything,
-and neither needs a working `.env` — you paste the line into `.harness/trust.txt` and open a pull
-request, and that review is the whole security boundary. The vouch pins the line to one account, so
-it works on **every** repository with no invitation and gives no repository access to anybody (D30).
+`mode: directed` needs `target`, the product repository's issue number, and skips every triage
+filter: the allowlist, the excluded labels, the assignee check and the in-flight-branch check.
+`mode: assigned` applies no label filter, so it queues every open issue assigned to the machine
+account, including ones labelled `intern-starter`, `large` or `architecture` that triage would
+exclude; it only queues, and the next `discover` run proposes. `implement`'s `issue` is the harness
+issue number, the item must already be `stage:ready`, and blank takes the dispatcher's plan. From a
+checkout the equivalents are `harness discover --mode directed --target 633` then
+`harness propose <id>`, `harness run --item 4`, and `harness sweep`.
 
-A line **without** a vouch is the other half of B131: it needs GitHub to report the commenter as
-OWNER, MEMBER or COLLABORATOR on the repository the comment is on — in practice an invitation. That
-route still works and needs no id, so use it for somebody who is already a collaborator here.
+---
 
-## 12. Where the ledger actually lives (D28)
+## 12. Where the ledger lives (D28)
 
-`main` is protected (one approving review, no force-push), so the workflows do **not** commit
-`state/ledger.json` to `main`. They keep it on the branch **`harness-state`**: every spending job
-loads the latest copy from there before `harness doctor`, and pushes the updated file back at the
-end with `[skip ci]`. `main`'s copy is the initial ledger and what local mode starts from.
+`main` is protected (one approving review, no force-push), so the workflows keep `state/ledger.json`
+on the unprotected branch `harness-state`. Every spending job loads the latest copy from there
+before `harness doctor` and pushes the updated file back at the end with `[skip ci]`, which keeps
+the push from triggering a workflow (B115). `main`'s copy is the seed that local mode starts from,
+and a ledger change committed there has no effect on Actions mode.
 
-- Read it: `git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json`
-- Rebuild it after a corruption: `harness ledger --rebuild`, then commit the result to `harness-state`
-  by hand (`git worktree add ../hs origin/harness-state`, copy, commit, push).
-- Never protect `harness-state`; it is written by the Actions token.
-- Every procedure in this document that writes the ledger goes through the recipe above:
-  §2 step 5 (rebuild after a conflicted ledger commit) and §4 (clear
-  `rate_limited_until`). If you find one that edits `state/ledger.json` on `main`, it is
-  a documentation bug — D28 is the ruling, this section is the procedure.
+Read it with `git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json`. Rebuild or
+edit it through a worktree on that branch: `git worktree add ../hs FETCH_HEAD`, edit or copy in a
+rebuilt `state/ledger.json`, commit with `[skip ci]`, push to `HEAD:refs/heads/harness-state`, then
+`git worktree remove ../hs`. §4 is a worked example. Never protect `harness-state`; the Actions
+token writes it.
+
+---
 
 ## 13. Usage-aware governance
 
-**Read this first: the dollars are not the metric.** Every `$` figure the harness prints is an
-*estimate of API-equivalent cost*, derived from token counts. Nobody bills it. What actually runs
-out is the **utilization** of two windows the API reports on the headers of every call — five-hour
-and seven-day — and that is what every report now leads with.
-
-The first live run showed how far apart the two can be: one model call, **$0.28** estimated, and
-the seven-day window at **18%**. By the dollar figure the harness had used 0.08% of its allowance.
-By the real one, nearly a fifth of the week.
-
-And most of that 18% was not the harness. **The allowance is shared with everything else this
-account does** — the operator's own Claude Code sessions included — so it moves while the harness
-is asleep, and a dollar total hides that completely.
-
-The dollar estimate is kept for three things and no others: a sense of scale, the
-`--max-budget-usd` flag the runner really does enforce on a single call, and being the only bound
-that exists before a real call has ever been made (B114: no decision may *depend* on the signal
-being present).
-
-This section is what to read when the queue is full, nothing is halted, nothing is rate limited,
-and `harness dispatch` still starts nothing.
+What stops work is the utilization of two subscription windows, five-hour (session) and seven-day
+(weekly), which the API reports on every call. The allowance is shared with everything else the
+account does, including the operator's own Claude Code sessions, so it moves while the harness is
+idle. Read this section when the queue is full, nothing is halted or rate limited, and
+`harness dispatch` still starts nothing.
 
 ### 13.1 The signal
 
-`claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call:
-
-```json
-{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1788519600,
- "rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false,
- "unifiedWindows":{"five_hour":{"utilization":0.07,"resetsAt":1788519600},
-                   "seven_day":{"utilization":0.49,"resetsAt":1788897600}}}}
-```
-
-`utilization` is a fraction, 0..1, of the subscription's allowance for that window. It comes from
-the inference response headers, so the long-lived `setup-token` used in Actions mode receives it
-too. The runner keeps the last one of a call; the stage stamps `observed_at` from the clock and the
-governor stores it in `state/ledger.json` under `window.usage`:
+`claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call, whose
+`unifiedWindows` carries a `utilization` fraction (0..1) and a `resetsAt` for `five_hour` and
+`seven_day`. It rides on the inference response headers, so the long-lived `setup-token` used in
+Actions mode receives it too. The runner keeps the last one of a call, the stage stamps
+`observed_at` from the clock, and the governor stores it under `window.usage`:
 
 ```bash
-harness ledger --json                       # window.usage, window.carry, medians, rate-limit state
-git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the copy Actions uses (§12)
+harness ledger --json                       # window.usage, window.carry, rate-limit state
+git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the copy Actions uses
 ```
 
-The weekly heartbeat comment prints the same numbers under **subscription usage (last observed)**,
-so the tracking issue is the phone-readable view. It reads the live copy on `harness-state`, not
-the seed checked in on `main`, and says which one it read (B402/D71).
+The weekly heartbeat comment prints the same numbers under **allowance**, read from the live copy on
+`harness-state` rather than the seed on `main`, and says which one it read (B402).
 
-A reading describes its window until that window's `resets_at` and nothing after (B399/D71). A
-100% seven-day reading stops work until the reset and then stops nothing, with no command needed;
-a refused call also sets `rate_limited_until` to the same instant (B396), which lifts with it.
-`harness ledger` and `harness status` then print `window reset since; no longer stops anything`
-for that window instead of STOPPED (B406).
+A reading describes its window until that window's `resets_at` and nothing after (B399). A 100%
+seven-day reading stops work until the reset and then stops nothing, with no command needed; a
+refused call also sets `rate_limited_until` to the same instant (B396), which lifts with it.
+`harness ledger` and `harness status` then print `window reset since; no longer stops anything` for
+that window instead of STOPPED (B406).
 
-**Nothing depends on the signal.** With `usage` absent — a fake backend, an older CLI, a call that
-never reached inference — every decision falls back to the USD path (`WEEKLY_CAP_USD`,
-`RESERVE_PCT`, `PER_CALL_CAP_USD`) and behaves exactly as it did in Delivery 2. That is B114, kept
-as a "must not depend" rule rather than the "no signal exists" claim it started as (DECISIONS D31).
-`WEEKLY_CAP_USD` therefore ships at `400.00`: high enough that the dollar backstop does not bind
-before the usage stop when the signal is present, and still hard when it is not.
+**Nothing depends on the signal** (B114, as D74 amends it). No decision may *depend* on the usage
+signal being present, and none falls back to a dollar figure — there is no dollar figure. With no
+reading in force — a fake backend, an older CLI, a call that never reached inference, or a reading
+whose window has reset — the usage stops and the headroom gates admit: unknown is not a stop. What
+bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, the `MAX_TURNS_*` ceilings, both kill
+switches and the commanded halt, and the subscription's own refusal, which D71 records as
+`rate_limited_until` and which ends at its reset.
 
 ### 13.2 The two stops
 
-| Knob | Ships as | Trips when | `reason` |
+| Knob | `.env.example` | `.harness/config.json` | `reason` when it trips |
 |---|---|---|---|
-| `WEEKLY_USAGE_STOP_PCT` | `90` | `seven_day.utilization * 100 >= 90` | `weekly usage 91% >= 90%` |
-| `SESSION_USAGE_STOP_PCT` | `70` | `five_hour.utilization * 100 >= 70` | `session usage 72% >= 70%` |
+| `WEEKLY_USAGE_STOP_PCT` | `90` | `90` | `weekly usage 91% >= 90%` |
+| `SESSION_USAGE_STOP_PCT` | `70` | `80` | `session usage 82% >= 80%` |
 
-The governor raises `BudgetExhausted(reason)` **before** the USD checks, and the dispatcher applies
-the same rule in its own order: rate limit → halted → **usage stop** → reserve (USD) → run window →
-candidates. A stop is a normal outcome, not an incident: the command exits 0, the item is handed off
-(§13.4), and the next window picks it up.
+`.harness/config.json` overrides `.env`, so Actions mode stops new session calls at 80%. A stop
+trips when that window's `utilization * 100` is at or above the knob.
 
-What it looks like: `harness dispatch` prints an empty `start` with one of those reasons; the item
-keeps its label; no comment claims failure. Nothing to do. If you need the work anyway, the honest
-options are to wait for the reset in `window.usage.seven_day.resets_at`, or to raise the knob in a
-reviewed PR (§13.5) and accept that your own interactive Claude use that week is competing with the
-harness for the same allowance.
+The governor raises `BudgetExhausted(reason)` before it authorises a call, and the dispatcher
+applies the same rule in its own order: rate limit → halted → commanded halt → carry → usage
+stop → run window → candidates. A
+stop is a normal outcome: the command exits 0, the item is handed off (§13.4), and the next window
+picks it up. `harness dispatch` prints an empty `start` with the reason, the item keeps its label,
+and no comment claims failure. To get the work done anyway, wait for the reset in `window.usage`, or
+raise the knob in a reviewed PR (§13.5), knowing that your own Claude use competes for the same
+allowance.
 
 ### 13.3 The run window
 
-`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 15:00`
-(D72). Both ends are UTC and take either a lowercase three-letter weekday — a weekly window that may
-wrap past Sunday, which is the `.env.example` default `mon 08:00` → `tue 20:00` — or `daily`, a
+`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 15:00` (D72).
+Both ends are UTC and take either a lowercase three-letter weekday, for a weekly window that may
+wrap past Sunday (the `.env.example` default is `mon 08:00` to `tue 20:00`), or `daily`, for a
 window that repeats every day and may wrap past midnight. Mixing the two is a startup error.
-Outside the window **no new item starts**; the plan's reason is
+Outside the window no new item starts, and the reason is
 `outside run window (daily 11:00-15:00 UTC)`. Both keys empty means always open.
 
-The window is not the schedule. `.github/workflows/discover.yml` carries `7 11 * * *` and
-`implement.yml` carries `23 11-14 * * *`: the times GitHub wakes the jobs up. The window is what
-the dispatcher enforces once they are awake. **Move both together**: `tests/test_invariants.py`
-(B412) fails the build when a daily window stops containing those crons.
+The window is not the schedule. `discover.yml` carries `7 11 * * *` and `implement.yml` carries
+`23 11-14 * * *`: the times GitHub wakes the jobs. The window is what the dispatcher enforces once
+they are awake. Move both together; `tests/test_invariants.py` (B412) fails the build when a daily
+window stops containing those crons.
 
-Why these hours. The subscription has no weekly limit, only a five-hour session about the size of
-a Pro plan's, and that session is shared with your own use. A session opens with its first model
-call: discover's triage call at 11:07 when there is something to triage, otherwise the first item
-a build starts. Items start until 15:00, and `SESSION_USAGE_STOP_PCT` — 80 here — stops new calls
-before the session is spent. Starts end an hour before a session opened at 11:07 does, because an
-implement run may take up to its 120-minute timeout. A carried item waits for the window too
-(B413). GitHub cron is always UTC; 11:00 UTC is 04:00 PDT and 03:00 PST, so the window opens
-between 3 and 4 a.m. Pacific all year and there is nothing to move when the clocks change.
+The hours follow the subscription's five-hour session, which is shared with your own use and opens
+with the first model call of the day: discover's triage call at 11:07 when there is something to
+triage, otherwise the first item a build starts. Items start until 15:00, an hour before a session
+opened at 11:07 ends, because an implement run may take its full 120-minute timeout, and
+`SESSION_USAGE_STOP_PCT` (80 in Actions) stops new calls before the session is spent. A carried item
+waits for the window too (B413). GitHub cron is always UTC; 11:00 UTC is 04:00 PDT and 03:00 PST, so
+nothing needs moving when the clocks change.
 
-`harness run --item N` bypasses the window on purpose — that is how you drive one item by hand on a
-Thursday. It does **not** bypass the usage stops.
+`harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
+usage stops.
 
 ### 13.4 The leeway, the handoff, and the continue
 
-A weekly reset in the middle of an implementation used to mean a branch abandoned halfway. Now:
+A stop, usage or rate limit, inside `implement`, `continue`, `package` or `deliver` triggers a
+handoff: uncommitted work is committed as `wip: handoff (<reason>)`, the branch is pushed to the
+fork (never upstream, never forced), `runs/item-N/HANDOFF.md` is written and posted as a comment,
+the item returns to `stage:ready`, the ledger records a carry (`window.carry`: issue, since,
+reason), and the command exits 0. `HANDOFF.md` holds the reason, the branch, the base sha, the fork,
+the last gate results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and
+the next command, `harness revise <id> --source continue`.
 
-1. A stop (usage or rate limit) inside `implement` / `continue` / `package` / `deliver` triggers a
-   **handoff**: anything uncommitted is committed as `wip: handoff (<reason>)`, the branch is pushed
-   to the **fork** (never upstream, never forced), `runs/item-N/HANDOFF.md` is written and posted as
-   a comment, the item returns to `stage:ready`, the ledger records a **carry**
-   (`window.carry` = issue, since, reason), and the command exits **0**.
-2. `HANDOFF.md` is the operator's page: the reason, the branch, the base sha, the fork, the last gate
-   results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and the exact next
-   command — `harness revise <id> --source continue`.
-3. The carried item is the **first** thing the next run starts — **even outside a weekly run
-   window**; a daily window (D72) holds it back until the window opens — and it may spend against
-   `OVERRUN_PCT` (`10`) of the fresh week instead of waiting for
-   `WEEKLY_USAGE_STOP_PCT`. When that leeway is used up the reason is `carry leeway 10% reached` and
-   the item is handed off again — same branch, same file, no work lost.
-4. Green gates → the item goes `stage:packaged`, the carry is cleared, and the ordinary package and
-   deliver steps run. Red → `stage:blocked`, nothing pushed, as always (B136).
+The carried item is the first thing the next run starts. A weekly run window does not hold it back;
+a daily one does, until it opens (D72). It may spend against `OVERRUN_PCT` (`10`) of the fresh week
+instead of waiting for `WEEKLY_USAGE_STOP_PCT`; when that leeway is used up the reason is
+`carry leeway 10% reached` and the item is handed off again on the same branch. Green gates then
+move it to `stage:packaged`, clear the carry, and run the ordinary package and deliver steps; red
+gates block it with nothing pushed (B136).
 
 Only one item is carried at a time. To look at it, or to resume it by hand:
 
@@ -615,51 +573,14 @@ To drop a carry instead of resuming it, relabel the issue `stage:blocked` and de
 
 ### 13.5 Changing the knobs
 
-All five live in `.env` and may be overridden in `.harness/config.json`, which is CODEOWNERS-
-protected — so changing them is a reviewed PR, which is the point. `.harness/README.md` carries the
-table of ranges. After merging, confirm what the harness actually loaded:
+The five knobs live in `.env` and may be overridden in `.harness/config.json`, which is
+CODEOWNERS-protected, so a change is a reviewed PR. After merging, confirm what the harness loaded
+with `harness doctor` (every key with its value; exit 3 names any missing or out-of-range one) and
+`harness dispatch`, whose reason string reflects the new knobs immediately and which starts nothing.
 
-```bash
-harness doctor      # every key with its value; exit 3 names any missing or out-of-range one
-harness dispatch    # the reason string reflects the new knobs immediately, and starts nothing
-```
-
-Ranges are enforced at startup, not at spend time: `0 < WEEKLY_USAGE_STOP_PCT <= 100`,
+Ranges are enforced at startup: `0 < WEEKLY_USAGE_STOP_PCT <= 100`,
 `0 < SESSION_USAGE_STOP_PCT <= 100`, `0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT`, and both window
-keys either empty or matching `^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):[0-5]\d$`. A typo is
-a `harness doctor` failure naming the key, never a silently different budget.
-
-Three things these knobs deliberately cannot do: make the harness merge anything, move a gate, or
-let it spend past `WEEKLY_CAP_USD` — the USD cap and the reserve still apply underneath, and a usage
-stop never removes them.
-
-## When a scheduled run never happens
-
-A run that **fails** files a `kind:ops` issue and is retried automatically — up to three attempts,
-for transient causes only, and never for a failure inside a model call or a gate (those cost money
-and fail for reasons a retry cannot fix). A run that **never starts** does neither, because nothing
-fired, and the only symptom is that comments on the product repository go unanswered — which looks
-exactly like nobody having commented.
-
-`watchdog.yml` covers that. It runs every four hours, and on a weekday, if no `feedback` run of any
-kind has started in six hours, it dispatches one. Two causes, and only one self-corrects:
-
-| Cause | What you see | What to do |
-|---|---|---|
-| GitHub dropped the cron under load | one dispatch, no issue | nothing; it is already fixed |
-| Four weekday slots missed in a row | a `kind:ops` issue titled **scheduled runs are not firing** | re-enable the schedule on the Actions tab |
-| **No repository activity for 60 days** | nothing at all — see below | push anything, then re-enable on the Actions tab |
-
-**The watchdog cannot report the 60-day case, and it is worth knowing why.** GitHub disables
-scheduled workflows on a public repository with no activity for 60 days — *all* of them, including
-the watchdog. It is not running, so it cannot tell you it is not running. Two things do: GitHub
-emails the repository owner, and the **weekly heartbeat comment** on the tracking issue stops
-appearing. That absence has been the alarm for this since B144, and it is still the only one that
-survives its own failure mode.
-
-The watchdog does **not** react to failures — `ops.yml` owns those, and two things re-running the
-same workflow would fight. It measures the absence of runs, so a failed run counts as proof of life.
-
-It does not sweep at weekends either. `feedback`'s cron is `1-5` on purpose and the documented
-behaviour is that a Friday-evening comment waits for Monday; a watchdog that dispatched all weekend
-would change that policy while looking like a bug fix.
+keys either empty or matching `^(mon|tue|wed|thu|fri|sat|sun|daily) ([01]\d|2[0-3]):[0-5]\d$`, with
+both ends `daily` or both weekdays. A typo is a `harness doctor` failure naming the key. The knobs
+cannot make the harness merge anything, move a gate, or lift the turn caps, the kill switches and
+the gate sequence that apply underneath them.

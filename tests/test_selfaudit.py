@@ -1,8 +1,8 @@
 """B359-B385 (D70): the adversarial self-audit before delivery. B386 is in test_docs_drift.py.
 
-Handoff `adversarial-self-audit.md` §6, T1-T27. The loop runs on the tests/test_stages.py rig:
+The loop runs on the tests/test_stages.py rig:
 `ScriptedRunner` places each model answer on a specific call, and `FakeTree` stands in for git.
-The rig's clone is a plain directory (handoff §4.12), so every git operation the loop, the
+The rig's clone is a plain directory, so every git operation the loop, the
 handoff, the packager and deliver make goes to a model of git's own semantics, never to
 whatever git the host happens to have. The tests that need git itself -- T13's diff, T20's
 database, and B387, B388, B390 and B394, which drive the git that undoes what a model did --
@@ -265,7 +265,7 @@ def answer(text, *effects):
 
 def rate_limited() -> RunResult:
     return RunResult(
-        ok=False, text="", turns=0, cost_usd=0.0, allowance_pct=None, duration_ms=12,
+        ok=False, text="", turns=0, duration_ms=12,
         session_id=None, exit_code=1, transcript=(),
         error=f"You've hit your usage limit. Resets at {RESET_AT}", reset_at=RESET_AT,
     )
@@ -426,7 +426,7 @@ def unpublishable_is_clear(monkeypatch):
 
 
 def assert_parked_with_a_carry(loop: Loop, *, can_write: bool) -> None:
-    """§4.6: approved, carried, the work kept -- never released, never deleted."""
+    """approved, carried, the work kept -- never released, never deleted."""
     assert loop.state() == "approved"
     assert loop.ctx.ledger.carry_issue() == loop.item_id
     handoff = loop.run_dir / "HANDOFF.md"
@@ -1121,7 +1121,8 @@ def test_B378_a_layout_2_database_migrates_and_keeps_every_row(tmp_path, frozen_
         "CREATE TABLE stage_run_copy AS SELECT * FROM stage_run;\n"
         "DROP TABLE stage_run;\n"
         + LAYOUT_2_STAGE_RUN
-        + "INSERT INTO stage_run SELECT * FROM stage_run_copy;\n"
+        + "INSERT INTO stage_run (id, work_item_id, stage, backend, status, started_at, "
+        "ended_at, turns, exit_reason, transcript_path) SELECT * FROM stage_run_copy;\n"
         "DROP TABLE stage_run_copy;\n"
         "CREATE INDEX idx_stage_run_item ON stage_run(work_item_id);\n"
         "PRAGMA user_version=2;\n"

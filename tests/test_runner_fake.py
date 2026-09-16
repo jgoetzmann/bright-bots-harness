@@ -1,8 +1,7 @@
 """FakeRunner determinism.
 
-Section 4.3 assigns this file "Fake determinism" and gives it no B number; the
-contract is HARNESS-SPEC section 5.4.2 plus RUN-DECISIONS "Runner". B24 covers
-the one behavior number that reaches here (get_runner selecting FakeRunner).
+B24 covers the one behavior number that reaches here: get_runner selecting
+FakeRunner.
 
 The fixtures below are written inline. Nothing under `tests/fixtures/` is read.
 """
@@ -23,8 +22,6 @@ PROPOSE_PAYLOAD = {
     "ok": True,
     "text": "# fix(scripts): bundle size check misreports esm chunks\n",
     "turns": 12,
-    "cost_usd": 0.1875,
-    "allowance_pct": 1.8,
     "duration_ms": 20100,
     "session_id": "fixture-propose",
     "exit_code": 0,
@@ -39,8 +36,6 @@ FAILED_PAYLOAD = {
     "ok": False,
     "text": "",
     "turns": 1,
-    "cost_usd": None,
-    "allowance_pct": None,
     "duration_ms": 900,
     "session_id": None,
     "exit_code": 1,
@@ -78,7 +73,7 @@ def fixtures_dir(tmp_path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - the fixture is returned verbatim
+# The fixture is returned verbatim
 # --------------------------------------------------------------------------
 
 
@@ -92,8 +87,6 @@ def test_s542_the_fixture_is_returned_verbatim(fixtures_dir, tmp_path):
     assert result.ok is True
     assert result.text == PROPOSE_PAYLOAD["text"]
     assert result.turns == 12
-    assert result.cost_usd == pytest.approx(0.1875)
-    assert result.allowance_pct == pytest.approx(1.8)
     assert result.duration_ms == 20100
     assert result.session_id == "fixture-propose"
     assert result.exit_code == 0
@@ -119,7 +112,7 @@ def test_b24_the_fake_runner_is_named_fake(fixtures_dir):
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - determinism
+# Determinism
 # --------------------------------------------------------------------------
 
 
@@ -178,7 +171,7 @@ def test_s542_each_stage_reads_its_own_fixture(fixtures_dir, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - failure paths
+# Failure paths
 # --------------------------------------------------------------------------
 
 
@@ -227,8 +220,7 @@ def test_s542_a_fixture_recording_a_failure_round_trips(fixtures_dir, tmp_path):
     assert result.exit_code == 1
     assert result.error == "the model gave up on the gate loop"
     assert result.transcript == ()
-    assert result.cost_usd is None
-    assert result.allowance_pct is None
+    assert result.turns == 1
 
 
 def test_s542_one_missing_stage_does_not_poison_the_others(fixtures_dir, tmp_path):
@@ -243,7 +235,7 @@ def test_s542_one_missing_stage_does_not_poison_the_others(fixtures_dir, tmp_pat
 
 
 # --------------------------------------------------------------------------
-# Section 5.4.2 - no network, no subprocess (source-level, as section 9 does it)
+# No network, no subprocess (source-level, as the invariants do it)
 # --------------------------------------------------------------------------
 
 

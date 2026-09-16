@@ -1,4 +1,4 @@
-"""Builds the review package of HARNESS-SPEC §7.2 and promotes it into ``packages/``."""
+"""Builds the review package and promotes it into ``packages/``."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from harness.gates import run_command
 from harness.redact import allowed_roots, write_redacted
 from harness.stages.propose import parse_work_package, work_package_text
 
-# Exactly the §7.2 entries. B73: the package directory contains these and nothing else.
+# B73: the package directory contains these entries and nothing else.
 PACKAGE_FILES: tuple[str, ...] = (
     "README.md",
     "DIAGNOSIS.md",
@@ -31,18 +31,18 @@ PACKAGE_FILES: tuple[str, ...] = (
 PACKAGE_DIRS: tuple[str, ...] = ("patches",)
 PACKAGE_ENTRIES: tuple[str, ...] = PACKAGE_FILES + PACKAGE_DIRS
 
-# Gates that need a live database. §12 Q1 is unanswered, so when these are absent from a
-# recorded sequence the omission is stated in EVIDENCE.md rather than passed over.
+# Gates that need a live database. When a recorded sequence lacks them, EVIDENCE.md states the
+# omission rather than passing over it.
 DATABASE_GATES: tuple[str, ...] = (
     "npx prisma generate",
     "bash scripts/check-prisma-drift.sh",
 )
 
 OMISSION_NOTE = (
-    "> **Database gates omitted.** HARNESS-SPEC §12 question 1 — whether a local throwaway\n"
-    "> Postgres counts as \"using secrets\" — is unanswered, so the gate sequence ran the\n"
-    "> non-database subset. The gates listed below are the ones that actually ran. This\n"
-    "> package does **not** claim full parity with the product repo's CI.\n"
+    "> **Database gates omitted.** These gates need a live database, which this run did not\n"
+    "> have, so the sequence ran the non-database subset. The gates listed below are the ones\n"
+    "> that actually ran. This package does **not** claim full parity with the product repo's\n"
+    "> CI.\n"
     "> Gates not run: {names}.\n"
 )
 
@@ -176,7 +176,7 @@ def _what_this_is(config) -> list[str]:
 
 
 def _prune(package_dir: Path) -> None:
-    """B73: remove anything in the package directory that §7.2 does not name."""
+    """B73: remove anything in the package directory that ``PACKAGE_ENTRIES`` does not name."""
     for entry in package_dir.iterdir():
         if entry.name in PACKAGE_ENTRIES:
             continue
@@ -187,7 +187,7 @@ def _prune(package_dir: Path) -> None:
 
 
 def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
-    """Assemble ``runs/<run-id>/package/`` per §7.2 and return its path."""
+    """Assemble ``runs/<run-id>/package/`` and return its path."""
     run_git = git_runner or run_command
     item = ctx.store.get_work_item(item_id)
     if item is None:
@@ -236,14 +236,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
                 gate_flags[key] = bool(loaded.get(key, False))
 
     stage_rows = [asdict(row) for row in ctx.store.list_stage_runs(work_item_id=item_id)]
-    stages = [
-        {
-            "stage": row.get("stage"),
-            "turns": row.get("turns"),
-            "allowance_pct": row.get("allowance_pct"),
-        }
-        for row in stage_rows
-    ]
+    stages = [{"stage": row.get("stage"), "turns": row.get("turns")} for row in stage_rows]
 
     # --- patches (B75): format-patch against the exact base, so `git am` onto BASE works.
     clone = lease.path
@@ -349,7 +342,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
         "",
         _bullets(list(pkg.decisions)),
         "",
-        "## Fullsend fitness gate (HARNESS-SPEC §5.9.3)",
+        "## Fullsend fitness gate",
         "",
         f"Path taken: **{'fullsend' if fullsend_taken else 'single agent'}**.",
         "",
@@ -413,7 +406,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
     # --- transcript.jsonl: always present, possibly empty.
     write_redacted(package_dir / "transcript.jsonl", transcript)
 
-    # --- manifest.json: §7.2 schema, keys in that order, indent=2.
+    # --- manifest.json: the fixed schema, keys in that order, indent=2.
     manifest = {
         "schema": 1,
         "item_id": item.id,

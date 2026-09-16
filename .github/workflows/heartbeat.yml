@@ -1,8 +1,6 @@
-# heartbeat.yml — weekly: prove the scheduler is alive by posting one comment to the tracking issue.
-# Spends nothing: BACKEND=fake, no model call, no secret beyond GITHUB_TOKEN. Handoff §11.1 (B144).
-# Absence of the weekly comment is the alarm.
-# RUN-DECISIONS-D3 "Workflows": the comment also reports the last observed subscription
-# utilization from state/ledger.json `window.usage`, when one has ever been observed.
+# heartbeat.yml: weekly, post one comment to the tracking issue with the queue, the last observed
+# subscription usage and the fork state. Spends nothing: fake backend, no model call, no secret
+# beyond GITHUB_TOKEN. A missing weekly comment is the alarm (B144).
 name: heartbeat
 
 on:
@@ -68,10 +66,9 @@ jobs:
           print("read-only .env written")
           PY
 
-      # B402/D71: the live ledger is on `harness-state` (D28); the checkout carries only main's
-      # seed. Reading the seed, the heartbeat of Monday 2026-09-14 said "not measured yet" while
-      # the live ledger held a 100% refusal. Read through the contents API, as the HALT check in
-      # the spending workflows reads .harness/HALT, so no git credentials are needed here.
+      # The live ledger is on `harness-state`; the checkout holds only main's seed. It is read
+      # through the contents API, as the spending workflows read .harness/HALT, so no git
+      # credentials are needed (B402).
       - name: Load state/ledger.json from harness-state
         shell: bash
         env:
@@ -80,8 +77,8 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p state runs/heartbeat
-          # B408: curl prints `000` itself when it cannot connect and then exits non-zero, so the
-          # fallback sits outside the substitution (inside it, `|| echo 000` made "000000").
+          # curl prints `000` itself when it cannot connect and then exits non-zero, so the
+          # fallback sits outside the substitution (B408).
           code="$(curl -sS -o state/ledger.json.new -w '%{http_code}' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github.raw" \
@@ -130,12 +127,9 @@ jobs:
             const ledgerCli = read('runs/heartbeat/ledger.json').trim();
             const statusCli = read('runs/heartbeat/status.json').trim();
 
-            // Precedence, one rule for the whole repository (.harness/README.md): the committed
-            // .harness/config.json wins, and the repository variable fills the knob only where
-            // that file leaves it empty. discover.yml, implement.yml and feedback.yml apply it in
-            // their .env writer; this step reads the same two sources directly, so it orders them
-            // the same way — otherwise the comment could describe a different tracking issue and
-            // a different fork from the ones `harness ledger --json` above it just measured.
+            // The repository's one precedence rule (.harness/README.md): the committed
+            // .harness/config.json wins, and a repository variable fills a knob only where that
+            // file leaves it empty. The spending workflows apply it in their .env writer.
             const cfgTracking = (cfg.TRACKING_ISSUE === null || cfg.TRACKING_ISSUE === undefined)
               ? '' : String(cfg.TRACKING_ISSUE).trim();
             const trackingRaw = cfgTracking || (process.env.TRACKING_ISSUE || '').trim();
@@ -147,9 +141,7 @@ jobs:
             const forkRepo = (cfg.FORK_REPO || '').trim() || (process.env.FORK_REPO || '').trim();
             const upstreamRepo = cfg.UPSTREAM_REPO || 'Bright-Bots-Initiative/brightboost';
 
-            // Queue depth per stage label (open issues; PRs excluded). D4/B264 renamed the
-            // family from `harness:*` to `stage:*`; counting the old names here after the
-            // migration would report a board of zeroes and read as "nothing in flight".
+            // Queue depth per stage label (open issues; PRs excluded).
             const labels = [
               'stage:queued', 'stage:planning', 'stage:needs-approval', 'stage:ready',
               'stage:building', 'stage:packaged', 'stage:needs-review', 'stage:revising',
@@ -199,10 +191,8 @@ jobs:
             lines.push(`## harness heartbeat — ${new Date().toISOString()}`);
             lines.push(`run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`);
             lines.push('');
-            // The kill switch, first and loud. While it is engaged every spending workflow
-            // exits 0 before doing anything, so a comment asking for work is a silent no-op --
-            // the run goes green, nothing happens, and this page used to look entirely normal.
-            // That is the worst day a new maintainer can have, and it is one line to prevent.
+            // The kill switch goes first: while it is on, every spending workflow exits 0 before
+            // doing anything, so a comment asking for work is read and silently ignored.
             const halted = fs.existsSync('.harness/HALT');
             if (halted) {
               lines.push('> ### The kill switch is ON');
@@ -210,8 +200,7 @@ jobs:
               lines.push('> `.harness/HALT` exists on `main`, so every spending workflow exits before it does anything. **Comments asking for work will be read and silently ignored.** Deleting that file, in one commit, resumes.');
               lines.push('');
             }
-            // The heartbeat is where a maintainer looks first and often the only page they
-            // read, so it carries the two links that turn "what is this" into an action.
+            // Maintainers look here first, so the comment links the inbox and the maintainer guide.
             const inboxRaw = (cfg.INBOX_ISSUE ?? '').toString().trim();
             const inbox = parseInt(inboxRaw, 10);
             if (Number.isFinite(inbox) && inbox > 0) {
@@ -224,24 +213,19 @@ jobs:
             for (const l of labels) lines.push(`| \`${l}\` | ${depth[l]} |`);
             lines.push('');
 
-            // RUN-DECISIONS-D3: the last rate_limit_event the runner saw, stored as window.usage.
-            // Reported, never depended on — an absent signal is a normal state and the USD path
-            // (WEEKLY_CAP_USD / RESERVE_PCT / PER_CALL_CAP_USD) governs alone (B114 kept).
+            // window.usage is the last rate_limit_event the runner saw; it may be absent.
             const usage = w.usage || null;
             const pct = (u) =>
               (u && typeof u.utilization === 'number' ? `${Math.round(u.utilization * 1000) / 10}%` : '?');
-            // B295: the subscription first and the dollar estimate under it, because the
-            // dollars are an estimate of API-equivalent cost that nobody bills and the
-            // utilization is what actually runs out. `observed_at` before `period_start` means
-            // the window rolled since the last real call, so the figure is LAST week's -- the
-            // ledger's own accessors drop it, and so must this.
+            // A reading observed before `period_start` belongs to the previous window; the
+            // ledger's own accessors drop it, and so does this.
             const stale = usage && usage.observed_at && w.period_start
               && String(usage.observed_at) < String(w.period_start);
             const room = (u, stop) =>
               (u && typeof u.utilization === 'number' && typeof stop === 'number')
                 ? `${Math.round((stop - u.utilization * 100) * 10) / 10} points to go`
                 : 'unknown';
-            // B399: a reading describes its window until that window resets, and nothing after.
+            // A reading describes its window until that window resets (B399).
             const over = (u) => !!(u && u.resets_at && Date.parse(u.resets_at) <= Date.now());
             const overNote = (u) => (over(u) ? ' — **that window has reset since**; this reading no longer stops anything' : '');
             lines.push('### allowance (shared with everything else this account does)');
@@ -255,18 +239,14 @@ jobs:
             } else if (stale) {
               lines.push(`- not measured yet this window: the last reading (${fmt(usage.observed_at)}) predates ${fmt(w.period_start)}, so it is last window's and is not shown.`);
             } else {
-              lines.push('- not measured yet: no `rate_limit_event` has been recorded. Nothing DEPENDS on this signal (B114); until one arrives the dollar estimate below is the only bound.');
+              lines.push('- not measured yet: no `rate_limit_event` has been recorded.');
             }
             lines.push(`- run window: ${fmt(cfg.RUN_WINDOW_START)} → ${fmt(cfg.RUN_WINDOW_END)} UTC; carry leeway OVERRUN_PCT ${fmt(cfg.OVERRUN_PCT)}%`);
             const carry = w.carry || null;
             lines.push(carry
               ? `- carried item: #${fmt(carry.issue)} since ${fmt(carry.since)} — ${fmt(carry.reason)}`
               : '- carried item: none');
-            lines.push('');
-            lines.push('### rough scale (estimated, not billed)');
-            lines.push(`- period_start: ${fmt(w.period_start)}`);
-            lines.push(`- est. api-equivalent: $${fmt(w.spent_usd)} over ${fmt(w.calls)} call(s), against a $${Math.round(Number(cfg.WEEKLY_CAP_USD) * (1 - Number(cfg.RESERVE_PCT) / 100))} backstop ($${fmt(cfg.WEEKLY_CAP_USD)} less ${fmt(cfg.RESERVE_PCT)}% reserve)`);
-            lines.push('- estimated from token counts; nobody bills it, and it is not what runs out.');
+            lines.push(`- model calls since ${fmt(w.period_start)}: ${fmt(w.calls)}`);
             lines.push(`- rate_limited_until: ${fmt(w.rate_limited_until)}`);
             lines.push(`- history entries: ${Array.isArray(ledger.history) ? ledger.history.length : '?'}`);
             lines.push('');

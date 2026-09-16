@@ -1,4 +1,4 @@
-"""Command line entry point: every subcommand of HARNESS-SPEC §5.10 and the handoff §3.2."""
+"""Command line entry point for every `harness` subcommand."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 from harness import __version__, keywords, links, verify_pin
+from harness import config as config_mod
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
@@ -54,8 +55,8 @@ from harness.store import (
     TRANSITIONS,
     VIA_LABELS,
 )
-# Not re-exported by `harness.store`: it is the GitHub backend's label vocabulary. `relabel`
-# needs it because it is the only mapping that reads BOTH label families (B265).
+# The GitHub backend's label vocabulary, not re-exported by `harness.store`. `relabel` needs it
+# because it reads both label families (B265).
 from harness.store.github import STATE_OF_LABEL, _label_names
 from harness.priority import via_of
 from harness.trust import MAX_LEVEL
@@ -68,16 +69,15 @@ LOG = logging.getLogger("harness")
 WHICH = shutil.which
 RUN = subprocess.run
 SLEEP = time.sleep
-#: D69: the unauthenticated client `harness trust line` resolves an account id with. One public
-#: GET, so it is built here and not from a `Context`: the command has to run in whatever
-#: checkout the operator is editing the trust file in, with no `.env` and no database.
+#: The unauthenticated client `harness trust line` resolves an account id with. It is not built
+#: from a `Context`, so the command runs in a checkout with no `.env` and no database (D69).
 PUBLIC_READER = public_reader
 
 #: The `TRUST_FILE` default from `.env.example`, for reading that file with no configuration.
 DEFAULT_TRUST_FILE = Path(".harness") / "trust.txt"
 
 #: `user.type` for a person. Only a person authors a comment, so only a person's account id can
-#: ever equal the `comment.user.id` a vouch is checked against (D69).
+#: match the `comment.user.id` a vouch is checked against (D69).
 ACCOUNT_TYPE_PERSON = "User"
 
 EXIT_OK = 0
@@ -92,52 +92,42 @@ REQUIRED_BINARIES = ("git", "claude", "node", "npm", "npx")
 
 MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "json", ""]
 
-# Handoff §6.5 (A30) plus the §2 additions: every key doctor must name, with the Config field
-# that carries it once the config has loaded. The five Delivery 3 knobs close the block:
-# OPERATIONS §13.5 sends the operator to `harness doctor` to confirm exactly those
-# values after a change, so every key of ``config.CONFIG_JSON_KEYS`` appears here.
+# Every key doctor reports, with the Config field that carries it once the config has loaded.
+# Every key of ``config.CONFIG_JSON_KEYS`` is here, so doctor confirms a knob change.
 CONFIG_KEYS: tuple[tuple[str, str], ...] = (
-    ("WEEKLY_CAP_USD", "weekly_cap_usd"),
-    ("PER_CALL_CAP_USD", "per_call_cap_usd"),
-    ("RESERVE_PCT", "reserve_pct"),
     ("MAX_CONCURRENT_ITEMS", "max_concurrent_items"),
     ("MAX_REVISE_CYCLES", "max_revise_cycles"),
     ("FORK_REPO", "fork_repo"),
     ("UPSTREAM_REPO", "upstream_repo"),
     ("TRUST_FILE", "trust_file"),
-    ("NOTIFY_POLL_HOURS", "notify_poll_hours"),
     ("MAX_SUBISSUES", "max_subissues"),
     ("SELF_REPO", "self_repo"),
     ("TRACKING_ISSUE", "tracking_issue"),
     ("STORE_BACKEND", "store_backend"),
-    # Delivery 3 (RUN-DECISIONS-D3, the Config section): the two usage stops, the overrun
-    # allowance and the run window.
+    # The two usage stops, the overrun allowance and the run window.
     ("WEEKLY_USAGE_STOP_PCT", "weekly_usage_stop_pct"),
     ("SESSION_USAGE_STOP_PCT", "session_usage_stop_pct"),
     ("OVERRUN_PCT", "overrun_pct"),
     ("RUN_WINDOW_START", "run_window_start"),
     ("RUN_WINDOW_END", "run_window_end"),
-    # B225: what the model calls actually run as. doctor reports it because a run whose model
-    # or effort quietly changed produces different work for the same money.
+    # What the model calls run as; a changed model or effort changes the work (B225).
     ("MODEL", "model"),
     ("EFFORT", "effort"),
-    # Delivery 4: what may ask for work, and what bounds the answers.
+    # What may ask for work, and what bounds the answers.
     ("INBOX_ISSUE", "inbox_issue"),
-    ("AUDIT_CAP_USD", "audit_cap_usd"),
     ("SUGGEST_MAX_PER_RUN", "suggest_max_per_run"),
     ("COMMENT_UPSTREAM", "comment_upstream"),
-    ("ASK_CAP_USD", "ask_cap_usd"),
     ("ASK_MAX_PER_DAY", "ask_max_per_day"),
     ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
     ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
-    # D70: how many audit/fix cycles run before delivery; 0 is off.
+    # How many audit/fix cycles run before delivery; 0 is off (D70).
     ("MAX_SELF_AUDIT_CYCLES", "max_self_audit_cycles"),
 )
 
-# B147: an item left in a running state longer than this with no live run is reset.
+# An item left in a running state longer than this with no live run is reset (B147).
 STALE_RUNNING_HOURS = 3
 
-# local-loop: HEARTBEAT cadence while sleeping between units (§16).
+# local-loop: HEARTBEAT cadence while sleeping between units.
 HEARTBEAT_SLICE_S = 10
 DEFAULT_LOOP_SECONDS = 300
 
@@ -180,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup = sub.add_parser("setup", help="assess identity readiness and regenerate HUMAN.md")
     setup.add_argument("--tier", type=int, default=1, metavar="N", help="target tier (default 1)")
 
-    status = sub.add_parser("status", help="queue by state, budget remaining, in-flight runs")
+    status = sub.add_parser("status", help="queue by state, subscription usage, in-flight runs")
     status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     discover = sub.add_parser("discover", help="find work")
@@ -200,7 +190,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="serial loop over approved items")
     run.add_argument("--item", type=int, default=None, metavar="ID")
-    run.add_argument("--session-pct", type=float, default=None, dest="session_pct", metavar="P")
     run.add_argument("--until", default=None, metavar="HH:MM")
 
     package = sub.add_parser("package", help="build the review package for an item")
@@ -218,7 +207,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="also lift a halt set by `/harness halt` (recorded in the ledger)",
     )
 
-    # Delivery 2 (handoff §3.2)
     sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
 
     deliver = sub.add_parser("deliver", help="push the branch and open the upstream PR")
@@ -248,9 +236,6 @@ def build_parser() -> argparse.ArgumentParser:
     ack.add_argument("--repo", default="", help="repository the comment is on")
     ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
 
-    # D69: the manual step made hard to get wrong. It prints; it never writes `.harness/`,
-    # which is outside the write roots on purpose (B143) so the harness cannot change its own
-    # trust list. What it produces is text a human commits through a reviewed pull request.
     trust_cmd = sub.add_parser(
         "trust", help="print the trust.txt line for a login, or the current file interpreted"
     )
@@ -261,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--level",
         required=True,
         metavar="N",
-        help="1 asker, 2 maintainer, 3 operator (the name works too); required on purpose",
+        help="1 asker, 2 maintainer, 3 operator (the name works too); no default",
     )
     trust_line.add_argument(
         "--no-vouch",
@@ -275,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
         "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
     )
 
-    ledger = sub.add_parser("ledger", help="print spend, medians, window state")
+    ledger = sub.add_parser("ledger", help="print the window, the calls and the measured usage")
     ledger.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     ledger.add_argument(
         "--rebuild",
@@ -400,8 +385,8 @@ def _window_text(config) -> str:
 
 
 def _is_carried(config, item, carry: int | None) -> bool:
-    """B215 routing: an item a handoff parked resumes where it stopped instead of starting
-    over. Either the ledger still carries it, or its run directory holds the handoff note."""
+    """True when a handoff parked the item, so it resumes instead of starting over (B215).
+    The ledger still carries it, or its run directory holds the handoff note."""
     if not getattr(item, "branch_name", ""):
         return False
     if carry is not None and int(carry) == int(item.id):
@@ -429,7 +414,7 @@ def _package(ctx, item_id: int, lease: Lease) -> Path:
 
 
 def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
-    """B212-B214: park the item, say so, and let the run end cleanly (D3)."""
+    """Park the item, say so, and let the run end cleanly (B212)."""
     reason = str(exc) or exc.__class__.__name__
     record = {"item": int(item_id), "reason": reason, "handoff": None}
     try:
@@ -497,7 +482,7 @@ def _read_knob_overrides(root: Path) -> dict[str, str]:
 
 
 def _ensure_labels(ctx, config) -> dict:
-    """Create every missing `harness:*` state label in SELF_REPO. Idempotent (§14)."""
+    """Create every missing `stage:`, `kind:` and `via:` label in SELF_REPO. Idempotent."""
     if not ctx.gh.can_write:
         return {
             "created": [],
@@ -506,8 +491,7 @@ def _ensure_labels(ctx, config) -> dict:
         }
     listing = ctx.gh.get(f"/repos/{config.self_repo}/labels?per_page=100")
     existing = {str(row.get("name", "")) for row in listing if isinstance(row, dict)}
-    # B268: all three families, each with the colour and description that make the GitHub
-    # issue list readable without opening anything.
+    # Each label is created with its colour and description (B268).
     created: list[str] = []
     for name, (colour, description) in LABEL_SPECS.items():
         if name in existing:
@@ -531,8 +515,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         # B66: never overwrite an existing .env.
         LOG.debug("init: %s already exists, leaving it alone", env_path)
     elif example.exists():
-        # No config exists yet, so no context has set the write roots (I-8). Admit exactly
-        # the file init is about to create; build_context below replaces the roots.
+        # No config exists yet, so no context has set the write roots (I-8). Admit only the
+        # file init is about to create; build_context below replaces the roots.
         set_write_roots([env_path])
         guarded_write(env_path, example.read_text(encoding="utf-8"))
         created_env = True
@@ -602,7 +586,7 @@ def _probe_claude_version() -> tuple[str | None, str]:
             shell=False,
         )
     except Exception as exc:
-        # A doctor that crashes tells the operator nothing. Degrade and report.
+        # Degrade and report instead of crashing.
         return None, f"claude --version failed: {exc}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     if getattr(proc, "returncode", 1) != 0:
@@ -611,7 +595,7 @@ def _probe_claude_version() -> tuple[str | None, str]:
 
 
 def _probe_max_turns() -> tuple[bool, str]:
-    """B70 / §3.1: --max-turns is accepted but undocumented, so it is probed, never trusted."""
+    """--max-turns is accepted but undocumented, so doctor probes for it (B70)."""
     claude = WHICH("claude")
     if claude is None:
         return False, "claude not on PATH; --max-turns unprobed"
@@ -636,7 +620,7 @@ def _probe_max_turns() -> tuple[bool, str]:
 def _doctor_config_keys(
     args: argparse.Namespace, config, config_error: str | None, problems: list[str]
 ) -> dict[str, str | None]:
-    """A30: one entry per §6.5 key, from the config or, when it failed to load, the raw files."""
+    """One entry per CONFIG_KEYS key, from the config or, if it failed to load, the raw files."""
     keys: dict[str, str | None] = {}
     if config is not None:
         for key, attr in CONFIG_KEYS:
@@ -652,7 +636,7 @@ def _doctor_config_keys(
             problems.append(f"missing config key: {key}")
             continue
         keys[key] = raw[key]
-        # Whole-word: a typo'd WEEKLY_CAP_USDD (B112) must not also indict WEEKLY_CAP_USD.
+        # Whole-word match, so a typo'd MAX_SUBISSUESS does not also indict MAX_SUBISSUES.
         if re.search(rf"\b{re.escape(key)}\b", error_text):
             problems.append(f"config key invalid or out of range: {key}")
     return keys
@@ -675,8 +659,8 @@ def _doctor_pin(root: Path, problems: list[str]) -> str:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     problems: list[str] = []
-    #: Things worth telling an operator that do NOT stop the harness running. Kept apart
-    #: from `problems` because `doctor`'s exit code gates two spending workflows.
+    #: Findings that do not stop the harness. Kept apart from `problems` because a problem
+    #: makes doctor exit 3, and that exit code gates the spending workflows.
     warnings: list[str] = []
 
     binaries: dict[str, str | None] = {}
@@ -701,6 +685,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except HarnessError as exc:
         config_error = str(exc)
         problems.append(f"config invalid: {exc}")
+    if config is not None:
+        # A stale line in the operator's own .env warns rather than stopping anything: a problem
+        # exits 3, and that exit code gates the spending workflows (D74).
+        for key, where in config_mod.retired_keys_seen():
+            warnings.append(
+                f"retired config key ignored: {key} (in {where}) -- D74 removed it; delete it"
+            )
 
     disk: dict[str, object] = {}
     halt_present = False
@@ -726,7 +717,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if halt_present:
             problems.append(f"halt file present: {config.halt_file}")
 
-    # Delivery 2: §6.5 keys (A30), .harness/HALT, .harness/PIN, the trust file.
+    # Config keys, .harness/HALT, .harness/PIN and the trust file.
     root = _repo_root(args, config)
     config_keys = _doctor_config_keys(args, config, config_error, problems)
     repo_halt_present = repo_halted(root)
@@ -791,16 +782,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if by_level:
         lines.append(f"    {by_level}")
     for bad, what in trust_mod.refusals(trusted):
-        # B269/D68/D69: every line that grants nothing is named, with the reason of its own
-        # that says which fix it needs -- a level to correct, a placeholder to finish, a handle
-        # that is not a login, a token the gate does not read, or two lines to make one.
-        #
-        # A WARNING, not a problem. The refusal itself is unchanged: the parser grants nothing
-        # either way, so fail-closed is untouched. But a problem exits 3, and `doctor` gates
-        # discover.yml, feedback.yml and implement.yml under `set -e`, so one typo in a
-        # hand-edited file stopped the entire fleet -- the failure #27 already fixed once, for
-        # the stranded-access diagnostic. The loudness moved to review time instead, where the
-        # operator is standing: the suite fails the pull request that would ship such a line.
+        # Each line that grants nothing is named with the reason that says which fix it needs
+        # (B269). A warning: the parser grants nothing either way, and a problem would exit 3,
+        # which stops discover.yml, feedback.yml and implement.yml under `set -e`.
         warnings.append(f"trust file line {what} and was refused: {bad!r}")
     for repeated in getattr(trusted, "duplicated", ()):
         warnings.append(
@@ -808,7 +792,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "wins, so a line added to LOWER it does nothing at all -- change its one line "
             "instead."
         )
-    if getattr(trusted, "implicit", ()):  # B269: a level-less handle is level 1, never silently
+    if getattr(trusted, "implicit", ()):  # a level-less handle reads as level 1; say so
         named = ", ".join(f"@{h}" for h in trusted.implicit)
         lines.append(
             f"    no level given for {named}; read as level {trust_mod.DEFAULT_LEVEL} "
@@ -818,10 +802,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if vouched:
         named = ", ".join(f"@{h} = account {i}" for h, i in sorted(vouched.items()))
         lines.append(f"    vouched for one account (D68; association not required): {named}")
-    # D69: which handles still depend on the association half, said on every run rather than
-    # only when something is wrong. It is the half nobody can see -- their comment is read,
-    # denied and ignored, which looks exactly like the harness being asleep -- so the report
-    # written to make it visible must not go quiet about who it applies to.
+    # The handles that depend on the association half, listed on every run: a comment refused
+    # by that half is ignored without a reply (D69).
     association_route = sorted(h for h in trusted.levels if h not in vouched)
     payload["trust"]["association_route"] = association_route
     if association_route:
@@ -829,21 +811,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         lines.append(
             f"    heard only where GitHub reports them OWNER/MEMBER/COLLABORATOR: {named}"
         )
-    # B131's other half. A trust-file line alone grants nothing: GitHub must ALSO report the
-    # commenter as OWNER, MEMBER or COLLABORATOR. Nothing used to say so, and the failure is
-    # silent from the commenter's side -- their comment is read, denied, and ignored, which
-    # looks exactly like the harness being asleep.
-    #
-    # A vouched handle (D68) does not need that half, so "no access" is not a finding about it.
+    # A trust-file line alone grants nothing: GitHub must also report the commenter as OWNER,
+    # MEMBER or COLLABORATOR, and a refused commenter gets no reply (B131). A vouched handle
+    # does not need that half, so it is left out.
     stranded = tuple(
         h for h in _doctor_trust_access(config, args, trusted, payload) if h.lower() not in vouched
     )
     if "without_access" in payload["trust"]:
         payload["trust"]["without_access"] = list(stranded)
     if association_route and not payload["trust"].get("access_checked"):
-        # D69: "I could not look" said out loud. The collaborators endpoint needs push access,
-        # so tier 0 can never answer -- and printing nothing at all read as "checked, nobody is
-        # stranded", which is the opposite of what was known.
+        # The collaborators endpoint needs push access, so tier 0 cannot check. Printing nothing
+        # would read as "checked, nobody is stranded".
         lines.append(
             "    could not check who has access here (that read needs push access), so the "
             "association half above is unverified"
@@ -851,12 +829,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     warnings.extend(_doctor_vouches(config, args, trusted, payload))
     if stranded:
         named = ", ".join(f"@{h}" for h in stranded)
-        # A WARNING, not a problem, and the difference is why there are two lists.
-        # `harness doctor` gates feedback.yml and implement.yml under `set -e`, so anything
-        # reaching `problems` stops the harness entirely. This condition does not stop the
-        # harness -- it stops THAT PERSON'S comments, and everyone else's keep working.
-        # Filed as a problem it took the whole fleet down within an hour of going live: a
-        # diagnostic added to make a silent failure visible became a louder failure itself.
+        # A warning: it silences only these people, and a problem would stop every workflow
+        # that gates on doctor.
         warnings.append(
             f"no access to {config.self_repo}: {named}. The association half of the gate is "
             f"per-repository, so their commands are ignored ON {config.self_repo} -- the inbox, "
@@ -865,13 +839,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "product issues and delivery pull requests. Invite them here only if you want them "
             "to steer the harness's own threads too."
         )
-    # The other half of "can it hear anybody". `sweep` finds product-repository comments by
-    # reading the notifications feed, which needs the `notifications` scope; a token without it
-    # is refused. A warning, not a problem: the inbox is polled directly and keeps working.
+    # `sweep` finds product-repository comments through the notifications feed, which needs the
+    # `notifications` scope. A warning: the inbox is polled directly and keeps working.
     feed = _doctor_notifications(config, args, payload)
     if feed:
         warnings.append(feed)
-    # B305/D67: what the token actually holds, against what it is expected to hold.
+    # What the token holds, against what it is expected to hold (B305).
     warnings.extend(_doctor_token_scopes(config, args, payload, feed_unreadable=bool(feed)))
     scopes = payload.get("token_scopes") or {}
     if scopes.get("checked"):
@@ -894,17 +867,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_DEGRADED if problems else EXIT_OK
 
 
-# --------------------------------------------------------------------------------------
-# setup
-# --------------------------------------------------------------------------------------
-
-
 def _doctor_notifications(config, args, payload) -> str:
-    """Empty when the feed reads; the warning to file when it does not.
+    """Empty when the notifications feed reads; otherwise the warning to file.
 
-    Never a problem: losing the feed costs cold product-issue mentions and nothing else, because
-    the inbox is polled whether or not it notified. Found the hard way -- the first live sweep
-    raised a 403 here, and the inbox commands it had already collected went with it.
+    Never a problem: without the feed only mentions on untouched product issues are missed,
+    because the inbox is polled directly.
     """
     payload["notifications"] = {"readable": None}
     if config is None or getattr(config, "permission_tier", 0) < 2:
@@ -926,9 +893,8 @@ def _doctor_notifications(config, args, payload) -> str:
     return ""
 
 
-#: B305/D67: the classic scopes the machine PAT is expected to carry, each with what goes wrong
-#: without it. Doctor reports what is granted and warns -- never degrades -- when one of these is
-#: missing or when anything else is present.
+#: The classic scopes the machine PAT is expected to carry, each with what fails without it.
+#: Doctor warns, and does not degrade, when one is missing or another is present (B305).
 EXPECTED_TOKEN_SCOPES: dict[str, str] = {
     "public_repo": "it cannot push to the fork or open a pull request, and nothing is delivered",
     "notifications": (
@@ -943,14 +909,11 @@ EXPECTED_TOKEN_SCOPES: dict[str, str] = {
 
 
 def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False) -> list[str]:
-    """B305: the machine PAT's real scopes, read off `X-OAuth-Scopes`; the warnings to file.
+    """The machine PAT's scopes, read off `X-OAuth-Scopes`; returns the warnings to file (B305).
 
-    D67 granted `workflow`, which took away the capability half of I-15 -- GitHub no longer
-    refuses a push that edits a workflow -- so what the token holds is checked before every
-    spending run instead of eyeballed once at a rotation. Nothing else would notice it acquire
-    `delete_repo` or `admin:org`. Warnings only: a problem exits 3, `feedback.yml` and
-    `implement.yml` gate on doctor under `set -e`, and a diagnostic filed as a problem took the
-    fleet down within an hour of go-live (#27).
+    The token holds `workflow` (D67), so GitHub does not refuse a push that edits a workflow.
+    Checking before every spending run catches a token that gains `delete_repo` or `admin:org`.
+    Warnings only, because a problem exits 3 and stops the workflows that gate on doctor.
     """
     payload["token_scopes"] = {"checked": False}
     if config is None or getattr(config, "permission_tier", 0) < 2:
@@ -1002,14 +965,11 @@ def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False
 
 
 def _doctor_vouches(config, args, trusted, payload) -> list[str]:
-    """D68: each vouched id against the account that holds the login today. Warnings only.
+    """Each vouched id against the account that holds the login today. Warnings only (D68).
 
-    The vouch binds an account, not a name, so a login that has changed hands is already safe:
-    the new holder's id does not match and every comment of theirs is refused. What that leaves
-    is a person who renamed and is now silently refused under their new login -- which is worth
-    saying, and is never worth stopping the fleet over (#27): it stops one person's comments,
-    and everybody else's keep working. "I could not look" (tier 0's rate ceiling, a network
-    error) is not a finding and says nothing.
+    A login that changed hands is already refused, because the new holder's id does not match.
+    This catches a person who renamed and is now refused under the new login. A lookup that
+    fails (tier 0's rate ceiling, a network error) reports nothing.
     """
     vouched = dict(getattr(trusted, "vouched", {}) or {})
     report = {h: {"id": i, "checked": False} for h, i in sorted(vouched.items())}
@@ -1051,10 +1011,8 @@ def _doctor_vouches(config, args, trusted, payload) -> list[str]:
                 "line; if the login changed hands, remove it (D68)."
             )
         elif kind and kind != ACCOUNT_TYPE_PERSON:
-            # D69: the id is right and the line still admits nobody. `harness trust line` now
-            # refuses to print such a line, but a line committed before that check -- or by
-            # hand -- would otherwise read as healthy everywhere: it parses, `trust show` calls
-            # it vouched, and the id matches the account it names.
+            # The id matches but the account is not a person, so the line admits nobody.
+            # `harness trust line` refuses to print one; this catches a hand-written line.
             found.append(
                 f"trust.txt vouches for @{handle} as account {pinned}, which GitHub reports as "
                 f"a {kind} account rather than a person. Only a person authors a comment, so "
@@ -1066,8 +1024,7 @@ def _doctor_vouches(config, args, trusted, payload) -> list[str]:
 def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:
     """Trusted handles GitHub would refuse anyway; () when there are none or it cannot be told.
 
-    Never a hard failure: the collaborators endpoint needs push access, so tier 0 has no answer,
-    and doctor must not turn "I could not check" into a problem report.
+    Never a problem: the collaborators endpoint needs push access, so tier 0 has no answer.
     """
     payload["trust"]["access_checked"] = False
     if config is None or not getattr(config, "self_repo", ""):
@@ -1084,6 +1041,11 @@ def _doctor_trust_access(config, args, trusted, payload) -> tuple[str, ...]:
     payload["trust"]["access_checked"] = True
     payload["trust"]["without_access"] = list(stranded)
     return stranded
+
+
+# --------------------------------------------------------------------------------------
+# setup
+# --------------------------------------------------------------------------------------
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1124,6 +1086,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------
 
 
+def _as_pct(fraction: float | None) -> float | None:
+    """A utilization fraction as a percentage, or None where this window has no live reading."""
+    return None if fraction is None else float(fraction) * 100.0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="status")
@@ -1132,30 +1099,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     for item in ctx.store.list_work_items():
         queue[item.state] = queue.get(item.state, 0) + 1
 
-    budget = {
-        "weekly_remaining_pct": ctx.governor.remaining_weekly_pct(),
-        "session_remaining_pct": ctx.governor.remaining_session_pct(),
-        "spendable_pct": ctx.governor.spendable_pct(),
+    now = ctx.clock.now()
+    usage = {
+        "weekly_pct": _as_pct(ctx.ledger.weekly_utilization(now)),
+        "session_pct": _as_pct(ctx.ledger.session_utilization(now)),
+        "rate_limited_until": dict(ctx.ledger.window).get("rate_limited_until"),
     }
 
     in_flight = [dataclasses.asdict(r) for r in ctx.store.list_stage_runs(status="running")]
 
     halt = ctx.ledger.halt_request()
-    payload = {"queue": queue, "budget": budget, "in_flight": in_flight, "halt": halt}
+    payload = {"queue": queue, "usage": usage, "in_flight": in_flight, "halt": halt}
 
-    # First, and before the numbers: reporting a healthy queue and budget while nothing can run
-    # is the failure the dispatcher's `head` reason exists to prevent.
+    # The halt comes first, so what follows is not read as a running harness.
     lines = _halt_lines(ctx.ledger)
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
-    # The subscription first, because it is the thing that actually runs out. The block under
-    # it is the harness's OWN accounting in budget units -- a different quantity that happens to
-    # also be a percentage, which is exactly why both now say which they are.
-    lines.extend(_usage_lines(ctx.ledger, config, ctx.clock.now()))
-    lines.append("internal allowance (budget units, not the subscription):")
-    lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
-    lines.append(f"  session remaining {budget['session_remaining_pct']:.2f}%")
-    lines.append(f"  spendable         {budget['spendable_pct']:.2f}%")
+    lines.extend(_usage_lines(ctx.ledger, config, now))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
         lines.append(
@@ -1228,15 +1188,15 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    # B149/B150: the repo-level kill switch precedes even the config load.
+    # The repo-level kill switch is checked before the config loads (B149).
     check_repo_halt(_repo_root(args))
     config = _load(args)
-    # B69: the kill switch is honoured before anything is selected, queue or no queue.
+    # The halt file is checked before anything is selected, queue or no queue (B69).
     check_halt(config.halt_file)
     until = _parse_hhmm(args.until) if args.until else None
 
     listing_ctx = _context(config, args, run_id="run")
-    # B147: a crashed job cannot strand an item in a running state beyond three hours.
+    # A crashed job cannot strand an item in a running state beyond three hours (B147).
     stale_before = iso(listing_ctx.clock.now() - timedelta(hours=STALE_RUNNING_HOURS))
     reset_ids = list(listing_ctx.store.reconcile_stale_running(stale_before))
     if reset_ids:
@@ -1252,12 +1212,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         item_ids = [args.item]
     else:
         item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
-        # D3 (B209/B210): outside the run window only the carried item may start. `--item` is
-        # a human at the keyboard, so it bypasses the window - and only the window: the usage
-        # stops are the governor's, and every stage still passes through them.
+        # Outside the run window only the carried item may start (B210). `--item` bypasses the
+        # window and nothing else: every stage still passes through the governor's usage stops.
         if not in_run_window(config, listing_ctx.clock.now()):
             window = _window_text(config)
-            # B413/D72: a daily window holds the carried item back too (see dispatcher.plan).
+            # A daily window holds the carried item back too, as in dispatcher.plan (B413).
             carry_exempt = carry is not None and not is_daily_window(config)
             item_ids = [i for i in item_ids if carry_exempt and int(i) == int(carry)]
             if not item_ids:
@@ -1307,8 +1266,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         for item_id in item_ids:
             ctx = _context(config, args, run_id=f"item-{item_id}")
-            if args.session_pct is not None:
-                ctx.governor.begin_session(args.session_pct)
 
             try:
                 # implement, or continue where a handoff stopped (B215)
@@ -1342,8 +1299,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 ran.append(item_id)
                 packages.append(str(package_dir))
 
-                # deliver (§14): only when a write credential exists; the branch is left for
-                # the host otherwise.
+                # deliver: only when a write credential exists; the branch is left for the host
+                # otherwise.
                 if ctx.gh.can_write:
                     check_halt(config.halt_file)
                     if _past_until(until, ctx):
@@ -1354,9 +1311,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                     if pr_url:
                         delivered.append(pr_url)
             except (BudgetExhausted, RateLimited) as exc:
-                # D3: a usage stop, a budget stop and a rate limit are all normal outcomes,
-                # not failures (B120). The item is handed off with its work committed and
-                # carried in the ledger, and the run ends at 0 without starting anything else.
+                # A declined call and a rate limit are normal outcomes (B120): the item is handed
+                # off with its work committed and carried in the ledger, and the run exits 0
+                # without starting anything else.
                 if isinstance(exc, RateLimited):
                     rate_limited_until = exc.reset_at or "unknown"
                 handed_off = _hand_off(ctx, item_id, exc)
@@ -1445,9 +1402,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
     lines = [f"resumed - {config.halt_file} removed"]
     lifted = None
     if getattr(args, "commanded", False):
-        # The escape hatch. `/harness resume` is the ordinary way to lift a commanded halt, but
-        # it arrives through the sweep -- so if the sweep is what is broken, there has to be a
-        # way out that does not depend on it.
+        # `/harness resume` lifts a commanded halt through the sweep; this lifts it when the
+        # sweep itself is broken.
         ctx = _context(config, args, run_id="resume")
         lifted = ctx.ledger.halt_request()
         if lifted is not None:
@@ -1465,12 +1421,12 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
-# dispatch (B122 / A33)
+# dispatch (B122)
 # --------------------------------------------------------------------------------------
 
 
 def _front_matter_depends_on(text: str) -> tuple[int, ...]:
-    """`depends_on` from a proposal's YAML front matter (§4.3), inline or block list (I-17)."""
+    """`depends_on` from a proposal's YAML front matter, inline or block list (I-17)."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return ()
@@ -1536,7 +1492,6 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         Candidate(
             issue=int(item.id),
             depends_on=_depends_on(config, item),
-            stage="implement",
             created_at=str(getattr(item, "created_at", "") or ""),
             forced=int(item.id) in forced,
             cls=priority.class_of("", via=priority.via_of(item)),
@@ -1553,8 +1508,8 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
     )
 
 
-#: What the head of the queue is waiting for, by the stage it is in. `approved` is absent on
-#: purpose: that is the one state the dispatcher itself speaks for, so the plan answers it.
+#: What the head of the queue is waiting for, by the stage it is in. `approved` is absent
+#: because the dispatcher's plan answers for that state.
 _HEAD_WAIT: dict[str, str] = {
     "discovered": "waiting to be proposed; `discover` ranks and proposes the queue",
     "proposing": "a propose job is in flight",
@@ -1590,12 +1545,8 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
     plan = _build_plan(ctx, config, args)
-    # B292: the plan says what starts; the queue says what is waiting behind it and why. The two
-    # questions an operator actually asks -- "why has my question not been answered" and "why is
-    # it proposing things nobody asked for" -- are answered by the second, not the first.
-    #
-    # Added *inside* the plan document, not printed after it: stdout here is parsed by
-    # `dispatch.yml`, and a second document appended to the first is not JSON any more.
+    # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
+    # the plan's JSON document, because workflows parse this stdout as a single document.
     payload = json.loads(plan.to_json())
     rows = priority.queue(store=ctx.store, ledger=ctx.ledger)
     payload["queue"] = [
@@ -1609,15 +1560,10 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         }
         for row in rows
     ]
-    # B292's other half: not only what is waiting, but why the top of it is or is not moving.
-    # `plan.reason` and `plan.skipped` only speak for `approved` candidates, and the head of the
-    # queue is often in `discovered` or `proposing` -- for which the plan says nothing at all,
-    # so a healthy-looking "budget 100% remaining, 0 of max 1 slots" sat beside a stalled queue
-    # and explained none of it.
+    # Why the head of the queue is or is not moving. `plan.reason` and `plan.skipped` cover only
+    # `approved` candidates, and the head is often in `discovered` or `proposing`.
     payload["head"] = _head_reason(plan, rows, config)
-    # Spelled out rather than left as "reason, or null". An operator reading this wants to know
-    # whether suggested work may run, and a bare `null` reads as "no suggestion" rather than as
-    # "nothing is stopping it".
+    # Spelled out with `admitted`, since a bare `null` reason would read as "no suggestion".
     blocked = priority.admit(
         "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
     )
@@ -1698,20 +1644,18 @@ def cmd_decompose(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
-# sweep (B140 / B141 / §8.3)
+# sweep (B140)
 # --------------------------------------------------------------------------------------
 
 
 def _item_for_command(ctx, config, cmd) -> int | None:
     """Map a keyword command's thread to a work item id.
 
-    B243: a `product_issue` resolves through the store, never through the number. The harness
-    repository and the product repository number independently, so harness work item 4 and
-    product issue 4 are different things that happen to share a digit.
+    A `product_issue` resolves through the store, never by number: the harness and product
+    repositories number their issues independently (B243).
     """
     if cmd.surface == "inbox":
-        # B241: the inbox is a conversation. It is never a work item, so no verb that steers one
-        # can ever be pointed at it by accident.
+        # The inbox is never a work item, so no steering verb can target it (B241).
         return None
     if cmd.surface == "product_issue":
         item = ctx.store.find_by_ref(f"issue:{int(cmd.number)}")
@@ -1733,23 +1677,15 @@ def _item_for_command(ctx, config, cmd) -> int | None:
     return None
 
 
-#: How the item arrived, for the `via:` label (B264).
-#:
-#: Every `/harness work` is `requested`, wherever it was typed: a person asked for it in words.
-#: `assigned` means something else and only one thing -- the machine account was put in the
-#: Assignees box, which `discover --mode assigned` reads. Mapping the product-issue surface to
-#: `assigned` conflated "a human asked me here" with "a human assigned me", and `via:` feeds the
-#: priority queue, so the two must not blur.
+#: How the item arrived, for the `via:` label (B264). Every `/harness work` is `requested`,
+#: wherever it was typed. `assigned` means only that the machine account was put in the
+#: Assignees box, which `discover --mode assigned` reads. `via:` feeds the priority queue.
 _VIA_BY_SURFACE: dict[str, str] = {}
 
 
 def _next_scheduled(now) -> str:
-    """When the next scheduled thing happens, in the words the crons are written in.
-
-    An operator asking "why has nothing happened" is usually asking this. The two answers that
-    matter are when the sweep next reads comments and when the run window next opens.
-    """
-    # feedback.yml: `41 */3 * * 1-5` — minute 41 of hours 0,3,6,…,21, Monday to Friday.
+    """The next scheduled `feedback.yml` sweep after `now`, as an ISO timestamp."""
+    # feedback.yml's cron `41 */3 * * 1-5`: minute 41 of hours 0, 3, ..., 21, Monday to Friday.
     nxt = now.replace(minute=41, second=0, microsecond=0)
     while nxt <= now or nxt.hour % 3 != 0 or nxt.weekday() > 4:
         nxt = nxt + timedelta(hours=1)
@@ -1757,10 +1693,10 @@ def _next_scheduled(now) -> str:
 
 
 def _usage_report(ctx, config, now) -> str:
-    """Usage, the queue, and when the next thing happens — the answer to "what is going on".
+    """The `/harness status` reply: usage, the queue, and what happens next.
 
-    Assembled from the same three sources the CLI reads, so a comment and `harness status`,
-    `harness ledger` and `harness dispatch` cannot disagree about the state of the system.
+    Built from the sources `harness status`, `harness ledger` and `harness dispatch` read, so
+    the reply and the CLI agree.
     """
     led = ctx.ledger
     lines: list[str] = []
@@ -1774,12 +1710,7 @@ def _usage_report(ctx, config, now) -> str:
         )
         lines.append("")
 
-    # Utilization first, and dollars in small print underneath. See `links.usage_headline`
-    # for why round that way: the dollar total is an estimate nobody bills, and it hides the
-    # fact that the allowance is shared with everything else this subscription does.
     lines.extend(links.usage_headline(led, config, now))
-    lines.append("")
-    lines.append(links.spend_estimate(led, config))
     lines.append("")
 
     try:
@@ -1817,8 +1748,7 @@ def _usage_report(ctx, config, now) -> str:
             + ("; open now" if in_run_window(config, now) else "; closed now")
         )
         lines.append(f"- suggested work: {blocked or 'admitted'}")
-    # The other gate denominated in the allowance. Reported for the same reason: a maintainer
-    # whose audit was declined has to be able to find out why without reading the source.
+    # Audits are gated on the allowance too, so a declined audit's reason shows here.
     audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config, now=now)
     lines.append(f"- audits: {audit_blocked or 'admitted'}")
     return "\n".join(lines)
@@ -1829,34 +1759,24 @@ def _via_for(cmd) -> str:
 
 
 def _forced(ctx, cmd, item_id: int | None) -> str:
-    """Record `--force` on the item and say so in the reply (B283/D62).
-
-    Said out loud on purpose: a flag named `force` invites the assumption that it lifts more
-    than it does, so the reply names the one thing it lifts and the things it does not.
-    """
+    """Record `--force` on the item; the reply names what it lifts and what still applies."""
     if not getattr(cmd, "force", False) or item_id is None:
         return ""
-    # The exemption itself, not just the sentence about it. Without these two lines the reply
-    # claimed the item was window-exempt while `ledger.forced()` stayed empty, so the dispatcher
-    # never saw it and a forced item waited for the next window exactly like an unforced one.
+    # The dispatcher reads the exemption from the ledger.
     ctx.ledger.force(int(item_id))
     ctx.store.append_event(
         int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"
     )
     return (
-        f" — forced by @{cmd.actor}, so it starts on the next sweep rather than waiting for "
-        "the run window. The kill switch, both usage stops, every cap and both human gates "
-        "are unchanged."
+        f" — forced by @{cmd.actor}: it starts on the next sweep, even outside the run window. "
+        "Halts, usage stops and both human gates still apply."
     )
 
 
 def _reply(ctx, config, cmd, message: str) -> None:
-    """Answer in the thread the command came from (B236/B263).
+    """Answer in the thread the command came from (B236).
 
-    Without this the harness is a program you talk to and that never talks back: the operator
-    comments, something happens or does not, and the only way to find out which is to go
-    looking. `COMMENT_UPSTREAM=false` silences the product repository and nothing else -- the
-    harness still delivers, it just stops speaking where other people are working.
+    `COMMENT_UPSTREAM=false` silences replies on the product repository only.
     """
     if not message or not ctx.gh.can_write:
         return
@@ -1864,10 +1784,8 @@ def _reply(ctx, config, cmd, message: str) -> None:
     if outward and not config.comment_upstream:
         return
     repo = config.upstream_repo if outward else config.self_repo
-    # `steerable=False` drops the command table: the person reading this reply just gave a
-    # command, so listing all of them back at them is noise on somebody else's thread. The
-    # one-line pointer goes in its place, so every answer says what else can be asked and where
-    # the full list is — without a reply becoming a manual.
+    # `steerable=False` drops the command table from the signature; the one-line pointer says
+    # what else can be asked and where the full list is.
     body = "\n\n".join(
         [
             message.strip(),
@@ -1883,9 +1801,9 @@ def _reply(ctx, config, cmd, message: str) -> None:
             "could not reply on %s#%s: %s", repo, cmd.number, exc)
 
 
-#: States in which `revise` means "another implementation pass" rather than "a new plan" --
-#: exactly the entry states `stages.revise` accepts from a comment. Anything else has no code
-#: yet, so revising it can only mean rewriting the plan.
+#: States in which `revise` means another implementation pass: the entry states
+#: `stages.revise` accepts from a comment. In any other state there is no code yet, so
+#: revising rewrites the plan.
 _REVISE_STATES = frozenset({"shipped", "needs-human"})
 
 #: What to say instead of an IllegalTransition when `go` is aimed at a state it cannot move.
@@ -1900,20 +1818,19 @@ _GO_DEAD_ENDS: dict[str, str] = {
 
 
 def _act_on_command(ctx, config, cmd) -> str:
-    """Apply one authorised keyword command (§8.3 table). Returns a one-line result."""
-    # The typed word, not the resolved one: the issue thread is the log, and a log that says
-    # `stop` for a comment that said `reject` cannot be read back honestly.
+    """Apply one authorised keyword command. Returns the reply text."""
+    # The typed word, so the log says `reject` when `reject` was typed.
     said = getattr(cmd, "typed", "") or cmd.verb
     reason = f"/harness {said} by {cmd.actor}"
     if cmd.args:
         reason = f"{reason}: {cmd.args}"
 
     if cmd.verb == "__denied__":
-        # B270: the refusal is the whole action. It is recorded and answered, never silent.
+        # The refusal is the whole action; it is recorded and answered (B270).
         return cmd.args
 
     if cmd.verb == "work":
-        # B235/B244: the one route that creates rather than steers.
+        # The one verb that creates an item instead of steering one (B235).
         existing = _item_for_command(ctx, config, cmd)
         if existing is not None:
             return f"work item #{existing} already tracks this"
@@ -1928,10 +1845,9 @@ def _act_on_command(ctx, config, cmd) -> str:
         return _usage_report(ctx, config, ctx.clock.now())
 
     if cmd.verb == "halt":
-        # Not `.harness/HALT` and not `HALT_FILE`: a third, deliberately different switch. This
-        # one lives in the ledger every runner fetches, so a comment stops the fleet without a
-        # commit -- and it gates the model calls rather than the job, which is what lets the
-        # sweep keep listening for `/harness resume`.
+        # A third switch, separate from `.harness/HALT` and `HALT_FILE`. It lives in the ledger
+        # every runner fetches, so a comment sets it without a commit, and it gates model calls
+        # instead of jobs, so the sweep still hears `/harness resume`.
         if ctx.ledger.halt_request() is not None:
             return "already halted"
         ctx.ledger.request_halt(cmd.actor, cmd.args, iso(ctx.clock.now()))
@@ -1948,7 +1864,7 @@ def _act_on_command(ctx, config, cmd) -> str:
         return f"resumed by @{cmd.actor}; the halt set by @{was.get('by', 'someone')} is lifted"
 
     if cmd.verb == "ask":
-        # B274: an answer, and nothing else. No item is resolved because none is involved.
+        # An answer only; no item is involved (B274).
         return STAGES["ask"](ctx, question=cmd.args, actor=cmd.actor)
 
     if cmd.verb == "audit":
@@ -1956,8 +1872,8 @@ def _act_on_command(ctx, config, cmd) -> str:
         return f"audit opened as #{number}"
 
     if cmd.verb == "promote":
-        # B252: only ever on the audit issue the findings live in, which is the thread it came
-        # from. Promoting finding 3 of some other audit is not a thing you can typo into.
+        # Only on the audit issue that holds the findings, so it cannot reach another audit
+        # (B252).
         if cmd.surface != "issue":
             return "promote only works on an audit issue in this repository"
         created = STAGES["promote"](
@@ -1977,29 +1893,21 @@ def _act_on_command(ctx, config, cmd) -> str:
 
     if item_id is None:
         if cmd.verb == "go" and cmd.surface in ("inbox", "issue"):
-            # There is nothing here to proceed with, so the only sensible reading of "go" is
-            # "get on with it" -- which is a question about the queue. This is also where
-            # `/harness queue` on the inbox lands, and it answered with the queue before the
-            # merge; falling through to a shrug was a capability quietly lost to a rename.
+            # With no item on this thread, `go` (or its alias `queue`) answers with the queue.
             return _usage_report(ctx, config, ctx.clock.now())
         return "no work item for this thread"
 
     if cmd.verb == "go":
-        # "Proceed with this." What that means depends on where the item already is, which is
-        # why `queue` was folded in here: a suggestion waiting for a green light becomes
-        # approved (B262), and an item that was stopped or blocked goes back in the queue. Both
-        # are the same request in the person's head, and asking them to pick the right word for
-        # a state they cannot see was never going to work.
+        # "Proceed with this", which depends on the item's state: a suggestion waiting for a
+        # green light is approved (B262), and a stopped or blocked item goes back in the queue.
         item = ctx.store.get_work_item(item_id)
         if item is None:
             return f"no work item {item_id}"
         state = item.state
         if state == "blocked":
-            # `blocked` is reachable from both sides of gate 1, so which way "proceed" points
-            # depends on how far the item had got. A branch exists only once `implement` has
-            # run, which is only after the proposal was merged -- so it is the honest test for
-            # "this was already approved once". Sending a half-implemented item back to
-            # `discovered` would orphan its branch and buy a second proposal nobody asked for.
+            # `blocked` is reachable from both sides of gate 1. A branch exists only after
+            # `implement`, which runs only after the proposal merged, so a branch means the item
+            # was approved once. Sending it back to `discovered` would orphan the branch.
             if item.branch_name:
                 ctx.store.transition(item_id, "approved", reason=reason)
                 return f"item {item_id} back to approved" + _forced(ctx, cmd, item_id)
@@ -2013,10 +1921,8 @@ def _act_on_command(ctx, config, cmd) -> str:
         if state == "discovered":
             return f"item {item_id} is already in the queue" + _forced(ctx, cmd, item_id)
         if state == "proposed":
-            # Gate 1. `go` is the green light B262 wrote for work NOBODY ASKED FOR: the harness
-            # proposed it unprompted and waits to be released. For everything else the gate is
-            # the merge, and `go` must not be a way around it -- especially since `queue` now
-            # resolves here, and `queue` on a proposal used to mean the exact opposite.
+            # Gate 1. `go` releases only work the harness suggested on its own (B262). Any
+            # other proposal is approved by merging it, and `go` must not bypass that.
             if via_of(item) != "suggested":
                 return (
                     f"item {item_id} has a proposal waiting for gate 1. Merging the proposal "
@@ -2026,9 +1932,8 @@ def _act_on_command(ctx, config, cmd) -> str:
             ctx.store.transition(item_id, "approved", reason=reason)
             return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
         if "approved" not in TRANSITIONS.get(state, frozenset()):
-            # Answered, not raised. `needs-human` and the two terminal states have nowhere to go
-            # from here, and an IllegalTransition traceback in a comment reply tells the person
-            # nothing they can act on.
+            # Answered instead of raised: `needs-human` and the terminal states cannot reach
+            # `approved`, and an IllegalTransition traceback in a reply is no answer.
             return (
                 f"item {item_id} is `{state}`, which `go` cannot move. "
                 + _GO_DEAD_ENDS.get(state, "Say what you want to happen and I will say if I can.")
@@ -2041,34 +1946,28 @@ def _act_on_command(ctx, config, cmd) -> str:
         if item is None:
             return f"no work item {item_id}"
         state = item.state
-        # `shipped -> abandoned` is pinned illegal (D1): an item with a delivery pull request
-        # open is not dropped, it is stopped for a decision. `stop` on a delivery PR is exactly
-        # that case, so it lands in `blocked` -- which is legal, reversible with `/harness go`,
-        # and what the label already means. Choosing the target instead of hard-coding
-        # `abandoned` is what stops the documented gesture raising after it closed the PR.
+        # The target is chosen from the legal edges. `shipped -> abandoned` is illegal (D1), so
+        # `stop` on a delivery PR lands in `blocked`, which `/harness go` reverses.
         legal = TRANSITIONS.get(state, frozenset())
         if not legal:
-            # `merged` and `abandoned` are terminal, so there is nothing to stop. Said rather
-            # than raised: an IllegalTransition traceback in a reply is not an answer, and this
-            # is the likeliest way to reach one -- somebody stopping a thing twice.
+            # `merged` and `abandoned` are terminal. Answered instead of raised, since stopping
+            # an item twice is the likeliest way here.
             return f"item {item_id} is already `{state}`; there is nothing left to stop."
-        # The LEVEL decides how final this is, which is the distinction `reject` used to carry
-        # in its name. Level 2 parks -- reversible with `/harness go`, and enough to keep
-        # something out of a product repository. Level 3 ends it. Merging the two verbs must not
-        # quietly hand every maintainer the terminal one.
+        # The level decides how final this is: level 2 parks (reversible with `/harness go`),
+        # level 3 ends it, so a maintainer cannot end an item that still has somewhere to park.
         ends_it = cmd.level >= MAX_LEVEL
         if ends_it and "abandoned" in legal:
             target = "abandoned"
         elif "blocked" in legal:
             target = "blocked"
         elif "abandoned" in legal:
-            # Nowhere to park it: `discovered` has no `blocked` edge (`proposed` does). Ending it
-            # is the only thing left, so say that it was terminal rather than pretending.
+            # Nowhere to park: `discovered` has no `blocked` edge (`proposed` does), so the item
+            # ends and the reply says so.
             target = "abandoned"
         else:
             return f"item {item_id} is `{state}`, which `stop` cannot move."
-        # Transitioned FIRST: a refused transition must not leave a closed pull request attached
-        # to a live item, which is what happened when the close came first.
+        # Transition first, so a refused transition never leaves a closed pull request on a live
+        # item.
         ctx.store.transition(item_id, target, reason=reason)
         repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo
         closed = False
@@ -2087,14 +1986,9 @@ def _act_on_command(ctx, config, cmd) -> str:
 
     if cmd.verb == "revise":
         item = ctx.store.get_work_item(item_id)
-        # "Redo it with my notes." On a proposal there is no code yet, so redoing it means
-        # rewriting the plan; on a delivery pull request the code exists, so it means another
-        # implementation pass against the same package. That is one intention with two
-        # mechanisms, and the ITEM'S STATE says which. Reading the surface instead was wrong:
-        # `stage:needs-human` is only visible on the harness issue, and OPERATIONS.md, USING.md
-        # and revise.py all tell the operator to type this there -- which under a surface test
-        # fell through to a re-propose and raised, because `needs-human -> proposing` is not a
-        # legal edge. State is the ground truth; the surface was only ever standing in for it.
+        # Before code exists, revising rewrites the plan; after, it is another implementation
+        # pass. The item's state decides which: `needs-human` shows only on the harness issue,
+        # where the operator is told to type this, and `needs-human -> proposing` is illegal.
         if item is not None and item.state in _REVISE_STATES:
             lease = STAGES["revise"](
                 ctx, item_id, source="review", notes=cmd.args or "/harness revise"
@@ -2115,8 +2009,7 @@ def _act_on_command(ctx, config, cmd) -> str:
 def _by_comment(commands) -> list[list]:
     """`commands` split into runs sharing a comment id, in the order they arrived.
 
-    Grouped rather than sorted: the order commands were typed in is the order they run in, and a
-    sort would quietly reorder two comments that arrived in one sweep.
+    Grouped without sorting, so commands run in the order they were typed.
     """
     groups: list[list] = []
     for cmd in commands:
@@ -2128,24 +2021,17 @@ def _by_comment(commands) -> list[list]:
 
 
 def run_command(ctx, config, cmd) -> tuple[dict, bool]:
-    """Act on one command, answer in its thread, and say whether the batch may continue.
-
-    Split out of the sweep loop so the answering behaviour can be exercised without standing up
-    a whole sweep -- every branch here ends in a reply, and a branch that quietly stopped
-    replying would look, from the thread, exactly like the harness being asleep.
-    """
+    """Act on one command, answer in its thread, and say whether the batch may continue."""
     record, answer, keep_going = _outcome(ctx, config, cmd)
     _reply(ctx, config, cmd, answer)
     return record, keep_going
 
 
 def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
-    """Every command from ONE comment, answered in ONE reply.
+    """Every command from one comment, answered in one reply.
 
-    A comment carrying three commands used to draw three separate replies, each with the full
-    signature under it -- so the thread filled with more of the harness's own writing than
-    anybody's. One comment in, one answer out is what a person expects, and it is also three
-    times fewer writes against GitHub's content-creation limit.
+    One reply per comment keeps the thread readable and spends fewer writes against GitHub's
+    content-creation limit.
     """
     records: list[dict] = []
     parts: list[str] = []
@@ -2155,8 +2041,7 @@ def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
         records.append(record)
         if answer:
             said = getattr(cmd, "typed", "") or cmd.verb
-            # Labelled only when there is more than one, so the ordinary single-command reply
-            # reads exactly as it did before.
+            # Labelled only when the comment carried more than one command.
             parts.append(f"**`/harness {said}`** — {answer}" if len(cmds) > 1 else answer)
         if not keep_going:
             break
@@ -2178,46 +2063,34 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
     }
     try:
         result = _act_on_command(ctx, config, cmd)
-        # B284: anything the actor needs told that is not the outcome itself -- a refused
-        # `--force`, say. Appended to the reply rather than folded into the command, so it
-        # reaches the person without reaching the stage.
+        # A note for the actor, such as a refused `--force`, is appended to the reply and never
+        # reaches the stage (B284).
         if getattr(cmd, "note", ""):
             result = "\n\n".join(part for part in (result, cmd.note) if part)
         record["result"] = result
         return record, result, True
     except Halted as exc:
-        # A commanded halt refuses THIS command; it must not abort the batch. Every command in a
-        # batch is already marked seen while the batch is collected, so re-raising here consumed
-        # the rest of them permanently -- including the `/harness resume` that lifts the halt,
-        # which the inbox poll makes likely to sit behind a spending verb rather than in front of
-        # it. The switch would have been one a comment could set and no comment could clear.
+        # A commanded halt refuses this command without aborting the batch. Every command is
+        # marked seen when the batch is collected, so aborting would consume the rest, including
+        # a `/harness resume` that lifts the halt.
         record["result"] = str(exc)
         return record, str(exc), True
     except RateLimited as exc:
-        # The next command would fail the same way, and burning the rest of them against a
-        # closed window loses them for good -- they are already marked seen.
+        # The next command would fail the same way, so the batch stops here.
         record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
         return record, "", False
     except RateCeilingReached as exc:
-        # GitHub's own limit, which is a DIFFERENT ceiling from the model one and arrives as an
-        # ordinary error. Left to fall through to the handler below, the loop ground on through
-        # every remaining command posting replies that were themselves refused and swallowed --
-        # consuming, among others, any `/harness resume` sitting behind the comment that tripped
-        # it. Both ceilings mean the same thing here: stop, and let the next sweep retry.
+        # GitHub's rate ceiling, separate from the model's, arrives as an ordinary error. Stop
+        # here as for RateLimited, so the remaining commands do not post refused replies.
         record["result"] = f"github rate ceiling reached: {exc}"
         return record, "", False
     except BudgetExhausted as exc:
-        # NOT "that did not work". D3 is explicit that a usage stop is a normal outcome, like a
-        # closed run window -- the harness declining to spend the allowance you have left is the
-        # governor doing its job, and dressing it as a failure teaches people to read a working
-        # system as a broken one.
+        # A usage stop is a normal outcome, like a closed run window (D3), so the reply says
+        # "Not now" and reports no failure.
         record["result"] = f"declined: {exc}"
         return record, f"Not now — {exc}", True
     except HarnessError as exc:
-        # Answered, not just recorded. A command that failed is the case where a person most
-        # needs to hear something: recording it to stdout and saying nothing in the thread is
-        # indistinguishable, from where they are standing, from the harness being asleep --
-        # which is the one failure this whole surface exists to avoid.
+        # A failed command is answered in the thread as well as recorded.
         record["result"] = f"error: {exc}"
         return record, f"that did not work: {exc}", True
     return record, "", True
@@ -2226,15 +2099,13 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
 def _ack_halt_reason(config) -> str:
     """Why nothing is going to happen, or "" when something will.
 
-    Read from the checkout and the ledger the workflow has to hand, and never raised: a
-    diagnostic in front of the real thing must not fail in front of the real thing.
+    Reads the checkout and the ledger file, and never raises.
     """
     try:
         if repo_halted(Path(".")):
             return (
-                "**The harness is halted.** `.harness/HALT` is committed on the default branch, "
-                "which stops every workflow before it starts — so this command was read, and "
-                "nothing will run until that file is removed."
+                "**The harness is halted** (`.harness/HALT` is committed). This command was "
+                "read, but nothing runs until that file is removed."
             )
     except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
         pass
@@ -2248,36 +2119,24 @@ def _ack_halt_reason(config) -> str:
     who = str(halt.get("actor") or "someone")
     why = str(halt.get("reason") or "").strip()
     return (
-        f"**The harness is halted** — by @{who}"
+        f"**The harness is halted** by @{who}"
         + (f": {why}" if why else "")
-        + ". Nothing will spend until `/harness resume`, so this command was read and will not "
-        "be acted on."
+        + ". This command was read, but nothing spends until `/harness resume`."
     )
 
 
 def cmd_ack(args: argparse.Namespace) -> int:
     """Decide what to say about one comment before any work starts (B293).
 
-    A separate command, and a separate workflow, because of what it is FOR. The sweep is the
-    thing that takes minutes -- checkout, install, doctor, sync-fork, dispatch, then the model
-    call itself -- and for all of those minutes a thread shows nothing at all. Silence and
-    thinking look identical from there, and silence is the one people act on: they comment
-    again, or they conclude the harness is off. This says which it is, in seconds.
-
+    The sweep takes minutes; this says within seconds whether the comment will be acted on.
     Prints one JSON object: ``{"react": bool, "comment": str}``.
 
-    - ``react`` is "the sweep is going to act on this", which is worth a reaction even when it
-      is not worth a comment.
-    - ``comment`` is the acknowledgement, or "" when everything asked for is fast enough that
-      the answer beats the acknowledgement.
+    - ``react``: the sweep is going to act on this.
+    - ``comment``: the acknowledgement, or "" when every verb is fast enough that the answer
+      arrives first.
 
-    Both are decided with the SAME parser and the SAME trust gate the sweep uses, rather than a
-    second copy of either: a copy drifts, and the way that surfaces is somebody being told the
-    harness heard them when it did not, on a public repository.
-
-    Never spends, never writes, and never fails the workflow -- exit 0 on every path, because an
-    acknowledgement that can break the run it precedes is a worse bargain than no
-    acknowledgement.
+    Uses the sweep's own parser and trust gate. Never spends, never writes, and exits 0 on
+    every path, so it cannot fail the workflow.
     """
     def _say(react: bool = False, comment: str = "") -> int:
         print(json.dumps({"react": bool(react), "comment": comment}))
@@ -2294,23 +2153,19 @@ def cmd_ack(args: argparse.Namespace) -> int:
         config = _load(args)
         trusted = trust_mod.load_trust(Path(config.trust_file))
     except HarnessError as exc:
-        # No config, no trust file, nothing to say. Not an error: `ack` is an optional courtesy
-        # in front of the real thing, and the real thing does its own checking.
+        # Nothing to say without a config and trust file; the sweep does its own checking.
         LOG.warning("ack: %s", exc)
         return _say()
 
-    # The harness comments on the threads it watches, and every reply it writes carries a
-    # pointer that mentions `/harness`. Without this it would react to its own answers, on every
-    # thread, for ever. Checked first because it is the cheapest and the most embarrassing.
+    # Every harness reply mentions `/harness`, so the machine account's own comments are
+    # skipped first.
     machine = discover_stage.machine_account(config)
     if machine and actor.lower() == str(machine).lstrip("@").lower():
         return _say()
 
-    # The same gate `keywords.authorise` applies -- literally the same call, over the same
-    # comment shape the sweep reads from the REST API: a level in the trust file, AND either an
-    # association GitHub vouches for or the one account id the trust file vouches for (D68).
-    # Acknowledging a comment the sweep will then ignore is the worst of both -- it tells an
-    # untrusted commenter they were heard, in public.
+    # The call `keywords.authorise` makes, over the comment shape the sweep reads from the REST
+    # API: a level in the trust file, and either a GitHub association or the vouched account id
+    # (D68). An untrusted commenter is never told they were heard.
     as_comment = {
         "user": {"login": actor, "id": getattr(args, "actor_id", "")},
         "author_association": str(args.association or ""),
@@ -2318,30 +2173,22 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if not trust_mod.comment_authorised(as_comment, trusted):
         return _say()
 
-    # Only the verbs this actor may actually give. The sweep applies `VERB_LEVEL` per verb after
-    # parsing and refuses the rest, so acknowledging all of them would promise a level-1 asker
-    # twenty minutes of audit and then deny it -- the exact failure this command exists to
-    # avoid, performed in public.
+    # Only the verbs this actor may give: the sweep refuses the rest per `VERB_LEVEL`.
     level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
     verbs = [
         verb for verb, _args, typed in keywords.parse_typed(body)
-        # The TYPED word's level when it has one of its own -- `reject` is level 3 and resolves
-        # to `stop`, which is level 2, so resolving before gating would over-promise.
+        # The typed word's level when it has one: `reject` is level 3 but resolves to `stop` (2).
         if level >= keywords.VERB_LEVEL.get(typed or verb, keywords.VERB_LEVEL.get(verb, 3))
     ]
     if not verbs:
         return _say()
 
-    # A halted harness is going to do none of this, and saying "about twenty minutes" while
-    # nothing will ever run is worse than saying nothing -- the more so because the reply's own
-    # escape hatch is `/harness status`, which the same halt refuses. Both switches: the
-    # committed one stops the workflows, the commanded one stops the spending.
+    # A halted harness does none of this. Both switches count: the committed file stops the
+    # workflows, and the commanded halt stops the spending.
     stopped = _ack_halt_reason(config)
     if not stopped and "audit" in verbs:
-        # The same gate `stages/audit` applies at its entry. Without it the acknowledgement
-        # promises twenty minutes and the sweep then declines -- the exact failure this command
-        # exists to avoid, performed in public. Read-only and never raised: `ack` is a courtesy
-        # in front of the real thing, and the real thing checks for itself.
+        # The gate `stages/audit` applies at entry, so the acknowledgement never promises an
+        # audit the sweep will decline. Read-only and never raised.
         try:
             led = ledger_mod.Ledger.load(Path(config.ledger_path))
             refused = priority.admit("audit", store=None, ledger=led, config=config)
@@ -2353,10 +2200,8 @@ def cmd_ack(args: argparse.Namespace) -> int:
         return _say(react=True, comment=mark_machine_written(stopped))
 
     text = links.acknowledgement(verbs)
-    # Marked like everything else the harness writes. The workflow posts this through
-    # `github-script` rather than through `gh.comment`, so the transport does not mark it -- and
-    # an unmarked acknowledgement, whose whole content is a list of `/harness` commands, would
-    # wake `feedback.yml` and this workflow all over again.
+    # The workflow posts this through `github-script`, which does not mark it the way
+    # `gh.comment` does. Unmarked, a list of `/harness` commands would wake the workflows again.
     return _say(react=True, comment=mark_machine_written(text) if text else "")
 
 
@@ -2388,7 +2233,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
-# ledger (B116 / B117)
+# ledger (B116)
 # --------------------------------------------------------------------------------------
 
 
@@ -2414,11 +2259,7 @@ def _self_repo_comments(ctx, config) -> list[dict]:
 
 
 def _halt_lines(led) -> list[str]:
-    """The commanded halt, wherever an operator looks for the state of the system.
-
-    `harness status` and `harness ledger` reporting a healthy queue and a healthy budget while
-    nothing can run is the same failure the dispatcher's `head` reason exists to prevent.
-    """
+    """The commanded halt, shown at the top of `harness status` and `harness ledger`."""
     halt = led.halt_request()
     if halt is None:
         return []
@@ -2430,30 +2271,25 @@ def _halt_lines(led) -> list[str]:
 
 
 def _usage_lines(led, config, now=None) -> list[str]:
-    """The measured subscription usage and how far it is from each stop (B221/D41).
+    """The measured subscription usage and how far it is from each stop (B221).
 
-    Delivery 3 made the two stops depend on this signal, and then printed neither it nor the
-    distance to it -- so the one question an operator asks the ledger ("how close am I?") had
-    no answer in its output.
-
-    ``now`` marks a reading whose window has reset since (B406/D71). The governor and the
-    dispatcher stop refusing at that instant, so this view stops saying STOPPED too: after a
-    reset, `harness ledger` is the first command an operator runs.
+    ``now`` marks a reading whose window has reset since. The governor and the dispatcher stop
+    refusing at that instant, so this view stops saying STOPPED too (B406).
     """
     usage = (dict(led.window).get("usage") or {}) if led.window else {}
     if not usage:
         return [
             "subscription:",
             "  (not measured yet -- the signal rides on the headers of a real model call, so",
-            "   until one has been made the dollar estimate is the only bound there is. B114:",
-            "   no decision may DEPEND on the signal being present.)",
+            "   until one has been made there is nothing to report. B114: no decision may",
+            "   DEPEND on it. What bounds a call meanwhile is the run window, the turn caps,",
+            "   both halts and the subscription's own refusal.)",
         ]
     rows = [
         ("session (5h) ", "five_hour", float(config.session_usage_stop_pct)),
         ("weekly  (7d) ", "seven_day", float(config.weekly_usage_stop_pct)),
     ]
-    # "subscription", not "usage": this is what runs out, and it is shared with everything else
-    # the same account does -- so it moves while the harness is asleep.
+    # The allowance is shared with the rest of the account, so it moves while the harness sleeps.
     lines = ["subscription (shared with everything else this account does):"]
     for label, key, stop in rows:
         window = usage.get(key) or {}
@@ -2474,16 +2310,16 @@ def _usage_lines(led, config, now=None) -> list[str]:
     return lines
 
 
-#: B267: relabelling while a job is mid-flight would race the job's own label write.
+#: Relabelling while a job is mid-flight would race the job's own label write (B267).
 RELABEL_BUSY_STATES: tuple[str, ...] = ("proposing", "implementing", "revising")
 
 
 def cmd_relabel(args: argparse.Namespace) -> int:
-    """B266/B267: move every open issue from the `harness:*` family to `stage:*`.
+    """Move every open issue from the `harness:*` family to `stage:*` (B266).
 
-    Idempotent, and it changes no state: an issue keeps the stage it was in and gains the
-    `kind:` and `via:` labels its history implies. Refuses while a job is in flight, because
-    the job will write its own state label when it finishes and the two writes would race.
+    Idempotent, and it changes no state: an issue keeps its stage and gains the `kind:` and
+    `via:` labels its history implies. Refuses while a job is in flight, because the job's own
+    state-label write would race it.
     """
     config = _load(args)
     ctx = _context(config, args, run_id="relabel")
@@ -2493,12 +2329,9 @@ def cmd_relabel(args: argparse.Namespace) -> int:
               "no write credential; nothing relabelled", args)
         return EXIT_OK
 
-    # Every open issue here, read once and classified locally. NOT `list_work_items(state=...)`:
-    # that asks GitHub to filter by `LABELS[state]`, which is the NEW `stage:` name -- so it can
-    # only ever return issues that have already been migrated, and the one command whose whole
-    # job is to find `harness:*` issues could never see one.
-    # `paginate`, not `get`: `get` is one request, and a one-shot migration that stops at the
-    # first hundred issues is worse than one that refuses, because it reports success.
+    # Every open issue, read once and classified locally: `list_work_items(state=...)` filters
+    # on the new `stage:` label, so it never returns an unmigrated issue. `paginate`, because
+    # `get` is one request and would stop at the first hundred issues.
     listing = ctx.gh.paginate(f"/repos/{config.self_repo}/issues?state=open&per_page=100")
     inbox = int(getattr(config, "inbox_issue", 0) or 0)
     found: list[tuple[int, str, list[str]]] = []
@@ -2514,11 +2347,8 @@ def cmd_relabel(args: argparse.Namespace) -> int:
         names = _label_names(issue)
         states = {STATE_OF_LABEL[n] for n in names if n in STATE_OF_LABEL}
         if len(states) > 1:
-            # `_state_of` REFUSES this rather than picking one, and so must this. Taking the
-            # first label in GitHub's serialisation order would resolve `harness:blocked` +
-            # `stage:ready` differently depending on array order -- either silently moving the
-            # item between states in a command whose contract is that it changes none, or
-            # writing two `stage:` labels and wedging the issue for every later reader.
+            # Refused, as `_state_of` refuses it: picking one would depend on GitHub's array
+            # order, and could move the item or leave it with two `stage:` labels.
             ambiguous.append(number)
             continue
         if states:
@@ -2544,12 +2374,10 @@ def cmd_relabel(args: argparse.Namespace) -> int:
         kept = [n for n in names if n not in legacy_of and n != LABELS[state]]
         wanted = [LABELS[state]]
         if not any(n.startswith("kind:") for n in kept):
-            # Everything that is a work item is product work: I-18 means there is no other
-            # kind, and an audit issue is not a work item.
+            # Every work item is product work (I-18); an audit issue is not a work item.
             wanted.append(KIND_LABELS["product"])
         if not any(n.startswith("via:") for n in kept):
-            # Nothing recorded how it arrived, because nothing used to. `requested` is the
-            # honest reading of an item that predates the distinction: a human caused it.
+            # An item with no `via:` label predates them; a human caused it, so `requested`.
             wanted.append(VIA_LABELS["requested"])
         final = sorted(set(kept + wanted))
         if sorted(set(names)) == final:
@@ -2566,13 +2394,26 @@ def cmd_relabel(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _rebuilt(current, comments):
+    """`--rebuild`'s ledger: the replayed history and call count, over the window on disk.
+
+    A transition comment carries the history and nothing else, so the state no comment can
+    reconstruct -- the period start, the usage reading, the carry, the rate limit and the
+    cursors -- is kept rather than reset to an empty ledger (D74).
+    """
+    replayed = ledger_mod.rebuild(comments)
+    current.history = list(replayed.history)
+    current.window["calls"] = int(replayed.window.get("calls", 0) or 0)
+    return current
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="ledger")
     led = ctx.ledger
     rebuilt = False
     if getattr(args, "rebuild", False):
-        led = ledger_mod.rebuild(_self_repo_comments(ctx, config))
+        led = _rebuilt(led, _self_repo_comments(ctx, config))
         ledger_mod.save(led, ctx.ledger_path)
         rebuilt = True
 
@@ -2586,24 +2427,9 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     lines.extend(_halt_lines(led))
     lines.append("window:")
     lines.append(f"  period_start        {window.get('period_start')}")
-    # Named `spent_usd` in the JSON for compatibility; labelled for what it is in the text.
-    lines.append(
-        f"  est. api-equiv usd  {float(window.get('spent_usd') or 0.0):.2f}  "
-        "(estimated from tokens; nobody bills it)"
-    )
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
     lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
     lines.extend(_usage_lines(led, config, ctx.clock.now()))
-    lines.append("observations:")
-    if led.observations:
-        for stage in sorted(led.observations):
-            row = led.observations[stage]
-            lines.append(
-                f"  {stage:<12} n={int(row.get('n') or 0):<4} "
-                f"median_usd={float(row.get('median_usd') or 0.0):.2f}"
-            )
-    else:
-        lines.append("  (none)")
     limited = "yes" if led.rate_limited(now_iso) else "no"
     lines.append(f"rate limited now: {limited} (now {now_iso})")
     lines.append(f"history: {len(led.history)} entr{'y' if len(led.history) == 1 else 'ies'}")
@@ -2619,7 +2445,7 @@ def cmd_ledger(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
-# sync-fork (B105 / A36)
+# sync-fork (B105)
 # --------------------------------------------------------------------------------------
 
 
@@ -2633,8 +2459,8 @@ def cmd_sync_fork(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     ctx = _context(config, args, run_id="sync-fork")
-    # The push callable IS the client's fast-forward-only push_ref (B105): one recorded call,
-    # no force path, the token only ever inside gh.py. ForkDiverged propagates to main().
+    # The client's fast-forward-only push_ref (B105): no force path, and the token stays in
+    # gh.py. ForkDiverged propagates to main().
     push = functools.partial(ctx.gh.push_ref, remote_repo=config.fork_repo)
     sha = sync_fork(config, workdir=config.runs_dir / "sync-fork", push=push)
     _emit(
@@ -2646,12 +2472,12 @@ def cmd_sync_fork(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
-# local-loop (§10 / RUN-DECISIONS-D2 §16)
+# local-loop
 # --------------------------------------------------------------------------------------
 
 
 def _write_heartbeat(work: Path) -> None:
-    """Write `<work>/HEARTBEAT` (ISO-Z). Synchronous by design: no thread under harness/."""
+    """Write `<work>/HEARTBEAT` as an ISO-Z timestamp, synchronously."""
     roots = allowed_roots()
     if roots:
         resolved = work.resolve()
@@ -2673,12 +2499,10 @@ def _stop_requested(work: Path) -> bool:
 def _was_handed_off(ledger_path: Path | None, item_id: int) -> bool:
     """True when the run that just finished parked ``item_id`` across a usage stop (D3).
 
-    A usage stop is no longer an exception the caller can catch. ``cmd_run`` absorbs
-    ``BudgetExhausted``/``RateLimited`` itself (D3: "a usage stop is a normal outcome like
-    B120"), hands the item off and returns ``EXIT_OK`` - so the unit has to read the outcome
-    the stop left behind instead. That outcome is the ledger's carry slot: ``deliver.handoff``
-    sets it and a green ``revise --source continue`` clears it. It is re-read from disk because
-    ``cmd_run`` builds its own contexts, and the dispatch context's ledger is a stale snapshot.
+    ``cmd_run`` absorbs ``BudgetExhausted``/``RateLimited`` and returns ``EXIT_OK``, so the
+    outcome is read from the ledger's carry slot: ``deliver.handoff`` sets it and a green
+    ``revise --source continue`` clears it. The ledger is re-read from disk because ``cmd_run``
+    builds its own contexts, which leaves the dispatch context's copy stale.
     """
     if ledger_path is None:
         return False
@@ -2703,7 +2527,6 @@ def _local_unit(args: argparse.Namespace, work: Path) -> None:
             json=False,
             dry_run=getattr(args, "dry_run", False),
             item=int(item_id),
-            session_pct=None,
             until=None,
         )
         try:
@@ -2713,11 +2536,8 @@ def _local_unit(args: argparse.Namespace, work: Path) -> None:
         except HarnessError as exc:
             print(f"item {item_id} failed: {exc}", file=sys.stderr)
         _write_heartbeat(work)
-        # A usage stop is global, not per-item: the governor refuses the next item's first call
-        # exactly as it refused this one. Marching on would clone, be refused, write a HANDOFF.md
-        # and comment on the issue once per remaining item, and each handoff would overwrite the
-        # single carry slot - so the item that actually has work in progress would lose it, and
-        # `run` outside the window would then start the wrong one. The unit ends instead.
+        # A usage stop is global: the governor refuses the next item's first call too, and each
+        # further handoff would overwrite the single carry slot. The unit ends instead.
         if _was_handed_off(ctx.ledger_path, item_id):
             print(f"item {item_id} was handed off; unit ends")
             return
@@ -2750,10 +2570,10 @@ def cmd_local_loop(args: argparse.Namespace) -> int:
 
 
 def _trust_level(value: object) -> int:
-    """``2``, or ``maintainer``. Raises rather than defaulting: see `cmd_trust`."""
+    """``2`` or ``maintainer`` as a level. Raises on anything else; there is no default."""
     text = str(value or "").strip().lower()
-    # ASCII digits only: `str.isdigit()` is true for a superscript two, which then raises out of
-    # `int()` as an unhandled ValueError rather than as the sentence below.
+    # ASCII digits only: `str.isdigit()` is true for a superscript two, which `int()` then
+    # rejects with an unhandled ValueError.
     if text.isascii() and text.isdigit() and 1 <= int(text) <= trust_mod.MAX_LEVEL:
         return int(text)
     for level, name in trust_mod.LEVEL_NAMES.items():
@@ -2779,10 +2599,7 @@ def _trust_grants(level: int) -> str:
 def _gate_accepts(line: str, handle: str, level: int, account: int | None = None) -> bool:
     """True when `parse_trust` reads `line` back as exactly the grant it was printed to make.
 
-    The command's whole value is that its output can be pasted unedited, so it checks that
-    output against the parser rather than trusting the two to agree. They did not: a login
-    beginning `vouch` was refused by a rule about the handle's first five letters, and this
-    printed that refused line with every appearance of success.
+    The output is pasted unedited, so it is checked against the parser itself.
     """
     trusted = trust_mod.parse_trust(line)
     return trusted.level_of(handle) == level and trusted.vouched_id(handle) == account
@@ -2800,15 +2617,10 @@ def _refuse_own_line(line: str) -> int:
 
 
 def _trust_line(args: argparse.Namespace) -> int:
-    """The one line to paste, on stdout; what it means, on stderr.
+    """The one line to paste, on stdout; what it means, on stderr, so stdout copies cleanly.
 
-    Split that way so the output can be copied without editing, which is the whole point: the
-    line has to be exactly right, and retyping an account id is how it stops being.
-
-    It reads no configuration and opens no database. The lookup is a single unauthenticated
-    GET, and binding it to a whole `Context` -- store, governor, ledger, write guard -- meant
-    the command written to make adding somebody easy could not run in a checkout nobody had
-    provisioned, and created `harness.db` on a page that says it writes nothing.
+    Reads no configuration and opens no database: the lookup is one unauthenticated GET, so
+    the command runs in an unprovisioned checkout.
     """
     raw = str(getattr(args, "login", "") or "").strip().lstrip("@")
     level = _trust_level(getattr(args, "level", ""))
@@ -2846,10 +2658,6 @@ def _trust_line(args: argparse.Namespace) -> int:
         "collaborator here."
     )
     try:
-        # No Config, no Store, no Context. Building one to make this read meant every way a
-        # machine can be unprovisioned became a way to fail to add somebody: in a fresh
-        # checkout the command answered "could not start up to look @x up: no .env file at
-        # .env" and never asked GitHub anything at all.
         data = PUBLIC_READER().get(f"/users/{urllib.parse.quote(raw, safe='')}")
     except Exception as exc:  # noqa: BLE001 - any failure to read means the same thing
         print(f"could not resolve @{raw}'s account id: {exc}", file=sys.stderr)
@@ -2866,13 +2674,9 @@ def _trust_line(args: argparse.Namespace) -> int:
     login = str((data.get("login") if isinstance(data, dict) else "") or raw)
     kind = str((data.get("type") if isinstance(data, dict) else "") or "").strip()
     if kind and kind != ACCOUNT_TYPE_PERSON:
-        # An organisation resolves to a perfectly good account id, and a vouch for it can never
-        # match: the id a vouch is checked against is `comment.user.id`, the account that
-        # TYPED, and an organisation types nothing. Such a line parses, reads as healthy in
-        # `trust show`, and passes doctor's id check -- while admitting nobody, anywhere, for
-        # ever. That is the silent denial this command exists to prevent, manufactured by the
-        # command itself. Only a type GitHub actually returned is refused; an absent one is
-        # unknown, and unknown is not evidence of anything.
+        # An organisation has a valid account id, but a vouch is checked against
+        # `comment.user.id` and an organisation authors no comments, so the line would admit
+        # nobody. Only a type GitHub returned is refused; a missing type proves nothing.
         print(
             f"GitHub says @{login} is not a person: that login is a {kind} account, so no "
             f"line was printed. Only a person authors a comment, so a vouch for account "
@@ -2904,10 +2708,7 @@ def _trust_show(args: argparse.Namespace) -> int:
     """The trust file as the gate reads it: who, at what level, by which route, and what is
     being refused without anybody being told.
 
-    It reads one local text file, so it asks for no more than that: with no usable `.env` it
-    falls back to the documented default path and says so, rather than exiting with a
-    complaint about configuration. The moment somebody wants this report is while editing that
-    file, in whatever checkout it happens to be in front of them.
+    With no usable `.env` it reads the default path and says so, since it needs only that file.
     """
     note = ""
     try:
@@ -2979,15 +2780,10 @@ def _trust_show(args: argparse.Namespace) -> int:
 
 
 def cmd_trust(args: argparse.Namespace) -> int:
-    """D69: turn a login into the exact line to commit, or read the current file back.
+    """Turn a login into the exact trust.txt line to commit, or read the current file back.
 
-    It never writes. `.harness/` is deliberately outside the write roots (B143) so the harness
-    cannot change its own trust list; the security boundary is that only the operator can, and
-    only through a reviewed pull request. This just makes the line hard to get wrong.
-
-    `--level` is required rather than defaulted, which is the one place worth costing a
-    keystroke: defaulting somebody's authority is exactly the silent misgrant the rest of this
-    work exists to remove.
+    It never writes: `.harness/` is outside the write roots (B143), so the trust list changes
+    only through a reviewed pull request. `--level` has no default, so no grant is implicit.
     """
     if (getattr(args, "trust_action", "") or "show") == "line":
         return _trust_line(args)
@@ -3036,21 +2832,22 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc) or "not implemented in delivery 1", file=sys.stderr)
         return EXIT_UNIMPLEMENTED
     except RepoHalted:
-        # B149: the repo-level kill switch is a normal outcome, not an error.
+        # The repo-level kill switch is a normal outcome, so it exits 0 (B149).
         print("halted by .harness/HALT")
         return EXIT_OK
     except Halted as exc:
         print(f"halted: {exc}", file=sys.stderr)
         return EXIT_HALTED
     except BudgetExhausted as exc:
+        # The harness declined to start a model call: a usage stop, a stored rate limit or a
+        # priority refusal. This exit code and this phrase are a workflow contract (D74).
         print(f"budget exhausted: {exc}", file=sys.stderr)
         return EXIT_BUDGET
     except RateLimited as exc:
         # B120: the stage already returned the item to its prior state.
         if _wants_json(args):
-            # B398/D71: `--json` promises a JSON document on stdout, and discover.yml tees it
-            # into a file jq reads. A bare line there made jq fail under `set -e`, so a refusal
-            # that exits 0 still turned the step red.
+            # `--json` promises a JSON document on stdout: discover.yml feeds it to jq under
+            # `set -e`, where a bare line fails the step (B398).
             print(json.dumps({"rate_limited_until": exc.reset_at}, indent=2))
         else:
             print(f"rate limited until {exc.reset_at or 'unknown'}")

@@ -27,6 +27,8 @@ __all__ = [
     "CLASSIC_TOKEN_SHAPE",
     "CONFIG_JSON_KEYS",
     "CONFIG_JSON_RELATIVE",
+    "RETIRED_KEYS",
+    "retired_keys_seen",
     "DAILY",
     "RUN_WINDOW_PATTERN",
     "WINDOW_DAYS",
@@ -59,11 +61,6 @@ FIELD_KEYS: tuple[str, ...] = (
     "REPO",
     "PERMISSION_TIER",
     "ALLOWLIST_LABEL",
-    "WEEKLY_BUDGET_PCT",
-    "SESSION_BUDGET_PCT",
-    "RESERVE_PCT",
-    "WEEKLY_RESET_DAY",
-    "MAX_CONCURRENT_CLONES",
     "MAX_TURNS_DISCOVER",
     "MAX_TURNS_PROPOSE",
     "MAX_TURNS_IMPLEMENT",
@@ -76,14 +73,11 @@ FIELD_KEYS: tuple[str, ...] = (
     "PACKAGES_DIR",
     "HALT_FILE",
     "FULLSEND_ENABLED",
-    "WEEKLY_CAP_USD",
-    "PER_CALL_CAP_USD",
     "MAX_CONCURRENT_ITEMS",
     "MAX_REVISE_CYCLES",
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
-    "NOTIFY_POLL_HOURS",
     "MAX_SUBISSUES",
     "SELF_REPO",
     "TRACKING_ISSUE",
@@ -95,12 +89,10 @@ FIELD_KEYS: tuple[str, ...] = (
     "RUN_WINDOW_END",
     "MODEL",
     "EFFORT",
-    # Delivery 4 (DELIVERY-4-HANDOFF section 7): asking for work, and bounding what answers.
+    # Asking for work (D53).
     "INBOX_ISSUE",
-    "AUDIT_CAP_USD",
     "SUGGEST_MAX_PER_RUN",
     "COMMENT_UPSTREAM",
-    "ASK_CAP_USD",
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
     "AUDIT_MIN_HEADROOM_PCT",
@@ -115,12 +107,8 @@ KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS + PASSTHROUGH_KEYS
 
 #: The operational knobs `.harness/config.json` may carry, and nothing else (B112).
 CONFIG_JSON_KEYS: tuple[str, ...] = (
-    "WEEKLY_CAP_USD",
-    "PER_CALL_CAP_USD",
-    "RESERVE_PCT",
     "MAX_CONCURRENT_ITEMS",
     "MAX_REVISE_CYCLES",
-    "NOTIFY_POLL_HOURS",
     "MAX_SUBISSUES",
     "TRACKING_ISSUE",
     "FORK_REPO",
@@ -132,28 +120,35 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
     "INBOX_ISSUE",
-    "AUDIT_CAP_USD",
     "SUGGEST_MAX_PER_RUN",
     "COMMENT_UPSTREAM",
-    "ASK_CAP_USD",
     "ASK_MAX_PER_DAY",
     "SUGGEST_MIN_HEADROOM_PCT",
     "AUDIT_MIN_HEADROOM_PCT",
     "MAX_SELF_AUDIT_CYCLES",
 )
 
+#: Keys D74 removed. Accepted wherever a key is accepted and ignored, so an existing `.env` or
+#: `.harness/config.json` keeps loading; `harness doctor` names them as a warning until they
+#: are deleted. Never re-used for a live key.
+RETIRED_KEYS: tuple[str, ...] = (
+    "WEEKLY_BUDGET_PCT",
+    "SESSION_BUDGET_PCT",
+    "RESERVE_PCT",
+    "WEEKLY_RESET_DAY",
+    "MAX_CONCURRENT_CLONES",
+    "WEEKLY_CAP_USD",
+    "PER_CALL_CAP_USD",
+    "NOTIFY_POLL_HOURS",
+    "AUDIT_CAP_USD",
+    "ASK_CAP_USD",
+)
+
+#: The retired keys the last :func:`load_config` found, as ``(key, source)``.
+_LAST_RETIRED: list[tuple[str, str]] = []
+
 #: Where the override file lives, relative to the directory holding `.env`.
 CONFIG_JSON_RELATIVE: Path = Path(".harness") / "config.json"
-
-_WEEKDAYS: tuple[str, ...] = (
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-)
 
 _STAGE_KEYS: tuple[str, ...] = ("discover", "propose", "implement", "package")
 
@@ -200,11 +195,6 @@ class Config:
     repo: str
     permission_tier: int
     allowlist_label: str
-    weekly_budget_pct: float
-    session_budget_pct: float
-    reserve_pct: float
-    weekly_reset_day: str
-    max_concurrent_clones: int
     max_turns: Mapping[str, int]
     max_retries_gates: int
     github_api_ceiling_per_hour: int
@@ -216,14 +206,11 @@ class Config:
     fullsend_enabled: bool
     github_token_present: bool
     github_token_shape_ok: bool
-    weekly_cap_usd: float
-    per_call_cap_usd: float
     max_concurrent_items: int
     max_revise_cycles: int
     fork_repo: str
     upstream_repo: str
     trust_file: Path
-    notify_poll_hours: int
     max_subissues: int
     self_repo: str
     tracking_issue: int | None
@@ -241,10 +228,8 @@ class Config:
     effort: Literal["low", "medium", "high", "xhigh", "max"]
     #: Delivery 4. The inbox issue in SELF_REPO; 0 disables it.
     inbox_issue: int
-    audit_cap_usd: float
     suggest_max_per_run: int
     comment_upstream: bool
-    ask_cap_usd: float
     ask_max_per_day: int
     suggest_min_headroom_pct: float
     audit_min_headroom_pct: float
@@ -373,6 +358,11 @@ def read_config_json(path: Path) -> dict[str, str]:
         raise ConfigError(f"{path} must be a JSON object of config keys")
     out: dict[str, str] = {}
     for key, value in raw.items():
+        # A retired key is tolerated at any value shape, so it is skipped before both the
+        # unknown-key check and the scalar check (D74).
+        if key in RETIRED_KEYS:
+            _LAST_RETIRED.append((key, ".harness/config.json"))
+            continue
         if key not in CONFIG_JSON_KEYS:
             raise ConfigError(f"unknown key in .harness/config.json: {key}")
         out[key] = _json_scalar(key, value)
@@ -401,15 +391,22 @@ def load_config(
     except OSError as exc:
         raise ConfigError(f"could not read .env at {path}: {exc}") from exc
 
+    _LAST_RETIRED.clear()
     file_values = parse_env_text(text)
 
     for key in file_values:
-        if key not in KNOWN_KEYS:
+        if key not in KNOWN_KEYS and key not in RETIRED_KEYS:
             raise ConfigError(f"unknown key in .env: {key}")
 
     base_dir = path.resolve().parent
 
-    values: dict[str, str] = dict(file_values)
+    # A retired key is dropped here, so it reaches neither validation nor `_LAST_ENV` (D74).
+    values: dict[str, str] = {}
+    for key, value in file_values.items():
+        if key in RETIRED_KEYS:
+            _LAST_RETIRED.append((key, ".env"))
+            continue
+        values[key] = value
     values.update(read_config_json(base_dir / CONFIG_JSON_RELATIVE))
 
     source: Mapping[str, str] = os.environ if environ is None else environ
@@ -440,34 +437,6 @@ def load_config(
     allowlist_label = values["ALLOWLIST_LABEL"].strip()
     if not allowlist_label:
         raise ConfigError("ALLOWLIST_LABEL must not be empty")
-
-    weekly_budget_pct = _require_float(values, "WEEKLY_BUDGET_PCT")
-    if not 0 < weekly_budget_pct <= 100:
-        raise ConfigError(f"WEEKLY_BUDGET_PCT must be in (0, 100]; got {weekly_budget_pct}")
-
-    session_budget_pct = _require_float(values, "SESSION_BUDGET_PCT")
-    if not 0 < session_budget_pct <= 100:
-        raise ConfigError(f"SESSION_BUDGET_PCT must be in (0, 100]; got {session_budget_pct}")
-
-    reserve_pct = _require_float(values, "RESERVE_PCT")
-    if not 0 <= reserve_pct < 100:
-        raise ConfigError(f"RESERVE_PCT must be in [0, 100); got {reserve_pct}")
-
-    weekly_reset_day = values["WEEKLY_RESET_DAY"].strip()
-    if weekly_reset_day not in _WEEKDAYS:
-        raise ConfigError(
-            f"WEEKLY_RESET_DAY must be a lowercase weekday name; got {weekly_reset_day!r}"
-        )
-
-    max_concurrent_clones = _require_int(values, "MAX_CONCURRENT_CLONES")
-    if max_concurrent_clones < 1:
-        raise ConfigError(
-            f"MAX_CONCURRENT_CLONES must be at least 1; got {max_concurrent_clones}"
-        )
-    if max_concurrent_clones > 1:
-        raise ConfigError(
-            f"MAX_CONCURRENT_CLONES must be 1 in delivery 1; got {max_concurrent_clones}"
-        )
 
     turns: dict[str, int] = {}
     for stage in _STAGE_KEYS:
@@ -505,14 +474,6 @@ def load_config(
 
     # --- Delivery 2 keys (handoff §6.5, RUN-DECISIONS-D2 §2), in Config field order ---
 
-    weekly_cap_usd = _require_float(values, "WEEKLY_CAP_USD")
-    if weekly_cap_usd <= 0:
-        raise ConfigError(f"WEEKLY_CAP_USD must be > 0; got {weekly_cap_usd}")
-
-    per_call_cap_usd = _require_float(values, "PER_CALL_CAP_USD")
-    if per_call_cap_usd <= 0:
-        raise ConfigError(f"PER_CALL_CAP_USD must be > 0; got {per_call_cap_usd}")
-
     max_concurrent_items = _require_int(values, "MAX_CONCURRENT_ITEMS")
     if max_concurrent_items < 1:
         raise ConfigError(f"MAX_CONCURRENT_ITEMS must be at least 1; got {max_concurrent_items}")
@@ -528,10 +489,6 @@ def load_config(
     upstream_repo = _require_repo(values, "UPSTREAM_REPO")
 
     trust_file = _require_path(values, "TRUST_FILE", base_dir)
-
-    notify_poll_hours = _require_int(values, "NOTIFY_POLL_HOURS")
-    if notify_poll_hours < 1:
-        raise ConfigError(f"NOTIFY_POLL_HOURS must be at least 1; got {notify_poll_hours}")
 
     max_subissues = _require_int(values, "MAX_SUBISSUES")
     if not 1 <= max_subissues <= 50:
@@ -625,14 +582,10 @@ def load_config(
         if not fork_repo:
             raise ConfigError("PERMISSION_TIER=2 requires a non-empty FORK_REPO (owner/name)")
 
-    # Delivery 4 (DELIVERY-4-HANDOFF section 7).
+    # Asking for work (D53).
     inbox_issue = _require_int(values, "INBOX_ISSUE")
     if inbox_issue < 0:
         raise ConfigError(f"INBOX_ISSUE must be 0 or an issue number; got {inbox_issue}")
-
-    audit_cap_usd = _require_float(values, "AUDIT_CAP_USD")
-    if audit_cap_usd <= 0:
-        raise ConfigError(f"AUDIT_CAP_USD must be greater than 0; got {audit_cap_usd}")
 
     suggest_max_per_run = _require_int(values, "SUGGEST_MAX_PER_RUN")
     if suggest_max_per_run < 0:
@@ -641,10 +594,6 @@ def load_config(
         )
 
     comment_upstream = _require_bool(values, "COMMENT_UPSTREAM")
-
-    ask_cap_usd = _require_float(values, "ASK_CAP_USD")
-    if ask_cap_usd <= 0:
-        raise ConfigError(f"ASK_CAP_USD must be greater than 0; got {ask_cap_usd}")
 
     ask_max_per_day = _require_int(values, "ASK_MAX_PER_DAY")
     if ask_max_per_day < 0:
@@ -687,11 +636,6 @@ def load_config(
         repo=repo,
         permission_tier=permission_tier,
         allowlist_label=allowlist_label,
-        weekly_budget_pct=weekly_budget_pct,
-        session_budget_pct=session_budget_pct,
-        reserve_pct=reserve_pct,
-        weekly_reset_day=weekly_reset_day,
-        max_concurrent_clones=max_concurrent_clones,
         max_turns=max_turns,
         max_retries_gates=max_retries_gates,
         github_api_ceiling_per_hour=github_api_ceiling_per_hour,
@@ -703,14 +647,11 @@ def load_config(
         fullsend_enabled=fullsend_enabled,
         github_token_present=github_token_present,
         github_token_shape_ok=github_token_shape_ok,
-        weekly_cap_usd=weekly_cap_usd,
-        per_call_cap_usd=per_call_cap_usd,
         max_concurrent_items=max_concurrent_items,
         max_revise_cycles=max_revise_cycles,
         fork_repo=fork_repo,
         upstream_repo=upstream_repo,
         trust_file=trust_file,
-        notify_poll_hours=notify_poll_hours,
         max_subissues=max_subissues,
         self_repo=self_repo,
         tracking_issue=tracking_issue,
@@ -724,10 +665,8 @@ def load_config(
         model=model,
         effort=effort,
         inbox_issue=inbox_issue,
-        audit_cap_usd=audit_cap_usd,
         suggest_max_per_run=suggest_max_per_run,
         comment_upstream=comment_upstream,
-        ask_cap_usd=ask_cap_usd,
         ask_max_per_day=ask_max_per_day,
         suggest_min_headroom_pct=suggest_min_headroom_pct,
         audit_min_headroom_pct=audit_min_headroom_pct,
@@ -792,6 +731,15 @@ def run_window_label(config: Config) -> str:
     if start.startswith(prefix) and end.startswith(prefix):
         return f"{start}-{end[len(prefix):]}"
     return f"{start}-{end}"
+
+
+def retired_keys_seen() -> tuple[tuple[str, str], ...]:
+    """Every retired key the last :func:`load_config` read, as ``(key, source)`` (D74).
+
+    ``source`` is ``".env"`` or ``".harness/config.json"``. ``harness doctor`` reports these as
+    warnings, never as problems: a stale line in the operator's own file must not stop the fleet.
+    """
+    return tuple(_LAST_RETIRED)
 
 
 def github_token() -> str:

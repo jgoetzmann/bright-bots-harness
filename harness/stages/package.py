@@ -23,7 +23,7 @@ def package(ctx: Context, item_id: int, lease: Lease) -> Path:
     if item is None:
         raise HarnessError(f"no work item {item_id}")
 
-    from harness.packager import build  # lazy: packager imports stages.propose (S2)
+    from harness.packager import build  # lazy: packager imports stages.propose
 
     path = build(ctx, item_id, lease)
 

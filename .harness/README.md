@@ -1,60 +1,36 @@
-# `.harness/` — operator-editable configuration
+# `.harness/`: operator-owned configuration
 
-Everything in this directory is owned by the operator (see `.github/CODEOWNERS`) and changed only
-through a reviewed pull request. The harness reads these files; it never writes them. `.harness/`
-is **not** one of the harness's allowed write roots (B143): a stage that tried to touch it would be
-refused by `redact.allowed_roots()` before any I/O.
+Everything here is CODEOWNERS-protected and changed only through a reviewed pull request. The
+harness reads these files and never writes them: `.harness/` is not one of its write roots
+(B143).
 
-## What lives here
-
-| File | Purpose | Written by |
+| File | Purpose | Changed by |
 | --- | --- | --- |
-| `trust.txt` | GitHub handles whose `/harness …` keyword commands are honoured, and how much: `<level> <handle> [vouch:<id>]` per line, `#` comments, case-insensitive. A handle here is necessary but not sufficient — GitHub must also confirm who is typing, either by the account id the line vouches for or by an `author_association` of `OWNER`, `MEMBER` or `COLLABORATOR` (B131, D68). The vouched form is the ordinary one (D69): it admits that one account on every repository whatever its association, refuses any other account holding the login, grants no repository access, and is still capped by its level. Anything that would grant less than it says — a bad level, a handle that is not a GitHub login, a malformed vouch, a stray token, two lines disagreeing about an account — refuses the whole line and is named by `harness doctor`. `harness trust line <login> --level 2` prints the line to paste; `harness trust show` reads the file back as the gate sees it. | a human, via PR |
-| `config.json` | Operational knobs only (P12, B112). Exactly these keys, upper-snake: `WEEKLY_CAP_USD`, `PER_CALL_CAP_USD`, `RESERVE_PCT`, `MAX_CONCURRENT_ITEMS`, `MAX_REVISE_CYCLES`, `NOTIFY_POLL_HOURS`, `MAX_SUBISSUES`, `TRACKING_ISSUE`, `FORK_REPO`, `UPSTREAM_REPO`, `TRUST_FILE`, `WEEKLY_USAGE_STOP_PCT`, `SESSION_USAGE_STOP_PCT`, `OVERRUN_PCT`, `RUN_WINDOW_START`, `RUN_WINDOW_END`. A value here overrides the same key in `.env`; any other key is a startup error naming it. | a human, via PR |
-| `HALT` | The kill switch for Actions mode (B149/B150). If this file exists on the default branch, every spending workflow logs `halted by .harness/HALT` and exits 0 as its **first** step — before checkout, before `harness doctor`, before the dispatcher. Creating it is a one-line commit that works from a phone. Delete it to resume. | a human, via commit |
-| `PIN` | sha256 over the pinned result definition (`harness/gates.py`, `harness/packager.py`, `harness/redact.py`, every file under `prompts/`). Checked by `python -m harness.verify_pin --check` in the container entrypoint and in `selftest`. | the orchestrator, `python -m harness.verify_pin --write` |
+| `trust.txt` | Who may give `/harness` commands, and at which level: `<level> <handle> [vouch:<id>]` per line. Its header explains the format and the levels. `harness trust line <login> --level 2` prints a line to paste, `harness trust show` reads the file back as the gate sees it, and `harness doctor` names any line the gate refuses. | a PR |
+| `config.json` | Operational knobs. The allowed keys are `config.CONFIG_JSON_KEYS`, nineteen of them; any other key is a startup error naming it. A value here overrides the same key in `.env`. | a PR |
+| `HALT` | The Actions-mode kill switch. While it exists on the default branch, every spending workflow logs `halted by .harness/HALT` and exits 0 as its first step. Delete it to resume. | a commit |
+| `PIN` | sha256 over `harness/gates.py`, `harness/packager.py`, `harness/redact.py` and every file under `prompts/`. Checked by `harness doctor`, `selftest` and the container entrypoint. | `python -m harness.verify_pin --write`, in a PR |
 
 ## What may go in `config.json`
 
-A knob whose change alters **how much** or **how often** the harness works: budget caps, reserve,
-concurrency, revise cycles, poll cadence, decomposition bound, the fork and upstream names, the
-tracking issue number, the trust file path, and the five usage-governance knobs below.
+A knob that changes how much or how often the harness works: concurrency, revise cycles, the
+self-audit cap, the decomposition bound, the usage stops and carry leeway, the run window, the
+suggestion and ask limits and the headroom floors under suggested work and `/harness audit`,
+whether it may comment upstream, the fork and upstream names, the inbox and tracking issues,
+and the trust file path.
+[docs/OPERATIONS.md](../docs/OPERATIONS.md) explains the usage stops, the run window and the
+leeway, and how to change them.
 
-### The usage-governance knobs (Delivery 3)
+Moving `RUN_WINDOW_START`/`RUN_WINDOW_END` does not move the schedule: the crons in
+`.github/workflows/discover.yml` and `implement.yml` decide when a job wakes, and the window
+decides what it may start once awake. Move both together.
 
-These five read the subscription's own utilization, which the `claude` CLI reports on every call
-as a `rate_limit_event`. Nothing DEPENDS on that signal: when it is absent the USD path
-(`WEEKLY_CAP_USD`, `RESERVE_PCT`, `PER_CALL_CAP_USD`) governs exactly as in Delivery 2 (B114,
-DECISIONS D31). Full procedure in [`docs/OPERATIONS.md`](../docs/OPERATIONS.md) §13.
-
-| Knob | Ships as | Range | What changing it does |
-| --- | --- | --- | --- |
-| `WEEKLY_USAGE_STOP_PCT` | `90` | `0 < x <= 100` | Nothing new starts once the seven-day utilization reaches this. Lower it to leave more of the week for interactive use; raise it to spend nearer the wall. |
-| `SESSION_USAGE_STOP_PCT` | `70` | `0 < x <= 100` | The same for the rolling five-hour window. The tighter of the two stops wins. This file sets `80`: the harness has one session a day to itself (D72). |
-| `OVERRUN_PCT` | `10` | `0 <= x < WEEKLY_USAGE_STOP_PCT` | Leeway granted to a **carried** item after a weekly reset, so a half-finished branch reaches a delivery PR instead of being abandoned. Applies to that one item; everything else still waits for `WEEKLY_USAGE_STOP_PCT`. Under a daily run window the carried item also waits for the window, and without a weekly reading the leeway never binds (D72). |
-| `RUN_WINDOW_START` | `mon 08:00` | `^(mon\|tue\|wed\|thu\|fri\|sat\|sun\|daily) HH:MM$`, UTC | Opens the window in which new items may start: weekly with a weekday, every day with `daily` (D72). This file sets `daily 11:00`. |
-| `RUN_WINDOW_END` | `tue 20:00` | same shape and the same kind as the start; a weekly window may wrap past Sunday, a daily one past midnight | Closes it. This file sets `daily 15:00`, an hour before a session opened by discover's 11:07 call would end. Both empty = always open. |
-
-Changing `RUN_WINDOW_START`/`RUN_WINDOW_END` does **not** move the schedule: the crons in
-`.github/workflows/implement.yml` are the times GitHub wakes the job up, and the window is what the
-dispatcher enforces once it is awake. Move both together, or the job wakes to find nothing eligible.
-`harness run --item N` bypasses the window on purpose; it never bypasses the usage stops.
-
-### The self-audit knob (D70)
-
-| Knob | Ships as | Range | What changing it does |
-| --- | --- | --- | --- |
-| `MAX_SELF_AUDIT_CYCLES` | `3` (in `.env`, not in `config.json`) | integer `>= 0` | How many times a separate model call audits an item's diff against its approved work package once the gates are green; blocking findings get one fix pass per cycle, and the gates re-run after it. `0` turns the audit off: no model call, no record, no line in the pull request. Findings are a model's opinion and never block delivery. |
-
-`FORK_REPO` and `TRACKING_ISSUE` ship empty/`null` in `.env.example`. Fill them in here once the
-machine account's fork exists and the pinned tracking issue is open (HUMAN.md items 3 and 12). The workflows also
-accept repository variables `FORK_REPO` and `TRACKING_ISSUE` and use them only where this file
-leaves the knob empty.
+The workflows also accept repository variables `FORK_REPO` and `TRACKING_ISSUE`, and use them
+only where this file leaves the knob empty.
 
 ## What may not go here
 
-A knob whose change alters **what the harness concludes** is not configuration; it is a code
-change, reviewed as one (B112):
+A change to what the harness concludes is a code change, reviewed as one (B112):
 
 - the gate sequence or any gate's timeout, command or threshold (`harness/gates.py`);
 - the redaction patterns or the allowed write roots (`harness/redact.py`);
@@ -64,18 +40,5 @@ change, reviewed as one (B112):
 - anything that would let a keyword comment bypass the actor gate (`harness/trust.py`,
   `harness/keywords.py`).
 
-Adding such a key to `config.json` does not silently take effect: `load_config` rejects any key
-outside the list above (`config.CONFIG_JSON_KEYS`, twenty-five keys since D70 added the
-self-audit cycle cap),
-so the run fails at `harness doctor` naming the key (A30).
-
-## Notes
-
-- `trust.txt` carries real handles now — `jgoetzmann` and `BrightBoost-Tech`; the
-  `<NATHAN_HANDLE>` placeholder it shipped with is gone. `Identity.trust_file_ready()` is what
-  reads that: it wants the file present, at least two handles, and no placeholder left. Adding
-  or removing a handle is a reviewed PR, and `tests/test_trust.py` pins the shipped file.
-  `BrightBoost-Tech` is vouched (`vouch:193453438`) instead of being a collaborator here (D30,
-  D68); `harness doctor` lists every vouch and warns if the login now resolves to another id.
-- The harness never merges, approves or dismisses anything (I-12). Nothing in this directory can
-  change that.
+`load_config` rejects any key outside `config.CONFIG_JSON_KEYS`, so such a key fails at
+`harness doctor`.

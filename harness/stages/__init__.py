@@ -1,5 +1,5 @@
-"""Stage registry, prompt loading (``string.Template``, never f-strings), and the one model-call
-wrapper every stage goes through — including the B120 rate-limit sequence."""
+"""Stage registry, prompt loading (``string.Template``, never f-strings), and ``run_model``,
+the wrapper every model call goes through, including the rate-limit sequence (B120)."""
 
 from __future__ import annotations
 
@@ -35,21 +35,21 @@ __all__ = [
 
 StageFn = Callable[..., Any]
 
-#: ``<repo root>/prompts`` — this file is ``<repo root>/harness/stages/__init__.py``.
+#: ``<repo root>/prompts``; this file is ``<repo root>/harness/stages/__init__.py``.
 PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 
-#: The state an item is returned to on a rate limit when the calling stage did not say (B120).
-#: ``implement`` and ``package`` are frozen Delivery 1 files and cannot be edited to pass one.
+#: The state an item returns to on a rate limit when the calling stage passes no
+#: ``entry_state`` (B120).
 DEFAULT_ENTRY_STATE: dict[str, str] = {
     "implement": "approved",
     "package": "implementing",
-    # D70: both self-audit calls run inside implement, holding its clone and its state.
+    # Both self-audit calls run inside implement, holding its clone and its state.
     "selfaudit": "approved",
     "selfaudit_fix": "approved",
 }
 
 #: When the runner reports a rate limit without a usable reset time, the dispatcher is held off
-#: for this long rather than for nothing at all.
+#: for this long.
 DEFAULT_RESET_DELAY = timedelta(hours=1)
 
 _DURATION = re.compile(r"^\+?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
@@ -68,8 +68,8 @@ def system_prompt() -> str:
 
 
 def data_block(label: str, text: str) -> str:
-    """A fence the content cannot break out of, labelled as data (R11.4). Every prompt that
-    quotes an issue body, review text, or gate output wraps it here."""
+    """A fence the content cannot break out of, labelled as data. Every prompt that quotes an
+    issue body, review text or gate output wraps it here."""
     body = text if text.endswith("\n") else text + "\n"
     longest = 0
     for line in body.splitlines():
@@ -85,13 +85,11 @@ def read_issue_body(
 ) -> str:
     """The issue text behind a work item, stripped; ``""`` when there is none to read.
 
-    One dispatch for every stage that needs it. An ``issue:<n>`` reference is an issue of the
-    product repository and is read through ``ctx.gh.issue``; anything else is an issue of
-    ``SELF_REPO`` — ``self:<n>`` by its recorded number, and otherwise by the work-item id,
-    which *is* the issue number under the GitHub store. Never fatal: a failed read is ``""``,
-    and ``on_error`` (if given) receives the exception so a caller can record a decision about
-    it. Whether that read is worth a decision line is the caller's business, not this
-    function's; so is what to put in the prompt when the body is empty.
+    An ``issue:<n>`` reference is an issue of the product repository, read through
+    ``ctx.gh.issue``; anything else is an issue of ``SELF_REPO``, found by its recorded number
+    for ``self:<n>`` and otherwise by the work-item id, which is the issue number under the
+    GitHub store. Never fatal: a failed read is ``""``, and ``on_error`` (if given) receives
+    the exception.
     """
     ref = str(item.external_ref)
     try:
@@ -114,7 +112,7 @@ def resolve_reset(raw: str | None, now: datetime) -> str:
     """Turn a runner's ``reset_at`` into ISO-Z.
 
     Accepts an ISO-8601 timestamp (any offset), a ``+PT30M``-style duration relative to ``now``,
-    or nothing at all — in which case the reset is ``now + DEFAULT_RESET_DELAY``.
+    or nothing, in which case the reset is ``now + DEFAULT_RESET_DELAY``.
     """
     text = (raw or "").strip()
     if not text:
@@ -133,12 +131,12 @@ def resolve_reset(raw: str | None, now: datetime) -> str:
 
 
 def stamp_usage(usage: Mapping[str, Any] | None, now: datetime) -> dict | None:
-    """D3: the runner reports the utilisation it saw, the stage says *when* it saw it.
+    """The runner's usage reading, stamped with the time the stage saw it.
 
-    ``observed_at`` never comes from the model's own output — the ledger uses it to decide
-    whether an observation belongs to the current window, so it is the harness's clock or
-    nothing at all. Anything that is not a mapping (an older fixture, a backend that reports
-    no usage) is ``None``: B114 still holds, no decision may depend on the signal existing.
+    ``observed_at`` comes from the harness clock, never from the model's output: the ledger
+    uses it to decide whether a reading belongs to the current window. Anything that is not a
+    mapping (an older fixture, a backend that reports no usage) is ``None``, and no decision
+    may depend on the reading existing (B114).
     """
     if not isinstance(usage, Mapping):
         return None
@@ -147,13 +145,13 @@ def stamp_usage(usage: Mapping[str, Any] | None, now: datetime) -> dict | None:
     return stamped
 
 
-#: Files and directories under the repository root that no model call may read (B218/D36).
+#: Files and directories under the repository root that no model call may read (B218).
 #: `.env` holds the machine-account PAT and the Claude OAuth token; `state/` and `.harness/`
 #: hold the ledger, the trust file and the pin.
 DENY_UNDER_ROOT: tuple[str, ...] = (".env", "local/.env", ".harness/**", "state/**")
 
-#: The same, under the operator's home directory: every credential store a stage could
-#: otherwise walk into. On an Actions runner most of these do not exist, which costs nothing.
+#: The same, under the operator's home directory: the credential stores a stage could otherwise
+#: walk into. Most of them do not exist on an Actions runner, which is harmless.
 DENY_UNDER_HOME: tuple[str, ...] = (
     ".claude/**",
     ".ssh/**",
@@ -166,14 +164,12 @@ DENY_UNDER_HOME: tuple[str, ...] = (
 
 
 def deny_read_paths(config: Any) -> tuple[str, ...]:
-    """Absolute paths handed to every :class:`RunRequest` as ``deny_read`` (B218/D36).
+    """Absolute paths handed to every :class:`RunRequest` as ``deny_read`` (B218).
 
     The `claude` CLI does not confine ``Read`` to the working directory: under
-    ``--permission-mode acceptEdits`` it reads any absolute path it is asked for. That was
-    measured, not assumed -- a propose call with `cwd` set to an empty run directory read the
-    harness's own `.env` and an unrelated product checkout elsewhere on the disk. Enumerating
-    the sensitive paths is what the CLI's rule syntax can actually express; it closes the
-    credential path, and it does not pretend to be a sandbox.
+    ``--permission-mode acceptEdits`` it reads any absolute path it is asked for. Enumerating
+    the sensitive paths is what the CLI's rule syntax can express; it closes the credential
+    paths and is not a sandbox.
     """
     paths: list[str] = []
     root = Path(getattr(config, "repo_root", ".")).resolve()
@@ -209,15 +205,13 @@ def run_model(
 ) -> RunResult:
     """One model call with its bookkeeping, including the rate-limit outcome (B120).
 
-    B288: every model call the harness makes passes through here, so this is where admission
-    lives. Priority first, then the governor -- and in that order because the two answer
-    different questions. Priority says whether this *class* of call should be happening at all
-    right now; the governor says whether there is allowance for it. Priority never overrules
-    the governor (B291): a class-0 `ask` past a usage stop still does not run.
+    Every model call the harness makes passes through here, so admission lives here: priority
+    says whether this class of call should run at all right now, then the governor applies the
+    usage stops and the stored rate limit. Priority never overrules the governor: a class-0
+    `ask` past a usage stop does not run.
     """
-    # Both switches, via the context: the file and the commanded halt. This is the last line of
-    # defence rather than the only one -- every stage checks at its own entry too, so a halted
-    # harness does not clone a repository and run `npm ci` before finding out.
+    # Both switches, via the context: the file and the commanded halt. Every stage checks at its
+    # own entry too, so a halted harness does not clone a repository before finding out.
     ctx.check_halt()
     refused = priority.admit(
         _class_of_call(ctx, stage, item_id),
@@ -243,15 +237,14 @@ def run_model(
         cwd=cwd,
         timeout_s=timeout_s,
         add_dirs=add_dirs,
-        max_budget_usd=auth.max_budget_usd,
         deny_read=deny_read_paths(ctx.config),
         model=getattr(ctx.config, "model", None),
         effort=getattr(ctx.config, "effort", None),
     )
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)
-    # D3: every call carries the rate-limit windows back from the inference headers. The
-    # governor stores them; the dispatcher and the usage stops read them from the ledger.
+    # Every call carries the rate-limit windows back from the inference headers. The governor
+    # stores them; the dispatcher and the usage stops read them from the ledger.
     usage = stamp_usage(getattr(result, "usage", None), ctx.clock.now())
 
     limited = runner_base.is_rate_limited(result)
@@ -259,20 +252,15 @@ def run_model(
     if limited:
         reset_iso = resolve_reset(getattr(result, "reset_at", None), ctx.clock.now())
 
-    allowance = result.allowance_pct
-    if allowance is None:
-        allowance = ctx.governor.estimate(stage)
     if run_id is not None:
         ctx.store.finish_stage_run(
             run_id,
             status="ok" if result.ok else "failed",
             turns=result.turns,
-            allowance_pct=allowance,
-            cost_usd=result.cost_usd,
             exit_reason=f"rate limited until {reset_iso}" if limited else result.error,
             transcript_path=str(transcript_path),
         )
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd, usage=usage)
+    ctx.governor.record(auth, usage=usage)
 
     if limited:
         _rate_limited(
@@ -291,7 +279,7 @@ def _class_of_call(ctx: Context, stage: str, item_id: int | None) -> str:
     if item_id:
         try:
             item = ctx.store.get_work_item(int(item_id))
-        except Exception:  # pragma: no cover - a store that cannot answer is not the class
+        except Exception:  # pragma: no cover - a store that cannot answer means no `via`
             item = None
         if item is not None:
             via = priority.via_of(item)
@@ -301,7 +289,7 @@ def _class_of_call(ctx: Context, stage: str, item_id: int | None) -> str:
 def _rate_limited(
     ctx: Context, *, stage: str, item_id: int | None, reset_iso: str, entry_state: str | None
 ) -> None:
-    """B120: back to the entry state, reset time into the ledger, event, comment, raise."""
+    """Back to the entry state, reset time into the ledger, event, comment, raise (B120)."""
     if item_id is not None and entry_state:
         item = ctx.store.get_work_item(item_id)
         if item is not None and item.state != entry_state:
@@ -356,8 +344,8 @@ STAGES: dict[str, StageFn] = {
     "deliver": deliver.deliver,
     "revise": revise.revise,
     "decompose": decompose.decompose,
-    # Not stages a work item passes through: the routes by which one comes into being, and the
-    # two that create no work item at all (B247/B274).
+    # Not stages a work item passes through: `request` and `promote` are routes by which one
+    # comes into being, and `ask` and `audit` create no work item at all (B247).
     "request": discover.request,
     "ask": ask_stage.ask,
     "audit": audit_stage.audit,

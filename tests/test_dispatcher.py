@@ -1,11 +1,10 @@
-"""Spec tests for ``harness.dispatcher`` — Delivery 2 handoff §6.4 (B121–B123, B107).
+"""Spec tests for ``harness.dispatcher`` (B121–B123, B107).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §5; Config keys by §2 plus Delivery 1's list.
-Fixtures are inline on purpose.
+Fixtures are inline.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from datetime import datetime, timezone
@@ -15,7 +14,7 @@ import pytest
 
 from harness.clock import FrozenClock, iso
 from harness.config import load_config
-from harness.dispatcher import STATIC_USD, Candidate, Plan, plan
+from harness.dispatcher import Candidate, Plan, plan
 from harness.errors import ConfigError
 from harness.ledger import Ledger
 
@@ -23,19 +22,14 @@ NOW = FrozenClock(datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)).now()
 NOW_ISO = iso(NOW)
 PERIOD_START = "2026-08-31T00:00:00Z"
 RUN_URL = "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/1"
-BUDGET_REASON = re.compile(r"^budget \d+% remaining, (\d+) of max (\d+) slots$")
+SLOTS_REASON = re.compile(r"^(\d+) of max (\d+) slots$")
 
-# Every key Delivery 1 requires (RUN-DECISIONS "Config extras") plus every Delivery 2 §2 key.
+# Every key the config requires.
 BASE_ENV: tuple[tuple[str, str], ...] = (
     ("BACKEND", "fake"),
     ("REPO", "Bright-Bots-Initiative/brightboost"),
     ("PERMISSION_TIER", "0"),
     ("ALLOWLIST_LABEL", "harness-ok"),
-    ("WEEKLY_BUDGET_PCT", "40"),
-    ("SESSION_BUDGET_PCT", "15"),
-    ("RESERVE_PCT", "10"),
-    ("WEEKLY_RESET_DAY", "monday"),
-    ("MAX_CONCURRENT_CLONES", "1"),
     ("MAX_TURNS_DISCOVER", "10"),
     ("MAX_TURNS_PROPOSE", "30"),
     ("MAX_TURNS_IMPLEMENT", "80"),
@@ -50,14 +44,11 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("FULLSEND_ENABLED", "false"),
     ("HARNESS_GITHUB_TOKEN", ""),
     ("ANTHROPIC_API_KEY", ""),
-    ("WEEKLY_CAP_USD", "25.00"),
-    ("PER_CALL_CAP_USD", "3.00"),
     ("MAX_CONCURRENT_ITEMS", "1"),
     ("MAX_REVISE_CYCLES", "3"),
     ("FORK_REPO", ""),
     ("UPSTREAM_REPO", "Bright-Bots-Initiative/brightboost"),
     ("TRUST_FILE", ".harness/trust.txt"),
-    ("NOTIFY_POLL_HOURS", "3"),
     ("MAX_SUBISSUES", "8"),
     ("SELF_REPO", "jgoetzmann/bright-bots-harness"),
     ("TRACKING_ISSUE", ""),
@@ -65,10 +56,8 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("MODEL", "opus"),
     ("EFFORT", "xhigh"),
     ("INBOX_ISSUE", "0"),
-    ("AUDIT_CAP_USD", "20.00"),
     ("SUGGEST_MAX_PER_RUN", "5"),
     ("COMMENT_UPSTREAM", "true"),
-    ("ASK_CAP_USD", "0.50"),
     ("ASK_MAX_PER_DAY", "20"),
     ("SUGGEST_MIN_HEADROOM_PCT", "50"),
     ("AUDIT_MIN_HEADROOM_PCT", "75"),
@@ -99,18 +88,14 @@ def github_config(tmp_path: Path, slots: int = 3):
                        FORK_REPO="bb-machine/brightboost")
 
 
-def ledger_spent(spent_usd: float) -> Ledger:
-    """A ledger with exactly `spent_usd` spent, recorded under a stage no candidate uses so the
-    implement estimate stays on the static table."""
-    ledger = Ledger.empty(PERIOD_START)
-    if spent_usd:
-        ledger.record(ts=NOW_ISO, stage="package", issue=1, usd=spent_usd, run=RUN_URL)
-    return ledger
+def empty_ledger() -> Ledger:
+    """A ledger whose window is the period containing NOW, with nothing recorded."""
+    return Ledger.empty(PERIOD_START)
 
 
-def cands(*issues: int, stage: str = "implement") -> tuple[Candidate, ...]:
+def cands(*issues: int) -> tuple[Candidate, ...]:
     """Candidates whose created_at increases with position — oldest first as given."""
-    return tuple(Candidate(issue=n, stage=stage, created_at=f"2026-09-01T10:{k:02d}:00Z")
+    return tuple(Candidate(issue=n, created_at=f"2026-09-01T10:{k:02d}:00Z")
                  for k, n in enumerate(issues))
 
 
@@ -128,7 +113,7 @@ def test_B121_rate_limited_until_in_the_future_gives_empty_plan_naming_the_limit
     """B121: while now < rate_limited_until the dispatcher starts nothing and the reason names
     the reset time."""
     config = make_config(tmp_path)
-    ledger = ledger_spent(0.0)
+    ledger = empty_ledger()
     ledger.set_rate_limited("2026-09-02T13:00:00Z")
     result = run_plan(config, ledger, cands(816, 823))
     assert result.start == ()
@@ -141,7 +126,7 @@ def test_B121_rate_limited_until_in_the_future_gives_empty_plan_naming_the_limit
 def test_B121_rate_limit_expired_at_now_starts_work(tmp_path):
     """B121: at now == rate_limited_until the limit is over — the plan starts the candidate."""
     config = make_config(tmp_path)
-    ledger = ledger_spent(0.0)
+    ledger = empty_ledger()
     ledger.set_rate_limited(NOW_ISO)
     result = run_plan(config, ledger, cands(816))
     assert result.start == (816,)
@@ -151,17 +136,17 @@ def test_B121_rate_limit_expired_at_now_starts_work(tmp_path):
 def test_B121_rate_limit_in_the_past_starts_work(tmp_path):
     """B121: a reset time already passed does not block the plan."""
     config = make_config(tmp_path)
-    ledger = ledger_spent(0.0)
+    ledger = empty_ledger()
     ledger.set_rate_limited("2026-09-01T00:00:00Z")
     result = run_plan(config, ledger, cands(816))
     assert result.start == (816,)
 
 
 def test_B121_rate_limit_is_checked_before_halt(tmp_path):
-    """B121/§6.4 order: step 1 (rate limit) precedes step 2 (halt) — both set, the reason is the
+    """B121: step 1 (rate limit) precedes step 2 (halt) — both set, the reason is the
     rate limit."""
     config = make_config(tmp_path)
-    ledger = ledger_spent(0.0)
+    ledger = empty_ledger()
     ledger.set_rate_limited("2026-09-02T13:00:00Z")
     result = run_plan(config, ledger, cands(816), halted=True)
     assert result.start == ()
@@ -169,69 +154,17 @@ def test_B121_rate_limit_is_checked_before_halt(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# halt (§6.4 step 2; the CLI-level HALT exit code and ordering are tested elsewhere)
+# halt (the CLI-level HALT exit code and ordering are tested elsewhere)
 # ---------------------------------------------------------------------------
 
 def test_B122_halted_gives_empty_plan_with_reason_halted(tmp_path):
-    """B122 (§6.4 step 2): a repo-level HALT yields an empty plan with reason 'halted' even with
-    budget and candidates available."""
+    """B122: a repo-level HALT yields an empty plan with reason 'halted' even with
+    candidates available."""
     config = make_config(tmp_path)
-    result = run_plan(config, ledger_spent(0.0), cands(816, 823), halted=True)
+    result = run_plan(config, empty_ledger(), cands(816, 823), halted=True)
     assert result.start == ()
     assert result.reason == "halted"
     assert json.loads(result.to_json())["start"] == []
-
-
-def test_B122_halt_is_checked_before_reserve(tmp_path):
-    """B122/§6.4 order: step 2 (halt) precedes step 3 (reserve)."""
-    config = make_config(tmp_path)
-    result = run_plan(config, ledger_spent(24.0), cands(816), halted=True)
-    assert result.start == ()
-    assert result.reason == "halted"
-
-
-# ---------------------------------------------------------------------------
-# reserve (§6.4 step 3)
-# ---------------------------------------------------------------------------
-
-def test_B122_reserve_boundary_spent_equals_cap_times_one_minus_reserve(tmp_path):
-    """B122 (§6.4 step 3): spent_usd == weekly_cap_usd*(1-reserve_pct/100) → empty plan, reason
-    led by 'reserve'. 25.00 * 0.90 = 22.50.
-
-    The token is pinned as a PREFIX rather than the whole string: B295 appends the subscription
-    reading beside it, because "reserve" alone tells an operator a dollar estimate stopped them
-    and nothing about whether the thing that actually runs out is anywhere near its limit. The
-    arithmetic B122 froze is unchanged, and the sibling reason above already carried the same
-    suffix. Nothing outside the tests ever compared this string for equality.
-    """
-    config = make_config(tmp_path)
-    assert config.weekly_cap_usd == pytest.approx(25.0)
-    assert config.reserve_pct == pytest.approx(10.0)
-    result = run_plan(config, ledger_spent(22.50), cands(816))
-    assert result.start == ()
-    assert result.reason.startswith("reserve")
-
-
-def test_B122_reserve_when_spent_exceeds_the_boundary(tmp_path):
-    """B122 (§6.4 step 3): spend past the reserve line → empty plan, reason led by 'reserve'."""
-    config = make_config(tmp_path)
-    result = run_plan(config, ledger_spent(23.10), cands(816, 823))
-    assert result.start == ()
-    assert result.reason.startswith("reserve")
-    data = json.loads(result.to_json())
-    assert data["start"] == []
-    assert data["reason"].startswith("reserve")
-
-
-
-def test_B122_just_below_reserve_is_not_reserve_but_estimate_skips(tmp_path):
-    """B122 (§6.4 steps 3 and 6): one cent below the reserve line is not 'reserve'; the candidate
-    is instead skipped because its $2.50 static estimate exceeds the $0.50 remaining."""
-    config = make_config(tmp_path)
-    result = run_plan(config, ledger_spent(22.00), cands(816))
-    assert not result.reason.startswith("reserve")
-    assert result.start == ()
-    assert result.skipped == {"816": "estimate $2.50 exceeds remaining $0.50"}
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +177,7 @@ def test_B107_unmet_depends_on_is_skipped_with_the_exact_reason(tmp_path):
     config = github_config(tmp_path, slots=3)
     candidates = (Candidate(issue=816, created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=819, depends_on=(816,), created_at="2026-09-01T10:01:00Z"))
-    result = run_plan(config, ledger_spent(0.0), candidates, merged=set())
+    result = run_plan(config, empty_ledger(), candidates, merged=set())
     assert result.start == (816,)
     assert result.skipped == {"819": "depends_on 816 not merged"}
     data = json.loads(result.to_json())
@@ -256,7 +189,7 @@ def test_B107_partially_met_depends_on_names_the_unmerged_one(tmp_path):
     """B107: all dependencies must be merged; the reason names the one that is not."""
     config = github_config(tmp_path, slots=3)
     candidates = (Candidate(issue=830, depends_on=(816, 817), created_at="2026-09-01T10:00:00Z"),)
-    result = run_plan(config, ledger_spent(0.0), candidates, merged={816})
+    result = run_plan(config, empty_ledger(), candidates, merged={816})
     assert result.start == ()
     assert result.skipped == {"830": "depends_on 817 not merged"}
 
@@ -265,75 +198,20 @@ def test_B107_fully_merged_depends_on_starts(tmp_path):
     """B107: once every dependency is stage:done the candidate is eligible."""
     config = github_config(tmp_path, slots=3)
     candidates = (Candidate(issue=830, depends_on=(816, 817), created_at="2026-09-01T10:00:00Z"),)
-    result = run_plan(config, ledger_spent(0.0), candidates, merged={816, 817, 900})
+    result = run_plan(config, empty_ledger(), candidates, merged={816, 817, 900})
     assert result.start == (830,)
     assert result.skipped == {}
 
 
 def test_B107_dependency_skip_does_not_consume_a_slot(tmp_path):
-    """B107/§6.4 order: step 5 drops unmet dependencies before step 7 takes slots — the blocked
+    """B107: step 5 drops unmet dependencies before step 7 takes slots — the blocked
     oldest candidate does not crowd out the next one."""
     config = make_config(tmp_path)  # sqlite → one slot
     candidates = (Candidate(issue=819, depends_on=(816,), created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=823, created_at="2026-09-01T10:05:00Z"))
-    result = run_plan(config, ledger_spent(0.0), candidates, merged=set())
+    result = run_plan(config, empty_ledger(), candidates, merged=set())
     assert result.start == (823,)
     assert result.skipped == {"819": "depends_on 816 not merged"}
-
-
-# ---------------------------------------------------------------------------
-# estimate vs remaining (§6.4 step 6)
-# ---------------------------------------------------------------------------
-
-def test_B122_static_estimate_exceeding_remaining_is_skipped(tmp_path):
-    """B122 (§6.4 step 6): below three observations the static table applies — implement is
-    $2.50; with $1.50 remaining (22.50 - 21.00) the candidate is skipped with the exact reason."""
-    config = make_config(tmp_path)
-    assert STATIC_USD["implement"] == pytest.approx(2.50)
-    result = run_plan(config, ledger_spent(21.00), cands(816))
-    assert result.start == ()
-    assert result.skipped == {"816": "estimate $2.50 exceeds remaining $1.50"}
-    assert BUDGET_REASON.match(result.reason), result.reason
-    assert BUDGET_REASON.match(result.reason).group(1) == "0"
-
-
-def test_B122_median_estimate_replaces_static_after_three_observations(tmp_path):
-    """B122 (§6.4 step 6): with three implement observations the median ($1.00) is the estimate,
-    which fits the $1.50 remaining where the static $2.50 would not."""
-    config = make_config(tmp_path)
-    ledger = Ledger.empty(PERIOD_START)
-    for i in range(3):
-        ledger.record(ts=NOW_ISO, stage="implement", issue=700 + i, usd=1.00, run=RUN_URL)
-    ledger.record(ts=NOW_ISO, stage="package", issue=1, usd=18.00, run=RUN_URL)
-    assert ledger.window["spent_usd"] == pytest.approx(21.00)
-    assert ledger.median_usd("implement") == pytest.approx(1.00)
-    result = run_plan(config, ledger, cands(816))
-    assert result.start == (816,)
-    assert result.skipped == {}
-
-
-def test_B122_static_table_values(tmp_path):
-    """B122/§6.4: the static estimates are the frozen table.
-
-    Delivery 4 added two. `ask` is one read and a paragraph; `audit` reads a whole repository,
-    which is why it has a ceiling of its own (`AUDIT_CAP_USD`) rather than the per-call cap.
-
-    D70 added two more: `selfaudit` reads one diff against one work package, priced like a
-    propose, and `selfaudit_fix` is one more implementation pass, priced like a revise."""
-    assert STATIC_USD == {"discover": 0.20, "propose": 0.50, "implement": 2.50, "revise": 1.00,
-                          "decompose": 0.30, "package": 0.05, "ask": 0.05, "audit": 3.00,
-                          "selfaudit": 0.50, "selfaudit_fix": 1.00}
-
-
-def test_B122_cheaper_stage_fits_where_implement_does_not(tmp_path):
-    """B122 (§6.4 step 6): the estimate is per candidate stage — a $0.50 propose fits in $1.50
-    remaining while a $2.50 implement is skipped."""
-    config = github_config(tmp_path, slots=3)
-    candidates = (Candidate(issue=816, stage="implement", created_at="2026-09-01T10:00:00Z"),
-                  Candidate(issue=823, stage="propose", created_at="2026-09-01T10:01:00Z"))
-    result = run_plan(config, ledger_spent(21.00), candidates)
-    assert result.start == (823,)
-    assert result.skipped == {"816": "estimate $2.50 exceeds remaining $1.50"}
 
 
 # ---------------------------------------------------------------------------
@@ -345,10 +223,10 @@ def test_B123_github_mode_cap_is_max_concurrent_items(tmp_path):
     start, the newest is 'slots full', the reason reports 3 of max 3."""
     config = github_config(tmp_path, slots=3)
     assert config.max_concurrent_items == 3
-    result = run_plan(config, ledger_spent(0.0), cands(816, 823, 830, 841))
+    result = run_plan(config, empty_ledger(), cands(816, 823, 830, 841))
     assert result.start == (816, 823, 830)
     assert result.skipped == {"841": "slots full"}
-    m = BUDGET_REASON.match(result.reason)
+    m = SLOTS_REASON.match(result.reason)
     assert m, result.reason
     assert (m.group(1), m.group(2)) == ("3", "3")
 
@@ -359,10 +237,10 @@ def test_B123_sqlite_mode_cap_is_one(tmp_path):
     config = make_config(tmp_path)
     assert config.store_backend == "sqlite"
     assert config.max_concurrent_items == 1
-    result = run_plan(config, ledger_spent(0.0), cands(816, 823, 830))
+    result = run_plan(config, empty_ledger(), cands(816, 823, 830))
     assert result.start == (816,)
     assert result.skipped == {"823": "slots full", "830": "slots full"}
-    m = BUDGET_REASON.match(result.reason)
+    m = SLOTS_REASON.match(result.reason)
     assert m, result.reason
     assert (m.group(1), m.group(2)) == ("1", "1")
 
@@ -375,33 +253,33 @@ def test_B123_sqlite_mode_rejects_max_concurrent_items_above_one(tmp_path):
 
 
 def test_B123_max_concurrent_items_zero_is_rejected(tmp_path):
-    """B123/§2: MAX_CONCURRENT_ITEMS must be >= 1."""
+    """B123: MAX_CONCURRENT_ITEMS must be >= 1."""
     with pytest.raises(ConfigError):
         make_config(tmp_path, MAX_CONCURRENT_ITEMS="0")
 
 
 # ---------------------------------------------------------------------------
-# ordering (§6.4 step 4)
+# ordering
 # ---------------------------------------------------------------------------
 
 def test_B122_candidates_are_taken_oldest_first_regardless_of_input_order(tmp_path):
-    """B122 (§6.4 step 4): oldest first by created_at — input order does not matter; with two
+    """B122: oldest first by created_at — input order does not matter; with two
     slots the two oldest start and the newest is 'slots full'."""
     config = github_config(tmp_path, slots=2)
     candidates = (Candidate(issue=841, created_at="2026-09-01T12:00:00Z"),
                   Candidate(issue=816, created_at="2026-08-30T08:00:00Z"),
                   Candidate(issue=823, created_at="2026-08-31T09:00:00Z"))
-    result = run_plan(config, ledger_spent(0.0), candidates)
+    result = run_plan(config, empty_ledger(), candidates)
     assert result.start == (816, 823)
     assert result.skipped == {"841": "slots full"}
 
 
 def test_B122_ties_on_created_at_break_by_issue_number(tmp_path):
-    """B122/RUN-DECISIONS-D2 §5: equal created_at orders by issue number."""
+    """B122: equal created_at orders by issue number."""
     config = github_config(tmp_path, slots=1)
     candidates = (Candidate(issue=823, created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=816, created_at="2026-09-01T10:00:00Z"))
-    result = run_plan(config, ledger_spent(0.0), candidates)
+    result = run_plan(config, empty_ledger(), candidates)
     assert result.start == (816,)
     assert result.skipped == {"823": "slots full"}
 
@@ -414,7 +292,7 @@ def test_B122_same_inputs_give_byte_identical_plans(tmp_path):
     """B122: the dispatcher is pure — the same ledger/config/candidates produce byte-identical
     to_json() output on two consecutive calls."""
     config = github_config(tmp_path, slots=2)
-    ledger = ledger_spent(3.25)
+    ledger = empty_ledger()
     candidates = (Candidate(issue=816, created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=819, depends_on=(816,), created_at="2026-09-01T10:01:00Z"),
                   Candidate(issue=823, created_at="2026-09-01T10:02:00Z"),
@@ -431,7 +309,7 @@ def test_B122_plan_mutates_nothing_and_starts_nothing(tmp_path):
     """B122: planning leaves the ledger JSON, the config and the filesystem exactly as they were —
     it emits a plan, it never starts work."""
     config = github_config(tmp_path, slots=3)
-    ledger = ledger_spent(1.0)
+    ledger = empty_ledger()
     ledger.mark_seen("IC_1")
     ledger_before = ledger.to_json()
     config_before = repr(config)
@@ -444,12 +322,12 @@ def test_B122_plan_mutates_nothing_and_starts_nothing(tmp_path):
 
 
 def test_B122_to_json_key_order_and_types(tmp_path):
-    """B122/§6.4: the plan JSON is {"start": [...], "reason": "...", "skipped": {...}} in that
+    """B122: the plan JSON is {"start": [...], "reason": "...", "skipped": {...}} in that
     order, indent=2, start as a list of ints, skipped keyed by issue-number strings."""
     config = github_config(tmp_path, slots=1)
     candidates = (Candidate(issue=816, created_at="2026-09-01T10:00:00Z"),
                   Candidate(issue=819, depends_on=(816,), created_at="2026-09-01T10:01:00Z"))
-    text = run_plan(config, ledger_spent(0.0), candidates).to_json()
+    text = run_plan(config, empty_ledger(), candidates).to_json()
     assert text.startswith('{\n  "start": [')
     data = json.loads(text)
     assert list(data.keys()) == ["start", "reason", "skipped"]
@@ -457,25 +335,26 @@ def test_B122_to_json_key_order_and_types(tmp_path):
     assert all(isinstance(n, int) for n in data["start"])
     assert data["skipped"] == {"819": "depends_on 816 not merged"}
     assert all(isinstance(k, str) for k in data["skipped"])
-    assert isinstance(data["reason"], str) and BUDGET_REASON.match(data["reason"])
+    assert isinstance(data["reason"], str) and SLOTS_REASON.match(data["reason"])
 
 
-def test_B122_empty_candidates_give_empty_start_with_budget_reason(tmp_path):
+def test_B122_empty_candidates_give_empty_start_with_the_slots_reason(tmp_path):
     """B122: no candidates → nothing starts, nothing skipped, reason reports 0 of max n slots."""
     config = github_config(tmp_path, slots=3)
-    result = run_plan(config, ledger_spent(0.0), ())
+    result = run_plan(config, empty_ledger(), ())
     assert result.start == ()
     assert result.skipped == {}
-    m = BUDGET_REASON.match(result.reason)
+    assert result.reason == "0 of max 3 slots"
+    m = SLOTS_REASON.match(result.reason)
     assert m, result.reason
     assert (m.group(1), m.group(2)) == ("0", "3")
     assert json.loads(result.to_json()) == {"start": [], "reason": result.reason, "skipped": {}}
 
 
 def test_B122_plan_fields_are_immutable_tuple_and_dict(tmp_path):
-    """B122/§5: Plan.start is a tuple of ints and Plan.skipped a dict of str→str."""
+    """B122: Plan.start is a tuple of ints and Plan.skipped a dict of str→str."""
     config = make_config(tmp_path)
-    result = run_plan(config, ledger_spent(0.0), cands(816, 823))
+    result = run_plan(config, empty_ledger(), cands(816, 823))
     assert isinstance(result, Plan)
     assert isinstance(result.start, tuple)
     assert isinstance(result.skipped, dict)
@@ -483,14 +362,13 @@ def test_B122_plan_fields_are_immutable_tuple_and_dict(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Delivery 3 — RUN-DECISIONS-D3 "Dispatcher" (B209, B210, B211) and config.in_run_window.
-# Appended by the D3 spec-tester (T1); additions only.
+# The run window (B209, B210, B211) and config.in_run_window.
 #
-# plan() order becomes: rate limit → halted → usage stop → reserve → run window → candidates.
-# NOW (2026-09-02T12:00:00Z) is a Wednesday, i.e. OUTSIDE the mon 08:00 → tue 20:00 window.
+# plan() order: rate limit → halted → carry → usage stop → run window → candidates.
+# NOW (2026-09-02T12:00:00Z) is a Wednesday, outside the mon 08:00 → tue 20:00 window.
 # ---------------------------------------------------------------------------
 
-# RUN-DECISIONS-D3 "Config" — the five new keys with their .env.example values (inline).
+# The five new keys with their .env.example values (inline).
 D3_ENV: dict[str, str] = {
     "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
@@ -537,10 +415,10 @@ def d3_usage(*, weekly: float = 0.49, session: float = 0.07) -> dict:
     }
 
 
-def usage_ledger(*, weekly: float = 0.49, session: float = 0.07, spent_usd: float = 0.0,
+def usage_ledger(*, weekly: float = 0.49, session: float = 0.07,
                  carry: int | None = None) -> Ledger:
     """A ledger that has seen the signal, optionally carrying an item across the reset."""
-    ledger = ledger_spent(spent_usd)
+    ledger = empty_ledger()
     ledger.observe_usage(d3_usage(weekly=weekly, session=session), NOW_ISO)
     if carry is not None:
         ledger.set_carry(carry, NOW_ISO, "weekly usage 91% >= 90%")
@@ -552,7 +430,7 @@ def usage_ledger(*, weekly: float = 0.49, session: float = 0.07, spent_usd: floa
 # ---------------------------------------------------------------------------
 
 def test_B211_usage_stop_reports_the_weekly_and_session_reasons(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": usage_stop(ledger, config, carry=False) is the planner's
+    """usage_stop(ledger, config, carry=False) is the planner's
     copy of the governor's rule, with the same exact reasons."""
     from harness.dispatcher import usage_stop
 
@@ -564,7 +442,7 @@ def test_B211_usage_stop_reports_the_weekly_and_session_reasons(tmp_path):
 
 
 def test_B211_usage_stop_uses_the_leeway_for_a_carried_item(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": carry=True swaps the weekly stop for OVERRUN_PCT."""
+    """carry=True swaps the weekly stop for OVERRUN_PCT."""
     from harness.dispatcher import usage_stop
 
     config = d3_config(tmp_path)
@@ -575,18 +453,18 @@ def test_B211_usage_stop_uses_the_leeway_for_a_carried_item(tmp_path):
 
 
 def test_B211_usage_stop_is_none_without_the_signal(tmp_path):
-    """RUN-DECISIONS-D3 / B114: no decision may DEPEND on the signal — a ledger that never saw a
+    """B114: no decision may DEPEND on the signal — a ledger that never saw a
     rate_limit_event never trips the usage stop."""
     from harness.dispatcher import usage_stop
 
     config = d3_config(tmp_path)
-    assert usage_stop(ledger_spent(0.0), config) is None
-    assert usage_stop(ledger_spent(0.0), config, carry=True) is None
+    assert usage_stop(empty_ledger(), config) is None
+    assert usage_stop(empty_ledger(), config, carry=True) is None
 
 
 def test_B211_a_usage_stop_empties_the_plan_with_that_reason(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": the usage stop sits between halt and reserve — past the
-    weekly threshold nothing starts and the reason is the usage reason."""
+    """The usage stop sits between the halt and the run window — past
+    the weekly threshold nothing starts and the reason is the usage reason."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     result = run_plan(config, usage_ledger(weekly=0.91), cands(816, 823))
     assert result.start == ()
@@ -594,17 +472,8 @@ def test_B211_a_usage_stop_empties_the_plan_with_that_reason(tmp_path):
     assert json.loads(result.to_json())["reason"] == "weekly usage 91% >= 90%"
 
 
-def test_B211_the_usage_stop_is_checked_before_the_reserve(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": order — usage stop precedes reserve, so a run that is both
-    out of dollars and out of allowance reports the allowance."""
-    config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
-    result = run_plan(config, usage_ledger(weekly=0.91, spent_usd=23.10), cands(816))
-    assert result.start == ()
-    assert result.reason == "weekly usage 91% >= 90%"
-
-
 def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": the D2 steps keep their places — a live rate limit is
+    """The D2 steps keep their places — a live rate limit is
     still the first thing reported."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     ledger = usage_ledger(weekly=0.91)
@@ -614,7 +483,7 @@ def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
 
 
 def test_B211_halt_is_still_checked_before_the_usage_stop(tmp_path):
-    """RUN-DECISIONS-D3 "Dispatcher": halted still wins over the usage stop."""
+    """Halted still wins over the usage stop."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
     result = run_plan(config, usage_ledger(weekly=0.91), cands(816), halted=True)
     assert result.reason == "halted"
@@ -715,18 +584,6 @@ def test_B209_no_carry_means_no_exemption(tmp_path):
     assert result.reason == WINDOW_REASON
 
 
-def test_B209_the_carry_item_still_obeys_the_dollar_reserve(tmp_path):
-    """B209: the leeway is about allowance, not dollars — past the reserve line the plan is the
-    D2 reserve plan, carry or no carry."""
-    config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.05, session=0.05, spent_usd=23.10, carry=816)
-
-    result = run_plan(config, ledger, cands(816), now=WED)
-
-    assert result.start == ()
-    assert result.reason.startswith("reserve")  # B295 appends the subscription reading
-
-
 # ---------------------------------------------------------------------------
 # B210 — outside the run window nothing else starts, with the exact reason
 # ---------------------------------------------------------------------------
@@ -780,8 +637,7 @@ def test_B210_a_wrapping_window_is_open_on_sunday(tmp_path):
 
 
 def test_B210_an_empty_window_is_always_open(tmp_path):
-    """B210 / RUN-DECISIONS-D3 "Config": both empty = always open — the Delivery 2 dispatcher
-    behaviour, unchanged, for a house that does not want a window."""
+    """B210: both empty = always open, for a house that does not want a window."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
 
     for moment in (WED, MON_INSIDE, SUN_NOON, TUE_INSIDE):
@@ -790,34 +646,20 @@ def test_B210_an_empty_window_is_always_open(tmp_path):
         assert "outside run window" not in result.reason
 
 
-def test_B210_the_run_window_is_checked_after_the_reserve(tmp_path):
-    """B210: order — reserve precedes the run window, so a drained week says "reserve" even
-    outside the window."""
-    config = d3_config(tmp_path)
-
-    result = run_plan(config, usage_ledger(spent_usd=23.10), cands(816), now=WED)
-
-    assert result.start == ()
-    assert result.reason.startswith("reserve")  # B295 appends the subscription reading
-
-
 # ---------------------------------------------------------------------------
-# B211 — inside the window the D2 selection is unchanged, with a usage suffix
+# B211 — inside the window the selection is unchanged, with a usage suffix
 # ---------------------------------------------------------------------------
 
-def test_B211_the_reason_keeps_the_d2_shape_and_appends_the_utilization(tmp_path):
-    """B211: inside the window with usage under both thresholds the reason is the D2 budget
-    reason with "; weekly 49%, session 7%" appended — percentages as integers."""
+def test_B211_the_reason_is_the_slot_count_with_the_utilization_appended(tmp_path):
+    """B211: inside the window with usage under both thresholds the reason is the slot count
+    with "; weekly 49%, session 7%" appended — percentages as integers."""
     config = d3_config(tmp_path)
 
     result = run_plan(config, usage_ledger(weekly=0.49, session=0.07), cands(816),
                       now=MON_INSIDE)
 
     assert result.start == (816,)
-    assert result.reason.endswith("; weekly 49%, session 7%")
-    prefix = result.reason.split(";")[0]
-    assert BUDGET_REASON.match(prefix), result.reason
-    assert BUDGET_REASON.match(prefix).group(1) == "1"
+    assert result.reason == "1 of max 1 slots; weekly 49%, session 7%"
 
 
 def test_B211_the_suffix_reports_the_latest_observation(tmp_path):
@@ -830,21 +672,21 @@ def test_B211_the_suffix_reports_the_latest_observation(tmp_path):
     assert result.reason.endswith("; weekly 85%, session 66%")
 
 
-def test_B211_without_the_signal_the_reason_is_exactly_the_d2_reason(tmp_path):
-    """B211/B114: the suffix is appended only when usage is known — without the signal the D2
-    reason is unchanged, character for character."""
+def test_B211_without_the_signal_the_reason_is_the_bare_slot_count(tmp_path):
+    """B211/B114: the suffix is appended only when usage is known — without the signal the
+    reason is the slot count alone, character for character."""
     config = d3_config(tmp_path)
 
-    result = run_plan(config, ledger_spent(0.0), cands(816), now=MON_INSIDE)
+    result = run_plan(config, empty_ledger(), cands(816), now=MON_INSIDE)
 
     assert result.start == (816,)
-    assert BUDGET_REASON.match(result.reason), result.reason
+    assert result.reason == "1 of max 1 slots"
     assert "weekly" not in result.reason
     assert "session" not in result.reason
 
 
-def test_B211_inside_the_window_the_d2_selection_is_unchanged(tmp_path):
-    """B211: unchanged D2 selection — oldest first, unmet dependencies skipped, slots enforced,
+def test_B211_inside_the_window_the_selection_is_unchanged(tmp_path):
+    """B211: unchanged selection — oldest first, unmet dependencies skipped, slots enforced,
     the same skipped strings."""
     config = d3_github_config(tmp_path, slots=2)
     candidates = (Candidate(issue=816, created_at="2026-09-01T10:00:00Z"),
@@ -859,16 +701,45 @@ def test_B211_inside_the_window_the_d2_selection_is_unchanged(tmp_path):
     assert result.reason.endswith("; weekly 49%, session 7%")
 
 
-def test_B211_inside_the_window_the_estimate_rule_is_unchanged(tmp_path):
-    """B211: the D2 dollar estimate still governs inside the window — a $2.50 implement does not
-    fit $1.50 of remaining budget."""
+# ---------------------------------------------------------------------------
+# B420 — a pre-D74 ledger's spend stops nothing, and no dollar state survives
+# ---------------------------------------------------------------------------
+
+def test_B420_a_pre_d74_ledger_with_spend_no_longer_stops_anything(tmp_path):
+    """B420 (D74): the live ledger carried a spend total, a per-stage observation map and USD
+    on every history entry. None of it is read, so the candidate starts."""
+    fixture = Path(__file__).resolve().parent / "fixtures" / "ledger" / "pre_d74.json"
+    config = make_config(tmp_path)
+    ledger = Ledger.from_json(fixture.read_text(encoding="utf-8"))
+    ledger.window.pop("usage", None)  # the reading is B399's business, not D74's
+
+    result = run_plan(config, ledger, cands(816))
+
+    assert result.start == (816,)
+    assert result.reason == "1 of max 1 slots"
+    assert result.skipped == {}
+
+
+def test_B420_the_dispatcher_holds_no_dollar_state(tmp_path):
+    """B420 (D74): no static table, no estimator, no per-candidate stage, and nothing in the
+    planner's own source that reads or prints money."""
+    import inspect
+
+    from harness import dispatcher as dispatcher_module
+
+    assert not hasattr(dispatcher_module, "STATIC_USD")
+    assert not hasattr(dispatcher_module, "estimate_usd")
+    assert dispatcher_module.__all__ == ["Candidate", "Plan", "plan", "usage_stop"]
+    assert "stage" not in {f.name for f in dataclasses.fields(Candidate)}
+    source = inspect.getsource(dispatcher_module.plan).lower()
+    for token in ("usd", "reserve", "$"):
+        assert token not in source, token
+
+    # Order: outside the window a weekly stop is still the reason, because the usage stop is
+    # checked first.
     config = d3_config(tmp_path)
-
-    result = run_plan(config, usage_ledger(spent_usd=21.00), cands(816), now=MON_INSIDE)
-
-    assert result.start == ()
-    assert result.skipped == {"816": "estimate $2.50 exceeds remaining $1.50"}
-    assert result.reason.endswith("; weekly 49%, session 7%")
+    result = run_plan(config, usage_ledger(weekly=0.95), cands(816), now=WED)
+    assert result.reason == "weekly usage 95% >= 90%"
 
 
 def test_B211_planning_still_mutates_nothing(tmp_path):
@@ -887,11 +758,11 @@ def test_B211_planning_still_mutates_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# in_run_window — the wrap cases (RUN-DECISIONS-D3 "Config")
+# in_run_window — the wrap cases
 # ---------------------------------------------------------------------------
 
 def test_B210_in_run_window_inside_and_outside(tmp_path):
-    """RUN-DECISIONS-D3 "Config": in_run_window(config, now) is pure and UTC — Monday 09:00 and
+    """in_run_window(config, now) is pure and UTC — Monday 09:00 and
     Tuesday 19:00 are inside mon 08:00 → tue 20:00; Wednesday noon is not."""
     from harness.config import in_run_window
 
@@ -904,7 +775,7 @@ def test_B210_in_run_window_inside_and_outside(tmp_path):
 
 
 def test_B210_in_run_window_wraps_past_sunday(tmp_path):
-    """RUN-DECISIONS-D3 "Config": the window may wrap — sat 22:00 → mon 08:00 covers Saturday
+    """The window may wrap — sat 22:00 → mon 08:00 covers Saturday
     night, all of Sunday and Monday morning, and nothing else."""
     from harness.config import in_run_window
 
@@ -919,7 +790,7 @@ def test_B210_in_run_window_wraps_past_sunday(tmp_path):
 
 
 def test_B210_an_empty_window_is_always_in(tmp_path):
-    """RUN-DECISIONS-D3 "Config": both empty = always open."""
+    """Both empty = always open."""
     from harness.config import in_run_window
 
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")

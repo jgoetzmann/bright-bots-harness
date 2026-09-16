@@ -1,10 +1,10 @@
-"""Delivery 2 - the `decompose` stage.
+"""The `decompose` stage.
 
 Behaviors under test: B110 (N sub-issues in THIS repository, each queued and linked to the
 parent; parent blocked with a comment listing them; never an issue on the product repo, I-14)
 and B111 (bounded by max_subissues; a sub-issue is never decomposed - depth is one).
 
-Fixtures are inline on purpose. Nothing here touches the network or the wall clock.
+Fixtures are inline. Nothing here touches the network or the wall clock.
 """
 from __future__ import annotations
 
@@ -62,11 +62,6 @@ BASE_ENV = {
     "REPO": UPSTREAM,
     "PERMISSION_TIER": "2",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "90",
-    "SESSION_BUDGET_PCT": "90",
-    "RESERVE_PCT": "5",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -81,14 +76,11 @@ BASE_ENV = {
     "FULLSEND_ENABLED": "false",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
-    "WEEKLY_CAP_USD": "100.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": FORK,
     "UPSTREAM_REPO": UPSTREAM,
     "TRUST_FILE": "trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
@@ -96,10 +88,8 @@ BASE_ENV = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -130,7 +120,7 @@ def make_config(tmp_path: Path, **overrides):
 
 
 class FakeGh:
-    """Stand-in for `harness.gh.GitHubClient` exposing exactly the section-7 surface.
+    """Stand-in for `harness.gh.GitHubClient` exposing exactly the client surface.
 
     Issues live in `repos[repo][number]` (labels as `[{"name": ...}]`); comments, label
     events, reviews and review comments are keyed by `(repo, number)`. Every method call is
@@ -246,7 +236,7 @@ class FakeGh:
             out.append(copy.deepcopy(issue))
         return sorted(out, key=lambda i: i["number"])
 
-    # ---- section 7 reads ----
+    # ---- reads ----
     def get(self, path: str):
         self._record("get", path=path)
         url = path
@@ -352,7 +342,7 @@ class FakeGh:
         self._record("user")
         return self.user_dict()
 
-    # ---- section 7 writes ----
+    # ---- writes ----
     def comment(self, repo, number, body) -> dict:
         self._record("comment", repo=repo, number=number, body=body)
         self._write("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
@@ -492,13 +482,13 @@ class RecordingRunner:
 
 
 def write_fixtures(dir_: Path, *, decompose_text: str | None = DECOMPOSE_TEXT) -> Path:
-    base = {"turns": 2, "cost_usd": 0.12, "allowance_pct": None, "duration_ms": 800,
+    base = {"turns": 2, "duration_ms": 800,
             "session_id": "sess-2", "exit_code": 0, "transcript": [], "error": None,
             "reset_at": None}
     if decompose_text is not None:
         _w(dir_ / "decompose.json", json.dumps({"ok": True, "text": decompose_text, **base}))
     _w(dir_ / "rate_limited.json", json.dumps({
-        "ok": False, "text": "", "turns": None, "cost_usd": 0.0, "allowance_pct": None,
+        "ok": False, "text": "", "turns": None,
         "duration_ms": 40, "session_id": None, "exit_code": 1, "transcript": [],
         "error": "Claude usage limit reached. Resets at 2026-09-02T13:30:00Z",
         "reset_at": "2026-09-02T13:30:00Z", "rate_limited": True}))
@@ -565,7 +555,7 @@ def test_B110_parent_is_blocked_with_a_comment_listing_the_children(tmp_path):
 
 
 def test_B110_sub_issue_titles_and_bodies_come_from_the_numbered_lines(tmp_path):
-    """B110 / section 13: `N. <title> - <body>` lines become the sub-issues, in order."""
+    """B110: `N. <title> - <body>` lines become the sub-issues, in order."""
     s = setup_decompose(tmp_path)
     before = set(s.gh.repos[SELF_REPO])
     children = decompose(s.ctx, PARENT)
@@ -610,7 +600,7 @@ def test_B110_decompose_never_files_anything_on_the_product_repo(tmp_path):
 
 
 def test_B110_the_model_sees_the_parent_issue_and_the_bound(tmp_path):
-    """B110 / section 13: prompts/decompose.md is rendered with the issue title and body."""
+    """B110: prompts/decompose.md is rendered with the issue title and body."""
     s = setup_decompose(tmp_path)
     decompose(s.ctx, PARENT)
     assert len(s.runner.requests) == 1

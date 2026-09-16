@@ -1,4 +1,5 @@
-"""The discover stage: directed, triage (queue first, then the product repo), refused audit."""
+"""The discover stage: directed, assigned and triage routes, the green-light comment, and the
+work item a `/harness work` request creates."""
 
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ def discover(
     ctx.check_halt()
 
     if mode == "audit":
-        # B247: an audit produces one findings issue and no work items, so it returns no ids.
+        # An audit produces one findings issue and no work items, so it returns no ids (B247).
         # Imported here rather than at the top: `harness.stages.audit` imports this package.
         from harness.stages.audit import audit
 
@@ -65,13 +66,13 @@ def discover(
 
 
 def _directed(ctx: Context, target: str | None, *, via: str = "requested") -> list[int]:
-    """B53/B54: exactly one work item, no model call, no duplicate on a re-run."""
+    """Exactly one work item, no model call, and no duplicate on a re-run (B53)."""
     number = _parse_target(target)
     ref = f"issue:{number}"
 
     existing = ctx.store.find_by_ref(ref)
     if existing is not None:
-        # B54. Returning the existing item costs no GitHub call at all.
+        # Returning the existing item makes no GitHub call (B54).
         ctx.record_decision(
             f"directed discover of {ref} returned existing work item {existing.id} "
             f"in state {existing.state} rather than creating a duplicate"
@@ -89,8 +90,7 @@ def _directed(ctx: Context, target: str | None, *, via: str = "requested") -> li
         external_ref=ref,
         title=title,
         tier_required=0,
-        # B227: the issue the harness opens quotes the one it is tracking, so a reader on the
-        # web can judge the work without leaving the page.
+        # The issue the harness opens quotes the body of the one it tracks (B227).
         upstream_body=str(issue.get("body") or ""),
         via=via,
     )
@@ -113,28 +113,24 @@ def _parse_target(target: str | None) -> int:
 
 
 # --------------------------------------------------------------------------------------------
-# triage — the queue in this repository first
+# triage: the queue in this repository first
 # --------------------------------------------------------------------------------------------
 
 
 def machine_account(config: Any) -> str:
     """The login the harness runs as: the owner of the fork it pushes to (B233).
 
-    Derived rather than configured, because a fork the machine account does not own is not a
-    fork it can push to — `FORK_REPO` already names the account, and a second key naming it
-    again could only ever disagree.
+    Derived from `FORK_REPO`, since the machine account can push only to a fork it owns.
     """
     fork = str(getattr(config, "fork_repo", "") or "").strip()
     return fork.split("/")[0] if "/" in fork else ""
 
 
 def _assigned(ctx: Context) -> list[int]:
-    """B233: every open product-repository issue assigned to the machine account.
+    """Queue every open product-repository issue assigned to the machine account (B233).
 
-    Assignment is a maintainer saying "this one is yours", on the ticket itself, in the place
-    they already work. It is the allowlist label's job without the label — and unlike the
-    label, it is a gesture GitHub already has a verb for. No model call: which issues are
-    assigned is a fact, not a judgement.
+    Assignment does the allowlist label's job on the ticket itself, so no label is needed and
+    no model call is made.
     """
     account = machine_account(ctx.config)
     if not account:
@@ -166,7 +162,7 @@ def _assigned(ctx: Context) -> list[int]:
             title=title,
             tier_required=0,
             upstream_body=str(issue.get("body") or ""),
-            # B264/D56: assignment is its own way in, and the priority queue reads it.
+            # Assignment is its own way in, and the priority queue reads it (B264).
             via="assigned",
         )
         ctx.store.append_event(item_id, "info", f"queued {ref}: assigned to @{account}")
@@ -193,8 +189,8 @@ def _triage(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]
 
 
 def _triage_queue(ctx: Context, queued: Sequence[Any]) -> list[int]:
-    """Rank the items already queued here. Reads nothing from the product repository and
-    creates nothing: the ids returned are the ids that went in, best first."""
+    """Rank the items already queued here, best first. Reads nothing from the product
+    repository and creates nothing: the ids returned are the ids that went in."""
     ctx.record_decision(
         f"triage: {len(queued)} work item(s) already discovered in the queue; ranking those "
         "and reading no product-repository issue list"
@@ -240,15 +236,14 @@ def _render_queue(ctx: Context, queued: Sequence[Any]) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# triage — Delivery 1, the product repository, unchanged
+# triage: the product repository
 # --------------------------------------------------------------------------------------------
 
 
 def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]:
-    # B257/B290: looking at the product repository for work is *suggesting*, and a suggestion
-    # runs only when nothing anybody asked for is outstanding and the week has headroom left.
-    # Checked before the GitHub reads as well as before the model call, because the refusal is
-    # the same either way and the reads are not free.
+    # Looking at the product repository for work is suggesting, and a suggestion runs only when
+    # nothing anybody asked for is outstanding and the week has headroom left (B257). Checked
+    # before the GitHub reads as well as before the model call, since the refusal is the same.
     refused = priority.admit(
         "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
     )
@@ -268,13 +263,11 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
         f"{len(branches)} branches; claimed issue numbers = {sorted(claimed)}"
     )
 
-    # B332: an issue that already has a work item, in any state, is not suggested again. A
-    # suggestion still waiting for gate 1, one somebody stopped, and one already built all
-    # carry the issue's ref; `_ensure_item` would hand that old id back, it would take one of
-    # the SUGGEST_MAX_PER_RUN slots, and discover.yml's `harness propose <id>` would refuse it
-    # (`_enter` accepts only a queued item) and turn the run red. Worse, a maintainer's
-    # `/harness stop` would be undone by the next day's ranking. One store read, not one per
-    # issue: `find_by_ref` on the GitHub store pages every issue each time it is called.
+    # An issue that already has a work item, in any state, is not suggested again (B332):
+    # `_ensure_item` would hand the old id back, it would take a SUGGEST_MAX_PER_RUN slot,
+    # `harness propose <id>` would refuse an item that is not queued, and a maintainer's
+    # `/harness stop` would be undone. One store read: `find_by_ref` on the GitHub store pages
+    # every issue each time it is called.
     known = {
         str(getattr(item, "external_ref", "") or "") for item in ctx.store.list_work_items()
     }
@@ -338,8 +331,7 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
 
     by_number = {_issue_number(i): i for i in survivors}
     item_ids: list[int] = []
-    # B258: at most this many per run. Five proposals a person has to read is a week's worth of
-    # goodwill; fifty is a reason to turn the harness off.
+    # At most this many suggestions per run (B258).
     cap = int(getattr(ctx.config, "suggest_max_per_run", 0) or 0)
     for number in ranked:
         issue = by_number.get(number)
@@ -373,7 +365,7 @@ def _rejection_reason(
     """Return why this issue is not a candidate, or ``None`` when it survives."""
     mine = _assigned_to(issue, machine)
     if _is_assigned(issue) and not mine:
-        return "assigned"  # B55: to somebody else, so it is somebody else's work
+        return "assigned"  # somebody else's work (B55)
     if number in claimed:
         return "claimed by an in-flight branch or pull request title"  # B56
     labels = _label_names(issue)
@@ -381,8 +373,7 @@ def _rejection_reason(
     if hit:
         return f"excluded label {hit[0]}"  # B57
     if mine:
-        # B233: assignment is the statement the allowlist label makes, made on the ticket
-        # itself. Requiring both would mean a maintainer had to say the same thing twice.
+        # Assignment to the machine account stands in for the allowlist label (B233).
         return None
     if not ignore_allowlist and allowlist_label not in labels:
         return f"missing allowlist label {allowlist_label}"  # B58
@@ -461,11 +452,11 @@ def _ensure_item(ctx: Context, number: int, title: str, *, via: str = "requested
 
 
 # --------------------------------------------------------------------------------------------
-# the green light — B259-B263
+# the green light (B259-B263)
 # --------------------------------------------------------------------------------------------
 
-#: The phrase that makes the comment findable again. `sweep` must never treat its own comment as
-#: a new request, and a person must be able to see at a glance that the harness already asked.
+#: Marks the green-light comment, so a later run finds the one it already posted (B260) and a
+#: reader can see that the harness has asked.
 GREEN_LIGHT_MARKER = "<!-- bright-bots-harness: green-light-request -->"
 
 
@@ -474,13 +465,11 @@ def ask_for_green_light(
 ) -> bool:
     """Comment on the product issue asking to be let start. True when one was posted (B259).
 
-    This is the one outward write the harness makes without being asked, and it is what makes it
-    discoverable to the people who own the work. It is also the thing that has to be honest: a
-    proposal is not a change, and an offer is not a claim.
+    This is the only write the harness makes to the product repository without being asked.
     """
     if not getattr(ctx.config, "comment_upstream", True):
-        # B263: the switch silences the product repository and changes nothing else -- the item
-        # is still queued, the proposal still exists, delivery still works.
+        # The switch silences the product repository and changes nothing else: the item is
+        # still queued, the proposal still exists, delivery still works (B263).
         ctx.record_decision(
             f"no green-light comment on #{issue_number}: COMMENT_UPSTREAM is false"
         )
@@ -490,15 +479,14 @@ def ask_for_green_light(
 
     issue = ctx.gh.issue(int(issue_number))
     if _is_assigned(issue):
-        # B261: somebody is already on it. Offering to do their work is not discoverability.
+        # Somebody is already on it (B261).
         ctx.record_decision(
             f"no green-light comment on #{issue_number}: it has an assignee"
         )
         return False
     for comment in ctx.gh.issue_comments(ctx.config.upstream_repo, int(issue_number)):
         if GREEN_LIGHT_MARKER in str(comment.get("body") or ""):
-            # B260: once per issue, ever. A weekly job that re-asks every week is a weekly job
-            # that gets muted, and then nothing it says is read.
+            # Once per issue, ever (B260).
             ctx.record_decision(
                 f"no green-light comment on #{issue_number}: one was already posted"
             )
@@ -514,8 +502,8 @@ def ask_for_green_light(
             "**I have not started, and I will not without a green light.** Assign me, or reply "
             "`/harness go` on this issue.",
             "",
-            "Nobody asked for this one — I picked it up while the queue was empty, so ignoring "
-            "this comment is a complete and expected answer.",
+            "Nobody asked for this; I picked it up while the queue was empty. Ignoring this "
+            "comment is fine.",
             "",
             links.signature(ctx.config, trusted=ctx.trusted),
         ]
@@ -528,14 +516,14 @@ def ask_for_green_light(
 
 
 # --------------------------------------------------------------------------------------------
-# request — `/harness work <text or link>` (B235, B238, B239, B244)
+# request: `/harness work <text or link>` (B235)
 # --------------------------------------------------------------------------------------------
 
-#: A GitHub issue link, in any of the forms a person actually pastes.
+#: A GitHub issue link, in any of the forms a person pastes.
 _ISSUE_URL_RE = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)")
 
-#: A bare number, or `#633`. Only when it is the whole of the text: `fix 3 of the cards` is a
-#: sentence, not a pointer, and reading it as issue 3 would be a confident wrong answer.
+#: A bare number, or `#633`, and only when it is the whole of the text: `fix 3 of the cards`
+#: is a sentence rather than a pointer to issue 3.
 _BARE_NUMBER_RE = re.compile(r"^#?(\d+)$")
 
 #: The title of a free-text request is its first line, cut here so the issue list stays readable.
@@ -547,17 +535,13 @@ def request(
 ) -> tuple[int | None, str]:
     """One work item from a `/harness work` command. Returns ``(item_id, message)``.
 
-    The same route serves all three ways of asking: a comment on the inbox issue (B235), a
-    comment on a product issue (B244), and a link pasted into either (B238). They differ only
-    in where the text came from, so they share the creation path rather than each growing one.
-
-    ``item_id`` is None when nothing was created; the message then says what was missing, and
-    is meant to be read by the person who asked.
+    One route serves all three ways of asking: a comment on the inbox issue, a comment on a
+    product issue, and a link pasted into either (B235). ``item_id`` is None when nothing was
+    created; the message then tells the person who asked what was missing.
     """
     body = str(text or "").strip()
     if not body:
-        # B239: an empty `/harness work` is a person who meant something. Guessing which issue
-        # they meant is worse than asking.
+        # An empty `/harness work` is answered with how to ask, not with a guess (B239).
         return None, (
             "say what to work on: `/harness work <what you want done>`, or paste a link to an "
             "issue on the product repository."
@@ -573,8 +557,7 @@ def request(
     title = body.splitlines()[0].strip()
     if len(title) > TITLE_LIMIT:
         title = title[: TITLE_LIMIT - 1].rstrip() + "\u2026"
-    # The reference is the request itself. There is no upstream issue to point at, and inventing
-    # one would make the item look like it tracks something it does not.
+    # A free-text request tracks no upstream issue, so its reference is derived from the text.
     ref = f"request:{_request_slug(ctx, actor, body)}"
     existing = ctx.store.find_by_ref(ref)
     if existing is not None:
@@ -585,8 +568,8 @@ def request(
         external_ref=ref,
         title=title,
         tier_required=0,
-        # Quoted as data, not as instructions: the requester is trusted to ask for work, which
-        # is not the same as being trusted to write the harness's own prompts (B277).
+        # Prompts quote the requester's text as data: being trusted to ask for work is not
+        # being trusted to write the harness's prompts (B277).
         upstream_body=body,
         via=via,
     )
@@ -597,8 +580,7 @@ def request(
         f"request created work item {item_id} ({title}) from free text{who}; no model call "
         f"was made, because what to work on was stated rather than inferred"
     )
-    # B236: a link, not a number. The reply is read in a thread on the web, where "#12" is
-    # ambiguous between two repositories and a link is not.
+    # A link, because "#12" in a web thread is ambiguous between two repositories (B236).
     return item_id, f"{where} is open and queued."
 
 
@@ -613,9 +595,8 @@ def _item_link(ctx: Context, item_id: int) -> str:
 def _resolve_pointer(ctx: Context, body: str) -> int | None:
     """The product-repository issue number `body` names, or None if it names no issue.
 
-    Refuses a link to the harness's own repository (I-18/B280) rather than tracking it, and
-    refuses a link to a third repository rather than silently reading the number out of it and
-    applying it to the product repo -- which would be the number trap with an extra step.
+    Raises on a link to the harness's own repository (I-18) and on a link to any repository
+    other than the product one, whose numbers do not carry across.
     """
     match = _ISSUE_URL_RE.search(body)
     if match is not None:
@@ -640,8 +621,7 @@ def _resolve_pointer(ctx: Context, body: str) -> int | None:
 def _request_slug(ctx: Context, actor: str, body: str) -> str:
     """A short stable reference for a free-text request.
 
-    Content-derived, so the same request asked twice is the same item rather than two, and so
-    it survives the item being reopened. Short because it is read by people in an issue body.
+    Derived from the actor and the text, so the same request asked twice finds the same item.
     """
     digest = hashlib.sha256(f"{actor.lower()}\n{body}".encode("utf-8")).hexdigest()
     return digest[:12]

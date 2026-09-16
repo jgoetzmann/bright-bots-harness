@@ -1,6 +1,6 @@
-"""B79-B86: harness.identity (HARNESS-SPEC 5.12, 13).
+"""B79-B86: harness.identity.
 
-Delivery 1 is Tier 0: nothing here authenticates, and no test prints a token value.
+Tier 0: nothing here authenticates, and no test prints a token value.
 """
 
 from __future__ import annotations
@@ -31,11 +31,6 @@ ENV = {
     "REPO": REPO,
     "PERMISSION_TIER": "0",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "40",
-    "SESSION_BUDGET_PCT": "15",
-    "RESERVE_PCT": "10",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -48,14 +43,11 @@ ENV = {
     "PACKAGES_DIR": "packages",
     "HALT_FILE": "HALT",
     "FULLSEND_ENABLED": "false",
-    "WEEKLY_CAP_USD": "25.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": "",
     "UPSTREAM_REPO": REPO,
     "TRUST_FILE": ".harness/trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
@@ -68,10 +60,8 @@ ENV = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -499,3 +489,16 @@ def test_I8_write_human_doc_writes_the_document_verbatim_under_an_allowed_root(t
 
     assert target.read_text(encoding="utf-8") == doc
     assert b"\r\n" not in target.read_bytes()
+
+
+def test_B428_setup_lists_no_max_budget_experiment_prerequisite(tmp_path):
+    """B428: with the dollar caps gone there is nothing to verify about a per-call cap, so the
+    experiment prerequisite and the accessor behind it are no longer offered."""
+    identity = Identity(make_config(tmp_path), account_found())
+
+    readiness = identity.assess(2)
+
+    for item in readiness.prerequisites:
+        assert "budget" not in item.id
+        assert "max-budget-usd" not in item.title
+    assert not hasattr(identity, "budget_experiment_recorded")

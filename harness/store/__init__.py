@@ -26,7 +26,7 @@ from harness.store.sqlite import SqliteStore as Store
 
 
 class StoreProtocol(Protocol):
-    """Every public method of :class:`SqliteStore`, plus the three Delivery 2 seam methods."""
+    """Every public method both stores implement."""
 
     def migrate(self) -> None: ...
 
@@ -63,8 +63,6 @@ class StoreProtocol(Protocol):
         *,
         status: str,
         turns: int | None,
-        allowance_pct: float | None,
-        cost_usd: float | None,
         exit_reason: str | None,
         transcript_path: str | None,
     ) -> None: ...
@@ -73,19 +71,9 @@ class StoreProtocol(Protocol):
         self, work_item_id: int | None = None, status: str | None = None
     ) -> list[StageRun]: ...
 
-    def completed_allowances(self, stage: str) -> list[float]: ...
-
     def append_event(self, work_item_id: int | None, level: str, message: str) -> None: ...
 
     def events(self, work_item_id: int | None = None) -> list[dict]: ...
-
-    def ensure_budget_period(
-        self, unit: str, period_start: str, period_end: str, allocated: float
-    ) -> None: ...
-
-    def budget_period(self, unit: str, period_start: str) -> tuple[float, float]: ...
-
-    def consume_budget(self, unit: str, period_start: str, amount: float) -> None: ...
 
     def cache_get(self, url: str) -> tuple[str | None, str] | None: ...
 
@@ -95,7 +83,7 @@ class StoreProtocol(Protocol):
 
     def api_calls_since(self, iso_ts: str) -> int: ...
 
-    # Delivery 2 (RUN-DECISIONS-D2 section 3)
+    # Proposals, merged items and reconciliation
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str: ...
 

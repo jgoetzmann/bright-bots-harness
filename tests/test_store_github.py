@@ -1,10 +1,9 @@
-"""Delivery 2 - `GitHubStore` (harness/store/github.py) against an in-memory GitHub.
+"""`GitHubStore` (harness/store/github.py) against an in-memory GitHub.
 
-Behaviors under test: B100, B101, B102, B147, plus the store surface frozen in
-`.fullsend/RUN-DECISIONS-D2.md` section 3 (create / update / get / list / merged_issues /
-publish_proposal / illegal transitions).
+Behaviors under test: B100, B101, B102, B147, plus the store surface: create / update /
+get / list / merged_issues / publish_proposal / illegal transitions.
 
-Every fixture is inline on purpose. Nothing here touches the network or the wall clock.
+Every fixture is inline. Nothing here touches the network or the wall clock.
 """
 from __future__ import annotations
 
@@ -44,7 +43,7 @@ PROPOSAL_TEXT = (
     "# fix(dashboard): guard null user\n\n## Diagnosis\n`src/pages/Dashboard.tsx:42`.\n"
 )
 
-# The complete read + write surface of harness/gh.py per RUN-DECISIONS-D2 section 7.
+# The complete read + write surface of harness/gh.py.
 GH_SURFACE = frozenset({
     "get", "issue", "issues", "pulls", "branches", "rate_budget_remaining",
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
@@ -62,12 +61,12 @@ WRITE_METHODS = frozenset({
 # Inline fixtures
 # --------------------------------------------------------------------------------------
 class FakeGh:
-    """Stand-in for `harness.gh.GitHubClient` exposing exactly the section-7 surface.
+    """Stand-in for `harness.gh.GitHubClient` exposing exactly the client surface.
 
     Issues live in `repos[repo][number]` (labels as `[{"name": ...}]`); comments, label
     events, reviews and review comments are keyed by `(repo, number)`. Every method call is
     appended to `calls` with its bound arguments; every write is also appended to `sent` as
-    `{"method", "url", "payload"}`, like the real client. Anything outside section 7 does not
+    `{"method", "url", "payload"}`, like the real client. Anything outside that surface does not
     exist here, so a caller reaching for it gets `AttributeError`.
     """
 
@@ -92,7 +91,7 @@ class FakeGh:
         self._next_number: dict[str, int] = {repo: 1000, self_repo: 1}
         self._next_comment_id = 5000
 
-    # ---- test-side helpers (not part of section 7) ----
+    # ---- test-side helpers (not part of the client surface) ----
     def _now(self) -> str:
         return iso(self.clock.now()) if self.clock is not None else iso(T0)
 
@@ -202,7 +201,7 @@ class FakeGh:
             out.append(copy.deepcopy(issue))
         return sorted(out, key=lambda i: i["number"])
 
-    # ---- section 7 reads ----
+    # ---- reads ----
     def get(self, path: str):
         self._record("get", path=path)
         url = path
@@ -308,7 +307,7 @@ class FakeGh:
         self._record("user")
         return self.user_dict()
 
-    # ---- section 7 writes ----
+    # ---- writes ----
     def comment(self, repo, number, body) -> dict:
         self._record("comment", repo=repo, number=number, body=body)
         self._write("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
@@ -546,13 +545,14 @@ def test_B100_transition_of_an_invisible_issue_is_refused_without_writes(gh, sto
 
 
 # --------------------------------------------------------------------------------------
-# B101 - every transition writes exactly one comment: stage, run URL, cost, resulting state
+# B423 - every transition writes exactly one comment: stage, run URL, resulting state
 # --------------------------------------------------------------------------------------
-def test_B101_transition_comment_names_stage_state_run_url_and_cost(gh, store):
-    """B101: one comment per transition; it names the stage, the resulting state, run URL and $."""
+def test_B423_the_transition_comment_names_stage_state_and_run_and_no_cost(gh, store):
+    """B423: one comment per transition, naming the stage, the resulting state and the run URL,
+    and carrying no cost line."""
     n = _create(store)
     run_id = store.start_stage_run(n, "propose", "fake")
-    store.finish_stage_run(run_id, status="ok", turns=7, allowance_pct=None, cost_usd=0.42,
+    store.finish_stage_run(run_id, status="ok", turns=7,
                            exit_reason=None, transcript_path=None)
     comments_before = _comment_calls(gh)
     posted_before = len(gh.comments_of(n))
@@ -564,11 +564,12 @@ def test_B101_transition_comment_names_stage_state_run_url_and_cost(gh, store):
     assert "propose" in body
     assert "proposed" in body
     assert RUN_URL in body
-    assert "$0.42" in body
+    assert "$" not in body
+    assert "cost:" not in body
 
 
-def test_B101_transition_without_a_stage_run_still_comments_with_a_dollar_cost(gh, store):
-    """B101: with no stage run in this process the comment still carries the URL and $0.00."""
+def test_B101_transition_without_a_stage_run_still_comments_with_the_run_url(gh, store):
+    """B101: with no stage run in this process the comment still carries the run URL."""
     n = _create(store)
     store.transition(n, "proposing", reason="x")  # discovered->blocked is not a legal pair (D1 5.2.2)
     comments_before = _comment_calls(gh)
@@ -577,7 +578,7 @@ def test_B101_transition_without_a_stage_run_still_comments_with_a_dollar_cost(g
     body = gh.comments_of(n)[-1]["body"]
     assert "blocked" in body
     assert RUN_URL in body
-    assert "$0.00" in body
+    assert "$" not in body
 
 
 def test_B101_every_transition_in_a_lifecycle_adds_exactly_one_comment(gh, store):
@@ -654,7 +655,7 @@ def test_B102_human_abandon_is_terminal_for_the_harness(gh, store):
 # create_work_item duplicates
 # --------------------------------------------------------------------------------------
 def test_create_work_item_duplicate_title_and_ref_raises_and_files_nothing(gh, store):
-    """B100/section 3: a duplicate title+external_ref among open issues raises DuplicateWorkItem."""
+    """B100: a duplicate title+external_ref among open issues raises DuplicateWorkItem."""
     _create(store)
     count_before = len(gh.repos[SELF_REPO])
     with pytest.raises(DuplicateWorkItem):
@@ -663,7 +664,7 @@ def test_create_work_item_duplicate_title_and_ref_raises_and_files_nothing(gh, s
 
 
 def test_create_work_item_after_the_original_is_closed_files_a_new_issue(gh, store):
-    """Section 3: the duplicate check is over OPEN issues; a closed twin does not block."""
+    """The duplicate check is over OPEN issues; a closed twin does not block."""
     n = _create(store)
     gh.repos[SELF_REPO][n]["state"] = "closed"
     m = _create(store)
@@ -675,7 +676,7 @@ def test_create_work_item_after_the_original_is_closed_files_a_new_issue(gh, sto
 # update_work_item / get_work_item round trip through the hidden meta comment
 # --------------------------------------------------------------------------------------
 def test_update_work_item_round_trips_fields_through_the_meta_comment(gh, store):
-    """Section 3: update_work_item posts a hidden meta comment that get_work_item merges."""
+    """update_work_item posts a hidden meta comment that get_work_item merges."""
     n = _create(store)
     store.update_work_item(n, base_sha=SHA_A, branch_name=BRANCH, spec_path="runs/item-1/spec/1.md")
     item = store.get_work_item(n)
@@ -691,7 +692,7 @@ def test_update_work_item_round_trips_fields_through_the_meta_comment(gh, store)
 
 
 def test_get_work_item_reads_meta_from_github_with_a_fresh_scratch(gh, store, clock, tmp_path):
-    """Section 3: the scratch db is per-run; a new store on the same issue sees the meta values."""
+    """The scratch db is per-run; a new store on the same issue sees the meta values."""
     n = _create(store)
     store.update_work_item(n, base_sha=SHA_A, branch_name=BRANCH)
     scratch2 = SqliteStore(tmp_path / "scratch2.db", clock)
@@ -705,7 +706,7 @@ def test_get_work_item_reads_meta_from_github_with_a_fresh_scratch(gh, store, cl
 
 
 def test_update_work_item_latest_meta_wins(gh, store):
-    """Section 3: two updates -> the most recent meta comment is the one merged."""
+    """Two updates -> the most recent meta comment is the one merged."""
     n = _create(store)
     store.update_work_item(n, base_sha="1" * 40)
     store.update_work_item(n, base_sha="2" * 40)
@@ -723,7 +724,7 @@ def test_update_work_item_on_a_two_label_item_raises(gh, store):
 # list / merged_issues
 # --------------------------------------------------------------------------------------
 def test_list_work_items_filters_by_state_label(gh, store):
-    """Section 3: list_work_items(state=) selects by label; no filter lists every work item."""
+    """list_work_items(state=) selects by label; no filter lists every work item."""
     gh.add_issue(11, "a", labels=["stage:ready"])
     gh.add_issue(12, "b", labels=["stage:ready", "bug"])
     gh.add_issue(13, "c", labels=["stage:needs-review"])
@@ -735,7 +736,7 @@ def test_list_work_items_filters_by_state_label(gh, store):
 
 
 def test_merged_issues_returns_numbers_labelled_merged(gh, store):
-    """Section 3: merged_issues() is the set of issue numbers labelled stage:done."""
+    """merged_issues() is the set of issue numbers labelled stage:done."""
     gh.add_issue(21, "a", labels=["stage:done"])
     gh.add_issue(22, "b", labels=["stage:done", "bug"])
     gh.add_issue(23, "c", labels=["stage:needs-review"])
@@ -744,7 +745,7 @@ def test_merged_issues_returns_numbers_labelled_merged(gh, store):
 
 
 def test_merged_issues_is_empty_when_nothing_is_merged(gh, store):
-    """Section 3: no stage:done label anywhere -> empty set, not None."""
+    """No stage:done label anywhere -> empty set, not None."""
     gh.add_issue(23, "c", labels=["stage:needs-review"])
     assert store.merged_issues() == set()
 
@@ -753,7 +754,7 @@ def test_merged_issues_is_empty_when_nothing_is_merged(gh, store):
 # publish_proposal
 # --------------------------------------------------------------------------------------
 def test_publish_proposal_creates_branch_file_and_pr_then_marks_proposed(gh, store):
-    """Section 3 / B103 path: branch file on harness/propose-<id>, PR to main, proposed label."""
+    """B103 path: branch file on harness/propose-<id>, PR to main, proposed label."""
     n = _create(store)
     store.transition(n, "proposing", reason="propose")
     filename = f"{n}-dashboard-crashes-on-first-render.md"
@@ -776,7 +777,7 @@ def test_publish_proposal_creates_branch_file_and_pr_then_marks_proposed(gh, sto
 
 
 def test_publish_proposal_never_touches_the_product_repo(gh, store):
-    """I-14 / section 3: the proposal PR and branch file land in self_repo only."""
+    """I-14: the proposal PR and branch file land in self_repo only."""
     n = _create(store)
     store.transition(n, "proposing", reason="propose")
     store.publish_proposal(n, f"{n}-x.md", PROPOSAL_TEXT)
@@ -786,7 +787,7 @@ def test_publish_proposal_never_touches_the_product_repo(gh, store):
 
 
 def test_publish_proposal_from_a_wrong_state_raises_and_keeps_the_label(gh, store):
-    """Section 3: publish transitions proposing -> proposed; from approved that is illegal."""
+    """publish transitions proposing -> proposed; from approved that is illegal."""
     n = _create(store)
     gh.set_issue_labels(n, ["stage:ready"])
     with pytest.raises(IllegalTransition):
@@ -860,7 +861,7 @@ def test_B147_reconcile_ignores_old_items_that_are_not_in_flight(gh, store, cloc
 @pytest.mark.parametrize("target", ["implementing", "packaged", "shipped", "revising",
                                     "needs-human", "merged"])
 def test_illegal_transition_from_discovered_raises_and_changes_no_label(gh, store, target):
-    """Section 3 table / B11: a pair absent from the unified table raises IllegalTransition."""
+    """B11: a pair absent from the unified table raises IllegalTransition."""
     n = _create(store)
     puts_before = _label_puts(gh)
     with pytest.raises(IllegalTransition):
@@ -871,7 +872,7 @@ def test_illegal_transition_from_discovered_raises_and_changes_no_label(gh, stor
 
 @pytest.mark.parametrize("terminal", ["merged", "abandoned"])
 def test_terminal_states_reject_every_transition(gh, store, terminal):
-    """Section 3 table: merged and abandoned are terminal; every target raises."""
+    """merged and abandoned are terminal; every target raises."""
     gh.add_issue(31, "done", labels=[LABELS[terminal]])
     for target in STATES:
         with pytest.raises(IllegalTransition):
@@ -880,7 +881,7 @@ def test_terminal_states_reject_every_transition(gh, store, terminal):
 
 
 def test_transition_to_an_unknown_state_raises(gh, store):
-    """Section 3: a state outside STATES is never written as a label."""
+    """A state outside STATES is never written as a label."""
     n = _create(store)
     with pytest.raises(HarnessError):
         store.transition(n, "flying", reason="x")
@@ -891,21 +892,21 @@ def test_transition_to_an_unknown_state_raises(gh, store):
 # Delegation and the client surface
 # --------------------------------------------------------------------------------------
 def test_stage_runs_delegate_to_scratch_and_write_nothing_to_github(gh, store):
-    """Section 3: stage runs live in the scratch db; starting/finishing one sends no write."""
+    """Stage runs live in the scratch db; starting/finishing one sends no write."""
     n = _create(store)
     sent_before = len(gh.sent)
     rid = store.start_stage_run(n, "propose", "fake")
-    store.finish_stage_run(rid, status="ok", turns=3, allowance_pct=None, cost_usd=0.42,
+    store.finish_stage_run(rid, status="ok", turns=3,
                            exit_reason=None, transcript_path=None)
     runs = store.list_stage_runs(work_item_id=n)
     assert len(runs) == 1
     assert runs[0].status == "ok"
-    assert runs[0].cost_usd == 0.42
+    assert runs[0].turns == 3
     assert len(gh.sent) == sent_before
 
 
 def test_store_only_uses_the_section_7_client_surface(gh, store, clock):
-    """Section 7 / I-11: every method the store calls on the client is a section-7 name."""
+    """I-11: every method the store calls on the client is one of these names."""
     n = _create(store)
     store.update_work_item(n, base_sha=SHA_A, branch_name=BRANCH)
     store.get_work_item(n)

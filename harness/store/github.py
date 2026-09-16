@@ -1,4 +1,4 @@
-"""GitHub-as-queue store (Delivery 2 section 4): issues, state labels, a hidden meta marker."""
+"""GitHub-as-queue store: issues, state labels, a hidden meta marker."""
 
 from __future__ import annotations
 
@@ -27,9 +27,8 @@ from harness.store.sqlite import (
     bare_filename,
 )
 
-# B264/D56: both families resolve. New writes use `stage:`; an issue labelled before the rename
-# keeps working until `harness relabel` has run, and after, because a human may re-apply an old
-# one by hand and the harness should read what is there rather than what it wishes were.
+# Both label families resolve (B264). New writes use `stage:`; an issue labelled before the
+# rename keeps working, and so does one a person re-labels by hand afterwards.
 STATE_OF_LABEL: dict[str, str] = {
     **{label: state for state, label in LEGACY_LABELS.items()},
     **{label: state for state, label in LABELS.items()},
@@ -77,8 +76,8 @@ def _state_of(issue: Mapping[str, Any]) -> str | None:
 def _origin_ref(issue: Mapping[str, Any]) -> str:
     """The external_ref an item was created with (B227).
 
-    The marker line first, then the old convention -- the first non-blank line -- so items
-    opened before the bodies became prose still resolve.
+    The marker line first, then the first non-blank line, which is how older item bodies carry
+    it.
     """
     body = str(issue.get("body") or "")
     match = _REF_MARKER_RE.search(body)
@@ -140,7 +139,7 @@ def _timestamp(value: object) -> datetime | None:
 
 
 def _via_of(issue: Mapping[str, Any]) -> str:
-    """The `via:` label's value (B264/D56), or `requested` when the item predates the family."""
+    """The `via:` label's value (B264), or `requested` when the item carries none."""
     wanted = {label: name for name, label in VIA_LABELS.items()}
     for label in _label_names(issue):
         if label in wanted:
@@ -154,12 +153,10 @@ def _item_from(issue: Mapping[str, Any], meta: Mapping[str, Any], state: str) ->
     if parent is None:
         match = _PARENT_RE.search(str(issue.get("body") or ""))
         parent = int(match.group(1)) if match else None
-    # B230/D50: the reference the item was CREATED with, not a synthetic one. The meta comment
-    # records it at creation and the body carries it too; only when neither survives does this
-    # fall back to naming the issue itself. Getting this wrong is quiet and expensive: with
-    # `self:4`, `WorkItem.issue_number` returns 4 -- the harness issue -- rather than the product
-    # issue 633, so the delivery pull request lost its `Closes #633` and the package README
-    # named `self:4` as the work it was doing.
+    # The reference the item was created with (B230). The meta comment records it at creation
+    # and the body carries it too; only when neither survives does this fall back to naming the
+    # issue itself. A synthetic `self:<n>` would make `WorkItem.issue_number` the harness issue
+    # rather than the product one, so the delivery pull request would lose its `Closes #` line.
     external_ref = (
         str(meta.get("external_ref") or "").strip() or _origin_ref(issue) or f"self:{number}"
     )
@@ -204,17 +201,15 @@ class GitHubStore:
         self.scratch = scratch
         self._clock = clock
         self.run_url = run_url
-        # B227: what the bodies this store writes say about themselves. Optional so a test may
-        # build a store without a whole Config; the text degrades, nothing raises.
+        # What the bodies this store writes say about themselves (B227). Optional, so a test may
+        # build a store without a whole Config; the text degrades and nothing raises.
         self.config = config
-        # D69: kept WHOLE when it is a Trust. `tuple(trusted)` discarded the levels that
-        # `store/__init__.py` had just loaded, so `links._who` fell through to "level 2+" on
-        # every work item and proposal pull request while replies -- which pass `ctx.trusted`
-        # -- named the handles. The footer exists so a reader of a public thread can see
-        # whether their own comment would be honoured without first learning what a level is.
+        # Kept whole when it is a Trust, so the levels `store/__init__.py` loaded survive into
+        # the footer `links._who` writes: a reader of a public thread can then see whether
+        # their own comment would be honoured (D69).
         self.trusted = trusted if isinstance(trusted, Trust) else tuple(trusted)
-        # item id -> (stage, usd) of the latest finish_stage_run in this process (B101 comment).
-        self._last_run: dict[int, tuple[str, float]] = {}
+        # item id -> stage of the latest finish_stage_run in this process (B101 comment).
+        self._last_run: dict[int, str] = {}
         # run id -> (item id, stage) for runs started in this process.
         self._runs: dict[int, tuple[int, str]] = {}
 
@@ -239,11 +234,9 @@ class GitHubStore:
             query += f"&labels={label}"
         query += f"&per_page={PER_PAGE}"
         rows = self._pages(f"/repos/{self.self_repo}/issues?{query}")
-        # GitHub serves pull requests from the issues endpoint; they are not work items.
-        # B241: neither is the inbox, whatever labels it carries. It is a conversation that
-        # happens to live in an issue, and a stray `stage:` label on it -- applied by hand, or
-        # by a `relabel` that did not know better -- would otherwise put the inbox itself in
-        # the queue and start the harness working on its own request form.
+        # GitHub serves pull requests from the issues endpoint; they are not work items. Nor is
+        # the inbox, whatever labels it carries (B241): it is a conversation living in an issue,
+        # and a stray `stage:` label on it would otherwise put the request form in the queue.
         inbox = int(getattr(self.config, "inbox_issue", 0) or 0)
         return [
             row
@@ -303,11 +296,8 @@ class GitHubStore:
         meta["previous_state"] = from_state
         meta["ts"] = iso(self._clock.now())
         self._set_state_label(issue, to_state)
-        stage, usd = self._last_run.get(item_id, ("-", 0.0))
-        body = (
-            f"**harness** `{stage}` → `{to_state}`\n"
-            f"run: {self.run_url}\ncost: ${usd:.2f}\n{reason}"
-        )
+        stage = self._last_run.get(item_id, "-")
+        body = f"**harness** `{stage}` → `{to_state}`\nrun: {self.run_url}\n{reason}"
         self.gh.comment(self.self_repo, item_id, redact(body + "\n\n" + _meta_marker(meta)))
         item = _item_from(issue, meta, to_state)
         self.scratch._mirror_work_item(item)
@@ -346,15 +336,13 @@ class GitHubStore:
         kind_label: str = "product",
         via: str = "requested",
     ) -> int:
-        """Open an issue in ``self_repo`` labelled ``harness:queued``; returns its number."""
+        """Open an issue in ``self_repo`` labelled ``stage:queued``; returns its number."""
         for issue in self._issues(state="open"):
             if _origin_ref(issue) == external_ref:
                 raise DuplicateWorkItem(
                     f"work item already exists for {external_ref}: #{issue.get('number')}"
                 )
         sub = _SUB_REF_RE.match(external_ref)
-        # B227: the body used to be the bare `issue:633` and nothing else, which told a
-        # reader on the web neither what the work was nor where it came from.
         text = links.work_item_body(
             self.config,
             external_ref=external_ref,
@@ -365,8 +353,8 @@ class GitHubStore:
             extra=body,
             trusted=self.trusted,
         )
-        # B264: one label from each family, always. `kind` here is the WorkItem's kind
-        # ("issue"); `kind_label` is the taxonomy axis, which is a different question.
+        # One label from each family, always (B264). `kind` here is the WorkItem's kind
+        # ("issue"); `kind_label` is the `kind:` axis, which is a different question.
         labels = [LABELS["discovered"]]
         if kind_label in KIND_LABELS:
             labels.append(KIND_LABELS[kind_label])
@@ -452,7 +440,7 @@ class GitHubStore:
             self.gh.comment(self.self_repo, item_id, redact(_meta_marker(meta)))
         self.scratch._mirror_work_item(_item_from(issue, meta, state))
 
-    # ------------------------------------------------------------- delivery 2 seam
+    # --------------------------------------------------------------- the store seam
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
         """Branch + file + PR in ``self_repo`` (gate 1); ``proposing -> proposed``; the PR URL."""
@@ -474,8 +462,8 @@ class GitHubStore:
             head=branch,
             base="main",
             title=f"proposal: {item.title} (#{item_id})",
-            # B227: the proposal is inlined, not merely linked. Gate 1 is a judgement about a
-            # plan, and the person making it should not have to open a file in a diff to read it.
+            # The proposal is inlined as well as linked (B227): gate 1 is a judgement about a
+            # plan, and the person making it should not have to open a file in a diff.
             body=redact(
                 links.proposal_pr_body(
                     self.config,
@@ -499,7 +487,7 @@ class GitHubStore:
         return url
 
     def merged_issues(self) -> set[int]:
-        """Numbers of every issue labelled ``harness:merged``."""
+        """Numbers of every issue labelled ``stage:done``."""
         merged: set[int] = set()
         for issue in self._issues(label=LABELS["merged"]):
             if _state_of(issue) == "merged":
@@ -507,8 +495,8 @@ class GitHubStore:
         return merged
 
     def reconcile_stale_running(self, older_than_iso: str) -> list[int]:
-        """B147: mid-flight items whose label predates the cutoff, with no live-run marker
-        comment since, go back to the ``previous_state`` of their meta marker."""
+        """Mid-flight items whose label predates the cutoff, with no live-run marker comment
+        since, go back to the ``previous_state`` of their meta marker (B147)."""
         cutoff = parse_iso(older_than_iso)
         reset: list[int] = []
         for state in ("implementing", "revising", "proposing"):
@@ -594,8 +582,6 @@ class GitHubStore:
         *,
         status: str,
         turns: int | None,
-        allowance_pct: float | None,
-        cost_usd: float | None,
         exit_reason: str | None,
         transcript_path: str | None,
     ) -> None:
@@ -603,22 +589,17 @@ class GitHubStore:
             run_id,
             status=status,
             turns=turns,
-            allowance_pct=allowance_pct,
-            cost_usd=cost_usd,
             exit_reason=exit_reason,
             transcript_path=transcript_path,
         )
         owner = self._runs.get(run_id)
         if owner is not None:
-            self._last_run[owner[0]] = (owner[1], float(cost_usd or 0.0))
+            self._last_run[owner[0]] = owner[1]
 
     def list_stage_runs(
         self, work_item_id: int | None = None, status: str | None = None
     ) -> list[StageRun]:
         return self.scratch.list_stage_runs(work_item_id, status)
-
-    def completed_allowances(self, stage: str) -> list[float]:
-        return self.scratch.completed_allowances(stage)
 
     # -------------------------------------------------------------------- events
 
@@ -629,19 +610,6 @@ class GitHubStore:
 
     def events(self, work_item_id: int | None = None) -> list[dict]:
         return self.scratch.events(work_item_id)
-
-    # -------------------------------------------------------------------- budget
-
-    def ensure_budget_period(
-        self, unit: str, period_start: str, period_end: str, allocated: float
-    ) -> None:
-        self.scratch.ensure_budget_period(unit, period_start, period_end, allocated)
-
-    def budget_period(self, unit: str, period_start: str) -> tuple[float, float]:
-        return self.scratch.budget_period(unit, period_start)
-
-    def consume_budget(self, unit: str, period_start: str, amount: float) -> None:
-        self.scratch.consume_budget(unit, period_start, amount)
 
     # ---------------------------------------------------------------- http cache
 

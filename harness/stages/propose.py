@@ -1,4 +1,4 @@
-"""The propose stage: one model call -> a §7.1 work package -> a bounded proposal file (§4.3)."""
+"""The propose stage: one model call, a work package, and a validated proposal file."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ _HEADING = re.compile(r"^\s{0,3}##\s+(.+?)\s*#*\s*$")
 _TITLE = re.compile(r"^\s{0,3}#\s+(.+?)\s*#*\s*$")
 _BULLET = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+(.*)$")
 
-# --- the §4.3 schema -------------------------------------------------------------------------
+# --- the proposal schema -------------------------------------------------------------------------
 
 #: Every key, in the order the front matter is rendered. Every one is required; nothing else is
 #: accepted (B103).
@@ -116,7 +116,7 @@ _ISSUE_REF = re.compile(r"\bissue:(\d+)\b")
 
 @dataclass
 class WorkPackage:
-    """The parsed form of the §7.1 document. Sections absent from the text come back empty."""
+    """The parsed work package. Sections absent from the text come back empty."""
 
     title: str = ""
     issue: str = ""
@@ -132,7 +132,7 @@ class WorkPackage:
 
 
 def parse_work_package(text: str) -> WorkPackage:
-    """Split a §7.1 document on its headings. The headings are the contract; prose is not."""
+    """Split a work package on its headings. The headings are the contract; prose is not."""
     pkg = WorkPackage()
     if not text:
         return pkg
@@ -223,7 +223,7 @@ def build_front_matter(
     block: Mapping[str, Any] | None,
     max_turns: int,
 ) -> dict[str, Any]:
-    """The §4.3 mapping: defaults from the work package, overridden by the model's block."""
+    """The front matter: defaults from the work package, overridden by the model's block."""
     front: dict[str, Any] = {
         "issue": item_id,
         "upstream_issue": upstream_issue,
@@ -256,7 +256,7 @@ def validate_proposal(
     max_turns: int,
     open_issue: Callable[[int], bool],
 ) -> list[str]:
-    """Every §4.3 rule, as a list of human-readable errors. Empty means valid (B103/B104)."""
+    """Every schema rule, as a list of human-readable errors. Empty means valid (B103)."""
     problems: list[str] = []
     keys = set(front.keys())
     for key in PROPOSAL_KEYS:
@@ -369,8 +369,8 @@ def _yaml_list(key: str, values: Any) -> list[str]:
 
 
 #: Where the merged proposal lands, relative to the repository root. Gate 1 is the merge of a
-#: PR that adds exactly this file, so it is the one copy of a work package that is guaranteed
-#: to exist on every later checkout.
+#: PR adding exactly this file, so it is the copy of a work package that exists on every later
+#: checkout.
 PROPOSALS_DIR: str = "proposals"
 
 
@@ -391,15 +391,12 @@ def strip_front_matter(text: str) -> str:
 def work_package_text(item: Any, *, repo_root: Path | str = ".") -> str:
     """The work package for `item`: the recorded spec if it is still here, else the proposal.
 
-    B226/D46. ``propose`` writes ``runs/item-N/spec/N.md`` and records that absolute path as
-    ``WorkItem.spec_path``. ``runs/`` is ephemeral per Actions runner and is never committed, and
-    gate 1 -- a human merging the proposal PR -- necessarily puts ``propose`` and ``implement`` in
-    different runs, days apart in the intended weekly cadence. Measured: the first live run died
-    with ``spec file missing for item 4: .../runs/item-4/spec/4.md`` before spending anything.
-
-    The durable copy is the file that merge landed. Its slug comes from the proposal's own
-    front-matter title rather than the item's, so it is found by glob on the id prefix rather
-    than derived; the front matter is stripped so the caller gets the same text either way.
+    ``propose`` writes ``runs/item-N/spec/N.md`` and records that absolute path as
+    ``WorkItem.spec_path``, but ``runs/`` is never committed and does not survive between
+    Actions runs, and gate 1 puts ``propose`` and ``implement`` in different runs. The durable
+    copy is the file the merge landed (D46). Its slug comes from the proposal's own front-matter
+    title, so it is found by glob on the id prefix; the front matter is stripped so the caller
+    gets the same text either way.
     """
     recorded = str(getattr(item, "spec_path", "") or "")
     if recorded and Path(recorded).is_file():
@@ -410,9 +407,9 @@ def work_package_text(item: Any, *, repo_root: Path | str = ".") -> str:
         prefix = f"{int(item.id)}-"
     except (TypeError, ValueError):
         prefix = f"{item.id}-"
-    # Newest first, then last by name. One item normally has exactly one proposal; a re-propose
-    # under a changed title lands a second file beside the first, and the later one is the one
-    # that was approved. A checkout gives every file the same mtime, hence the name tie-break.
+    # Newest first, then last by name: a re-propose under a changed title lands a second file
+    # beside the first, and the later one is the approved one. A checkout gives every file the
+    # same mtime, hence the name tie-break.
     matches = sorted(
         (root / PROPOSALS_DIR).glob(f"{prefix}*.md"),
         key=lambda p: (p.stat().st_mtime, p.name),
@@ -430,7 +427,7 @@ def work_package_text(item: Any, *, repo_root: Path | str = ".") -> str:
 
 
 def render_front_matter(front: Mapping[str, Any]) -> str:
-    """The §4.3 block, keys in schema order, quoted so that it is valid YAML and valid JSON-ish."""
+    """The front-matter block, keys in schema order, with strings quoted so it is valid YAML."""
     lines = ["---"]
     for key in PROPOSAL_KEYS:
         value = front.get(key)
@@ -450,7 +447,7 @@ def render_front_matter(front: Mapping[str, Any]) -> str:
 
 
 def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
-    """B60 + §4.3: one model call, a spec file on disk, a validated proposal published."""
+    """One model call, a spec file on disk, and a validated proposal published (B60)."""
     ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
@@ -464,20 +461,18 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
     )
     max_turns = int(ctx.config.max_turns["implement"])
 
-    # B219/D37: propose reads the product repository, so it must have one. Its prompt says
-    # "Read the repository at the current working directory", requires citations with line
-    # numbers, and forbids listing a path it has not seen -- none of which an empty run
-    # directory can support. Without this the stage ran with `cwd` pointing at `runs/item-N`,
-    # where Read/Glob/Grep find nothing on a runner and, on a developer box, wander into
-    # whatever unrelated checkout happens to be on the disk (see B218).
+    # Propose reads the product repository, so it must have a clone of one (B219). Its prompt
+    # says "Read the repository at the current working directory", requires citations with line
+    # numbers, and forbids listing a path it has not seen; an empty run directory supports none
+    # of that.
     try:
         blockers = ctx.clones.preflight()
         if blockers:
             raise PreflightFailed("; ".join(blockers))
         lease = ctx.clones.acquire(item)
     except HarnessError as exc:
-        # The item is already `proposing` by now; without this it would sit there with no
-        # clone and no way back, and the next run would find it mid-flight.
+        # The item is already `proposing` by now; return it so the next run does not find it
+        # mid-flight with no clone.
         _revert(ctx, item_id, entry_state, f"propose could not acquire a clone ({exc})")
         raise
     try:
@@ -509,9 +504,8 @@ def _propose_leased(
 ) -> Path:
     """One model call against the checkout at `lease.path`, then validation and publication.
 
-    ``entry_state`` is ``_enter``'s answer, not ``item.state``: for an item that was already
-    ``proposing`` at entry those two differ, and only the first one is a state the item can be
-    returned to.
+    ``entry_state`` comes from ``_enter`` and differs from ``item.state`` for an item that was
+    already ``proposing`` at entry; only ``entry_state`` is a state the item can be returned to.
     """
     max_turns = int(ctx.config.max_turns["implement"])
     ctx.record_decision(
@@ -564,7 +558,7 @@ def _propose_leased(
             item_id, "warn", f"proposal invalid (attempt {attempt}): " + "; ".join(problems)
         )
     if problems:
-        # B103: never published. One retry was made with the errors appended; still invalid.
+        # Still invalid after one retry with the errors appended, so nothing is published (B103).
         reason = "proposal front matter invalid after one retry: " + "; ".join(problems)
         ctx.record_decision(f"item {item_id} blocked: {reason}")
         ctx.store.append_event(item_id, "error", reason)
@@ -610,14 +604,11 @@ def _propose_leased(
 
 
 def _offer_the_green_light(ctx: Context, item_id: int, proposal_url: str) -> None:
-    """B259-B261: for a suggestion, say so on the product issue it came from.
+    """For a suggested item, ask for a green light on the product issue it came from (B259).
 
-    Wired here rather than in the discover stage because the comment has to name the proposal,
-    and the proposal does not exist until this line. It applies only to work nobody asked for:
-    an assigned or requested item needs no permission, it already had it.
-
-    Never fatal. The proposal is published by the time this runs, and failing to advertise it
-    must not undo that or fail the run.
+    Called here because the comment names the proposal, which does not exist until this point.
+    Assigned and requested items already have permission. Never fatal: the proposal is
+    published by the time this runs.
     """
     from harness.priority import via_of
     from harness.stages.discover import ask_for_green_light
@@ -729,10 +720,10 @@ def _issue_body(ctx: Context, item: Any) -> tuple[str, int | None]:
 
 
 def _path_checker(ctx: Context, item: Any, *, base_sha: str | None = None) -> Callable[[str], bool]:
-    """B104: does the path exist in the product repository at the pinned base commit?
+    """Does the path exist in the product repository at the pinned base commit? (B104)
 
-    B219: the commit is the one propose's own clone was taken at, so validation and the model
-    see the same tree. Falls back to the item's base, then to HEAD.
+    The commit is the one propose's own clone was taken at, so validation and the model see the
+    same tree. Falls back to the item's base, then to HEAD.
     """
     ref = base_sha or item.base_sha or "HEAD"
     repo = ctx.config.repo

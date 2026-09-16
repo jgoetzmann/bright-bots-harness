@@ -1,4 +1,4 @@
-"""Deterministic fixture-backed runner (SPEC 5.4.2). No child process, no network."""
+"""Deterministic fixture-backed runner. No child process, no network."""
 
 from __future__ import annotations
 
@@ -50,8 +50,6 @@ class FakeRunner:
             ok=False if rate_limited else bool(data.get("ok", False)),
             text=str(data.get("text", "")),
             turns=data.get("turns"),
-            cost_usd=data.get("cost_usd"),
-            allowance_pct=data.get("allowance_pct"),
             duration_ms=data.get("duration_ms"),
             session_id=data.get("session_id"),
             exit_code=int(data.get("exit_code", 0)),
@@ -68,8 +66,6 @@ def _no_fixture(stage: str) -> RunResult:
         ok=False,
         text="",
         turns=None,
-        cost_usd=None,
-        allowance_pct=None,
         duration_ms=None,
         session_id=None,
         exit_code=1,

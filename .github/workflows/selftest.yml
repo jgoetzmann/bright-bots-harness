@@ -1,6 +1,5 @@
-# selftest.yml — on every pull request here: the whole suite under BACKEND=fake on Linux and Windows.
-# Uses no secrets; the only workflow that runs on pull requests, so a fork PR is safe by construction.
-# Handoff §7.3 (B129, B130); RUN-DECISIONS-D2 §15.
+# selftest.yml: on every pull request, the whole suite under BACKEND=fake on Linux and Windows.
+# Uses no secrets and is the only workflow that runs on pull requests, so a fork PR is safe (B130).
 name: selftest
 
 on:

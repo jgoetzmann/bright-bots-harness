@@ -236,8 +236,8 @@ def test_b228_no_bare_and_test_under_set_e():
 # --------------------------------------------------------------------------------------
 # The pointer every reply carries
 #
-# The harness answers in threads. An answer that says only what happened leaves the reader
-# where they started: knowing one command and not that there are eleven others.
+# The harness answers in threads, and an answer that says only what happened leaves the reader
+# knowing one command and not that there are eleven others.
 # --------------------------------------------------------------------------------------
 
 
@@ -251,9 +251,8 @@ def test_every_reply_offers_more_commands_and_links_the_full_list():
 
 
 def test_the_pointer_offers_what_makes_sense_on_this_surface():
-    """"What can I say" has a different answer on a delivery pull request than on the inbox, and
-    the useful version of it is the short one. Offering `split` on a delivery PR -- where it acts
-    on the wrong number -- is worse than offering nothing."""
+    """"What can I say" has a different answer on a delivery pull request than on the inbox.
+    `split` on a delivery PR acts on the wrong number, so it is not offered there."""
     on_delivery = links.reply_pointer(CONFIG, "delivery_pr")
     on_inbox = links.reply_pointer(CONFIG, "inbox")
 

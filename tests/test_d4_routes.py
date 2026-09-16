@@ -1,10 +1,8 @@
-"""B235-B263, B274-B292: the routes Delivery 4 adds, and the order they run in.
+"""B235-B263, B274-B292: the inbox routes, and the order they run in.
 
 Every one of these exercises a boundary the fake backend does *not* replace: the store, the
-ledger, the label families, the priority classes and the parsers. What it cannot exercise is the
-process spawn and the checkout — the two places Delivery 3 found every one of its real defects —
-so a green run here is evidence that the logic is right, not that the flow works. That is what
-the acceptance list in the handoff is for.
+ledger, the label families, the priority classes and the parsers. It cannot exercise the
+process spawn or the checkout, so a green run here is evidence that the logic is right.
 """
 
 from __future__ import annotations
@@ -425,8 +423,8 @@ def test_B258_triage_queues_at_most_suggest_max_per_run(tmp_path):
     ],
 )
 def test_B332_triage_never_suggests_an_issue_that_already_has_a_work_item(tmp_path, path):
-    """B332: an issue with a work item in any state is not a candidate again. Before this, the
-    ranking could pick it, `_ensure_item` handed back the old id, and discover.yml ran
+    """B332: an issue with a work item in any state is not a candidate again. Otherwise the
+    ranking picks it, `_ensure_item` hands back the old id, and discover.yml runs
     `harness propose <id>` on an item `_enter` refuses -- a red run, an ops issue, a spent
     slot, and a parked suggestion put back in front of the person who stopped it."""
     rig = triage_rig(tmp_path, issues=(gh_issue(101), gh_issue(102)))
@@ -594,7 +592,7 @@ def test_B290_suggested_runs_when_the_queue_is_empty_and_the_week_is_fresh(tmp_p
 def test_B290_an_unobserved_allowance_does_not_refuse(tmp_path):
     """Unobserved is not "no headroom". The signal arrives on the headers of a real model call,
     so a fresh ledger and every tier-0 run have none — refusing here would silently disable the
-    discovery route that has worked since Delivery 1."""
+    discovery route."""
     rig = request_rig(tmp_path)
 
     assert priority.admit(
@@ -689,8 +687,9 @@ def test_B292_the_head_quotes_the_plan_when_the_plan_is_the_authority(tmp_path):
     assert _head_reason(
         Plan(start=(), reason="r", skipped={"4": "slots full"}), rows, None
     )["reason"] == "slots full"
-    assert _head_reason(Plan(start=(), reason="reserve", skipped={}), rows, None)["reason"] == (
-        "reserve")
+    assert _head_reason(
+        Plan(start=(), reason="weekly usage 91% >= 90%", skipped={}), rows, None
+    )["reason"] == "weekly usage 91% >= 90%"
 
 
 def test_B292_an_empty_queue_says_so(tmp_path):
@@ -772,7 +771,7 @@ def test_B247_the_audit_body_says_it_is_a_list_and_not_a_plan(tmp_path):
         trusted=rig.ctx.trusted,
     )
 
-    assert "list, not a plan" in body
+    assert "list of findings, and nothing in it is queued" in body
     assert "/harness promote" in body
     assert "b" * 12 in body
 
@@ -784,7 +783,7 @@ def test_B247_the_audit_body_says_it_is_a_list_and_not_a_plan(tmp_path):
 
 def test_the_harness_never_acts_on_its_own_comment():
     """The machine account is in `trust.txt` — it has to be, so a person can steer the harness
-    from it. From Delivery 4 the harness also replies in the threads it sweeps, so without this
+    from it. The harness also replies in the threads it sweeps, so without this
     it could command itself, and the failure mode is a loop that spends the allowance."""
     from harness.keywords import command_from
     from harness.trust import parse_trust
@@ -842,8 +841,6 @@ def test_a_sub_issue_inherits_how_its_parent_arrived(tmp_path):
                 "ok": True,
                 "text": "1. First slice — do the first part.\n2. Second slice — then this.\n",
                 "turns": 2,
-                "cost_usd": 0.01,
-                "allowance_pct": 1.0,
                 "duration_ms": 10,
                 "session_id": "s",
                 "exit_code": 0,
@@ -945,9 +942,8 @@ def test_a_command_addressed_to_the_bot_by_mention_parses():
     `sweep` reads notifications, and the machine account is not subscribed to an issue it has
     never touched, so `@jgoetzmann-bot` is the only thing that makes a cold thread visible.
 
-    The handoff's own acceptance A3 tells the reader to write `@jgoetzmann-bot /harness work` —
-    which parsed to nothing until this, so the documented way to reach the harness from
-    brightboost could not have worked."""
+    The documented form is `@jgoetzmann-bot /harness work`, so a parse that dropped the
+    mention would leave no documented way to reach the harness from brightboost."""
     from harness.keywords import parse
 
     assert parse("@jgoetzmann-bot /harness work") == ("work", "")
@@ -968,10 +964,9 @@ def test_only_mentions_may_precede_a_command_so_prose_stays_prose():
 
 
 def test_the_force_flag_is_case_insensitive_like_everything_else():
-    """`--FORCE` used to do two wrong things at once: the flag was not honoured, and it was not
-    removed either, so it survived into the notes handed to a stage as if somebody had meant to
-    write it. A flag whose entire purpose is "start this now" must not be dropped over a shift
-    key — least of all when the verb beside it is already case-insensitive."""
+    """`--FORCE` is honoured and removed, like any other spelling of the flag. A flag whose
+    purpose is "start this now" must not be dropped over a shift key, and one left in place
+    reaches a stage as if somebody had meant to write it."""
     from harness.keywords import split_force
 
     assert split_force("tighten the budget --FORCE") == ("tighten the budget", True)
@@ -985,10 +980,10 @@ def test_the_force_flag_is_case_insensitive_like_everything_else():
 
 
 def test_B284_a_refused_force_does_not_contaminate_what_was_asked_for():
-    """The refusal notice used to be appended to `Command.args`, which is the text a stage reads
-    as the request. At level 2 that turned `/harness work #5 --force` into a free-text item
-    titled "(--force ignored: it needs level 3)" instead of a pointer to issue 5, and made
-    `/harness work --force` slip past the empty-request guard entirely."""
+    """The refusal notice stays out of `Command.args`, which is the text a stage reads as the
+    request. Appended there, at level 2, `/harness work #5 --force` becomes a free-text item
+    titled "(--force ignored: it needs level 3)" instead of a pointer to issue 5, and
+    `/harness work --force` slips past the empty-request guard entirely."""
     from harness.keywords import command_from
     from harness.trust import parse_trust
 
@@ -1339,7 +1334,7 @@ def _cmd(verb, surface="inbox", number=19, args="", actor="jgoetzmann"):
                    comment_id="IC_x", actor=actor, level=3)
 
 
-def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
+def test_usage_reports_the_subscription_the_queue_and_what_happens_next(tmp_path):
     """The answer to "why is nothing happening", from the same sources the CLI reads, so a
     comment and `harness status`/`ledger`/`dispatch` cannot disagree."""
     import harness.__main__ as main_mod
@@ -1359,9 +1354,8 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
     assert "40% used" in out and "50 points" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
-    # The ceiling quoted is the one the dispatcher spends against, not the raw cap.
-    # The dollar figure survives underneath, said as the estimate it is.
-    assert "reserve" in out and "nobody bills it" in out
+    # Subscription usage is the whole report: there is no dollar figure to follow it (D74).
+    assert "$" not in out and "dollar" not in out.lower()
 
 
 def test_queue_is_an_alias_for_go_now(tmp_path):
@@ -1425,14 +1419,14 @@ def test_resume_lifts_it_and_says_whose_halt(tmp_path):
 
 
 def test_the_dispatcher_names_who_halted_it(tmp_path):
-    """`dispatch` printing a healthy budget beside a queue that will never move is exactly the
-    failure this avoids: the reason has to name the halt, not the budget."""
+    """`dispatch` printing free slots beside a queue that will never move is exactly the
+    failure this avoids: the reason has to name the halt, not the slot count."""
     from harness.clock import parse_iso
     from harness.dispatcher import Candidate, plan
     from tests.test_dispatcher import NOW_ISO, PERIOD_START, github_config
 
     config = github_config(tmp_path, slots=1)
-    candidate = Candidate(issue=4, stage="implement", created_at="2026-09-01T10:00:00Z")
+    candidate = Candidate(issue=4, created_at="2026-09-01T10:00:00Z")
 
     led = Ledger.empty(PERIOD_START)
     healthy = plan(now=parse_iso(NOW_ISO), ledger=led, config=config,
@@ -1460,17 +1454,17 @@ def test_halt_and_resume_are_level_three():
     from harness.keywords import ALIASES, VERBS
 
     assert set(VERBS) - set(VERB_LEVEL) == set()
-    # An alias may also carry a level of its own, and `reject` does: it always meant "end this
-    # for good", which is the half of `stop` that level 2 does not get. Resolving before gating
-    # would have handed every maintainer a terminal verb as a side effect of a rename.
+    # An alias may also carry a level of its own, and `reject` does: it means "end this for
+    # good", which is the half of `stop` that level 2 does not get. Resolving before gating
+    # would hand every maintainer a terminal verb as a side effect of a rename.
     assert set(VERB_LEVEL) - set(VERBS) <= set(ALIASES)
     assert VERB_LEVEL["reject"] == 3 and VERB_LEVEL["stop"] == 2
 
 
 def test_the_commanded_halt_stops_discovers_spend_gate():
-    """`discover.yml` decides whether to spend from a `case` on the dispatcher's reason. It
-    matched bare `halted` EXACTLY, so `halted by @someone` fell through to `proceed=true` — a
-    harness a human had just stopped would have spent a discover call anyway."""
+    """`discover.yml` decides whether to spend from a `case` on the dispatcher's reason. A
+    clause matching bare `halted` exactly lets `halted by @someone` fall through to
+    `proceed=true`, so a harness a human just stopped spends a discover call anyway."""
     import re
 
     workflow = pathlib.Path(".github/workflows/discover.yml").read_text(encoding="utf-8")
@@ -1483,10 +1477,10 @@ def test_the_commanded_halt_stops_discovers_spend_gate():
 
 
 def test_a_commanded_halt_refuses_implement_before_it_clones_anything(tmp_path):
-    """It used to be enforced only in `run_model`, which sits *after* the clone — so a halted
-    harness cloned the product repository, ran `npm ci` and the whole baseline gate sequence,
-    churned the upstream issue's labels, and only then exited 5. On `feedback.yml`'s reconcile
-    step that repeated every three hours for as long as the halt stood."""
+    """The check comes before the clone. Enforced only in `run_model`, which sits *after* it, a
+    halted harness clones the product repository, runs `npm ci` and the whole baseline gate
+    sequence, churns the upstream issue's labels, and only then exits 5 — every three hours on
+    `feedback.yml`'s reconcile step, for as long as the halt stands."""
     from harness.errors import Halted
     from harness.stages.propose import propose
     from tests.test_stages import approved_item, proposable
@@ -1528,11 +1522,11 @@ def test_a_halt_does_not_eat_the_resume_behind_it(tmp_path):
 
 
 def test_the_command_loop_answers_a_halt_and_keeps_going(tmp_path):
-    """The loop must catch `Halted` per command rather than re-raise it, and it must ANSWER --
+    """The loop must catch `Halted` per command rather than re-raise it, and it must answer --
     a batch that silently drops the commands behind a halted one is the failure this guards.
 
-    Driven rather than read: this used to assert on `inspect.getsource`, which passes for a loop
-    that catches the exception and then does nothing with it.
+    Driven rather than read: an assertion on `inspect.getsource` passes for a loop that catches
+    the exception and then does nothing with it.
     """
     import harness.__main__ as main_mod
 
@@ -1541,7 +1535,7 @@ def test_the_command_loop_answers_a_halt_and_keeps_going(tmp_path):
     posted_before = len(rig.gh.comments_posted)
 
     # A spending verb: the halt stops model calls, so `work` (which only opens an issue) is
-    # deliberately still allowed and would not exercise this path.
+    # still allowed and would not exercise this path.
     record, keep_going = main_mod.run_command(
         rig.ctx, rig.config, _cmd("ask", args="what does the game registry do")
     )
@@ -1580,8 +1574,7 @@ def test_a_rate_limit_is_the_one_thing_that_stops_the_batch(tmp_path):
 # ----------------------------------------------------------------------------------------------
 # The merged verbs: one word, and the surface or the state decides what it does.
 #
-# Three pairs went away because each named a distinction the thread already carried. What has to
-# hold now is that the single verb still reaches BOTH of the behaviours its pair used to split.
+# Each merged verb has to reach both of the behaviours its pair split.
 
 
 def test_go_on_a_suggestion_approves_it(tmp_path):
@@ -1770,9 +1763,9 @@ def test_stop_on_a_finished_item_answers_instead_of_raising(tmp_path):
 
 
 def test_a_command_that_errors_is_answered_in_the_thread(tmp_path):
-    """The failure this whole surface exists to avoid is silence. A HarnessError used to be
-    recorded to stdout and nowhere else, which from the commenter's side looks exactly like the
-    harness being asleep."""
+    """The failure this whole surface exists to avoid is silence: a HarnessError recorded to
+    stdout and nowhere else looks, from the commenter's side, exactly like the harness being
+    asleep."""
     import harness.__main__ as main_mod
     from harness.errors import StoreError
 
@@ -1800,7 +1793,7 @@ def test_a_command_that_errors_is_answered_in_the_thread(tmp_path):
 
 
 def test_revise_wakes_a_needs_human_item_from_the_harness_issue(tmp_path):
-    """`stage:needs-human` is only visible on the harness issue, and OPERATIONS.md, USING.md and
+    """`stage:needs-human` is only visible on the harness issue, and OPERATIONS.md and
     `stages/revise.py` all tell the operator to type `/harness revise` THERE. Routing on the
     surface instead of the state sent that to a re-propose, and `needs-human -> proposing` is
     not a legal edge -- so the documented recovery answered with a traceback."""
@@ -2015,9 +2008,9 @@ def test_one_comment_cannot_carry_an_unbounded_number_of_commands():
 
 
 def test_githubs_own_rate_ceiling_stops_the_batch_like_the_model_one(tmp_path):
-    """Two different ceilings, and only one of them used to stop. Left running, the loop ground
-    through every remaining command posting replies that were themselves refused and swallowed
-    -- consuming any `/harness resume` sitting behind the comment that tripped it."""
+    """Two different ceilings, and both stop the batch. Left running, the loop grinds through
+    every remaining command posting replies that are themselves refused and swallowed --
+    consuming any `/harness resume` sitting behind the comment that tripped it."""
     import harness.__main__ as main_mod
     from harness.errors import RateCeilingReached
 
@@ -2036,9 +2029,9 @@ def test_githubs_own_rate_ceiling_stops_the_batch_like_the_model_one(tmp_path):
 
 
 def test_one_comment_draws_one_reply_however_many_commands_it_carried(tmp_path):
-    """Three commands used to draw three replies, each with the full signature under it -- so
-    the thread filled with more of the harness's own writing than anybody else's, and every
-    extra comment was another write against GitHub's content-creation limit."""
+    """Three commands draw one reply. A reply each, with the full signature under it, fills the
+    thread with more of the harness's own writing than anybody else's, and every extra comment
+    is another write against GitHub's content-creation limit."""
     import harness.__main__ as main_mod
 
     rig = request_rig(tmp_path)

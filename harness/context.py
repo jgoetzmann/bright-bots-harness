@@ -52,7 +52,7 @@ class Context:
     run_id: str
     ledger: Ledger | None = None
     ledger_path: Path | None = None
-    #: B269: the trust file with its levels. Still behaves as the set of handles it was.
+    #: The trust file with its levels; it still behaves as a set of handles (B269).
     trusted: Trust = field(default_factory=Trust)
 
     @property
@@ -63,11 +63,9 @@ class Context:
     def check_halt(self) -> None:
         """Both switches a running stage has to honour, in one call.
 
-        The halt FILE (B148) and the commanded halt set by `/harness halt`. They are checked
-        together because a stage that honours one and not the other is worse than a stage that
-        honours neither -- the operator is told everything stopped, and it did not. Keeping this
-        on the context rather than in `halt.py` is what lets every call site pass both without
-        each remembering to.
+        The halt file (B148) and the commanded halt set by `/harness halt`. They live together
+        on the context so that no call site can honour one and miss the other, which would
+        tell the operator everything stopped when it had not.
         """
         halt_module.check_halt(self.config.halt_file)
         commanded = self.ledger.halt_request()
@@ -132,9 +130,8 @@ def build_context(
 
     ledger_path = ledger_path_for(config)
     the_ledger: Ledger = ledger if ledger is not None else ledger_module.load(ledger_path)
-    # B269/D60: the levels have to survive. An explicit `trusted` that is already a Trust is
-    # kept whole; a bare iterable of handles becomes level-1 entries, which is the least the
-    # file could have meant.
+    # A `Trust` is kept whole so its levels survive; a bare iterable of handles becomes level-1
+    # entries, the least the file could have meant (B269).
     the_trusted: Trust = (
         (
             trusted
@@ -145,7 +142,7 @@ def build_context(
         else load_trust(config.trust_file)
     )
 
-    governor = Governor(the_store, config, the_clock, ledger=the_ledger)
+    governor = Governor(config, the_clock, the_ledger)
     the_runner: Runner = runner if runner is not None else get_runner(config)
     the_clones = clones if clones is not None else CloneManager(config, the_clock)
 
@@ -161,7 +158,7 @@ def build_context(
             # The CLI treats its cwd as the repository root (setup writes HUMAN.md there).
             Path.cwd() / "HUMAN.md",
             Path.cwd() / ".env",
-            # Delivery 2 (R-E): exactly these two. `.harness/` is deliberately NOT a root (B143).
+            # `state/` and `proposals/`; `.harness/` is never a write root (B143).
             Path(config.repo_root) / "state",
             Path(config.repo_root) / "proposals",
         ]

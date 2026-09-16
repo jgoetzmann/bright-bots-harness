@@ -1,5 +1,4 @@
-"""GitHub client: unauthenticated cached reads (spec §5.5) plus the tier-2 write surface
-(D2 §5.3)."""
+"""GitHub client: unauthenticated cached reads, plus the tier-2 write surface."""
 
 from __future__ import annotations
 
@@ -38,16 +37,13 @@ DRY_RUN_SHA = "0" * 40
 #: An invisible mark on every comment the harness writes, so a workflow can tell the harness's
 #: own voice from a person's without knowing the machine account's name.
 #:
-#: Needed because the harness quotes commands back at people: every reply ends with a pointer
-#: naming `/harness status` and two others, and both `feedback.yml` and `ack.yml` wake on
-#: `contains(comment.body, '/harness')`. So each reply the harness posted woke a full feedback
-#: run -- checkout, install, doctor, sync-fork, sweep -- which found nothing (the sweep skips the
-#: machine account's own comments) and posted nothing, having taken the ledger lock to do it.
-#: Four such runs in twenty-seven seconds were observed on the live inbox on 2026-09-09.
+#: The harness quotes commands back at people, and both `feedback.yml` and `ack.yml` wake on a
+#: comment containing `/harness`, so without the mark every reply starts a full feedback run
+#: that finds nothing and takes the ledger lock to do it.
 #:
 #: A marker rather than a login test, because a workflow `if:` cannot read
 #: `.harness/config.json`, and the machine account is an ordinary user rather than the `Bot`
-#: type GitHub would filter. An HTML comment renders as nothing, so it costs the reader nothing.
+#: type GitHub would filter. An HTML comment renders as nothing.
 MACHINE_MARKER = "<!-- bright-bots-harness -->"
 
 
@@ -55,11 +51,8 @@ def mark_machine_written(body: str) -> str:
     """`body` with the machine marker on it, once.
 
     Applied at the transport rather than at each call site, so a site added later cannot forget
-    it -- and because the one that most needed it, `deliver.handoff`, builds its body from a
-    template and never touches `links`.
-
-    Idempotent: a body already carrying the marker comes back unchanged, so a retry cannot stack
-    them.
+    it. Idempotent: a body already carrying the marker comes back unchanged, so a retry cannot
+    stack them.
     """
     text = str(body)
     if MACHINE_MARKER in text:
@@ -122,7 +115,7 @@ def _query(pairs: Sequence[tuple[str, str]]) -> str:
 
 
 class GitHubReadOnly:
-    """Read-only GitHub client. Never authenticates, never writes (§9 I-1, I-2)."""
+    """Read-only GitHub client. Never authenticates, never writes (I-1)."""
 
     def __init__(
         self,
@@ -235,9 +228,9 @@ class GitHubReadOnly:
     def paginate(self, path: str) -> list[dict]:
         """Every page of a list endpoint, following Link headers (B266).
 
-        Public because `relabel` needs it: it reads the whole issue list directly rather than
-        through the store, and `get` is one request. A one-shot migration that stops at the
-        first page is worse than one that refuses -- it reports success.
+        Public because `relabel` reads the whole issue list directly rather than through the
+        store, and `get` fetches one page: a migration that stopped at the first page would
+        report success over a partial run.
         """
         return self._paginate(path)
 
@@ -274,8 +267,8 @@ class GitHubReadOnly:
     def issues_assigned_to(self, login: str, *, state: str = "open") -> list[dict]:
         """Open product-repository issues assigned to `login` (B233).
 
-        One request. Assigning the machine account is how a maintainer hands it a ticket, so
-        this is the query that turns that gesture into a queue entry.
+        Assigning the machine account is how a maintainer hands it a ticket, and this query is
+        what turns that into a queue entry.
         """
         handle = str(login or "").strip().lstrip("@")
         if not handle:
@@ -300,7 +293,7 @@ class GitHubReadOnly:
 
 
 # ======================================================================================
-# Delivery 2 — the one authenticated client (I-11)
+# The one authenticated client (I-11)
 # ======================================================================================
 
 
@@ -311,10 +304,9 @@ PUSH_REASON_LINES = 12
 def _push_reason(detail: str) -> str:
     """The lines of a failed push worth reading (B229).
 
-    A push that a hook refuses carries the hook's entire output, and the tail of that is
-    whatever the hook's last command printed -- a vitest browser stack, in the case that led
-    here. The lines git itself writes all start `error:`, `fatal:`, `remote:` or `hint:`, so
-    prefer those and fall back to the tail only when there are none.
+    A push a hook refuses carries the hook's entire output, whose tail is whatever its last
+    command printed. The lines git itself writes all start `error:`, `fatal:`, `remote:` or
+    `hint:`, so those are preferred and the tail is used only when there are none.
     """
     text = redact.redact(detail or "").strip()
     if not text:
@@ -341,8 +333,8 @@ class GitHubClient(GitHubReadOnly):
         opener: Callable[[urllib.request.Request], Any] | None = None,
     ) -> None:
         super().__init__(repo, store, clock, ceiling_per_hour, opener=opener)
-        # Every read and write in the base class goes through self._opener; wrapping it is how
-        # the header reaches reads while ETag/304/ceiling logic stays exactly as Delivery 1 is.
+        # Every read and write in the base class goes through self._opener, so wrapping it is
+        # what puts the header on reads while the ETag, 304 and ceiling logic stays untouched.
         self._raw_opener = self._opener
         self._opener = self._open
         self._token = (token or "").strip()
@@ -405,7 +397,7 @@ class GitHubClient(GitHubReadOnly):
     # ------------------------------------------------------------------ writes
 
     def create_label(self, repo: str, *, name: str, color: str, description: str = "") -> dict:
-        """One `harness:*` label; `init --labels` calls it only for names not already present."""
+        """One label; `init --labels` calls it only for names not already present."""
         self._require_write("create_label")
         payload = redact.redact_json(
             {"name": str(name), "color": str(color).lstrip("#"), "description": str(description)}
@@ -416,8 +408,8 @@ class GitHubClient(GitHubReadOnly):
     def comment(self, repo: str, number: int, body: str) -> dict:
         self._require_write("comment")
         n = int(number)
-        # Marked here rather than by the caller: every comment on this path is the harness
-        # speaking, and a caller that forgets makes the harness talk to itself.
+        # Every comment on this path is the harness speaking, so it is marked here rather than
+        # by each caller.
         payload = redact.redact_json({"body": mark_machine_written(body)})
         data = self._write(
             "POST",
@@ -459,7 +451,7 @@ class GitHubClient(GitHubReadOnly):
         return [row for row in data if isinstance(row, dict)]
 
     def create_issue(self, title: str, body: str, labels: Sequence[str]) -> dict:
-        """Always in ``self.self_repo`` — there is no repo parameter (I-14)."""
+        """Always in ``self.self_repo``; there is no repo parameter (I-14)."""
         self._require_write("create_issue")
         if not self.self_repo:
             raise GitHubError("create_issue: SELF_REPO is not configured; refusing to guess")
@@ -616,12 +608,11 @@ class GitHubClient(GitHubReadOnly):
     ) -> None:
         """Push a work branch to the fork. ``force`` uses ``--force-with-lease``, never ``-f``.
 
-        B298/D67: nothing leaves until `_refuse_protected_commits` has walked the commits the
-        harness authored on the branch and found none under `.github/`. It is the last check
-        before the network and the one every push path shares, so it runs under ``dry_run``
-        too -- a dry run over a real clone reports the refusal it would make -- and it refuses
-        when git cannot answer. It takes no base: a rebase moves any recorded base, and a
-        parameter is something a caller can get wrong.
+        Nothing leaves until `_refuse_protected_commits` has walked the commits the harness
+        authored on the branch and found none under `.github/` (B298). It is the last check
+        before the network and every publishing path shares it, so it runs under ``dry_run``
+        too, and it refuses when git cannot answer. It takes no base, because a rebase moves
+        any recorded base.
         """
         self._require_write("push_branch")
         run = git_runner if git_runner is not None else run_command
@@ -637,8 +628,8 @@ class GitHubClient(GitHubReadOnly):
     def _refuse_protected_commits(
         self, cwd: Path, branch: str, run: Callable[[list[str], Path], tuple[int, str, str]]
     ) -> None:
-        """B298: raise unless every commit the harness authored at the top of ``branch`` stays
-        out of `.github/` (I-15, D67). Upstream's commits below them are relayed untouched."""
+        """Raise unless every commit the harness authored at the top of ``branch`` stays out of
+        `.github/` (I-15). Upstream's commits below them are relayed untouched."""
         try:
             walk = walk_harness_commits(cwd, branch, run)
         except CloneError as exc:
@@ -677,12 +668,11 @@ class GitHubClient(GitHubReadOnly):
     ) -> None:
         """Fast-forward-only push of one refspec (used by ``clone.sync_fork``). No force path.
 
-        Deliberately outside the D67 commit walk. Its one caller hands it
-        ``clone.FORK_SYNC_REFSPEC`` -- upstream's own ``main`` onto the fork's, fast-forward
-        only -- and that history is upstream's, its ``ci-cd.yml`` commits included, which is
-        exactly what the ``workflow`` scope was granted to relay. ``force=False`` and the
-        fast-forward check in ``sync_fork`` are its guard; the harness's own work goes through
-        `push_branch`.
+        Outside the D67 commit walk. Its one caller hands it ``clone.FORK_SYNC_REFSPEC``,
+        upstream's own ``main`` onto the fork's, fast-forward only; that history is upstream's,
+        its ``ci-cd.yml`` commits included, which is what the ``workflow`` scope was granted to
+        relay. ``force=False`` and the fast-forward check in ``sync_fork`` are its guard, and
+        the harness's own work goes through `push_branch`.
         """
         self._require_write("push_ref")
         self._git_push(
@@ -716,11 +706,9 @@ class GitHubClient(GitHubReadOnly):
             "git",
             "-c",
             f"http.extraheader=Authorization: basic {credential}",
-            # B229/D49: on the command line, where nothing can override it. `acquire` sets the
-            # same key in the clone's config, and then `npm ci` runs the product repository's
-            # `prepare` script -- husky -- which sets `core.hooksPath` right back to `.husky/_`.
-            # Measured twice: the product's pre-push hook refused the push after every gate had
-            # passed, and reported a vitest browser failure as the reason.
+            # Hooks off on the command line, where nothing can override it (B229). `acquire`
+            # sets the same key in the clone's config, but `npm ci` runs the product's `prepare`
+            # script, husky, which sets `core.hooksPath` back to `.husky/_`.
             "-c",
             f"core.hooksPath={HOOKS_OFF}",
             "push",
@@ -789,11 +777,11 @@ class GitHubClient(GitHubReadOnly):
         return data
 
     def token_scopes(self) -> tuple[str, ...] | None:
-        """The classic token's scopes, from ``X-OAuth-Scopes`` on ``GET /user`` (B305/D67).
+        """The classic token's scopes, from ``X-OAuth-Scopes`` on ``GET /user`` (B305).
 
-        ``None`` when GitHub sends no such header -- a fine-grained token, or no token at all
-        -- which means "cannot tell", never "no scopes". Unconditional on purpose: it bypasses
-        the ETag cache, because a 304 replayed from it is no source for a credential's scopes.
+        ``None`` when GitHub sends no such header, as for a fine-grained token or no token at
+        all; it means "cannot tell", never "no scopes". It bypasses the ETag cache, because a
+        replayed 304 is no source for a credential's scopes.
         """
         url = self._url("/user")
         self._check_ceiling(url)
@@ -819,18 +807,17 @@ class GitHubClient(GitHubReadOnly):
 
 
 #: GitHub's own limits: 60 requests an hour unauthenticated, 5000 authenticated. The `.env`
-#: key is the unauthenticated figure with a margin, because Delivery 1 held no credential.
+#: key holds the unauthenticated figure with a margin.
 AUTHENTICATED_CEILING_PER_HOUR = 5000
 
 
 def ceiling_for(config: Any) -> int:
-    """The self-imposed request ceiling for this tier (B231/D51).
+    """The self-imposed request ceiling for this tier (B231).
 
     `GITHUB_API_CEILING_PER_HOUR` defaults to 50, a margin under the unauthenticated 60. At
     tier 2 the machine account's token raises GitHub's own limit to 5000, and holding the
-    harness to the unauthenticated figure is not caution -- it stops a run in the middle.
-    Measured: the first delivery opened its pull request upstream and then failed on the very
-    next call, a label write, having spent everything it was going to spend.
+    harness to the unauthenticated figure stops a run part-way through, after it has opened a
+    pull request and before it can label it.
     """
     configured = int(getattr(config, "github_api_ceiling_per_hour", 0) or 0)
     if int(getattr(config, "permission_tier", 0) or 0) >= 2:
@@ -847,12 +834,11 @@ class _Unmetered:
     """The :class:`Store` surface :class:`GitHubReadOnly` caches and meters through, doing
     neither.
 
-    For ONE public read from a command a person typed. The trailing-hour meter exists to keep
-    the *fleet* inside the shared unauthenticated ceiling and lives in the database the fleet
-    shares; requiring that database is what made `harness trust line` -- the command that
-    exists to make adding somebody easy -- need a provisioned machine before it would resolve
-    an account id. GitHub's own 403 still arrives as `RateCeilingReached` from
-    `_raise_for_status`, so the real limit is still enforced, by the party that owns it.
+    For one public read from a command a person typed. The trailing-hour meter keeps the fleet
+    inside the shared unauthenticated ceiling and lives in the database the fleet shares, so
+    requiring it would make `harness trust line` need a provisioned machine to resolve an
+    account id. GitHub's own 403 still arrives as `RateCeilingReached` from
+    `_raise_for_status`, so the real limit is still enforced by the party that owns it.
     """
 
     def cache_get(self, url: str) -> tuple[str | None, str] | None:
@@ -871,8 +857,8 @@ class _Unmetered:
 def public_reader(clock: Clock | None = None) -> GitHubReadOnly:
     """An unauthenticated read-only client that needs no Config, Store, Context or `.env`.
 
-    Exactly what an anonymous request can read, and nothing more: the token door (I-11) is
-    `build_client`'s alone and is not opened here.
+    It reads what an anonymous request can read: the token door (I-11) is `build_client`'s
+    alone and is not opened here.
     """
     return GitHubReadOnly("", _Unmetered(), clock or SystemClock(), PUBLIC_CEILING_PER_HOUR)
 

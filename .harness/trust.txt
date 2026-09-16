@@ -29,8 +29,9 @@
 #   0  everyone else — the absence of a line. The comment is read, denied, and ignored.
 #
 # Level 1 is not "free": `ask` reads the product repository and spends a model call (bounded by
-# ASK_CAP_USD); `status` costs nothing. Level 2 is not merely "can't halt": in the four stages
-# with nowhere to park an item, its `stop` ends that item for good. docs/COMMANDS.md has both.
+# the ask turn cap and ASK_MAX_PER_DAY); `status` costs nothing. Level 2 is not merely "can't
+# halt": in the four stages with nowhere to park an item, its `stop` ends that item for good.
+# docs/COMMANDS.md has both.
 #
 # WITHOUT a vouch, a line still needs GitHub to report the commenter as OWNER, MEMBER or
 # COLLABORATOR on the repository the comment is on (B131) — in practice, an invitation. That

@@ -1,4 +1,4 @@
-"""The deliver stage (handoff §4.5): sync the fork, rebase, push, open the upstream PR, ship."""
+"""The deliver stage: sync the fork, rebase, push, open the upstream PR, ship."""
 
 from __future__ import annotations
 
@@ -21,13 +21,11 @@ from harness.stages.propose import parse_work_package, work_package_text
 
 
 def _spec_text(ctx: Context, item: Any) -> str:
-    """B226: the work package, from wherever it still exists; empty when it exists nowhere."""
+    """The work package, from wherever it still exists; empty when it exists nowhere (B226)."""
     try:
         return work_package_text(item, repo_root=ctx.config.repo_root)
     except HarnessError:
         return ""
-
-
 
 
 __all__ = [
@@ -52,7 +50,7 @@ log = logging.getLogger("harness")
 MAX_BODY_CHARS = 60000
 MAX_TITLE_CHARS = 100
 
-#: ``runs/item-<id>/HANDOFF.md`` — the note a stopped run leaves for the run that resumes it.
+#: ``runs/item-<id>/HANDOFF.md``: the note a stopped run leaves for the run that resumes it.
 HANDOFF_NAME = "HANDOFF.md"
 
 #: The same GitHub ceiling applies to the handoff comment as to a pull-request body.
@@ -61,23 +59,22 @@ MAX_COMMENT_CHARS = 60000
 #: How much of the run's reasoning the handoff carries forward (B213).
 DECISION_TAIL_LINES = 20
 
-#: D70: ``runs/<run-id>/selfaudit.json``, written by implement's self-audit loop.
+#: ``runs/<run-id>/selfaudit.json``, written by implement's self-audit loop.
 SELFAUDIT_NAME = "selfaudit.json"
-#: D70: how many blocking findings, and how many cycle outcomes, the PR body lists.
+#: How many blocking findings, and how many cycle outcomes, the PR body lists.
 MAX_SELF_AUDIT_LISTED = 5
 
-#: B214: the states a half-finished item can be handed off from. Anything else is either
-#: already parked (blocked, needs-human) or already gone (shipped, merged, abandoned).
+#: The states a half-finished item can be handed off from (B214). Anything else is already
+#: parked or already finished.
 HANDOFF_FROM_STATES: tuple[str, ...] = ("implementing", "packaged", "revising")
 
-#: B314/D67: where a handoff puts the fork's `main`, fetched at check time. A ref of the
-#: harness's own, force-updated by that fetch, so nothing the model left in the clone -- a
-#: moved `refs/remotes/origin/main` included -- can stand in for it.
+#: Where a handoff puts the fork's `main`, fetched at check time (B314). A ref of the
+#: harness's own, force-updated by that fetch, so a `refs/remotes/origin/main` the model moved
+#: cannot stand in for it.
 GUARD_FORK_MAIN = "refs/harness-guard/fork-main"
 
-#: B315: the commits a handoff withheld, as a patch series beside HANDOFF.md. An Actions run
-#: uploads `runs/` but not the clone, which does not outlive the run, so this is what a person
-#: can still read afterwards.
+#: The commits a handoff withheld, as a patch series beside HANDOFF.md (B315). The workflow
+#: uploads `runs/` but not the clone, which does not outlive the run.
 WITHHELD_NAME = "WITHHELD.patch"
 MAX_WITHHELD_CHARS = 2_000_000
 
@@ -94,10 +91,9 @@ GIT_IDENTITY = (
     "user.email=harness@brightboost-harness",
 )
 
-# The one module-level injectable, as in ``implement.py``: tests replace it so no test can
-# reach the network. The push has no injectable of its own — it goes through ``ctx.gh``, which
-# every test already fakes. Every git command in this module runs through ``gates.run_command``
-# inside the lease's clone.
+# The one module-level injectable, replaced by tests so none reaches the network. The push
+# goes through ``ctx.gh``, which every test already fakes. Every git command in this module
+# runs through ``gates.run_command`` inside the lease's clone.
 SYNC_FORK = clone_mod.sync_fork
 
 
@@ -145,10 +141,9 @@ def _reference_lines(
 ) -> str:
     """The closing keyword and the back-reference, as GitHub understands them (B227).
 
-    ``Closes`` only where merging really does resolve the thing named: this pull request is
-    against the product repository, so merging it closes the product issue. The harness work
-    item lives in another repository and is referenced, not closed -- it closes when the item
-    itself reaches its terminal state, not when this merges.
+    ``Closes`` names the product issue, which merging this pull request does resolve. The
+    harness work item lives in another repository, so it is referenced; it closes when the item
+    itself reaches its terminal state.
     """
     lines = []
     closing = links.closes(upstream_repo, upstream_issue, same_repo=True)
@@ -161,9 +156,8 @@ def _reference_lines(
     return "\n".join(lines)
 
 
-#: How much of a gate's output is worth inlining when it passed: none. The verbatim capture
-#: lives in the review package, which is attached to the run and rebuildable from the public
-#: repositories alone.
+#: How much of a failed gate's output the pull-request body inlines. A gate that passed gets
+#: a table row; the verbatim capture lives in the review package.
 EVIDENCE_TAIL_CHARS = 6000
 
 #: `### <gate> — exit code <n> (PASS|FAIL)`, as `packager._gate_section` writes it.
@@ -177,13 +171,10 @@ _PHASE_SPLIT = re.compile(r"\s+[-–—]\s+")
 
 
 def evidence_digest(evidence: str) -> str:
-    """The gate results as a table, with any failure kept whole (B232/D52).
+    """The gate results as a table, with each failure's output inlined (B232).
 
-    The first delivery pull request was 52 KB, 40 KB of which was the verbatim stdout of seven
-    gates that all passed — a wall nobody scrolls, in the one place a reviewer has to read.
-    What a reviewer needs from a green run is that it was green; what they need from a red one
-    is all of it. The complete capture is in the review package either way, and the package is
-    the artifact of record.
+    A gate that passed gets its row and nothing more; a failed one keeps its output up to
+    ``EVIDENCE_TAIL_CHARS``. The complete capture is in the review package either way.
     """
     text = (evidence or "").strip()
     if not text:
@@ -194,8 +185,8 @@ def evidence_digest(evidence: str) -> str:
     phase = ""
     for line in text.splitlines():
         if line.startswith("## "):
-            # `## Baseline - untouched tree at BASE` and its siblings. Without this the
-            # table lists every gate twice with nothing to say which run is which.
+            # `## Baseline - untouched tree at BASE` and its siblings name the run each
+            # gate below them belongs to, so the table can tell the two apart.
             phase = _PHASE_SPLIT.split(line[3:].strip(), maxsplit=1)[0]
         match = _GATE_HEADING.match(line)
         if match:
@@ -273,7 +264,7 @@ def _checklist(evidence: str) -> str:
 
 
 def load_self_audit(run_dir: Path) -> dict | None:
-    """D70: the self-audit record this run wrote, or ``None`` when there is none to read."""
+    """The self-audit record this run wrote, or ``None`` when there is none to read."""
     raw = _read(Path(run_dir) / SELFAUDIT_NAME).strip()
     if not raw:
         return None
@@ -296,11 +287,11 @@ def _count(n: int, noun: str) -> str:
 
 
 def self_audit_block(record: Any, tip: str) -> str:
-    """D70: the self-audit's status line, and what it found, for the delivery PR body.
+    """The self-audit's status line, and what it found, for the delivery PR body (D70).
 
     ``tip`` is `_tip_sha` of the branch being delivered; the line describes the record's last
-    cycle only when that cycle audited this exact tip. Findings are a model's opinion and are
-    labelled so; notes are counted, not listed; the full list is in the package DECISIONS.md.
+    cycle only when that cycle audited this exact tip. Findings are labelled as a model's
+    opinion, notes are counted rather than listed, and the package DECISIONS.md holds them all.
     """
     history = record.get("history") if isinstance(record, dict) else None
     last = history[-1] if isinstance(history, list) and history else None
@@ -361,12 +352,11 @@ def build_pr_body(
     trusted: Iterable[str] | None = None,
     self_audit: str | None = None,
 ) -> str:
-    """B108/B232: the pull request a reviewer actually reads.
+    """The delivery pull request body (B108).
 
-    What they need first is on top and uncollapsed — what this closes, how to steer it, why CI
-    may be waiting, and the checklist `CONTRIBUTING.md` asks them to work through. Everything
-    that is evidence rather than argument sits behind a `<details>`, because the review package
-    holds the authoritative copy and a pull request is not the place to reproduce it.
+    Uncollapsed at the top: what this closes, how to steer it, why CI may be waiting, and the
+    checklist `CONTRIBUTING.md` asks a reviewer to work through. Evidence sits behind a
+    `<details>`; the review package holds the authoritative copy.
     """
     readme = _read(package_dir / "README.md").strip()
     diagnosis = _read(package_dir / "DIAGNOSIS.md").strip()
@@ -418,9 +408,8 @@ def build_pr_body(
                 f"[{links.issue_ref(self_repo, item_id)}]({links.issue_url(self_repo, item_id)})."
             ),
             "",
-            # B234: the review request is also made through the API, but that needs push access
-            # the machine account does not have on this repository. A mention notifies either
-            # way, and it survives the request being refused.
+            # The API review request needs push access the machine account lacks here, so the
+            # mention is what notifies a reviewer when that request is refused (B234).
             f"Review requested from {_trusted_handles(trusted)}.",
             "",
             "## Steering it from here",
@@ -432,7 +421,7 @@ def build_pr_body(
             "| `/harness revise <notes>` | one more implementation pass, your notes as the brief |",
             "| `/harness rebase` | rebase onto this repository's current `main`, then push again |",
             "| `/harness stop` | close this and park the work item; `/harness go` puts it back |",
-            "| `/harness status` | spend, queue, and when the next thing happens |",
+            "| `/harness status` | usage, queue, and when the next thing happens |",
             "",
             (
                 f"Honoured only from {_trusted_handles(trusted)}, and only when GitHub also "
@@ -463,7 +452,7 @@ def build_pr_body(
                 evidence_digest(evidence),
             ),
             "",
-            # D70: after the gate results, and absent altogether when the audit is off.
+            # After the gate results, and absent altogether when the audit is off.
             *([self_audit, ""] if self_audit is not None else []),
             _collapsed(
                 "The review package, verbatim",
@@ -492,11 +481,9 @@ def build_pr_body(
 def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     """Push the branch and open the upstream PR; its URL, or ``""`` when the client cannot write."""
     ctx.check_halt()
-    # B282/I-18: first, before the state check and long before the push. A delivery targets the
-    # product repository; one that targeted the harness would be the harness proposing a change
-    # to itself, with only a reviewer's attention between it and the rules that govern it.
-    # `load_config` refuses this configuration outright -- this catches every other way
-    # `upstream_repo` could have been set.
+    # Checked first, before the state check and long before the push: a delivery targets the
+    # product repository, and the harness does not work on itself (I-18). `load_config` refuses
+    # this configuration too; this catches every other way `upstream_repo` could have been set.
     if ctx.config.self_repo and (
         str(ctx.config.upstream_repo).strip().lower()
         == str(ctx.config.self_repo).strip().lower()
@@ -528,13 +515,13 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     self_repo = str(ctx.config.self_repo)
     reviewers = sorted(str(handle) for handle in ctx.trusted)
 
-    # B226: same fallback as implement and the packager -- the PR body must not lose the work
-    # package just because propose ran on a different runner.
+    # The same fallback as implement and the packager, since propose may have run on another
+    # runner (B226).
     spec_text = _spec_text(ctx, item)
     pkg = parse_work_package(spec_text)
     upstream_issue = item.issue_number if item.external_ref.startswith("issue:") else None
     title = build_pr_title(pkg.title, item.title, upstream_issue)
-    # D70: read before the rebase below, so the tip compared is the one the audit saw.
+    # Read before the rebase below, so the tip compared is the one the audit saw.
     self_audit = None
     if int(getattr(ctx.config, "max_self_audit_cycles", 0) or 0) > 0:
         self_audit = self_audit_block(load_self_audit(ctx.run_dir), _tip_sha(the_lease))
@@ -584,9 +571,8 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     default_branch = _default_branch(ctx, upstream)
     record["base"] = default_branch
     if not nested:
-        # 1. sync-fork (B105): fast-forward only, loud on divergence, nothing pushed otherwise.
-        #    A clone whose origin is not on github.com (local remotes) has no fork to sync and
-        #    must never reach the network.
+        # 1. sync-fork: fast-forward only, raising on divergence (B105). A clone whose origin
+        #    is not on github.com has no fork to sync and must never reach the network.
         if _github_origin(the_lease):
             fork_sha = SYNC_FORK(
                 ctx.config,
@@ -612,9 +598,9 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         )
         ctx.check_halt()
 
-        # 3. push the branch to the fork — never to upstream (§5.3). B313/D67: and only once no
-        #    commit the push would send that upstream does not already hold -- whoever
-        #    authored it -- touches `.github/`.
+        # 3. push the branch to the fork, never to upstream, and only when no commit the push
+        #    would send that upstream does not already hold touches `.github/`, whoever
+        #    authored it (B313).
         _refuse_github_changes(ctx, the_lease)
         ctx.gh.push_branch(the_lease.path, the_lease.branch, remote_repo=fork)
         ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
@@ -650,8 +636,8 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 
 
 def _github_origin(lease: Lease) -> bool:
-    """True when the clone's ``origin`` is on github.com — a real run. A test clone's origin is
-    a local path, and nothing here may reach the network on its behalf."""
+    """True when the clone's ``origin`` is on github.com. A test clone's origin is a local
+    path, and nothing here may reach the network on its behalf."""
     code, out, _ = gates.run_command(["git", "remote", "get-url", "origin"], lease.path)
     return code == 0 and out.strip().startswith("https://github.com/")
 
@@ -681,16 +667,14 @@ def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
 
 
 def _refuse_github_changes(ctx: Context, lease: Lease) -> None:
-    """B313/D67: raise unless no commit on the branch above the upstream commit `_rebase` just
-    put it on touches `.github/`, whoever authored it.
+    """Raise unless no commit the push would send touches `.github/`, whoever authored it.
 
-    The push guard's walk stops at the first commit a harness email did not author, and the
-    model, holding Bash, can commit under any name; B64 read the working tree, and the branch a
-    push sends is a ref the model could have moved away from it. This reads exactly the commits
-    the push sends that upstream does not hold. Its anchor is `FETCH_HEAD`, which `_rebase`
-    fetched after the model's last call, so nothing the model left in the clone stands in for
-    it; upstream's own `.github/` commits sit below it and are relayed, as B299 requires. When
-    the range cannot be read, nothing is pushed.
+    The push guard's walk stops at the first commit a harness email did not author, and a model
+    holding Bash can commit under any name, so this reads every commit on the branch that
+    upstream does not hold. Its anchor is `FETCH_HEAD`, which `_rebase` fetched after the
+    model's last call, so nothing the model left in the clone stands in for it; upstream's own
+    `.github/` commits sit below it and are relayed. When the range cannot be read, nothing is
+    pushed (B313).
     """
     try:
         held = clone_mod.protected_paths_above(
@@ -796,14 +780,13 @@ def build_handoff_body(
     withheld: Sequence[str] = (),
     kept: str = "",
 ) -> str:
-    """B213: everything the next run (or a human) needs, and nothing that needs a credential.
+    """Everything the next run or a person needs, and nothing that needs a credential (B213).
 
     Pure: the caller gathers the pieces, this renders them. The last section is the exact
-    command that picks the work up again. ``withheld`` names the `.github/` paths that kept
-    the branch off the fork (B301), so the note does not blame a missing credential; then the
-    item is blocked, not carried, and the last section says what a person decides instead
-    (B315). ``kept`` names the patch of the withheld commits beside this note, if one was
-    written.
+    command that picks the work up again. ``withheld`` names the `.github/` paths that kept the
+    branch off the fork; the item is then blocked rather than carried, and the last section
+    says what a person decides instead. ``kept`` names the patch of the withheld commits beside
+    this note, if one was written.
     """
     if pushed:
         push_note = f"pushed to `{fork}`"
@@ -910,12 +893,12 @@ def build_handoff_body(
 
 
 def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
-    """B212-B214: park a half-finished item and carry it into the next run.
+    """Park a half-finished item and carry it into the next run (B212).
 
-    A usage stop is a normal outcome, not a failure. The work in the clone is committed,
-    pushed to the fork when there is a credential (never to upstream, never forced), written
-    up in ``runs/item-<id>/HANDOFF.md``, and the item goes back to ``approved`` with the
-    ledger carrying it. ``harness revise <id> --source continue`` is the other half.
+    The work in the clone is committed, pushed to the fork when there is a credential (never to
+    upstream, never forced), and written up in ``runs/item-<id>/HANDOFF.md``; the item goes back
+    to ``approved`` with the ledger carrying it. ``harness revise <id> --source continue`` is
+    the other half. A branch holding a `.github/` change is withheld and the item blocked.
     """
     item = ctx.store.get_work_item(item_id)
     if item is None:
@@ -935,9 +918,8 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
 
     # 1. Nothing the model already wrote may be lost to a usage stop.
     committed = _commit_wip(ctx, clone, reason)
-    # 2. B212: to the fork, only with a credential, and never with force. B301/D67: and never
-    #    carrying anything under `.github/` -- the push is withheld, and B315 keeps the withheld
-    #    commits where a person can still read them.
+    # 2. To the fork, only with a credential, never with force, and never carrying anything
+    #    under `.github/`: that push is withheld, and its commits are kept as a patch (B301).
     pushed, withheld, anchor = _push_handoff(ctx, clone, branch, fork)
     kept = (
         _keep_withheld(ctx, run_dir, clone, branch, anchor or str(item.base_sha or ""))
@@ -978,9 +960,9 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             ctx.record_decision(f"handoff could not comment on {self_repo}#{item_id}: {exc}")
     ctx.store.append_event(item_id, "warn", f"handoff: {reason}")
     if withheld:
-        # B315: not carried. Nothing a resume could pick up reached the fork -- in Actions mode
-        # `continue` would re-acquire a branch that is not there, or one without this work --
-        # so the item waits for a person instead, like any other forbidden diff.
+        # Not carried: nothing a resume could pick up reached the fork, so `continue` would
+        # re-acquire a branch that is missing or lacks this work. The item waits for a person,
+        # like any other forbidden diff (B315).
         ctx.record_decision(
             f"blocked item {item_id} on its handoff ({reason}): {branch} holds what the harness "
             f"never publishes, so it was not pushed; {path} says what"
@@ -1002,7 +984,7 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
         + f" and {path} says how to resume it with `harness revise {item_id} --source continue`"
     )
 
-    # 4. B214: back to approved, and into the ledger's carry slot.
+    # 4. Back to approved, and into the ledger's carry slot (B214).
     current = ctx.store.get_work_item(item_id) or item
     if current.state in HANDOFF_FROM_STATES:
         try:
@@ -1043,14 +1025,14 @@ def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:
 def _push_handoff(
     ctx: Context, clone: Path, branch: str, fork: str
 ) -> tuple[bool, list[str], str]:
-    """B212: the carried branch goes to the fork, never upstream, and never with force.
+    """The carried branch goes to the fork: never upstream, never forced, and never with a
+    change under `.github/` (B301).
 
-    B301/D67: and never with a change under `.github/`. Only the push is withheld -- HANDOFF.md
-    and the comment still happen, and B315 blocks the item and keeps the withheld commits --
-    and the paths come back so the note can say why. `push_branch` would refuse some of it too;
-    this names the paths first, and also sees what the push guard's walk cannot
-    (`_unpublishable`). Returns ``(pushed, withheld, anchor)``; ``anchor`` is the ref the
-    author-blind check read above, or "" when it had none.
+    A withheld push stops only the push; HANDOFF.md and the comment still happen, the item is
+    blocked, and the withheld commits are kept. `_unpublishable` names the paths first, so the
+    note can say why, and it also sees what the push guard's walk cannot. Returns ``(pushed,
+    withheld, anchor)``; ``anchor`` is the ref the author-blind check read above, or "" when it
+    had none.
     """
     if not ctx.gh.can_write or not branch:
         return False, [], ""
@@ -1071,18 +1053,16 @@ def _push_handoff(
 
 
 def _unpublishable(ctx: Context, clone: Path, branch: str) -> tuple[list[str], str]:
-    """B301/B314: the `.github/` paths the carried branch holds, a placeholder when it cannot
-    tell, and the anchor the author-blind half read above ("" when it had none).
+    """The `.github/` paths the carried branch holds, a placeholder when it cannot tell, and
+    the anchor the author-blind half read above ("" when it had none).
 
-    A handoff is the one push that follows a model call no check has seen -- the usage stop
-    lands inside the call, before implement's B64 -- so it asks two questions. The push guard's
-    own commit walk, which stops at the first commit a harness email did not author. And,
-    because the model holds Bash and a commit it makes carries whatever name it gives, the
-    author-blind one: every commit on the branch that the fork's `main` does not hold. That
-    `main` is fetched now, into a ref of the harness's own (B314): `refs/remotes/origin/main`
-    is a file in the clone the model could have moved onto its own commit, and an anchor it
-    moved would hide exactly what this looks for. When either question cannot be answered, the
-    push is withheld: a false alarm costs one withheld push, a miss publishes a workflow change.
+    A handoff is the one push that follows a model call no check has seen, since the usage stop
+    lands inside the call, before implement's B64. So it asks two questions: the push guard's
+    own commit walk, which stops at the first commit a harness email did not author, and the
+    author-blind one, every commit on the branch that the fork's `main` does not hold. That
+    `main` is fetched now into a ref of the harness's own, because the model could have moved
+    `refs/remotes/origin/main` onto its own commit and hidden what this looks for. When either
+    question cannot be answered, the push is withheld (B314).
     """
     try:
         walk = clone_mod.walk_harness_commits(clone, branch, gates.run_command)
@@ -1113,10 +1093,10 @@ def _unpublishable(ctx: Context, clone: Path, branch: str) -> tuple[list[str], s
 
 
 def _keep_withheld(ctx: Context, run_dir: Path, clone: Path, branch: str, anchor: str) -> str:
-    """B315: write the commits a handoff withheld where a person can still read them.
+    """Write the commits a handoff withheld where a person can still read them (B315).
 
-    The file's name, or "" when there was nothing to anchor the range on or git could not
-    produce it. Redacted like every other write, and capped: it is evidence, not a transport.
+    Returns the file's name, or "" when there was nothing to anchor the range on or git could
+    not produce it. Redacted like every other write, and capped at ``MAX_WITHHELD_CHARS``.
     """
     if not anchor or not branch:
         ctx.record_decision("handoff kept no patch of the withheld work: nothing to anchor it on")
@@ -1171,9 +1151,8 @@ def _decisions_tail(run_dir: Path) -> list[str]:
 def _acceptance(ctx: Context, item: Any) -> list[str]:
     """The work package's acceptance criteria, verbatim; empty when there is no spec.
 
-    B226: resolved against ``config.repo_root``, not the process cwd. Its only caller is
-    ``handoff``, which has the Context; on Actions the two happen to coincide, and in local
-    and container mode they do not.
+    Resolved against ``config.repo_root``, which in local and container mode differs from the
+    process cwd (B226). Its only caller is ``handoff``, which has the Context.
     """
     spec_text = _spec_text(ctx, item)
     if not spec_text.strip():

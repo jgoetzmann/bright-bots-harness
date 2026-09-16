@@ -1,5 +1,4 @@
-"""B7-B15. HARNESS-SPEC section 5.2, its verbatim DDL (5.2.1) and its transition
-table (5.2.2), plus the Store extras fixed by RUN-DECISIONS.
+"""B7-B15: the store, its DDL and its transition table.
 
 The database is opened directly with sqlite3 in a few places: schema and row
 state are observable state, not implementation detail.
@@ -16,18 +15,17 @@ from harness.clock import iso
 from harness.errors import DuplicateWorkItem, IllegalTransition
 from harness.store import StageRun, Store, WorkItem
 
-# Every table named in the verbatim DDL of section 5.2.1.
+# Every table named in the verbatim DDL.
 EXPECTED_TABLES = {
     "schema_version",
     "work_item",
     "stage_run",
-    "budget_period",
     "event",
     "http_cache",
     "api_call",
 }
 
-# Every index named in the verbatim DDL of section 5.2.1.
+# Every index named in the verbatim DDL.
 EXPECTED_INDEXES = {
     "idx_work_item_state",
     "idx_stage_run_item",
@@ -35,7 +33,7 @@ EXPECTED_INDEXES = {
     "idx_api_call_ts",
 }
 
-# The legal transitions of section 5.2.2, exhaustively.
+# The legal transitions, exhaustively.
 LEGAL_PAIRS = [
     ("discovered", "proposed"),
     ("discovered", "abandoned"),
@@ -55,7 +53,7 @@ LEGAL_PAIRS = [
     ("blocked", "abandoned"),
 ]
 
-# Pairs absent from section 5.2.2, including both terminal states.
+# Pairs absent from the transition table, including both terminal states.
 ILLEGAL_PAIRS = [
     ("discovered", "approved"),
     ("discovered", "implementing"),
@@ -121,7 +119,7 @@ def sqlite_names(db_path: Path, kind: str) -> set[str]:
 
 
 def test_b7_migrate_creates_every_table_from_the_ddl(tmp_path, frozen_clock):
-    """B7: every table named in section 5.2.1 exists after migrate()."""
+    """B7: every table named in the DDL exists after migrate()."""
     db_path = tmp_path / "b7.db"
     store = Store(db_path, clock=frozen_clock)
     store.migrate()
@@ -131,7 +129,7 @@ def test_b7_migrate_creates_every_table_from_the_ddl(tmp_path, frozen_clock):
 
 
 def test_b7_migrate_creates_every_index_from_the_ddl(tmp_path, frozen_clock):
-    """B7: the four indexes of section 5.2.1 exist after migrate()."""
+    """B7: the four indexes exist after migrate()."""
     db_path = tmp_path / "b7idx.db"
     store = Store(db_path, clock=frozen_clock)
     store.migrate()
@@ -157,7 +155,7 @@ def test_b7_migrate_sets_schema_version_to_one(tmp_path, frozen_clock):
 
 
 def test_b7_construction_alone_creates_no_tables(tmp_path, frozen_clock):
-    """B7: migrate() is what builds the schema; __init__ MUST NOT (RUN-DECISIONS)."""
+    """B7: migrate() is what builds the schema; __init__ MUST NOT."""
     db_path = tmp_path / "b7lazy.db"
     store = Store(db_path, clock=frozen_clock)
     store.close()
@@ -281,7 +279,7 @@ def test_b9_get_work_item_returns_none_for_an_unknown_id(store):
 
 @pytest.mark.parametrize(("from_state", "to_state"), LEGAL_PAIRS)
 def test_b10_every_legal_transition_is_accepted(store, frozen_clock, from_state, to_state):
-    """B10: section 5.2.2 lists these pairs, so transition MUST accept them."""
+    """B10: the transition table lists these pairs, so transition must accept them."""
     item_id = make_item(store, from_state)
     before = store.get_work_item(item_id)
     assert before is not None
@@ -329,7 +327,7 @@ def test_b10_list_work_items_filters_by_state(store):
 
 @pytest.mark.parametrize(("from_state", "to_state"), ILLEGAL_PAIRS)
 def test_b11_an_illegal_transition_raises(store, from_state, to_state):
-    """B11: any pair absent from section 5.2.2 raises IllegalTransition."""
+    """B11: any pair absent from the transition table raises IllegalTransition."""
     item_id = make_item(store, from_state)
 
     with pytest.raises(IllegalTransition):
@@ -449,7 +447,7 @@ def test_b13_start_stage_run_inserts_a_running_row(store, frozen_clock):
     assert run.started_at == iso(frozen_clock.now())
     assert run.ended_at is None
     assert run.turns is None
-    assert run.allowance_pct is None
+    assert run.exit_reason is None
 
 
 def test_b13_finish_stage_run_sets_a_terminal_status_and_ended_at(store, frozen_clock):
@@ -462,8 +460,6 @@ def test_b13_finish_stage_run_sets_a_terminal_status_and_ended_at(store, frozen_
         run_id,
         status="ok",
         turns=12,
-        allowance_pct=1.75,
-        cost_usd=0.42,
         exit_reason=None,
         transcript_path="runs/item-1/transcript/implement.jsonl",
     )
@@ -472,8 +468,6 @@ def test_b13_finish_stage_run_sets_a_terminal_status_and_ended_at(store, frozen_
     assert run.status == "ok"
     assert run.ended_at == iso(frozen_clock.now())
     assert run.turns == 12
-    assert run.allowance_pct == pytest.approx(1.75)
-    assert run.cost_usd == pytest.approx(0.42)
     assert run.transcript_path == "runs/item-1/transcript/implement.jsonl"
 
 
@@ -487,8 +481,6 @@ def test_b13_a_failed_stage_run_records_its_exit_reason(store, frozen_clock):
         run_id,
         status="failed",
         turns=None,
-        allowance_pct=None,
-        cost_usd=None,
         exit_reason="npm run lint stayed red after 2 retries",
         transcript_path=None,
     )
@@ -508,8 +500,6 @@ def test_b13_list_stage_runs_filters_by_status(store):
         finished,
         status="ok",
         turns=1,
-        allowance_pct=0.1,
-        cost_usd=None,
         exit_reason=None,
         transcript_path=None,
     )
@@ -541,8 +531,6 @@ def test_b13_an_unknown_status_is_rejected_by_the_schema(store):
             run_id,
             status="mostly_fine",
             turns=1,
-            allowance_pct=0.1,
-            cost_usd=None,
             exit_reason=None,
             transcript_path=None,
         )
@@ -553,84 +541,45 @@ def test_b13_an_unknown_status_is_rejected_by_the_schema(store):
 
 
 # --------------------------------------------------------------------------
-# B14 - consume_budget is atomic
+# B14 - the budget period table and its API are retired
 # --------------------------------------------------------------------------
 
 
-PERIOD_START = "2026-08-31T00:00:00Z"
-PERIOD_END = "2026-09-07T00:00:00Z"
+def test_B14_the_budget_period_table_and_api_are_retired(tmp_path, frozen_clock):
+    """B14: a fresh database has no `budget_period` table and the store has none of the four
+    methods that read or wrote it. A database written before D74 still carries the table;
+    opening and migrating it keeps working, because the migration only ever adds."""
+    db_path = tmp_path / "retired.db"
+    store = Store(db_path, clock=frozen_clock)
+    store.migrate()
 
+    assert "budget_period" not in sqlite_names(db_path, "table")
+    for name in (
+        "ensure_budget_period",
+        "budget_period",
+        "consume_budget",
+        "completed_allowances",
+    ):
+        assert not hasattr(store, name), name
+    store.close()
 
-def test_b14_consume_budget_accumulates_on_an_existing_period(store):
-    """B14: the happy path, so the atomicity tests below have something to protect."""
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-
-    store.consume_budget("allowance_pct", PERIOD_START, 5.0)
-    store.consume_budget("allowance_pct", PERIOD_START, 2.5)
-
-    allocated, consumed = store.budget_period("allowance_pct", PERIOD_START)
-    assert allocated == pytest.approx(40.0)
-    assert consumed == pytest.approx(7.5)
-
-
-def test_b14_consuming_against_a_missing_period_does_not_partially_apply(store):
-    """B14: a consume with no period row creates nothing and moves nothing."""
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-    store.consume_budget("allowance_pct", PERIOD_START, 5.0)
-    missing_start = "2025-01-06T00:00:00Z"
-
+    conn = sqlite3.connect(str(db_path))
     try:
-        store.consume_budget("allowance_pct", missing_start, 9.0)
-    except Exception:
-        pass
+        conn.executescript(
+            "CREATE TABLE budget_period (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "unit TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL, "
+            "allocated REAL NOT NULL, consumed REAL NOT NULL DEFAULT 0);"
+        )
+    finally:
+        conn.close()
 
-    assert store.budget_period("allowance_pct", missing_start) == (0.0, 0.0)
-    allocated, consumed = store.budget_period("allowance_pct", PERIOD_START)
-    assert allocated == pytest.approx(40.0)
-    assert consumed == pytest.approx(5.0)
+    reopened = Store(db_path, clock=frozen_clock)
+    reopened.migrate()
+    item_id = make_item(reopened, "approved")
 
-
-def test_b14_consuming_against_an_illegal_unit_does_not_partially_apply(store):
-    """B14: the DDL admits only 'allowance_pct' and 'usd'; a third unit writes nothing."""
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-    store.consume_budget("allowance_pct", PERIOD_START, 5.0)
-
-    try:
-        store.consume_budget("tokens", PERIOD_START, 3.0)
-    except Exception:
-        pass
-
-    assert store.budget_period("tokens", PERIOD_START) == (0.0, 0.0)
-    assert store.budget_period("allowance_pct", PERIOD_START)[1] == pytest.approx(5.0)
-
-
-def test_b14_budget_period_is_zero_when_no_row_exists(store):
-    """B14: an unknown period reads as (0.0, 0.0) rather than raising (RUN-DECISIONS)."""
-    assert store.budget_period("allowance_pct", "1999-01-04T00:00:00Z") == (0.0, 0.0)
-
-
-def test_b14_ensure_budget_period_is_idempotent(store):
-    """B14: re-ensuring a period must not reset consumed, or a crash would refund spend."""
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-    store.consume_budget("allowance_pct", PERIOD_START, 6.0)
-
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-
-    assert store.budget_period("allowance_pct", PERIOD_START) == (
-        pytest.approx(40.0),
-        pytest.approx(6.0),
-    )
-
-
-def test_b14_units_keep_separate_ledgers(store):
-    """B14: 'usd' and 'allowance_pct' share a period_start but not a balance."""
-    store.ensure_budget_period("allowance_pct", PERIOD_START, PERIOD_END, 40.0)
-    store.ensure_budget_period("usd", PERIOD_START, PERIOD_END, 12.0)
-
-    store.consume_budget("usd", PERIOD_START, 3.0)
-
-    assert store.budget_period("allowance_pct", PERIOD_START)[1] == pytest.approx(0.0)
-    assert store.budget_period("usd", PERIOD_START)[1] == pytest.approx(3.0)
+    assert reopened.get_work_item(item_id) is not None
+    reopened.close()
+    assert "budget_period" in sqlite_names(db_path, "table")
 
 
 # --------------------------------------------------------------------------
@@ -693,15 +642,14 @@ def test_b15_an_empty_body_is_stored_as_an_empty_string_not_a_miss(store):
 
 
 # --------------------------------------------------------------------------
-# One DDL, not two. The Delivery 1 constant was exported and never executed.
+# One DDL, and migrate runs it
 # --------------------------------------------------------------------------
 
 
 def test_b7_the_module_carries_exactly_one_ddl_and_migrate_runs_it(tmp_path, frozen_clock):
-    """``migrate()`` creates every fresh database from ``SCHEMA_SQL_V2``; the Delivery 1 DDL is
-    not a constant here any more. Two DDL blocks that disagree about the legal state set, only
-    one of them reachable, is the hazard: a reader cannot tell which is in force, and the spec
-    fence in HARNESS-SPEC 5.2.1 is the record of the layout that is not."""
+    """``migrate()`` creates every fresh database from ``SCHEMA_SQL_V2``, the module's only
+    DDL. Two DDL blocks that disagree about the legal state set, only one of them reachable,
+    is the hazard: a reader cannot tell which is in force."""
     from harness.store import sqlite as sqlite_module
 
     assert not hasattr(sqlite_module, "SCHEMA_SQL")

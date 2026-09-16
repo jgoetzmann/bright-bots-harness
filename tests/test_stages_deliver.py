@@ -1,12 +1,11 @@
-"""Delivery 2 - `clone.sync_fork` and the `deliver` stage.
+"""`clone.sync_fork` and the `deliver` stage.
 
-Behaviors under test: B105, B106, B108, B109 (I-12), plus the `deliver` contract frozen in
-`.fullsend/RUN-DECISIONS-D2.md` section 13 (can_write=False path, reviewers, shipped, entry
-state).
+Behaviors under test: B105, B106, B108, B109 (I-12), plus the `deliver` contract:
+can_write=False path, reviewers, shipped, entry state.
 
 All git repositories are throwaway local repos under `tmp_path`; the only network URL the
 code may build is rewritten to a local path by the injected `git_runner`, and any URL that
-survives that rewrite is refused. Fixtures are inline on purpose.
+survives that rewrite is refused. Fixtures are inline.
 """
 from __future__ import annotations
 
@@ -60,7 +59,7 @@ WRITE_METHODS = frozenset({
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
     "create_branch_file", "push_branch", "push_ref",
 })
-# The writes deliver is allowed per handoff section 4.5 / 5.3 (push, PR, reviewers, comment+label).
+# The writes deliver is allowed: push, PR, reviewers, comment+label.
 DELIVER_WRITES = frozenset({"push_branch", "push_ref", "create_pull", "request_reviewers",
                             "comment", "set_labels"})
 
@@ -69,11 +68,6 @@ BASE_ENV = {
     "REPO": UPSTREAM,
     "PERMISSION_TIER": "2",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "90",
-    "SESSION_BUDGET_PCT": "90",
-    "RESERVE_PCT": "5",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -88,14 +82,11 @@ BASE_ENV = {
     "FULLSEND_ENABLED": "false",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
-    "WEEKLY_CAP_USD": "100.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": FORK,
     "UPSTREAM_REPO": UPSTREAM,
     "TRUST_FILE": "trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
@@ -103,15 +94,13 @@ BASE_ENV = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
     "MAX_SELF_AUDIT_CYCLES": "3",
-    # RUN-DECISIONS-D3 "Config": the five D3 keys are required in every .env. The run
+    # The five D3 keys are required in every .env. The run
     # window is left empty (= always open) so the D2 behaviour above is unchanged.
     "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
@@ -202,7 +191,7 @@ def main_of(bare: Path) -> str:
 
 
 def make_git_runner(r, log: list):
-    """The section-8 `git_runner` seam: rewrite the two GitHub URLs to local bare repos."""
+    """The `git_runner` seam: rewrite the two GitHub URLs to local bare repos."""
     mapping = {
         f"https://github.com/{FORK}.git": str(r.fork),
         f"https://github.com/{FORK}": str(r.fork),
@@ -223,7 +212,7 @@ def make_git_runner(r, log: list):
 
 
 def make_push(r, pushes: list):
-    """The section-8 `push` callable: record, then really fast-forward the local fork."""
+    """The `push` callable: record, then really fast-forward the local fork."""
 
     def push(repo_path, refspec):
         pushes.append((Path(repo_path), refspec))
@@ -242,7 +231,7 @@ def make_push(r, pushes: list):
 
 
 class FakeGh:
-    """Stand-in for `harness.gh.GitHubClient` exposing exactly the section-7 surface.
+    """Stand-in for `harness.gh.GitHubClient` exposing exactly the client surface.
 
     Issues live in `repos[repo][number]` (labels as `[{"name": ...}]`); comments, label
     events, reviews and review comments are keyed by `(repo, number)`. Every method call is
@@ -376,7 +365,7 @@ class FakeGh:
             out.append(copy.deepcopy(issue))
         return sorted(out, key=lambda i: i["number"])
 
-    # ---- section 7 reads ----
+    # ---- reads ----
     def get(self, path: str):
         self._record("get", path=path)
         url = path
@@ -482,7 +471,7 @@ class FakeGh:
         self._record("user")
         return self.user_dict()
 
-    # ---- section 7 writes ----
+    # ---- writes ----
     def comment(self, repo, number, body) -> dict:
         self._record("comment", repo=repo, number=number, body=body)
         self._write("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
@@ -631,7 +620,7 @@ class RecordingRunner:
 
 
 def write_fixtures(dir_: Path) -> Path:
-    base = {"turns": 3, "cost_usd": 0.31, "allowance_pct": None, "duration_ms": 1200,
+    base = {"turns": 3, "duration_ms": 1200,
             "session_id": "sess-1", "exit_code": 0, "transcript": [], "error": None,
             "reset_at": None}
     for stage, text in (("package", "packaged"), ("implement", "done"),
@@ -721,7 +710,7 @@ def write_package(run_dir: Path, *, repo: Path, base: str, branch: str) -> Path:
         "base_sha": base, "branch": branch, "created_at": iso(T0), "harness_version": "1.0.0",
         "backend": "fake", "fullsend": False,
         "fullsend_gate": {"F1": False, "F2": False, "F3": True, "F4": True, "F5": False},
-        "stages": [{"stage": "implement", "turns": 3, "allowance_pct": None}],
+        "stages": [{"stage": "implement", "turns": 3}],
         "gates": [{"name": "npm run lint", "exit_code": 0}],
         "patch_count": 1, "touched_paths": ["src/pages/Dashboard.tsx"],
     }, indent=2) + "\n")
@@ -940,7 +929,7 @@ def test_B108_pr_body_is_redacted_before_it_is_sent(tmp_path):
 # B109 / I-12 - never merges, approves or dismisses
 # --------------------------------------------------------------------------------------
 def test_B109_deliver_uses_only_the_section_7_surface_and_no_merge_approve_dismiss(tmp_path):
-    """B109 / I-12: every client call deliver makes is a section-7 name from the allowed set."""
+    """B109 / I-12: every client call deliver makes is a name from the allowed set."""
     s = setup_deliver(tmp_path)
     deliver(s.ctx, ITEM)
     names = {c["name"] for c in s.gh.calls}
@@ -963,10 +952,10 @@ def test_B109_the_real_client_has_no_merge_approve_or_dismiss_method():
 
 
 # --------------------------------------------------------------------------------------
-# deliver contract (RUN-DECISIONS-D2 section 13)
+# deliver contract
 # --------------------------------------------------------------------------------------
 def test_deliver_returns_the_pr_url_and_ships_the_item(tmp_path):
-    """Section 13 / handoff 4.5 step 6: returns the PR URL; item -> shipped; comment has the URL."""
+    """Returns the PR URL; item -> shipped; comment has the URL."""
     s = setup_deliver(tmp_path)
     url = deliver(s.ctx, ITEM)
     prs = list(s.gh.prs[UPSTREAM].values())
@@ -997,7 +986,7 @@ def test_deliver_pushes_the_branch_to_the_fork_and_opens_the_pr_against_upstream
 
 
 def test_deliver_requests_review_from_every_trusted_handle(tmp_path):
-    """Handoff 4.5 step 5 / section 13: reviewers == ctx.trusted, on the PR just opened."""
+    """Reviewers == ctx.trusted, on the PR just opened."""
     s = setup_deliver(tmp_path, trusted=frozenset({"jgoetzmann", "nathanhandle"}))
     deliver(s.ctx, ITEM)
     rr = s.gh.calls_named("request_reviewers")
@@ -1008,7 +997,7 @@ def test_deliver_requests_review_from_every_trusted_handle(tmp_path):
 
 
 def test_deliver_without_a_token_returns_empty_writes_deliver_json_and_sends_nothing(tmp_path):
-    """Section 13: can_write False -> "" returned, runs/item-N/DELIVER.json written, no writes."""
+    """can_write False -> "" returned, runs/item-N/DELIVER.json written, no writes."""
     s = setup_deliver(tmp_path, can_write=False)
     result = deliver(s.ctx, ITEM)
     assert result == ""
@@ -1024,7 +1013,7 @@ def test_deliver_without_a_token_returns_empty_writes_deliver_json_and_sends_not
 
 
 def test_deliver_from_a_wrong_entry_state_raises_and_opens_nothing(tmp_path):
-    """Section 13: deliver requires `packaged`; from `approved` it raises IllegalTransition."""
+    """Deliver requires `packaged`; from `approved` it raises IllegalTransition."""
     s = setup_deliver(tmp_path, state="approved")
     with pytest.raises(IllegalTransition):
         deliver(s.ctx, ITEM)
@@ -1034,7 +1023,7 @@ def test_deliver_from_a_wrong_entry_state_raises_and_opens_nothing(tmp_path):
 
 
 def test_deliver_from_a_terminal_state_raises_and_opens_nothing(tmp_path):
-    """Section 13: a merged item is never re-delivered."""
+    """A merged item is never re-delivered."""
     s = setup_deliver(tmp_path, state="merged")
     with pytest.raises(IllegalTransition):
         deliver(s.ctx, ITEM)
@@ -1062,12 +1051,10 @@ def test_deliver_never_files_an_issue_anywhere(tmp_path):
 
 
 # ======================================================================================
-# Delivery 3 additions - `stages.deliver.handoff` (RUN-DECISIONS-D3 "Handoff and continue").
-# Appended by the D3 spec-tester (T2); additions only. Nothing above was edited except the
-# BASE_ENV data constant, which gained the five keys D3 makes required in every `.env`.
+# `stages.deliver.handoff`: what a usage stop leaves behind.
 # ======================================================================================
 
-# RUN-DECISIONS-D3 step 6: the reason a usage stop hands off with (a B206 string).
+# The reason a usage stop hands off with (a B206 string).
 HANDOFF_REASON = "weekly usage 91% >= 90%"
 NEXT_COMMAND = f"harness revise {ITEM} --source continue"
 # Gate names written to the run dir. `final.json` wins; `baseline.json` is the fallback.
@@ -1579,7 +1566,7 @@ def advance_rig_upstream(tmp_path: Path, path: str, content: str, message: str) 
     `make_work_repo` points both `origin` and `upstream` at `fork-origin.git` and never moved
     it, so `_rebase` was a no-op in every deliver test -- which is how a guard that diffed the
     branch against its recorded base would have shipped green while refusing every real
-    delivery (handoff 6.0). This drives `advance_upstream` against that bare repository.
+    delivery. This drives `advance_upstream` against that bare repository.
     """
     r = SimpleNamespace(work=tmp_path / "upstream-author", upstream=tmp_path / "fork-origin.git")
     if not r.work.exists():
@@ -1602,7 +1589,7 @@ class ResolvingRunner:
 
 
 def test_b299_a_rebase_past_upstreams_own_workflow_commit_still_delivers(tmp_path):
-    """B299 / D67 (handoff 8, test 1): upstream changes `.github/workflows/ci-cd.yml` after the
+    """B299: upstream changes `.github/workflows/ci-cd.yml` after the
     branch's base, the harness's commit touches only `src/`, and deliver rebases and pushes.
 
     The rejected design diffed the branch against the recorded base, which after the rebase
@@ -1683,7 +1670,7 @@ def test_b312_a_handoff_refuses_a_clone_whose_history_is_substituted(tmp_path):
 def test_b300_the_nested_conflict_revise_force_pushes_past_upstreams_workflow_commit(
     tmp_path, monkeypatch
 ):
-    """B300 / D67 (handoff 8, test 2): the same through the path that force-pushes. The rebase
+    """B300: the same through the path that force-pushes. The rebase
     conflicts, deliver nests `revise(source="conflict")`, the model resolves, the rebase
     continues, and `_gate_and_ship` force-pushes a branch that now sits on upstream's workflow
     commit; the nested deliver then opens the pull request."""
@@ -1754,7 +1741,7 @@ def assert_withheld(s, path: str, *, kept: bool = True) -> None:
 
 
 def test_b301_a_modified_workflow_is_committed_but_never_pushed(tmp_path):
-    """B301 (handoff 8, test 3): a usage stop lands while the model has the CI workflow open.
+    """B301: a usage stop lands while the model has the CI workflow open.
     The wip commit is made -- nothing is lost -- and nothing is pushed; HANDOFF.md says why,
     and the item is parked and carried exactly as any other handoff."""
     s = setup_handoff(tmp_path)
@@ -1769,7 +1756,7 @@ def test_b301_a_modified_workflow_is_committed_but_never_pushed(tmp_path):
 
 
 def test_b301_a_new_untracked_github_file_is_withheld_too(tmp_path):
-    """B301 (handoff 8, test 4): a new, untracked `.github/dependabot.yml` -- the widened prefix,
+    """B301: a new, untracked `.github/dependabot.yml` -- the widened prefix,
     reached through `git add -A` of a file git has never seen."""
     s = setup_handoff(tmp_path)
     _w(s.repo / ".github" / "dependabot.yml", "version: 2\n")

@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Host-side preflight for local mode (docs/delivery/DELIVERY-2-HANDOFF.md section 10).
-Run BEFORE bb-start.ps1.
+"""Host-side preflight for local mode (docs/LOCAL-MODE.md). Run before bb-start.ps1.
 
     python local/preflight.py            every check
     python local/preflight.py --quick    skip the docker daemon checks (paths, .env, pin, filter only)
 
 Checks, each PASS / FAIL / WARN / SKIP: docker present and up; the image; the repository paths the
 container mounts and gates on; .env and its two credentials; .harness/PIN and the pin itself;
-bb-config.json; the credential filter's output (A46); A44's filename rule; LF line endings on the
+bb-config.json; the credential filter's output; the watchdog filename; LF line endings on the
 baked-in entrypoint; the entrypoint's exec line (global flags before the subcommand); that every
 BB_* variable run.ps1 sets has a reader; that bb-config.json and bb-configure.py's SCHEMA hold the
 same keys; that every SCHEMA entry is a shape bb-configure.py's coerce() can check; that every
 DELIVER.json key watchdog-bb.ps1 reads is one deliver._write_record writes; and that the two
 publishers still agree on --force-with-lease. Exit 1 on any FAIL. Standard library only (I-17).
 
-Those last six are text assertions on purpose: PowerShell and the shell entrypoint have no Python
-test suite, so an invariant they share with harness/ can only be held here. Each one is a pair
-that has already drifted once - the exec line against argparse, run.ps1 against entrypoint.sh,
-bb-config.json against SCHEMA, SCHEMA against coerce(), the watchdog against deliver.py's record,
-and the watchdog against gh.push_branch.
+Those last six are text assertions: PowerShell and the shell entrypoint have no Python test
+suite, so an invariant they share with harness/ is held here and in tests/test_local_mode.py. The
+pairs are the exec line and argparse, run.ps1 and entrypoint.sh, bb-config.json and SCHEMA, SCHEMA
+and coerce(), the watchdog and deliver.py's record, and the watchdog and gh.push_branch.
 """
 from __future__ import annotations
 
@@ -499,7 +497,7 @@ def check_publishers_agree() -> None:
 def check_docker() -> None:
     exe = shutil.which("docker")
     if exe is None:
-        report("FAIL", "docker on PATH", "not found - install Docker Desktop (HUMAN.md item 15)")
+        report("FAIL", "docker on PATH", "not found - install Docker Desktop")
         return
     report("PASS", "docker on PATH", exe)
     code, out = run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=90)

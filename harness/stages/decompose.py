@@ -1,4 +1,4 @@
-"""The decompose stage (handoff §4.6): one issue here into bounded sub-issues here (I-14, B111)."""
+"""The decompose stage: one issue in this repository into bounded sub-issues here (I-14)."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def parse_subissues(text: str) -> list[tuple[str, str]]:
 
 
 def decompose(ctx: Context, issue_number: int) -> list[int]:
-    """B110: N sub-issues queued here, the parent blocked with the list. Returns the child ids."""
+    """N sub-issues queued here, the parent blocked with the list; returns the child ids (B110)."""
     ctx.check_halt()
 
     parent = ctx.store.get_work_item(int(issue_number))
@@ -55,7 +55,7 @@ def decompose(ctx: Context, issue_number: int) -> list[int]:
 
     body = _issue_body(ctx, parent)
     if str(parent.external_ref).startswith("sub:") or PARENT_MARKER.search(body):
-        # B111: depth is one. A sub-issue is never decomposed, and no model call is made.
+        # Depth is one: a sub-issue is never decomposed, and no model call is made (B111).
         raise HarnessError(
             f"issue #{issue_number} is a sub-issue (it names a parent); depth is one and it "
             "is not decomposed further"
@@ -107,10 +107,8 @@ def decompose(ctx: Context, issue_number: int) -> list[int]:
                 title=title,
                 tier_required=0,
                 body=text,
-                # B264/D63: a sub-issue arrived the way its parent did. Without this, splitting
-                # a suggestion would turn one item nobody asked for into eight `via:requested`
-                # ones that jump the priority queue -- which is the whole gate, defeated by a
-                # verb that is supposed to be a bookkeeping convenience.
+                # A sub-issue arrived the way its parent did, so splitting a suggestion does not
+                # turn it into `via:requested` items that jump the priority queue (B264).
                 via=priority.via_of(parent),
             )
         )
@@ -127,7 +125,7 @@ def decompose(ctx: Context, issue_number: int) -> list[int]:
     if parent.state != "blocked":
         try:
             if parent.state == "discovered":
-                # discovered -> blocked is not a legal pair (D1 B11); proposing is the hop.
+                # discovered -> blocked is not a legal pair (B11); proposing is the hop.
                 ctx.store.transition(parent.id, "proposing", reason="decompose started")
             ctx.store.transition(parent.id, "blocked", reason=reason)
         except HarnessError as exc:

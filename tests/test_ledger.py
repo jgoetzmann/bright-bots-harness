@@ -1,13 +1,12 @@
-"""Spec tests for ``harness.ledger`` — Delivery 2 handoff §6.2 (B114, B115, B116, B117).
+"""Spec tests for ``harness.ledger`` (B114, B115, B116, B117, B422, B424).
 
-Written from the spec before the implementation existed. Surface is frozen by
-``.fullsend/RUN-DECISIONS-D2.md`` §4; fixtures are inline on purpose.
+Fixtures are inline, except the pre-D74 ledger copied from `harness-state`.
 """
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -15,30 +14,38 @@ import pytest
 from harness import redact
 from harness.clock import FrozenClock, iso
 from harness.errors import HarnessError
-from harness.ledger import Ledger, load, rebuild, save
+from harness.ledger import Ledger, load, parse_transition_comment, rebuild, save
 
 NOW = FrozenClock(datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)).now()
 NOW_ISO = iso(NOW)  # 2026-09-02T12:00:00Z (a Wednesday)
 PERIOD_START = "2026-08-31T00:00:00Z"  # the Monday before NOW
 RUN_URL = "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/1"
 
+#: The live `harness-state` ledger as it stood before D74, copied verbatim.
+PRE_D74 = Path(__file__).resolve().parent / "fixtures" / "ledger" / "pre_d74.json"
+
 
 def fresh() -> Ledger:
     return Ledger.empty(PERIOD_START)
 
 
-def spend(ledger: Ledger, *, n: int = 1, stage: str = "implement", usd: float = 1.0,
-          issue: int = 816, ts: str = NOW_ISO) -> None:
+def calls(ledger: Ledger, *, n: int = 1, stage: str = "implement", issue: int = 816,
+          ts: str = NOW_ISO) -> None:
     for i in range(n):
-        ledger.record(ts=ts, stage=stage, issue=issue + i, usd=usd, run=f"{RUN_URL}/{i}")
+        ledger.record(ts=ts, stage=stage, issue=issue + i, run=f"{RUN_URL}/{i}")
 
 
-def b101_comment(*, stage: str, to_state: str, run: str, usd: float, issue: int,
-                 created_at: str, reason: str = "ok") -> dict:
-    """A transition comment exactly as RUN-DECISIONS-D2 §3 says GitHubStore writes it (the
-    stage/run/cost record every transition leaves on the issue)."""
-    body = f"**harness** `{stage}` → `{to_state}`\nrun: {run}\ncost: ${usd:.2f}\n{reason}"
-    return {"body": body, "created_at": created_at, "issue": issue}
+def b101_comment(*, stage: str, to_state: str, run: str, issue: int, created_at: str,
+                 reason: str = "ok", legacy: bool = True, usd: float = 1.23) -> dict:
+    """A transition comment exactly as GitHubStore writes it.
+
+    ``legacy=True`` emits the ``cost:`` line comments carried before D74, so both forms can be
+    produced from one helper.
+    """
+    body = f"**harness** `{stage}` → `{to_state}`\nrun: {run}\n"
+    if legacy:
+        body += f"cost: ${usd:.2f}\n"
+    return {"body": body + reason, "created_at": created_at, "issue": issue}
 
 
 @pytest.fixture
@@ -53,48 +60,50 @@ def state_dir(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# B114 — nobody claims to know remaining allowance
+# B114 — nobody claims to know remaining allowance, and nothing counts money
 # ---------------------------------------------------------------------------
 
 def test_B114_ledger_exposes_no_allowance_field_or_method():
-    """B114: no module claims to know remaining allowance — the Ledger has no attribute named
-    for it, and neither its JSON nor its window/observations mention it."""
+    """B114: no module claims to know remaining allowance, and since D74 none counts spend —
+    the Ledger has no attribute named for either, and its JSON mentions neither."""
     ledger = fresh()
-    spend(ledger, n=3, usd=2.0)
-    names = [n for n in dir(ledger) if "allowance" in n.lower()]
-    assert names == []
-    assert "allowance" not in ledger.to_json().lower()
-    assert "allowance" not in (json.dumps(ledger.window) + json.dumps(ledger.observations)).lower()
+    calls(ledger, n=3)
+    assert [n for n in dir(ledger) if "allowance" in n.lower()] == []
+    assert not hasattr(ledger, "observations")
+    assert not hasattr(ledger, "median_usd")
+    assert not hasattr(ledger, "roll_window")
+    text = ledger.to_json()
+    assert "allowance" not in text.lower()
+    assert "usd" not in text.lower()
 
 
 def test_B114_record_ignores_allowance_pct_from_a_runresult_shaped_payload():
-    """B114: a RunResult-shaped payload carrying allowance_pct never lands in the ledger — record
-    either refuses the extra key or drops it; the persisted state depends on usd only."""
+    """B114: a RunResult-shaped payload never lands in the ledger — record refuses both the
+    allowance and the cost, and the history entry carries exactly four keys."""
     ledger = fresh()
-    payload = {"ts": NOW_ISO, "stage": "implement", "issue": 816, "usd": 2.31,
-               "run": RUN_URL, "allowance_pct": 42.5}
-    try:
-        ledger.record(**payload)
-    except TypeError:
-        payload.pop("allowance_pct")
-        ledger.record(**payload)
+    base = {"ts": NOW_ISO, "stage": "implement", "issue": 816, "run": RUN_URL}
+
+    with pytest.raises(TypeError):
+        ledger.record(**base, allowance_pct=42.5)
+    with pytest.raises(TypeError):
+        ledger.record(**base, usd=2.31)
+
+    ledger.record(**base)
     text = ledger.to_json()
     assert "allowance" not in text.lower()
     assert "42.5" not in text
-    assert ledger.window["spent_usd"] == pytest.approx(2.31)
     assert ledger.window["calls"] == 1
     assert ledger.history[-1] == {"ts": NOW_ISO, "stage": "implement", "issue": 816,
-                                  "usd": 2.31, "run": RUN_URL}
+                                  "run": RUN_URL}
 
 
-def test_B114_record_accumulates_spend_and_calls_in_the_window():
-    """B114 (§6.1 spend accounting): every record adds its usd to window.spent_usd and one to
-    window.calls — the ledger accumulates cost, it never estimates allowance."""
+def test_B114_record_counts_calls_and_appends_history():
+    """B114: every record adds one to window.calls and one entry to the history — the ledger
+    counts calls, it never estimates allowance."""
     ledger = fresh()
-    ledger.record(ts=NOW_ISO, stage="propose", issue=816, usd=0.42, run=RUN_URL)
-    ledger.record(ts=NOW_ISO, stage="implement", issue=816, usd=2.10, run=RUN_URL)
-    ledger.record(ts=NOW_ISO, stage="implement", issue=823, usd=0.0, run=RUN_URL)
-    assert ledger.window["spent_usd"] == pytest.approx(2.52)
+    ledger.record(ts=NOW_ISO, stage="propose", issue=816, run=RUN_URL)
+    ledger.record(ts=NOW_ISO, stage="implement", issue=816, run=RUN_URL)
+    ledger.record(ts=NOW_ISO, stage="implement", issue=823, run=RUN_URL)
     assert ledger.window["calls"] == 3
     assert ledger.window["period_start"] == PERIOD_START
     assert [h["issue"] for h in ledger.history] == [816, 816, 823]
@@ -108,7 +117,7 @@ def test_B115_save_writes_the_json_and_leaves_no_temp_file(state_dir: Path):
     """B115: save is temp-then-os.replace; afterwards the directory holds only the ledger file,
     the file's bytes are exactly to_json(), LF newlines, trailing newline."""
     ledger = fresh()
-    spend(ledger, usd=2.31)
+    calls(ledger)
     path = state_dir / "ledger.json"
     save(ledger, path)
     assert [p.name for p in state_dir.iterdir()] == ["ledger.json"]
@@ -118,7 +127,7 @@ def test_B115_save_writes_the_json_and_leaves_no_temp_file(state_dir: Path):
     assert raw.decode("utf-8") == ledger.to_json()
     data = json.loads(raw)
     assert data["schema"] == 1
-    assert data["window"]["spent_usd"] == pytest.approx(2.31)
+    assert data["window"]["calls"] == 1
 
 
 def test_B115_save_failure_before_replace_leaves_original_unchanged(state_dir: Path,
@@ -127,12 +136,12 @@ def test_B115_save_failure_before_replace_leaves_original_unchanged(state_dir: P
     the temp-then-replace protocol never truncates or half-writes the real file."""
     path = state_dir / "ledger.json"
     original = fresh()
-    spend(original, usd=1.00)
+    calls(original)
     save(original, path)
     before = path.read_bytes()
 
     updated = fresh()
-    spend(updated, n=5, usd=9.99)
+    calls(updated, n=5)
     assert updated.to_json().encode("utf-8") != before  # the overwrite would have changed it
 
     def boom(*args, **kwargs):
@@ -144,13 +153,13 @@ def test_B115_save_failure_before_replace_leaves_original_unchanged(state_dir: P
     except Exception:  # noqa: BLE001 — the spec does not fix the exception type
         pass
     assert path.read_bytes() == before
-    assert json.loads(path.read_text(encoding="utf-8"))["window"]["spent_usd"] == pytest.approx(1.0)
+    assert json.loads(path.read_text(encoding="utf-8"))["window"]["calls"] == 1
 
 
 def test_B115_save_then_load_round_trips_exactly(state_dir: Path):
     """B115: load(save(ledger)) reproduces the same JSON text, including cursors and history."""
     ledger = fresh()
-    spend(ledger, n=2, usd=0.5)
+    calls(ledger, n=2)
     ledger.mark_seen("IC_abc")
     ledger.count_denied("mallory")
     ledger.set_rate_limited("2026-09-02T13:00:00Z")
@@ -164,132 +173,118 @@ def test_B115_save_then_load_round_trips_exactly(state_dir: Path):
 
 
 def test_B115_to_json_key_order_indent_and_trailing_newline():
-    """B115/§6.2: the file IS the §6.2 JSON — keys in the handoff's order, indent=2, one trailing
-    newline, window keys in order period_start/spent_usd/calls/rate_limited_until."""
+    """B115: the file IS the JSON — keys in that order, indent=2, one trailing newline, window
+    keys in order period_start/calls/rate_limited_until."""
     ledger = fresh()
     text = ledger.to_json()
     assert text.endswith("\n")
     assert not text.endswith("\n\n")
     assert text.startswith('{\n  "schema": 1,\n  "window": {\n    "period_start": ')
     data = json.loads(text)
-    assert list(data.keys()) == ["schema", "window", "observations", "cursors", "history"]
-    assert list(data["window"].keys()) == ["period_start", "spent_usd", "calls",
-                                           "rate_limited_until"]
-    assert data["window"] == {"period_start": PERIOD_START, "spent_usd": 0.0, "calls": 0,
+    assert list(data.keys()) == ["schema", "window", "cursors", "history"]
+    assert list(data["window"].keys()) == ["period_start", "calls", "rate_limited_until"]
+    assert data["window"] == {"period_start": PERIOD_START, "calls": 0,
                               "rate_limited_until": None}
-    assert data["observations"] == {}
     assert data["history"] == []
 
 
 def test_B115_from_json_to_json_round_trip_is_identical():
     """B115: from_json(to_json(x)).to_json() == to_json(x) — the on-disk form is lossless."""
     ledger = fresh()
-    spend(ledger, n=4, usd=1.25)
+    calls(ledger, n=4)
     ledger.mark_seen("IC_1")
     ledger.count_denied("mallory")
     text = ledger.to_json()
     again = Ledger.from_json(text)
     assert again.to_json() == text
-    assert again.window["spent_usd"] == pytest.approx(5.0)
+    assert again.window["calls"] == 4
 
 
 # ---------------------------------------------------------------------------
 # B116 — history cap
 # ---------------------------------------------------------------------------
 
-def test_B116_history_capped_at_500_after_501_records_observations_count_all():
-    """B116: after 501 records history holds at most 500 entries (oldest folded into
-    observations), while observations, calls and spend still account for all 501."""
+def test_B116_history_capped_at_500_after_501_records_and_calls_counts_all():
+    """B116: after 501 records history holds at most 500 entries — the oldest is dropped —
+    while window.calls still accounts for all 501."""
     ledger = fresh()
     for i in range(501):
-        ledger.record(ts=NOW_ISO, stage="implement", issue=i, usd=1.0, run=f"{RUN_URL}/{i}")
-    assert len(ledger.history) <= 500
-    assert len(json.loads(ledger.to_json())["history"]) <= 500
-    assert ledger.observations["implement"]["n"] == 501
+        ledger.record(ts=NOW_ISO, stage="implement", issue=i, run=f"{RUN_URL}/{i}")
+    assert len(ledger.history) == 500
+    assert len(json.loads(ledger.to_json())["history"]) == 500
     assert ledger.window["calls"] == 501
-    assert ledger.window["spent_usd"] == pytest.approx(501.0)
+    assert ledger.history[0]["issue"] == 1    # the oldest fell off
     assert ledger.history[-1]["issue"] == 500  # append-only: the newest survives
-    assert ledger.median_usd("implement") == pytest.approx(1.0)
 
 
 def test_B116_history_of_exactly_500_is_not_truncated():
     """B116: the cap is 500 inclusive — 500 records keep all 500 entries, oldest first."""
     ledger = fresh()
     for i in range(500):
-        ledger.record(ts=NOW_ISO, stage="implement", issue=i, usd=1.0, run=f"{RUN_URL}/{i}")
+        ledger.record(ts=NOW_ISO, stage="implement", issue=i, run=f"{RUN_URL}/{i}")
     assert len(ledger.history) == 500
     assert ledger.history[0]["issue"] == 0
     assert ledger.history[-1]["issue"] == 499
-    assert ledger.observations["implement"]["n"] == 500
+    assert ledger.window["calls"] == 500
 
 
-def test_B116_history_entries_have_exactly_the_five_keys_in_order():
-    """B116/§6.2: each history entry is {ts, stage, issue, usd, run} — nothing else is appended."""
+def test_B116_history_entries_have_exactly_the_four_keys_in_order():
+    """B116: each history entry is {ts, stage, issue, run} — nothing else is appended."""
     ledger = fresh()
-    ledger.record(ts=NOW_ISO, stage="revise", issue=816, usd=0.88, run=RUN_URL)
+    ledger.record(ts=NOW_ISO, stage="revise", issue=816, run=RUN_URL)
     entry = json.loads(ledger.to_json())["history"][0]
-    assert list(entry.keys()) == ["ts", "stage", "issue", "usd", "run"]
-    assert entry == {"ts": NOW_ISO, "stage": "revise", "issue": 816, "usd": 0.88, "run": RUN_URL}
+    assert list(entry.keys()) == ["ts", "stage", "issue", "run"]
+    assert entry == {"ts": NOW_ISO, "stage": "revise", "issue": 816, "run": RUN_URL}
 
 
 # ---------------------------------------------------------------------------
 # B117 — reconstructible from the issue's transition comments
 # ---------------------------------------------------------------------------
 
-def test_B117_rebuild_from_transition_comments_matches_record_within_a_cent():
-    """B117: rebuilding from the issues' transition comments reproduces history, observations,
-    calls and spend of a ledger built by record() within 0.01."""
+def test_B117_rebuild_from_transition_comments_matches_record():
+    """B117: rebuilding from the issues' transition comments reproduces the history and the call
+    count of a ledger built by record()."""
     entries = [
-        ("propose", "proposed", 816, 0.42, "2026-09-02T09:00:00Z"),
-        ("implement", "packaged", 816, 2.31, "2026-09-02T09:30:00Z"),
-        ("propose", "proposed", 823, 0.55, "2026-09-02T10:00:00Z"),
-        ("implement", "packaged", 823, 1.97, "2026-09-02T10:30:00Z"),
-        ("propose", "proposed", 830, 0.39, "2026-09-02T11:00:00Z"),
-        ("revise", "shipped", 816, 0.88, "2026-09-02T11:30:00Z"),
+        ("propose", "proposed", 816, "2026-09-02T09:00:00Z"),
+        ("implement", "packaged", 816, "2026-09-02T09:30:00Z"),
+        ("propose", "proposed", 823, "2026-09-02T10:00:00Z"),
+        ("implement", "packaged", 823, "2026-09-02T10:30:00Z"),
+        ("propose", "proposed", 830, "2026-09-02T11:00:00Z"),
+        ("revise", "shipped", 816, "2026-09-02T11:30:00Z"),
     ]
     reference = Ledger.empty("2026-09-01T00:00:00Z")
     comments = []
-    for k, (stage, to_state, issue, usd, ts) in enumerate(entries):
+    for k, (stage, to_state, issue, ts) in enumerate(entries):
         run = f"{RUN_URL}/{k}"
-        reference.record(ts=ts, stage=stage, issue=issue, usd=usd, run=run)
-        comments.append(b101_comment(stage=stage, to_state=to_state, run=run, usd=usd,
-                                     issue=issue, created_at=ts))
+        reference.record(ts=ts, stage=stage, issue=issue, run=run)
+        comments.append(b101_comment(stage=stage, to_state=to_state, run=run, issue=issue,
+                                     created_at=ts))
 
     rebuilt = rebuild(comments)
 
     assert len(rebuilt.history) == len(reference.history) == 6
-    for got, want in zip(rebuilt.history, reference.history):
-        assert got["stage"] == want["stage"]
-        assert got["issue"] == want["issue"]
-        assert got["run"] == want["run"]
-        assert got["ts"] == want["ts"]
-        assert got["usd"] == pytest.approx(want["usd"], abs=0.01)
-    assert set(rebuilt.observations) == {"propose", "implement", "revise"}
-    for stage in ("propose", "implement", "revise"):
-        assert rebuilt.observations[stage]["n"] == reference.observations[stage]["n"]
-        assert rebuilt.observations[stage]["median_usd"] == pytest.approx(
-            reference.observations[stage]["median_usd"], abs=0.01)
-    assert rebuilt.median_usd("propose") == pytest.approx(reference.median_usd("propose"),
-                                                          abs=0.01)
-    assert rebuilt.window["spent_usd"] == pytest.approx(reference.window["spent_usd"], abs=0.01)
+    assert rebuilt.history == reference.history
     assert rebuilt.window["calls"] == reference.window["calls"] == 6
 
 
 def test_B117_rebuild_ignores_comments_that_are_not_transition_comments():
-    """B117: human chatter and other non-transition comments contribute nothing — only comments
-    carrying the stage/run/cost record are replayed."""
+    """B117: human chatter and other non-transition comments contribute nothing. The lunch
+    receipt is the pin on the optional ``cost:`` group: a bare cost line is not a transition."""
+    decoy = {"body": "cost: $99.00 is what I paid for lunch",
+             "created_at": "2026-09-02T09:40:00Z", "issue": 816}
     comments = [
         {"body": "looks good to me", "created_at": "2026-09-02T09:00:00Z", "issue": 816},
         {"body": "/harness fix", "created_at": "2026-09-02T09:05:00Z", "issue": 816},
-        b101_comment(stage="implement", to_state="packaged", run=RUN_URL, usd=2.31, issue=816,
+        b101_comment(stage="implement", to_state="packaged", run=RUN_URL, issue=816,
                      created_at="2026-09-02T09:30:00Z"),
-        {"body": "cost: $99.00 is what I paid for lunch", "created_at": "2026-09-02T09:40:00Z",
-         "issue": 816},
+        decoy,
     ]
+
     rebuilt = rebuild(comments)
+
+    assert parse_transition_comment(decoy["body"]) is None
     assert len(rebuilt.history) == 1
-    assert rebuilt.history[0]["usd"] == pytest.approx(2.31, abs=0.01)
-    assert rebuilt.window["spent_usd"] == pytest.approx(2.31, abs=0.01)
+    assert rebuilt.history[0]["stage"] == "implement"
     assert rebuilt.window["calls"] == 1
 
 
@@ -298,8 +293,6 @@ def test_B117_rebuild_from_no_comments_is_an_empty_ledger():
     rebuilt = rebuild([])
     assert rebuilt.schema == 1
     assert rebuilt.history == []
-    assert rebuilt.observations == {}
-    assert rebuilt.window["spent_usd"] == 0.0
     assert rebuilt.window["calls"] == 0
 
 
@@ -308,11 +301,9 @@ def test_B117_load_of_a_missing_file_is_the_epoch_empty_ledger():
     Ledger.empty("1970-01-01T00:00:00Z") rather than raising."""
     ledger = load(Path("Z:/definitely/not/here/ledger.json"))
     assert ledger.window["period_start"] == "1970-01-01T00:00:00Z"
-    assert ledger.window["spent_usd"] == 0.0
     assert ledger.window["calls"] == 0
     assert ledger.window["rate_limited_until"] is None
     assert ledger.history == []
-    assert ledger.observations == {}
     assert ledger.to_json() == Ledger.empty("1970-01-01T00:00:00Z").to_json()
 
 
@@ -338,36 +329,83 @@ def test_B117_from_json_rejects_a_missing_schema_key():
         Ledger.from_json(json.dumps(data))
 
 
+def test_B117_empty_ledger_shape():
+    """B117: Ledger.empty(period_start) is the canonical zero state every rebuild and every
+    missing-file load starts from."""
+    ledger = Ledger.empty("2026-09-07T00:00:00Z")
+    assert ledger.schema == 1
+    assert ledger.window == {"period_start": "2026-09-07T00:00:00Z", "calls": 0,
+                             "rate_limited_until": None}
+    assert ledger.cursors["notifications_last_seen"] is None
+    assert ledger.cursors["seen_comment_ids"] == []
+    assert ledger.cursors["keyword_denied"] == {}
+    assert ledger.history == []
+
+
 # ---------------------------------------------------------------------------
-# observations / median (B116 fold + §6.4 step 6 inputs)
+# B424 — both comment forms rebuild the same history
 # ---------------------------------------------------------------------------
 
-def test_B116_median_usd_is_none_below_three_observations():
-    """B116/§6.4: below three observations there is no median — the dispatcher must fall back
-    to the static table, so median_usd returns None, not 0."""
-    ledger = fresh()
-    assert ledger.median_usd("implement") is None
-    spend(ledger, n=2, stage="implement", usd=2.0)
-    assert ledger.median_usd("implement") is None
-    assert ledger.observations["implement"]["n"] == 2
+def test_B424_rebuild_reads_both_the_old_and_the_new_transition_comment():
+    """B424 (D74): the ``cost:`` line became optional, so comments written before D74 and after
+    it parse to the same three-tuple and rebuild to the same history."""
+    old = b101_comment(stage="implement", to_state="packaged", run=RUN_URL, issue=816,
+                       created_at="2026-09-02T09:00:00Z", legacy=True, usd=2.31)
+    new = b101_comment(stage="implement", to_state="packaged", run=RUN_URL, issue=816,
+                       created_at="2026-09-02T09:00:00Z", legacy=False)
+
+    assert "cost: $2.31" in old["body"]
+    assert "cost:" not in new["body"]
+    assert parse_transition_comment(old["body"]) == parse_transition_comment(new["body"])
+    assert parse_transition_comment(new["body"]) == ("implement", "packaged", RUN_URL)
+
+    mixed = [
+        old,
+        b101_comment(stage="propose", to_state="proposed", run=f"{RUN_URL}/2", issue=823,
+                     created_at="2026-09-02T10:00:00Z", legacy=False),
+    ]
+    rebuilt = rebuild(mixed)
+
+    assert [e["stage"] for e in rebuilt.history] == ["implement", "propose"]
+    assert [e["run"] for e in rebuilt.history] == [RUN_URL, f"{RUN_URL}/2"]
+    assert rebuilt.window["calls"] == 2
 
 
-def test_B116_median_usd_after_three_observations_is_the_middle_value():
-    """B116/§6.4: with three observations the median is the middle value."""
-    ledger = fresh()
-    ledger.record(ts=NOW_ISO, stage="implement", issue=1, usd=0.50, run=RUN_URL)
-    ledger.record(ts=NOW_ISO, stage="implement", issue=2, usd=9.00, run=RUN_URL)
-    ledger.record(ts=NOW_ISO, stage="implement", issue=3, usd=2.10, run=RUN_URL)
-    assert ledger.median_usd("implement") == pytest.approx(2.10)
-    assert ledger.observations["implement"] == {"n": 3, "median_usd": pytest.approx(2.10)}
+# ---------------------------------------------------------------------------
+# B422 — the live pre-D74 ledger loads, and one save retires its dollar fields
+# ---------------------------------------------------------------------------
 
+def test_B422_a_pre_d74_ledger_loads_and_is_saved_without_the_dollar_fields():
+    """B422 (D74): the document on `harness-state` carries spent_usd, four observations and a
+    usd on every history entry. It loads, everything still read survives, and one save drops
+    the rest."""
+    raw = json.loads(PRE_D74.read_text(encoding="utf-8"))
+    assert raw["window"]["spent_usd"] == pytest.approx(0.2809)
+    assert set(raw["observations"]) == {"discover", "propose", "implement", "ask"}
+    assert all("usd" in entry for entry in raw["history"])
 
-def test_B116_median_usd_for_an_unobserved_stage_is_none():
-    """B116/§6.4: a stage never recorded has no median and no observations entry."""
-    ledger = fresh()
-    spend(ledger, n=3, stage="implement")
-    assert ledger.median_usd("decompose") is None
-    assert "decompose" not in ledger.observations
+    ledger = Ledger.from_json(PRE_D74.read_text(encoding="utf-8"))
+
+    assert ledger.schema == 1
+    assert ledger.window.get("spent_usd") is None
+    assert ledger.weekly_utilization() == pytest.approx(1.0)
+    assert ledger.window["usage"]["status"] == "rejected"
+    assert ledger.window["calls"] == 2
+    assert ledger.carry_issue() is None
+    assert ledger.seen("IC_kwDOULOSYs8AAAABTQOYjg") is True
+    assert ledger.cursors["ask_calls"] == {"date": "2026-09-09", "count": 1}
+
+    text = ledger.to_json()
+    assert "spent_usd" not in text
+    assert "observations" not in text
+    assert '"usd"' not in text
+    saved = json.loads(text)
+    assert len(saved["history"]) == len(raw["history"]) == 7
+    assert [e["ts"] for e in saved["history"]] == [e["ts"] for e in raw["history"]]
+    assert [e["stage"] for e in saved["history"]] == [e["stage"] for e in raw["history"]]
+    assert all(list(e) == ["ts", "stage", "issue", "run"] for e in saved["history"])
+
+    assert Ledger.from_json(text).to_json() == text
 
 
 # ---------------------------------------------------------------------------
@@ -411,49 +449,6 @@ def test_B121_fresh_ledger_is_not_rate_limited():
     assert ledger.window["rate_limited_until"] is None
     assert ledger.rate_limited(NOW_ISO) is False
     assert ledger.rate_limited("1970-01-01T00:00:00Z") is False
-
-
-# ---------------------------------------------------------------------------
-# window roll (§6.2 window, RUN-DECISIONS-D2 §4 roll_window)
-# ---------------------------------------------------------------------------
-
-def test_B116_roll_window_after_seven_days_resets_spend_and_keeps_history():
-    """B116 (append-only history) + §6.2 window: when now >= period_start + 7d the window rolls to
-    the most recent reset day with zero spend and zero calls; history and observations survive."""
-    ledger = Ledger.empty("2026-08-17T00:00:00Z")
-    spend(ledger, n=3, usd=1.5, ts="2026-08-18T00:00:00Z")
-    assert ledger.window["spent_usd"] == pytest.approx(4.5)
-    rolled = ledger.roll_window(NOW, "monday")
-    assert rolled is True
-    assert ledger.window["period_start"] == "2026-08-31T00:00:00Z"
-    assert ledger.window["spent_usd"] == 0.0
-    assert ledger.window["calls"] == 0
-    assert len(ledger.history) == 3
-    assert ledger.observations["implement"]["n"] == 3
-    assert ledger.median_usd("implement") == pytest.approx(1.5)
-
-
-def test_B116_roll_window_before_seven_days_is_a_no_op():
-    """§6.2 window: inside the seven-day window roll_window returns False and changes nothing."""
-    ledger = fresh()
-    spend(ledger, n=2, usd=2.0)
-    before = ledger.to_json()
-    assert ledger.roll_window(NOW, "monday") is False
-    assert ledger.to_json() == before
-    assert ledger.window["period_start"] == PERIOD_START
-    assert ledger.window["spent_usd"] == pytest.approx(4.0)
-
-
-def test_B116_roll_window_at_exactly_seven_days_rolls():
-    """§6.2 window: the boundary is inclusive — now == period_start + 7d rolls."""
-    ledger = Ledger.empty("2026-08-24T00:00:00Z")
-    spend(ledger, usd=3.0, ts="2026-08-25T00:00:00Z")
-    at_boundary = datetime(2026, 8, 24, tzinfo=timezone.utc) + timedelta(days=7)
-    assert ledger.roll_window(at_boundary, "monday") is True
-    assert ledger.window["period_start"] == "2026-08-31T00:00:00Z"
-    assert ledger.window["spent_usd"] == 0.0
-    assert ledger.window["calls"] == 0
-    assert len(ledger.history) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -510,23 +505,8 @@ def test_B132_count_denied_unknown_handle_is_absent():
     assert ledger.cursors["keyword_denied"].get("jgoetzmann", 0) == 0
 
 
-def test_B117_empty_ledger_shape():
-    """B117/§6.2: Ledger.empty(period_start) is the canonical zero state every rebuild and every
-    missing-file load starts from."""
-    ledger = Ledger.empty("2026-09-07T00:00:00Z")
-    assert ledger.schema == 1
-    assert ledger.window == {"period_start": "2026-09-07T00:00:00Z", "spent_usd": 0.0,
-                             "calls": 0, "rate_limited_until": None}
-    assert ledger.observations == {}
-    assert ledger.cursors["notifications_last_seen"] is None
-    assert ledger.cursors["seen_comment_ids"] == []
-    assert ledger.cursors["keyword_denied"] == {}
-    assert ledger.history == []
-
-
 # ---------------------------------------------------------------------------
-# Delivery 3 — RUN-DECISIONS-D3 "Ledger" (B204, B205) plus carry and the
-# backward-compatible from_json. Appended by the D3 spec-tester (T1); additions only.
+# Usage, carry and the backward-compatible from_json (B204, B205).
 #
 # The signal is the CLI's rate_limit_event: utilization is a fraction 0..1 and
 # seven_day.resets_at is the subscription's weekly reset (Tuesday 20:00 UTC).
@@ -536,7 +516,8 @@ D3_FIVE_HOUR_RESET = "2026-09-04T11:00:00Z"
 D3_SEVEN_DAY_RESET = "2026-09-08T20:00:00Z"  # Tuesday 20:00 UTC
 D3_NEXT_SEVEN_DAY_RESET = "2026-09-15T20:00:00Z"
 
-# A ledger file written by Delivery 2, before window.usage and window.carry existed.
+# A ledger file from before D74: it still carries spent_usd and observations, which is exactly
+# what must be ignored.
 D2_LEDGER_TEXT = json.dumps(
     {
         "schema": 1,
@@ -555,7 +536,7 @@ def usage(*, weekly: float = 0.49, session: float = 0.07,
           seven_day_resets: str = D3_SEVEN_DAY_RESET,
           five_hour_resets: str = D3_FIVE_HOUR_RESET,
           status: str = "allowed", observed_at: str | None = None) -> dict:
-    """The RUN-DECISIONS-D3 usage shape as the stage hands it to observe_usage."""
+    """The usage shape as the stage hands it to observe_usage."""
     payload = {
         "five_hour": {"utilization": session, "resets_at": five_hour_resets},
         "seven_day": {"utilization": weekly, "resets_at": seven_day_resets},
@@ -597,7 +578,7 @@ def test_B204_a_never_observed_ledger_reports_none():
     """B204/B114: no decision may depend on the signal being present — with nothing observed
     both readers return None rather than a guess, and the window carries no usage."""
     ledger = fresh()
-    spend(ledger, n=3, usd=2.0)
+    calls(ledger, n=3)
     assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
     assert ledger.window.get("usage") is None
@@ -645,14 +626,13 @@ def test_B204_save_then_load_round_trips_the_usage_and_the_carry(state_dir: Path
     assert loaded.carry_issue() == 816
 
 
-def test_B204_observing_usage_does_not_touch_spend_calls_or_history():
-    """B204: the usage signal and the USD accounting are independent — observing one changes
-    nothing about the other (the USD path still governs when usage is absent)."""
+def test_B204_observing_usage_does_not_touch_calls_or_history():
+    """B204: the usage signal and the call count are independent — observing one changes
+    nothing about the other."""
     ledger = fresh()
-    spend(ledger, n=2, usd=1.25)
+    calls(ledger, n=2)
     before_history = list(ledger.history)
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
-    assert ledger.window["spent_usd"] == pytest.approx(2.5)
     assert ledger.window["calls"] == 2
     assert ledger.history == before_history
 
@@ -663,10 +643,10 @@ def test_B204_observing_usage_does_not_touch_spend_calls_or_history():
 
 def test_B205_a_new_seven_day_reset_rolls_the_window_and_keeps_the_carry():
     """B205: when seven_day.resets_at differs from the one the window implies and now is past
-    the previous reset, the window rolls to that previous reset — spend and calls zeroed, the
+    the previous reset, the window rolls to that previous reset — the call count zeroed, the
     carried item kept so it can continue on the new week's leeway."""
     ledger = Ledger.empty("2026-09-01T20:00:00Z")
-    spend(ledger, n=2, usd=2.5, ts="2026-09-02T00:00:00Z")
+    calls(ledger, n=2, ts="2026-09-02T00:00:00Z")
     ledger.set_carry(816, "2026-09-08T19:00:00Z", "weekly usage 91% >= 90%")
     ledger.observe_usage(usage(weekly=0.91, seven_day_resets=D3_SEVEN_DAY_RESET),
                          "2026-09-08T19:00:00Z")
@@ -677,23 +657,34 @@ def test_B205_a_new_seven_day_reset_rolls_the_window_and_keeps_the_carry():
                          "2026-09-08T20:00:01Z")
 
     assert ledger.window["period_start"] == D3_SEVEN_DAY_RESET
-    assert ledger.window["spent_usd"] == 0.0
     assert ledger.window["calls"] == 0
     assert ledger.carry_issue() == 816
     assert ledger.weekly_utilization() == pytest.approx(0.02)
+
+
+def test_B205_the_roll_keeps_the_history():
+    """B205/B116: rolling on the subscription reset zeroes the window's call count and leaves
+    the append-only history alone."""
+    ledger = Ledger.empty("2026-09-01T20:00:00Z")
+    calls(ledger, n=3, ts="2026-09-02T00:00:00Z")
+    ledger.observe_usage(usage(seven_day_resets=D3_SEVEN_DAY_RESET), "2026-09-02T00:00:00Z")
+    ledger.observe_usage(usage(seven_day_resets=D3_NEXT_SEVEN_DAY_RESET),
+                         "2026-09-08T20:00:01Z")
+    assert ledger.window["period_start"] == D3_SEVEN_DAY_RESET
+    assert ledger.window["calls"] == 0
+    assert len(ledger.history) == 3
 
 
 def test_B205_the_same_seven_day_reset_does_not_roll_the_window():
     """B205: an observation whose reset matches the window's implied reset changes nothing —
     the usual case, once per call, all week long."""
     ledger = Ledger.empty("2026-09-01T20:00:00Z")
-    spend(ledger, usd=3.0, ts="2026-09-02T00:00:00Z")
+    calls(ledger, ts="2026-09-02T00:00:00Z")
     ledger.observe_usage(usage(weekly=0.10, seven_day_resets=D3_SEVEN_DAY_RESET),
                          "2026-09-02T00:00:00Z")
     ledger.observe_usage(usage(weekly=0.40, seven_day_resets=D3_SEVEN_DAY_RESET),
                          "2026-09-05T00:00:00Z")
     assert ledger.window["period_start"] == "2026-09-01T20:00:00Z"
-    assert ledger.window["spent_usd"] == pytest.approx(3.0)
     assert ledger.window["calls"] == 1
     assert ledger.weekly_utilization() == pytest.approx(0.40)
 
@@ -702,51 +693,38 @@ def test_B205_a_later_reset_before_the_previous_one_has_passed_does_not_roll():
     """B205: both conditions are required — a differing reset alone, while now is still before
     the previous reset, leaves the window where it is."""
     ledger = Ledger.empty("2026-09-01T20:00:00Z")
-    spend(ledger, usd=4.0, ts="2026-09-02T00:00:00Z")
+    calls(ledger, ts="2026-09-02T00:00:00Z")
     ledger.observe_usage(usage(seven_day_resets=D3_SEVEN_DAY_RESET), "2026-09-02T00:00:00Z")
     ledger.observe_usage(usage(seven_day_resets=D3_NEXT_SEVEN_DAY_RESET),
                          "2026-09-07T00:00:00Z")
     assert ledger.window["period_start"] == "2026-09-01T20:00:00Z"
-    assert ledger.window["spent_usd"] == pytest.approx(4.0)
-
-
-def test_B205_the_roll_keeps_history_and_observations():
-    """B205/B116: rolling on the subscription reset is the D2 roll with a better boundary —
-    the append-only history and the per-stage observations survive it."""
-    ledger = Ledger.empty("2026-09-01T20:00:00Z")
-    for i in range(3):
-        ledger.record(ts="2026-09-02T00:00:00Z", stage="implement", issue=800 + i, usd=1.5,
-                      run=RUN_URL)
-    ledger.observe_usage(usage(seven_day_resets=D3_SEVEN_DAY_RESET), "2026-09-02T00:00:00Z")
-    ledger.observe_usage(usage(seven_day_resets=D3_NEXT_SEVEN_DAY_RESET),
-                         "2026-09-08T20:00:01Z")
-    assert ledger.window["period_start"] == D3_SEVEN_DAY_RESET
-    assert len(ledger.history) == 3
-    assert ledger.observations["implement"]["n"] == 3
-    assert ledger.median_usd("implement") == pytest.approx(1.5)
+    assert ledger.window["calls"] == 1
 
 
 def test_B205_usage_observed_before_the_rolled_window_start_is_stale():
-    """B205/B204: after the roll an observation from the old week no longer answers for the new
+    """B205/B204: after a roll an observation from the old week no longer answers for the new
     one — the reader returns None until the next call reports."""
-    ledger = Ledger.empty("2026-09-01T20:00:00Z")
-    ledger.observe_usage(usage(weekly=0.91), "2026-09-02T00:00:00Z")
-    assert ledger.weekly_utilization() == pytest.approx(0.91)
-    ledger.roll_window(datetime(2026, 9, 14, tzinfo=timezone.utc), "monday")
+    ledger = Ledger.from_json(json.dumps({
+        "schema": 1,
+        "window": {
+            "period_start": "2026-09-14T00:00:00Z",
+            "calls": 0,
+            "rate_limited_until": None,
+            "usage": {
+                "seven_day": {"utilization": 0.91, "resets_at": D3_NEXT_SEVEN_DAY_RESET},
+                "five_hour": {"utilization": 0.3, "resets_at": D3_FIVE_HOUR_RESET},
+                "status": "allowed",
+                "observed_at": "2026-09-02T00:00:00Z",
+            },
+        },
+        "cursors": {"notifications_last_seen": None, "seen_comment_ids": [],
+                    "keyword_denied": {}},
+        "history": [],
+    }))
+
     assert ledger.window["period_start"] == "2026-09-14T00:00:00Z"
     assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
-
-
-def test_B205_roll_window_still_works_when_no_usage_was_ever_observed():
-    """B205: the D2 roll_window is untouched — a ledger that never saw the signal still rolls on
-    the seven-day boundary."""
-    ledger = Ledger.empty("2026-08-17T00:00:00Z")
-    spend(ledger, n=2, usd=1.0, ts="2026-08-18T00:00:00Z")
-    assert ledger.roll_window(NOW, "monday") is True
-    assert ledger.window["period_start"] == "2026-08-31T00:00:00Z"
-    assert ledger.window["spent_usd"] == 0.0
-    assert ledger.weekly_utilization() is None
 
 
 # ---------------------------------------------------------------------------
@@ -754,7 +732,7 @@ def test_B205_roll_window_still_works_when_no_usage_was_ever_observed():
 # ---------------------------------------------------------------------------
 
 def test_B205_set_carry_records_issue_since_and_reason():
-    """RUN-DECISIONS-D3 "Ledger": window.carry is {"issue", "since", "reason"} and
+    """window.carry is {"issue", "since", "reason"} and
     carry_issue() reads the issue number back."""
     ledger = fresh()
     assert ledger.carry_issue() is None
@@ -765,7 +743,7 @@ def test_B205_set_carry_records_issue_since_and_reason():
 
 
 def test_B205_clear_carry_removes_it():
-    """RUN-DECISIONS-D3 "Ledger": clear_carry() drops the carried item (the continue run went
+    """clear_carry() drops the carried item (the continue run went
     green and was packaged)."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
@@ -775,7 +753,7 @@ def test_B205_clear_carry_removes_it():
 
 
 def test_B205_set_carry_replaces_a_previous_carry():
-    """RUN-DECISIONS-D3 "Ledger": one carried item at a time — the newest handoff wins."""
+    """One carried item at a time — the newest handoff wins."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
     ledger.set_carry(823, "2026-09-02T13:00:00Z", "carry leeway 10% reached")
@@ -785,14 +763,14 @@ def test_B205_set_carry_replaces_a_previous_carry():
 
 
 def test_B205_clearing_a_carry_that_was_never_set_is_a_no_op():
-    """RUN-DECISIONS-D3 "Ledger": clear_carry() on a fresh ledger neither raises nor invents."""
+    """clear_carry() on a fresh ledger neither raises nor invents."""
     ledger = fresh()
     ledger.clear_carry()
     assert ledger.carry_issue() is None
 
 
 def test_B205_carry_survives_to_json_and_from_json():
-    """RUN-DECISIONS-D3 "Ledger": the carry is persisted — the next process knows which item to
+    """The carry is persisted — the next process knows which item to
     continue."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
@@ -803,7 +781,7 @@ def test_B205_carry_survives_to_json_and_from_json():
 
 
 def test_B205_carry_is_independent_of_the_usage_observation():
-    """RUN-DECISIONS-D3 "Ledger": clearing the carry does not clear the usage, and observing
+    """Clearing the carry does not clear the usage, and observing
     usage does not clear the carry."""
     ledger = fresh()
     ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
@@ -814,14 +792,14 @@ def test_B205_carry_is_independent_of_the_usage_observation():
 
 
 # ---------------------------------------------------------------------------
-# from_json accepts a Delivery 2 file (no usage, no carry)
+# from_json accepts a file with no usage and no carry
 # ---------------------------------------------------------------------------
 
 def test_B204_from_json_accepts_a_file_without_the_new_keys():
-    """RUN-DECISIONS-D3 "Ledger": from_json accepts files without these keys (defaults None) —
-    the ledger written by Delivery 2 loads unchanged."""
+    """from_json accepts files without these keys (defaults None), and a pre-D74 file's spend
+    total is dropped rather than carried into an unused window key."""
     ledger = Ledger.from_json(D2_LEDGER_TEXT)
-    assert ledger.window["spent_usd"] == pytest.approx(1.5)
+    assert ledger.window.get("spent_usd") is None
     assert ledger.window["calls"] == 2
     assert ledger.window.get("usage") is None
     assert ledger.window.get("carry") is None
@@ -832,7 +810,7 @@ def test_B204_from_json_accepts_a_file_without_the_new_keys():
 
 
 def test_B204_a_delivery_2_ledger_can_then_observe_and_carry():
-    """RUN-DECISIONS-D3 "Ledger": an upgraded file is fully usable — the first D3 run observes
+    """An upgraded file is fully usable — the first D3 run observes
     usage and sets a carry on it without a migration step."""
     ledger = Ledger.from_json(D2_LEDGER_TEXT)
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
@@ -843,7 +821,7 @@ def test_B204_a_delivery_2_ledger_can_then_observe_and_carry():
 
 
 def test_B204_load_of_a_missing_file_has_no_usage_and_no_carry(tmp_path: Path):
-    """RUN-DECISIONS-D3 "Ledger" / B117: the empty ledger a missing file yields reports no
+    """B117: the empty ledger a missing file yields reports no
     utilization and carries nothing."""
     ledger = load(tmp_path / "nope" / "ledger.json")
     assert ledger.weekly_utilization() is None
@@ -865,7 +843,6 @@ def test_B204_from_json_normalises_a_hand_edited_usage_block():
             "schema": 1,
             "window": {
                 "period_start": PERIOD_START,
-                "spent_usd": 1.0,
                 "calls": 1,
                 "rate_limited_until": None,
                 "usage": {
@@ -875,7 +852,6 @@ def test_B204_from_json_normalises_a_hand_edited_usage_block():
                     "observed_at": NOW_ISO,
                 },
             },
-            "observations": {},
             "cursors": {"notifications_last_seen": None, "seen_comment_ids": [],
                         "keyword_denied": {}},
             "history": [],
@@ -909,9 +885,9 @@ def test_B204_usage_survives_a_to_json_from_json_round_trip_byte_for_byte():
 
 
 def test_B204_a_window_reads_usage_and_carry_as_none_before_either_exists():
-    """RUN-DECISIONS-D3 "Ledger": ``from_json`` accepts files without these keys (defaults
+    """``from_json`` accepts files without these keys (defaults
     None). The window mapping guarantees it for *any* access pattern, subscript included, so
-    a reader that does not know to use ``.get()`` cannot turn a Delivery 2 file into a
+    a reader that does not know to use ``.get()`` cannot turn an older file into a
     KeyError."""
     from harness.ledger import EPOCH
 

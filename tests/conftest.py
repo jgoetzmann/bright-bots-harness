@@ -1,10 +1,9 @@
 """Shared fixtures for the Bright Bots Harness suite.
 
-Everything here is derived from HARNESS-SPEC section 5 (``## Surface``) and from
-RUN-DECISIONS.md. No fixture inspects the implementation.
+No fixture inspects the implementation.
 
-Time is always frozen: 2026-09-01T12:00:00Z, a Tuesday. The most recent monday
-(the default ``WEEKLY_RESET_DAY``) is therefore 2026-08-31.
+Time is always frozen: 2026-09-01T12:00:00Z, a Tuesday. The Monday before it is 2026-08-31,
+which is where the ledger fixtures start their window.
 """
 
 from __future__ import annotations
@@ -28,19 +27,13 @@ PERIOD_END_ISO = "2026-09-07T00:00:00Z"
 # .env
 # --------------------------------------------------------------------------
 
-# Every key named in RUN-DECISIONS "Config extras", with the safe defaults from
-# RUN-DECISIONS "Defaults for .env.example". Paths are relative so they resolve
-# against the .env file's own directory (which is tmp_path in every fixture).
+# Every required key, with the safe defaults .env.example ships. Paths are relative
+# so they resolve against the .env file's own directory (tmp_path in every fixture).
 DEFAULT_ENV: dict[str, str] = {
     "BACKEND": "fake",
     "REPO": "Bright-Bots-Initiative/brightboost",
     "PERMISSION_TIER": "0",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "40",
-    "SESSION_BUDGET_PCT": "15",
-    "RESERVE_PCT": "10",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -53,14 +46,11 @@ DEFAULT_ENV: dict[str, str] = {
     "PACKAGES_DIR": "packages",
     "HALT_FILE": "HALT",
     "FULLSEND_ENABLED": "false",
-    "WEEKLY_CAP_USD": "25.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": "",
     "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
     "TRUST_FILE": ".harness/trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
@@ -73,10 +63,8 @@ DEFAULT_ENV: dict[str, str] = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -85,7 +73,7 @@ DEFAULT_ENV: dict[str, str] = {
     "ANTHROPIC_API_KEY": "",
 }
 
-# A token whose shape satisfies RUN-DECISIONS' ^github_pat_[A-Za-z0-9_]{40,}$
+# A token whose shape satisfies ^github_pat_[A-Za-z0-9_]{40,}$
 VALID_PAT = "github_pat_" + "A1b2C3d4E5" * 5
 # A token whose shape satisfies ^ghp_[A-Za-z0-9]{30,}$
 VALID_GHP = "ghp_" + "Z9y8X7w6V5" * 4
@@ -167,8 +155,8 @@ def store(tmp_path: Path, frozen_clock):
 # Runner fixtures (written inline; nothing is read from the repo's own fixtures)
 # --------------------------------------------------------------------------
 
-# A complete section 7.1 work package: >= 1 decision, fewer than 3 slices,
-# fewer than 15 behaviors, empty open questions (RUN-DECISIONS "Runner").
+# A complete work package: >= 1 decision, fewer than 3 slices,
+# fewer than 15 behaviors, empty open questions.
 WORK_PACKAGE_816 = """# fix(scripts): bundle size check misreports esm chunks
 
 ## Issue
@@ -215,8 +203,6 @@ def runner_fixture_payload(
     *,
     ok: bool = True,
     turns: int | None = 3,
-    cost_usd: float | None = 0.0125,
-    allowance_pct: float | None = None,
     duration_ms: int | None = 4321,
     session_id: str | None = "fixture-session",
     exit_code: int = 0,
@@ -227,8 +213,6 @@ def runner_fixture_payload(
         "ok": ok,
         "text": text,
         "turns": turns,
-        "cost_usd": cost_usd,
-        "allowance_pct": allowance_pct,
         "duration_ms": duration_ms,
         "session_id": session_id,
         "exit_code": exit_code,

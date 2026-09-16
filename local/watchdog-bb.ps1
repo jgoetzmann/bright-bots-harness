@@ -1,15 +1,14 @@
-# Host-side watchdog for the bb container (docs/delivery/DELIVERY-2-HANDOFF.md section 10;
-# platform section 6.5).
-# Hand-written; never machine-generated. Polls every 10 s from OUTSIDE the container (P10):
+# Host-side watchdog for the bb container (docs/LOCAL-MODE.md).
+# Hand-written; never machine-generated. Polls every 10 s from outside the container:
 #   soft limits pause  - on battery, or non-container host CPU high and sustained (docker pause)
 #   one limit kills    - stale HEARTBEAT, after a startup grace period (docker kill; the restart
 #                        policy heals it and the gate re-runs)
-#   hard limits stop   - free disk under the floor, weekly spend over the cap (docker stop; operator)
-#   every N minutes    - push the branches the container committed. This process is the ONLY
-#                        publisher in local mode (P5: the container commits, the host pushes).
+#   hard limits stop   - free disk under the floor (docker stop; operator)
+#   every N minutes    - push the branches the container committed. This process is the only
+#                        publisher in local mode: the container commits, the host pushes.
 # Pause state is derived from docker inspect on every poll, never from this process's variables.
-# Coexistence (A44): this file is named so that rk's wildcard process kill cannot match it, and
-# everything that looks for this process matches the FULL path of this file, never a wildcard.
+# Coexistence with rk: this file is named so that rk's wildcard process kill cannot match it,
+# and everything that looks for this process matches its full path, never a wildcard.
 #   .\local\watchdog-bb.ps1            persistent (bb-start.ps1 launches it minimised)
 #   .\local\watchdog-bb.ps1 -Once      one pass: push what is owed, check once, exit
 param(
@@ -62,13 +61,6 @@ function Read-EnvValue([string]$key) {
         if ($line -match $pattern) { $val = $Matches[1].Trim().Trim('"').Trim("'") }
     }
     return $val
-}
-
-function Get-Spend {
-    # window.spent_usd from the ledger the loop keeps at /work/state/ledger.json; 0 when absent
-    $p = Join-Path $Work "state/ledger.json"
-    if (-not (Test-Path $p)) { return 0.0 }
-    try { return [double]((Get-Content $p -Raw | ConvertFrom-Json).window.spent_usd) } catch { return 0.0 }
 }
 
 function Container-UptimeSeconds {
@@ -249,12 +241,9 @@ function Push-Delivered {
 }
 $lastPush = Get-Date
 
-$cap = 0.0
-$capRaw = Read-EnvValue "WEEKLY_CAP_USD"
-if ($capRaw -match '^[0-9]+(\.[0-9]+)?$') { $cap = [double]$capRaw }
 $highSince = $null
 $lowSince = $null
-Write-Host "bb watchdog: container=$Container work=$Work poll=${PollSeconds}s heartbeat-stale=${HeartbeatStaleSeconds}s min-free=${MinFreeGB}GB push=${PushMinutes}min weekly-cap=$cap USD cpu-pause=${CpuHigh}/${CpuLow}% for ${CpuSustainSeconds}s battery-guard=$(-not $NoBatteryGuard)"
+Write-Host "bb watchdog: container=$Container work=$Work poll=${PollSeconds}s heartbeat-stale=${HeartbeatStaleSeconds}s min-free=${MinFreeGB}GB push=${PushMinutes}min cpu-pause=${CpuHigh}/${CpuLow}% for ${CpuSustainSeconds}s battery-guard=$(-not $NoBatteryGuard)"
 
 while ($true) {
     if (-not $Once) { Start-Sleep -Seconds $PollSeconds }
@@ -308,19 +297,7 @@ while ($true) {
         } catch { Write-Host "$(Stamp) heartbeat unreadable" }
     }
 
-    # 4. Weekly spend over the cap -> hard stop. The loop's governor enforces the same number from
-    #    inside; this is the independent enforcement from outside (platform section 5.4).
-    if ($cap -gt 0) {
-        $spend = Get-Spend
-        if ($spend -gt $cap) {
-            Write-Host "$(Stamp) spend $spend USD > WEEKLY_CAP_USD $cap -> docker stop"
-            docker stop $Container | Out-Null
-            if ($Once) { break }
-            continue
-        }
-    }
-
-    # 5. Free disk on the work drive under the floor -> hard stop.
+    # 4. Free disk on the work drive under the floor -> hard stop.
     $freeGB = [double]::MaxValue
     try { $freeGB = [double](Get-Item $Work).PSDrive.Free / 1GB } catch {}
     if ($freeGB -lt $MinFreeGB) {
@@ -330,7 +307,7 @@ while ($true) {
         continue
     }
 
-    # 6. CPU pause: non-container host CPU above CpuHigh for CpuSustainSeconds -> pause; below CpuLow
+    # 5. CPU pause: non-container host CPU above CpuHigh for CpuSustainSeconds -> pause; below CpuLow
     #    for as long -> unpause. Host load = total minus this container's share. Another harness's
     #    container reads as host load here (platform section 8); subtract it by hand if it bites.
     $total = 0.0

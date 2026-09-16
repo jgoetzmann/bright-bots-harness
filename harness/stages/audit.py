@@ -1,8 +1,7 @@
-"""The audit stage: one lens, one read, one findings issue, no work items (B247-B256).
+"""The audit stage: one lens, one read, one findings issue, no work items (B247).
 
-An audit is deliberately not a discovery route. Discovery produces work; an audit produces a
-*list*, and a person turns lines of that list into work with `/harness promote`. The gap between
-the two is the whole point: one sentence ("audit accessibility") must not become eight
+An audit is not a discovery route. It produces a list, and a person turns lines of that list
+into work with `/harness promote`, so one sentence ("audit accessibility") never becomes
 implementation runs nobody approved.
 """
 
@@ -40,8 +39,8 @@ TIMEOUT_S = 1800
 
 SEVERITIES: tuple[str, ...] = ("high", "medium", "low")
 
-#: The marker that makes a finding promotable. `- [ ]` is GitHub's own checkbox, so the issue is
-#: readable as a list of what remains without anyone learning a convention.
+#: The marker that makes a finding promotable. `- [ ]` is GitHub's own checkbox, so the issue
+#: renders as a list of what remains.
 _FINDING_RE = re.compile(
     r"^\s*-\s*\[(?P<done>[ xX])\]\s*\*\*(?P<n>\d+)\.\s*(?P<title>[^*]+)\*\*\s*(?P<rest>.*)$"
 )
@@ -107,8 +106,7 @@ class Finding:
 def parse_findings(text: str) -> tuple[list[Finding], str]:
     """``(findings, not_reached)`` from either the model's output or an audit issue body.
 
-    Both shapes are read by one parser on purpose: `promote` has to re-read what `audit` wrote,
-    and two parsers that must agree about a format eventually do not.
+    One parser reads both shapes, because `promote` has to re-read what `audit` wrote.
     """
     findings: list[Finding] = []
     not_reached: list[str] = []
@@ -182,10 +180,9 @@ def render_audit_body(
         "",
         "**Lens.** " + lens.strip(),
         "",
-        "This issue is a **list, not a plan**, and it is not a work item — nothing here is "
-        "queued and nothing here will be implemented on its own. Reply "
+        "This issue is a list of findings, and nothing in it is queued. Reply "
         "`/harness promote <n>` (or `/harness promote all`) to turn a finding into a work "
-        "item, which then goes through the ordinary proposal gate like any other.",
+        "item, which then needs an approved proposal like any other.",
         "",
         "## Findings",
         "",
@@ -197,7 +194,7 @@ def render_audit_body(
         lines.append("None. Nothing in this repository matched the lens.")
     lines.append("")
     if stopped:
-        # B250: an audit that ran out of room says so where the reader is, not only in a log.
+        # An audit that ran out of room says so in the issue, not only in a log (B250).
         lines.append(f"> **Incomplete.** {stopped}")
         lines.append("")
     if not_reached.strip():
@@ -228,12 +225,12 @@ def tick(body: str, numbers: Iterable[int]) -> str:
 
 
 def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
-    """B247-B251: one read of the product repository, one findings issue, no work items."""
+    """One read of the product repository, one findings issue, no work items (B247)."""
     ctx.check_halt()
     scope = str(lens or "").strip()
     if not scope:
-        # B256: refused before any GitHub read and before any model call. An audit with no lens
-        # is "look at everything", which is the one scope the budget cannot bound.
+        # Refused before any GitHub read and before any model call: an audit with no lens is
+        # "look at everything", which no turn cap can bound (B256).
         raise HarnessError(
             "audit needs a lens: what should it look for? `/harness audit accessibility in "
             "src/components`, say, or `/harness audit redundant code`."
@@ -241,12 +238,8 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
     if not ctx.gh.can_write:
         raise HarnessError("audit opens an issue and there is no write credential")
 
-    # B295: checked HERE, before the clone. `run_model` checks it too and is the last line of
-    # defence, but by then a full fresh clone of the product repository has already been made
-    # for a call that is about to be refused. Every other stage checks at its own entry for the
-    # same reason -- `discover` does it before its GitHub reads "because the refusal is the same
-    # either way and the reads are not free", and B256's no-lens refusal above is before any
-    # read at all. This gate was the one arriving late.
+    # Checked before the clone (B295). `run_model` checks it again, but by then a fresh clone of
+    # the product repository has been made for a call that is about to be refused.
     from harness import priority
 
     refused = priority.admit(
@@ -279,8 +272,8 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
         ctx.clones.release(lease, keep=False)
 
     if not result.ok:
-        # B250: a cap reached mid-audit is not a crash. Whatever was found before the ceiling is
-        # still worth reading, and the issue says where it stopped so the next one can continue.
+        # A cap reached mid-audit still publishes what was found, and the issue says where it
+        # stopped so the next audit can continue (B250).
         stopped = str(result.error or "the audit stopped before it finished")
     findings, not_reached = parse_findings(result.text or "")
     if not findings and not stopped:
@@ -297,8 +290,8 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
         stopped=stopped,
         trusted=ctx.trusted,
     )
-    # B251/B255: no stage label. Without one the store does not see it, so it can never enter
-    # the queue and can never be transitioned -- the label families are what make it a work item.
+    # No `stage:` label, so the store never sees this issue as a work item and it can neither
+    # enter the queue nor be transitioned (B251).
     created = ctx.gh.create_issue(title, body, [KIND_LABELS["audit"], VIA_LABELS["requested"]])
     number = int(created["number"])
     ctx.record_decision(
@@ -310,7 +303,7 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
 
 
 def promote(ctx: Context, *, issue_number: int, which: str, actor: str = "") -> list[int]:
-    """B252-B254: one work item per named finding, `via:audit`, ticked off in the issue."""
+    """One work item per named finding, `via:audit`, ticked off in the issue (B252)."""
     ctx.check_halt()
     issue = ctx.gh.get(f"/repos/{ctx.config.self_repo}/issues/{int(issue_number)}") or {}
     body = str(issue.get("body") or "")
@@ -339,8 +332,8 @@ def promote(ctx: Context, *, issue_number: int, which: str, actor: str = "") -> 
         ref = f"audit:{int(issue_number)}:{number}"
         existing = ctx.store.find_by_ref(ref)
         if existing is not None:
-            # B254: promoting twice is one item. The reference carries the audit and the line,
-            # so the second attempt finds the first rather than opening a near-duplicate.
+            # The reference carries the audit and the line, so promoting twice is one item
+            # (B254).
             promoted.append(number)
             continue
         item_id = ctx.store.create_work_item(
@@ -372,8 +365,7 @@ def _wanted(which: str, findings: list[Finding], *, cap: int) -> set[int]:
     text = str(which or "").strip().lower()
     if text in ("all", "*", "everything"):
         open_ones = [f.number for f in findings if not f.done]
-        # B253: `all` is still bounded. A twenty-finding audit promoted in one comment would put
-        # twenty proposals in the queue, which is exactly what the audit/promote split prevents.
+        # `all` is still bounded by SUGGEST_MAX_PER_RUN (B253).
         return set(open_ones[:cap] if cap else open_ones)
     return {int(n) for n in re.findall(r"\d+", text)}
 

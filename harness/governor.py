@@ -1,65 +1,26 @@
-"""Budget periods, spend estimates and admission control (SPEC §5.3; handoff §6 with a ledger)."""
+"""Admission control: the subscription usage stops, the stored rate limit, and the turn caps."""
 
 from __future__ import annotations
 
 import logging
-import statistics
 from dataclasses import dataclass
-from datetime import timedelta
 
 from harness.clock import Clock, iso
 from harness.config import Config
-from harness.dispatcher import estimate_usd, usage_stop
-from harness.errors import BudgetExhausted, ConfigError
+from harness.dispatcher import usage_stop
+from harness.errors import BudgetExhausted
 from harness.ledger import Ledger
-from harness.store import Store
 
 log = logging.getLogger("harness")
 
-BUDGET_UNIT = "allowance_pct"
-
-WEEKDAYS: tuple[str, ...] = (
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-)
-
-STATIC_ESTIMATES: dict[str, float] = {
-    "discover": 0.5,
-    "propose": 2.0,
-    "implement": 8.0,
-    "package": 0.5,
-    "ask": 0.2,
-    "audit": 4.0,
-    # D70: priced like the stages whose shape they share (dispatcher.STATIC_USD says the same).
-    "selfaudit": 2.0,
-    "selfaudit_fix": 4.0,
-}
-
-#: Stages whose per-call ceiling is their own key rather than `PER_CALL_CAP_USD` (B248/B275).
-#: The map lives here, not at the call sites, so a new stage cannot quietly inherit the wrong
-#: ceiling by forgetting to pass one. An `ask` is one question and must stay cheap; an `audit`
-#: reads a whole repository and would fail every time under the per-call cap.
-STAGE_CAP_KEY: dict[str, str] = {
-    "ask": "ask_cap_usd",
-    "audit": "audit_cap_usd",
-}
-
-MIN_OBSERVATIONS = 3
-
-# Stages Delivery 1 had no MAX_TURNS_* key for borrow the nearest stage's turn cap.
+# Stages with no MAX_TURNS_* key of their own borrow the nearest stage's turn cap.
 _TURNS_FALLBACK: dict[str, str] = {
     "revise": "implement",
     "decompose": "propose",
     "deliver": "package",
-    # An answer is one read and one paragraph; an audit reads a repository and writes a list.
     "ask": "package",
     "audit": "propose",
-    # D70: fallbacks rather than new MAX_TURNS_* keys, which every complete .env would need.
+    # Fallbacks, so a complete .env needs no new MAX_TURNS_* keys (D70).
     "selfaudit": "propose",
     "selfaudit_fix": "implement",
 }
@@ -70,124 +31,38 @@ class Authorization:
     id: str
     work_item_id: int
     stage: str
-    granted_pct: float
     max_turns: int
-    max_budget_usd: float = 0.0
 
 
 class Governor:
-    def __init__(
-        self, store: Store, config: Config, clock: Clock, ledger: Ledger | None = None
-    ) -> None:
-        if config.max_concurrent_clones > 1:
-            raise ConfigError(
-                "max_concurrent_clones must be 1 in delivery 1, got "
-                f"{config.max_concurrent_clones}"
-            )
-        self.store = store
+    """What may start a model call: the usage stops, the stored rate limit, the turn caps.
+
+    The ledger is required and holds every fact admission reads (D74).
+    """
+
+    def __init__(self, config: Config, clock: Clock, ledger: Ledger) -> None:
         self.config = config
         self.clock = clock
         self.ledger = ledger
-        self.session_allocated: float = float(config.session_budget_pct)
-        self.session_consumed: float = 0.0
 
-    # -- periods ---------------------------------------------------------------------------
-
-    def current_period(self) -> tuple[str, str]:
-        """The week bounded by ``config.weekly_reset_day``, as ``(start_iso, end_iso)``."""
-        now = self.clock.now()
-        reset_index = WEEKDAYS.index(self.config.weekly_reset_day)
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        back = (midnight.weekday() - reset_index) % 7
-        start = midnight - timedelta(days=back)
-        end = start + timedelta(days=7)
-        return iso(start), iso(end)
-
-    def _ensure_period(self) -> tuple[str, str]:
-        start, end = self.current_period()
-        self.store.ensure_budget_period(
-            BUDGET_UNIT, start, end, float(self.config.weekly_budget_pct)
-        )
-        return start, end
-
-    def _ensure_window(self) -> Ledger:
-        """Roll the ledger window when the week has passed; returns the ledger."""
-        assert self.ledger is not None
-        self.ledger.roll_window(self.clock.now(), self.config.weekly_reset_day)
-        return self.ledger
-
-    # -- USD figures (ledger path only) ----------------------------------------------------
-
-    def _weekly_cap_usd(self) -> float:
-        return float(self.config.weekly_cap_usd)
-
-    def _spent_usd(self) -> float:
-        ledger = self._ensure_window()
-        return float(ledger.window.get("spent_usd", 0.0) or 0.0)
-
-    def _spend_ceiling_usd(self) -> float:
-        return self._weekly_cap_usd() * (1.0 - float(self.config.reserve_pct) / 100.0)
-
-    # -- remaining -------------------------------------------------------------------------
-
-    def remaining_weekly_pct(self) -> float:
-        if self.ledger is not None:
-            return max(0.0, (1.0 - self._spent_usd() / self._weekly_cap_usd()) * 100.0)
-        start, _end = self._ensure_period()
-        allocated, consumed = self.store.budget_period(BUDGET_UNIT, start)
-        return float(allocated) - float(consumed)
-
-    def remaining_session_pct(self) -> float:
-        return float(self.session_allocated) - float(self.session_consumed)
-
-    def spendable_pct(self) -> float:
-        if self.ledger is not None:
-            reserve = float(self.config.reserve_pct)
-            return min(self.remaining_weekly_pct(), self.remaining_session_pct()) - reserve
-        reserve = float(self.config.weekly_budget_pct) * float(self.config.reserve_pct) / 100.0
-        return min(self.remaining_weekly_pct(), self.remaining_session_pct()) - reserve
-
-    # -- estimates -------------------------------------------------------------------------
-
-    def estimate(self, stage: str) -> float:
-        if self.ledger is not None:
-            return estimate_usd(self.ledger, stage) / self._weekly_cap_usd() * 100.0
-        observed = [float(v) for v in self.store.completed_allowances(stage)]
-        if len(observed) >= MIN_OBSERVATIONS:
-            return float(statistics.median(observed))
-        return STATIC_ESTIMATES[stage]
-
-    def can_fund(self, stage: str) -> bool:
-        if self.ledger is not None:
-            if self.ledger.rate_limited(iso(self.clock.now())):
-                return False
-            needed = self._spent_usd() + estimate_usd(self.ledger, stage)
-            return needed <= self._spend_ceiling_usd()
-        return self.estimate(stage) <= self.spendable_pct()
-
-    # -- usage stops (D3, B206-B208) --------------------------------------------------------
+    # -- usage stops ------------------------------------------------------------------------
 
     def usage_stop_reason(self, *, carry: bool = False) -> str | None:
         """Why the subscription signal says to stop, or ``None`` (B206).
 
-        ``None`` without a ledger and ``None`` while nothing has been observed (B207): the USD
-        path then governs exactly as in Delivery 2. ``carry=True`` is the item carried across a
-        weekly reset, which runs on ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
-        The rule itself lives in :func:`harness.dispatcher.usage_stop` so that admission and
-        the plan cannot drift apart.
+        ``None`` while nothing has been observed: unknown admits. ``carry=True`` is the item
+        carried across a weekly reset, which runs on ``OVERRUN_PCT`` instead of
+        ``WEEKLY_USAGE_STOP_PCT``. The rule itself lives in
+        :func:`harness.dispatcher.usage_stop`, so admission and the plan cannot drift apart.
         """
-        if self.ledger is None:
-            return None
-        # B399: through the clock, so a reading whose window has reset no longer refuses.
+        # Through the clock, so a reading whose window has reset no longer refuses (B399).
         return usage_stop(self.ledger, self.config, carry=carry, now=self.clock.now())
 
     def _is_carry(self, work_item_id: int) -> bool:
-        if self.ledger is None:
-            return False
         carried = self.ledger.carry_issue()
         return carried is not None and int(carried) == int(work_item_id)
 
-    # -- admission -------------------------------------------------------------------------
+    # -- admission --------------------------------------------------------------------------
 
     def _max_turns(self, stage: str) -> int:
         turns = self.config.max_turns
@@ -199,86 +74,38 @@ class Governor:
         return int(turns[stage])
 
     def authorize(self, work_item_id: int, stage: str) -> Authorization:
-        if self.ledger is not None:
-            # B208: an observed usage stop refuses the call before any USD arithmetic.
-            stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
-            if stop is not None:
-                raise BudgetExhausted(stop)
-            now_iso = iso(self.clock.now())
-            if self.ledger.rate_limited(now_iso):
-                until = self.ledger.window.get("rate_limited_until")
-                raise BudgetExhausted(f"rate limited until {until}")
-            needed_usd = estimate_usd(self.ledger, stage)
-            spent = self._spent_usd()
-            ceiling = self._spend_ceiling_usd()
-            if spent + needed_usd > ceiling:
-                raise BudgetExhausted(
-                    f"stage {stage!r} needs ${needed_usd:.2f} but ${spent:.2f} of "
-                    f"${ceiling:.2f} is already spent this window"
-                )
-            needed = self.estimate(stage)
-        else:
-            needed = self.estimate(stage)
-            spendable = self.spendable_pct()
-            if needed > spendable:
-                raise BudgetExhausted(
-                    f"stage {stage!r} needs {needed:.3f}% but only {spendable:.3f}% is spendable"
-                )
-        max_turns = self._max_turns(stage)
+        """Admit one call, or raise :class:`BudgetExhausted` naming what refused it.
+
+        The usage stop is checked before the rate limit, so an operator past the weekly stop
+        hears about the allowance rather than about a reset time (B208).
+        """
+        stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
+        if stop is not None:
+            raise BudgetExhausted(stop)
+        now_iso = iso(self.clock.now())
+        if self.ledger.rate_limited(now_iso):
+            until = self.ledger.window.get("rate_limited_until")
+            raise BudgetExhausted(f"rate limited until {until}")
         auth = Authorization(
-            id=f"{work_item_id}:{stage}:{iso(self.clock.now())}",
+            id=f"{work_item_id}:{stage}:{now_iso}",
             work_item_id=work_item_id,
             stage=stage,
-            granted_pct=needed,
-            max_turns=int(max_turns),
-            max_budget_usd=self._cap_usd(stage),
+            max_turns=self._max_turns(stage),
         )
-        log.debug("authorized %s for %.3f%% (%d turns)", auth.id, needed, auth.max_turns)
+        log.debug("authorized %s (%d turns)", auth.id, auth.max_turns)
         return auth
 
-    def _cap_usd(self, stage: str) -> float:
-        """The USD ceiling for one call of `stage` (B248/B275)."""
-        key = STAGE_CAP_KEY.get(stage)
-        if key is not None:
-            value = getattr(self.config, key, None)
-            if value is not None:
-                return float(value)
-        return float(self.config.per_call_cap_usd)
+    def record(self, auth: Authorization, *, usage: dict | None = None) -> None:
+        """Book the call in the ledger.
 
-    def record(
-        self,
-        auth: Authorization,
-        *,
-        allowance_pct: float,
-        cost_usd: float | None,
-        usage: dict | None = None,
-    ) -> None:
-        """Book the call. ``usage`` is the D3 subscription signal the stage observed, if any;
-        it reaches the ledger before the spend so a weekly reset rolls the window first
-        (B204/B205). ``None`` records nothing and erases nothing (B114)."""
-        amount = 0.0 if allowance_pct is None else float(allowance_pct)
-        start, _end = self._ensure_period()
-        self.store.consume_budget(BUDGET_UNIT, start, amount)
-        self.session_consumed += amount
-        if self.ledger is not None:
-            ledger = self._ensure_window()
-            ledger.observe_usage(usage, iso(self.clock.now()))
-            ledger.record(
-                ts=iso(self.clock.now()),
-                stage=auth.stage,
-                issue=int(auth.work_item_id),
-                usd=float(cost_usd or 0.0),
-                # The Actions audit link has no producer: only config.py may read the
-                # environment (I-4) and no config key carries a run URL, so there is nothing
-                # here to fill it from. ``GitHubStore(run_url=...)`` is the frozen seam
-                # (RUN-DECISIONS-D2 section 3); wire both ends together or neither.
-                run="",
-            )
-        log.debug("recorded %.3f%% against %s (cost_usd=%s)", amount, auth.id, cost_usd)
-
-    def begin_session(self, session_pct: float | None = None) -> None:
-        if session_pct is None:
-            self.session_allocated = float(self.config.session_budget_pct)
-        else:
-            self.session_allocated = float(session_pct)
-        self.session_consumed = 0.0
+        ``usage`` is the subscription signal the stage observed, if any; ``None`` records
+        nothing and erases nothing.
+        """
+        now = iso(self.clock.now())
+        # The reading lands first: observe_usage zeroes window["calls"] on a seven-day
+        # turnover, so recording first would lose the call that produced it (B431).
+        self.ledger.observe_usage(usage, now)
+        # No config key carries the run URL and only config.py reads the environment (I-4), so
+        # the entry's `run` is the empty string; `GitHubStore(run_url=...)` is the other end.
+        self.ledger.record(ts=now, stage=auth.stage, issue=int(auth.work_item_id), run="")
+        log.debug("recorded %s", auth.id)

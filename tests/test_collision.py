@@ -1,4 +1,4 @@
-"""B38-B41: harness.collision (HARNESS-SPEC 5.6).
+"""B38-B41: harness.collision.
 
 Pure functions, no I/O, except B41 which is asserted against the recorded 2026-09-01 fixtures.
 """

@@ -1,4 +1,4 @@
-"""The revise stage (handoff §9): one bounded revision of a delivered branch, fully re-gated."""
+"""The revise stage: one bounded revision of a delivered branch, fully re-gated."""
 
 from __future__ import annotations
 
@@ -55,14 +55,13 @@ FAILING_CONCLUSIONS: tuple[str, ...] = (
     "stale",
 )
 
-#: B139: the branch tip must carry one of these author emails to be force-pushed. The second
-#: is what Delivery 1's ``implement.COMMIT`` writes and cannot be changed (do-not-touch).
-#: D67: defined once in `clone.py`, where the push guard's commit walk reads the same pair.
+#: The author emails a branch tip must carry to be force-pushed (B139). The pair is defined in
+#: `clone.py`, where the push guard's commit walk reads it too.
 HARNESS_AUTHOR_EMAILS: tuple[str, ...] = clone_mod.HARNESS_AUTHOR_EMAILS
 
-#: B215: the fourth source. Not a revision of a delivered branch at all - it resumes an item
-#: that a usage stop handed off mid-flight (``deliver.handoff``), from ``approved`` back into
-#: ``implementing``, and hands the run loop a ``packaged`` item when the gates are green.
+#: The source that resumes an item a usage stop handed off (``deliver.handoff``): from
+#: ``approved`` back into ``implementing``, and on to ``packaged`` for the run loop when the
+#: gates are green (B215).
 CONTINUE = "continue"
 
 
@@ -72,9 +71,10 @@ CONTINUE = "continue"
 
 
 def _is_trusted(comment: Mapping[str, Any], trusted: Trust | frozenset[str]) -> bool:
-    """B131 over one review or review comment: ``trust.comment_authorised`` is the only judge,
-    the same one the sweep uses -- so narrowing the association set, or vouching for an account
-    (D68), changes what reaches the model here in the same stroke."""
+    """Whether one review or review comment comes from a trusted actor (B131).
+
+    ``trust.comment_authorised`` is the only judge, the same one the command sweep uses, so a
+    narrowed association set or a vouched account changes what reaches the model here too."""
     return comment_authorised(comment, trusted)
 
 
@@ -174,8 +174,7 @@ def revise(
     explicit = bool(notes.strip())
     resuming = source == CONTINUE
     if resuming:
-        # B215: continue picks up a handed-off item, so its entry state is the one the handoff
-        # left behind - approved, with the branch the carried work sits on.
+        # A handed-off item is approved, with the branch the carried work sits on (B215).
         if entry_state != "approved" or not item.branch_name:
             raise IllegalTransition(
                 f"illegal transition {entry_state} -> implementing for work item {item_id}: "
@@ -201,14 +200,14 @@ def revise(
     cap = int(ctx.config.max_revise_cycles)
     cycles = _cycle_count(ctx, item_id)
     if resuming and cycles >= cap:
-        # A carried item is not going round a review loop; it is the same first attempt, split
-        # across two runs by a usage stop. The revise cap counts revisions, not resumptions.
+        # The cap counts revision cycles. A resumption is the same first attempt, split across
+        # two runs by a usage stop.
         ctx.record_decision(
             f"continue resumes item {item_id} after {cycles} recorded revise run(s); the "
             f"cap of {cap} counts revision cycles, not handoffs (B215)"
         )
     elif cycles >= cap and not explicit:
-        # B137: the cap is a stop, and a human is the only thing that restarts it.
+        # The cap is a stop, and a trusted human is the only thing that restarts it (B137).
         _to_needs_human(
             ctx,
             item_id,
@@ -244,7 +243,7 @@ def revise(
             nested=nested,
         )
     except Halted:
-        # R7.7 / A10: a halt mid-stage releases the clone and leaves the item resumable.
+        # A halt mid-stage releases the clone and leaves the item resumable.
         _back_to(ctx, item_id, entry_state, "halted mid-revise")
         ctx.clones.release(the_lease, keep=False)
         raise
@@ -253,9 +252,8 @@ def revise(
 def _acquire(ctx: Context, item: Any, source: str) -> Lease:
     """The clone this cycle works in.
 
-    B215: a resumed item re-acquires its branch from the fork, unless the clone is still on
-    disk - in local mode the carried commits may exist nowhere else, and a fresh clone would
-    throw them away.
+    A resumed item reuses the clone when it is still on disk, where in local mode the carried
+    commits may exist nowhere else, and otherwise re-acquires its branch from the fork (B215).
     """
     if source == CONTINUE:
         clone_dir = Path(ctx.config.runs_dir) / f"item-{item.id}" / "clone"
@@ -302,8 +300,7 @@ def _revise_leased(
 
     upstream = str(ctx.config.upstream_repo)
     fork_owner = str(ctx.config.fork_repo or "").split("/")[0]
-    # A resumed item has never been delivered, so there is no pull request to read and no
-    # reason to spend an API call looking for one.
+    # A resumed item has never been delivered, so there is no pull request to look for.
     pr = (
         None
         if source == CONTINUE
@@ -324,7 +321,7 @@ def _revise_leased(
             ctx.record_decision("rebase onto upstream's main was clean; no conflict to resolve")
 
     feedback, shaped = _feedback(ctx, item, source, lease, pr, notes, conflicted)
-    feedback = redact.redact(feedback)  # §9.1: the log tail reaches the model redacted (I-13)
+    feedback = redact.redact(feedback)  # the log tail reaches the model redacted (I-13)
     signature = gates.signature(shaped)
     if not feedback.strip():
         ctx.record_decision(f"revise ({source}): no feedback to act on; no model call was made")
@@ -334,7 +331,7 @@ def _revise_leased(
         _back_to(ctx, item_id, entry_state, f"revise ({source}) found nothing to act on")
         return None
     if signature and _signature_seen(ctx, item_id, signature):
-        # B138: the same failure again means the loop is going nowhere. Stop before spending.
+        # The same failure again means the loop is going nowhere; stop before the call (B138).
         _to_needs_human(
             ctx,
             item_id,
@@ -352,14 +349,11 @@ def _revise_leased(
         feedback=data_block(f"{source} feedback", feedback[:MAX_FEEDBACK_CHARS]),
         spec_text=spec_text,
     )
-    # The model's edits are the diff against the tip it was GIVEN, not against the old base:
-    # after a rebase the old base also differs by everything upstream merged since. B302/D67
-    # (hole B): so that tip is read BEFORE the call. Read after it, as it once was, the tip is
-    # any commit the model made itself with Bash, the diff comes back empty, and every arm of
-    # B64 -- `.github/`, `continue-on-error`, `.skip(`, the timeout -- passes a change nobody
-    # looked at, whoever the model said authored it. A resumed item (B215) is judged from its
-    # fork point instead: a usage stop lands inside a model call, before implement's own B64,
-    # so nothing the branch carries was ever checked.
+    # The model's edits are the diff against the tip it was given, so that tip is read before
+    # the call: after a rebase the old base also differs by everything upstream merged since,
+    # and a tip read afterwards is any commit the model made itself with Bash, which would hand
+    # every arm of B64 an empty diff (B302). A resumed item is judged from its base instead,
+    # since a usage stop lands inside a model call, before implement's own B64.
     given = deliver_mod._tip_sha(lease) or lease.base_sha
     base = lease.base_sha if source == CONTINUE else given
     result = run_model(
@@ -386,7 +380,7 @@ def _revise_leased(
         f"revise ({source}) changed paths: " + (", ".join(changed) if changed else "(none)")
     )
     implement_mod._reject_forbidden_diff(ctx, item_id, check_lease, changed)  # B64, one copy
-    _refuse_unpublishable_commits(ctx, item_id, lease)  # B303: and what the branch carries
+    _refuse_unpublishable_commits(ctx, item_id, lease)  # and what the branch carries (B303)
 
     if conflicted:
         _continue_rebase(ctx, item_id, lease)
@@ -421,7 +415,7 @@ def _gate_and_ship(
         + "; no gate was widened, skipped or retimed"
     )
 
-    # B139: force-push only under harness/, and only onto a tip the harness itself authored.
+    # Force-push only under harness/, and only onto a tip the harness itself authored (B139).
     if not lease.branch.startswith("harness/"):
         _to_needs_human(
             ctx, item_id, f"branch {lease.branch} is outside harness/; never force-pushed (B139)"
@@ -450,7 +444,7 @@ def _gate_and_ship(
     ctx.gh.push_branch(lease.path, lease.branch, remote_repo=fork, force=True)
     ctx.record_decision(f"force-pushed {lease.branch} to {fork} (tip authored by {email})")
     if entry_state == "packaged":
-        # deliver's rebase conflicted before any pull request existed (§4.5 step 2): open it.
+        # deliver's rebase conflicted before any pull request existed: open it.
         url = deliver_mod.deliver(ctx, item_id, lease=lease)
         ctx.store.append_event(item_id, "info", f"revise ({source}) delivered: {url or 'no URL'}")
     else:
@@ -466,11 +460,10 @@ def _gate_and_ship(
 
 
 def _gate_and_hand_over(ctx: Context, item: Any, lease: Lease) -> Lease | None:
-    """B215: the resumed work is re-gated exactly as a revision is.
+    """The resumed work is re-gated exactly as a revision is (B215).
 
     Green hands the item to the run loop as ``packaged`` and drops the ledger's carry; the run
-    loop builds the review package and delivers it. Red blocks the item and pushes nothing,
-    the same rule as B136 - a resumed item gets no easier ride than a revised one.
+    loop builds the review package and delivers it. Red blocks the item and pushes nothing.
     """
     item_id = int(item.id)
     ctx.check_halt()
@@ -557,11 +550,10 @@ def _feedback(
 
 
 def _handoff_feedback(ctx: Context, item: Any) -> str:
-    """B215: ``HANDOFF.md`` verbatim, as the resumed run's brief.
+    """``HANDOFF.md`` verbatim, as the resumed run's brief (B215).
 
-    It is quoted like every other source - the caller wraps the whole feedback in a labelled
-    data block, so nothing the previous run wrote is read as an instruction. When the note is
-    missing (a handoff that never got that far) the branch itself is the brief.
+    The caller wraps the whole feedback in a labelled data block, so nothing the previous run
+    wrote is read as an instruction. When the note is missing, the branch itself is the brief.
     """
     run_dir = Path(ctx.config.runs_dir) / f"item-{item.id}"
     text = deliver_mod._read(run_dir / deliver_mod.HANDOFF_NAME).strip()
@@ -607,8 +599,8 @@ def _review_feedback(ctx: Context, upstream: str, pr: dict | None) -> str:
     except (GitHubError, RateCeilingReached) as exc:
         ctx.record_decision(f"could not read reviews for #{number}: {exc}")
         return ""
-    # The Trust itself, not a set of its handles: flattening it dropped every vouch (D68), so
-    # a vouched maintainer's review was gated on an association GitHub never gives them.
+    # The Trust itself: a flat set of handles carries no vouch, so a vouched maintainer's
+    # review would be gated on an association GitHub never gives them (D68).
     return gather_review_feedback(reviews, comments, ctx.trusted)
 
 
@@ -618,18 +610,18 @@ def _review_feedback(ctx: Context, upstream: str, pr: dict | None) -> str:
 
 
 def tip_author_email(lease: Lease) -> str:
-    """``git log -1 --format=%ae`` — who authored the branch tip (B139)."""
+    """``git log -1 --format=%ae``: who authored the branch tip (B139)."""
     code, out, _ = gates.run_command(["git", "log", "-1", "--format=%ae"], lease.path)
     return out.strip() if code == 0 else ""
 
 
 def _refuse_unpublishable_commits(ctx: Context, item_id: int, lease: Lease) -> None:
-    """B303/D67: block, clone kept, when a commit the harness authored on this branch touches
-    `.github/` -- one carried in from a handoff, or pushed before D67 widened the path set.
+    """Block the item, clone kept, when a commit the harness authored on this branch touches
+    `.github/`, such as one carried in from a handoff (B303).
 
-    The diff check above sees what changed since the tip the model was given; this sees what
-    the branch already holds, so the item stops here, locally and inspectable, rather than at
-    the push. The same walk `gh.push_branch` makes, over HEAD, which mid-rebase is the replayed
+    The diff check above sees what changed since the tip the model was given; this sees what the
+    branch already holds, so the item stops here, locally and inspectable, rather than at the
+    push. It is the walk `gh.push_branch` makes, run over HEAD, which mid-rebase is the replayed
     branch rather than the not-yet-moved branch ref.
     """
     try:

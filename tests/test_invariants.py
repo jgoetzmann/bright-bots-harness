@@ -1,7 +1,7 @@
-"""Invariant tests — HARNESS-SPEC §9 (I-1 … I-10) plus the §10.1 structural criterion A1.
+"""Invariant tests: I-1 … I-17 (docs/SAFETY.md), the file map, and the structure of the
+workflows and the governance files.
 
-These are checked by inspecting the source tree at run time, not by running the program.
-Every test here is a negative assertion: it proves a forbidden construct is absent.
+Everything here reads the source tree and the workflow text; nothing runs the harness.
 
 Stack: Python 3.13 standard library + pytest==8.3.4 only.
 """
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HARNESS_DIR = REPO_ROOT / "harness"
 TESTS_DIR = REPO_ROOT / "tests"
 
-# §4.1 — every Python file the package is allowed to contain.
+# Every Python file the package may contain.
 SPEC_PACKAGE_FILES = [
     "harness/__init__.py",
     "harness/__main__.py",
@@ -51,7 +51,6 @@ SPEC_PACKAGE_FILES = [
     "harness/stages/propose.py",
     "harness/stages/implement.py",
     "harness/stages/package.py",
-    # Delivery 2 — DELIVERY-2-HANDOFF §3 file map (data change only; D2-R12.3).
     "harness/store/github.py",
     "harness/dispatcher.py",
     "harness/ledger.py",
@@ -63,13 +62,12 @@ SPEC_PACKAGE_FILES = [
     "harness/stages/deliver.py",
     # B227: the presentation layer for everything the harness opens on GitHub.
     "harness/links.py",
-    # Delivery 4 — the two routes that create no work item, and the order every call runs in.
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
 ]
 
-# §4.3 — every test module the delivery is required to ship.
+# Test modules that must exist.
 SPEC_TEST_FILES = [
     "tests/conftest.py",
     "tests/test_config.py",
@@ -151,8 +149,7 @@ def test_i1_no_module_issues_a_non_get_http_request():
     )
 
     for path in _harness_sources():
-        # I-1' (Delivery 2, DECISIONS D13): harness/gh.py is the one module permitted to issue a
-        # non-GET request; the new I-11 test pins that exemption to gh.py alone.
+        # harness/gh.py is the one module that may issue a non-GET request (I-11).
         if _rel(path) == "harness/gh.py":
             continue
         tree = _parse(path)
@@ -248,7 +245,7 @@ def test_i4_os_environ_is_read_only_in_config_py():
 
 
 # --------------------------------------------------------------------------------------
-# I-5 — SQL exists only in store.py
+# I-5 — SQL exists only in store/sqlite.py
 # --------------------------------------------------------------------------------------
 
 
@@ -256,7 +253,6 @@ def test_i5_sql_exists_only_in_store_py():
     violations: list[str] = []
 
     for path in _harness_sources():
-        # Delivery 2 moved the SQLite store to a package (DECISIONS D12); SQL lives there only.
         if _rel(path) in ("harness/store.py", "harness/store/sqlite.py"):
             continue
         source = _strip_comment_lines(_read(path))
@@ -413,7 +409,7 @@ def test_i10_render_human_doc_interpolates_no_environment_or_secret_value():
 
 
 # --------------------------------------------------------------------------------------
-# A1 — the file manifest of §4 is exact
+# A1 — the file manifest is exact
 # --------------------------------------------------------------------------------------
 
 
@@ -437,10 +433,7 @@ def test_a1_every_test_file_in_section_4_3_exists():
 
 
 # ======================================================================================
-# Delivery 2 additions — docs/delivery/DELIVERY-2-HANDOFF.md §3 (file map, D2-R1), §7 (workflow
-# hygiene), §10.4 (B142, B143), §12 (I-2′, I-11 … I-17), plus RUN-DECISIONS-D2 §10/§15/§17.
-# Appended by the D2 spec-tester (T3). Additions only — D2-R12.3. Nothing above was edited
-# except the SPEC_PACKAGE_FILES data constant, which gained the D2 file-map entries.
+# I-2′ and I-11 … I-17, the pin (B142, B143), the file map, workflow hygiene and governance.
 # ======================================================================================
 
 import hashlib
@@ -452,8 +445,8 @@ from harness import verify_pin as verify_pin_mod
 
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 SPENDING_WORKFLOWS = ("discover.yml", "implement.yml", "feedback.yml")
-#: The six the Delivery 2 handoff froze. Still every workflow that can spend, hold the ledger
-#: lock, or run on a schedule that matters -- which is what D2-R1.5 was actually protecting.
+#: The original six: every workflow that can spend, hold the ledger lock, or run on a schedule
+#: that matters.
 HANDOFF_WORKFLOWS = (
     "discover.yml",
     "implement.yml",
@@ -462,31 +455,26 @@ HANDOFF_WORKFLOWS = (
     "heartbeat.yml",
     "selftest.yml",
 )
-#: Added since, each by a numbered decision. A workflow file appearing with no entry here is the
-#: thing D2-R1.5 exists to catch: something that runs on this repository's schedule and secrets
-#: that nobody wrote down a reason for.
+#: Workflows added since, each with the decision that added it. One with no entry fails.
 ADDED_WORKFLOWS = {
     "ack.yml": "D65/B293 — say 'working on it' within seconds; spends nothing, takes no lock",
     "watchdog.yml": "D65/B294 — dispatch feedback when a scheduled run never started",
 }
 ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
-# RUN-DECISIONS-D2 §15 / handoff §7.1 — the frozen crons. ops.yml and selftest.yml have none.
-# Delivery 3 bound implement.yml's crons to the weekly Mon 08:00 -> Tue 20:00 UTC run window
-# (RUN-DECISIONS-D3 "Workflows"); D72 moved discover and implement into the daily 11:00 -> 15:00
-# UTC window, one subscription session a day. Each entry is the full expected list.
+# The full expected cron list per scheduled workflow; the others carry none. discover and
+# implement fire inside the daily 11:00 -> 15:00 UTC run window (D72).
 FROZEN_CRONS = {
     "discover.yml": ["7 11 * * *"],
     "implement.yml": ["23 11-14 * * *"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
-    # D65/B294. Offset from feedback's in BOTH fields on purpose: a watchdog sharing a cron
-    # expression with the thing it watches is watching itself fail. `ack.yml` has none -- it is
-    # event-driven only, which is the whole reason it can be fast.
+    # Offset from feedback's in both fields, so the watchdog never fires with what it watches
+    # (B294). `ack.yml` is event-driven and carries no cron.
     "watchdog.yml": ["17 */4 * * *"],
 }
 ROUND_MINUTES = (0, 15, 30, 45)
 
-# RUN-DECISIONS-D2 §7 — every gh.py write method (I-13's write set).
+# Every gh.py write method (I-13's write set).
 GH_WRITE_METHODS = (
     "comment",
     "set_labels",
@@ -497,7 +485,7 @@ GH_WRITE_METHODS = (
     "create_branch_file",
 )
 
-# Handoff §3 — the Python files Delivery 2 adds (D1's 27 minus store.py, plus store/*).
+# Modules the I-17 import scan requires to exist.
 D2_NEW_PACKAGE_FILES = [
     "harness/store/github.py",
     "harness/dispatcher.py",
@@ -549,13 +537,12 @@ D2_PACKAGE_FILES = [
     "harness/stages/deliver.py",
     # B227: the presentation layer for everything the harness opens on GitHub.
     "harness/links.py",
-    # Delivery 4 — the two routes that create no work item, and the order every call runs in.
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
 ]
 
-# Handoff §3 — test modules and fixtures marked NEW.
+# Test modules and fixtures that must exist.
 D2_REQUIRED_TEST_FILES = [
     "tests/test_store_github.py",
     "tests/test_ledger.py",
@@ -567,13 +554,12 @@ D2_REQUIRED_TEST_FILES = [
     "tests/test_stages_decompose.py",
     "tests/fixtures/runner/revise.json",
     "tests/fixtures/runner/rate_limited.json",
-    # D4. `BACKEND=fake` is the documented way to try the harness without spending anything,
-    # so a stage with no fixture is a stage nobody can try safely.
+    # `BACKEND=fake` needs a fixture for every stage that calls a model.
     "tests/fixtures/runner/ask.json",
     "tests/fixtures/runner/audit.json",
 ]
 
-# Handoff §3 — every non-Python file marked NEW.
+# Non-Python files that must exist.
 D2_REQUIRED_FILES = [
     ".github/workflows/discover.yml",
     ".github/workflows/implement.yml",
@@ -582,7 +568,6 @@ D2_REQUIRED_FILES = [
     ".github/workflows/heartbeat.yml",
     ".github/workflows/selftest.yml",
     ".github/CODEOWNERS",
-    ".github/ISSUE_TEMPLATE/work-item.md",
     ".github/pull_request_template.md",
     ".harness/trust.txt",
     ".harness/config.json",
@@ -605,26 +590,19 @@ D2_REQUIRED_FILES = [
     "bb-watcher.ps1",
     "bb-configure.py",
     "bb-config.json",
-    "docs/delivery/DELIVERY-2-REVIEW.md",
 ]
 
-# RUN-DECISIONS-D2 §2 — the eleven .harness/config.json knob keys Delivery 2 froze (B112).
+# The first seven .harness/config.json knob keys (B112).
 D2_CONFIG_JSON_KEYS = (
-    "WEEKLY_CAP_USD",
-    "PER_CALL_CAP_USD",
-    "RESERVE_PCT",
     "MAX_CONCURRENT_ITEMS",
     "MAX_REVISE_CYCLES",
-    "NOTIFY_POLL_HOURS",
     "MAX_SUBISSUES",
     "TRACKING_ISSUE",
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
 )
-# RUN-DECISIONS-D3 "Config" ("Knob keys in .harness/config.json: add the five to the allowed
-# set") — the five Delivery 3 adds, kept apart from the D2 eleven so `D3_CONFIG_JSON_KEYS`
-# below is a real union rather than a no-op over a constant that already held them.
+# The five usage-governance knobs, kept apart so `D3_CONFIG_JSON_KEYS` below is a real union.
 D3_NEW_CONFIG_JSON_KEYS = (
     "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
@@ -632,24 +610,19 @@ D3_NEW_CONFIG_JSON_KEYS = (
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
 )
-# DELIVERY-4-HANDOFF section 7 — the one D4 key that belongs in the COMMITTED config rather
-# than in `.env`. It is repository state (which issue is the inbox), not an environment knob:
-# every runner that reads this repository must agree about it, and the six D4 caps beside it
-# in `config.CONFIG_JSON_KEYS` are per-environment and stay in `.env`.
+# `INBOX_ISSUE` is repository state every runner must agree on, so it is committed; the caps
+# added beside it are per-environment and stay in `.env`.
 D4_NEW_CONFIG_JSON_KEYS = ("INBOX_ISSUE",)
-# The seventeen knob keys the shipped .harness/config.json must carry today.
+# The knob keys the shipped .harness/config.json carries.
 CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS + D4_NEW_CONFIG_JSON_KEYS
 
-# RUN-DECISIONS-D2 §2 — the D2 .env keys, .env.example values (inline; duplicated on purpose).
+# The .env keys and values the build_context test writes, kept inline.
 D2_ENV_KEYS: dict[str, str] = {
-    "WEEKLY_CAP_USD": "25.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": "",
     "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
     "TRUST_FILE": ".harness/trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
@@ -661,7 +634,7 @@ D2_ENV_KEYS: dict[str, str] = {
     "RUN_WINDOW_END": "",
 }
 
-# RUN-DECISIONS-D2 §10 — a minimal tree carrying every pinned path.
+# A minimal tree carrying every pinned path.
 PIN_TREE: dict[str, str] = {
     "harness/gates.py": "SEQUENCE = ('npm run lint', 'npm run build')\n",
     "harness/packager.py": "def build():\n    return 'package'\n",
@@ -672,7 +645,7 @@ PIN_TREE: dict[str, str] = {
 
 
 # --------------------------------------------------------------------------------------
-# D2 helpers
+# Workflow and pin helpers
 # --------------------------------------------------------------------------------------
 
 
@@ -807,7 +780,7 @@ def _pin_repo(root: Path) -> Path:
 
 
 def _expected_pin(root: Path) -> str:
-    """RUN-DECISIONS-D2 §10 + B217: sha256 over (posix path + NUL + normalised bytes), sorted."""
+    """sha256 over (posix path + NUL + normalised bytes), sorted (B217)."""
     pinned = ["harness/gates.py", "harness/packager.py", "harness/redact.py"]
     pinned += sorted(
         f"prompts/{p.name}" for p in (root / "prompts").iterdir() if p.is_file()
@@ -826,7 +799,7 @@ def _expected_pin(root: Path) -> str:
 
 
 def test_i2_prime_the_gh_cli_is_never_invoked_and_gh_py_is_the_only_transport():
-    """I-2′ (handoff §12, D2-R3.1): no `gh` program token anywhere; the D1 semantics unchanged."""
+    """I-2′: no `gh` program token anywhere, and gh.py is the only HTTP transport."""
     quoted = re.compile(r"""['"]gh['"]""")
     violations: list[str] = []
 
@@ -867,13 +840,11 @@ def test_i2_prime_the_gh_cli_is_never_invoked_and_gh_py_is_the_only_transport():
 
 
 def test_i11_authorization_header_is_built_in_gh_py_only():
-    """I-11 (handoff §12, D2-R3.2): the string `Authorization` — the header an authenticated
-    request carries — is built in harness/gh.py and nowhere else.
+    """I-11: the header string an authenticated request carries is built in harness/gh.py and
+    nowhere else.
 
-    Corrected at Delivery 2 reconcile (.fullsend/notes/test-corrections-d2.md): the scan reads
-    string constants and f-string parts, not identifiers, because HARNESS-SPEC §5.3 froze the
-    `governor.Authorization` dataclass in Delivery 1 and I-11 is about the request header.
-    Docstrings are prose, not a header, and are skipped.
+    The scan reads string constants and f-string parts, not identifiers, so the
+    `governor.Authorization` dataclass name does not count, and it skips docstrings.
     """
     scopes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     with_header: set[str] = set()
@@ -898,7 +869,7 @@ def test_i11_authorization_header_is_built_in_gh_py_only():
 
 
 def test_i11_the_token_door_is_defined_in_config_and_imported_by_gh_py_only():
-    """I-11 (handoff §12, D2-R3.3): github_token() lives in config.py; only gh.py imports it."""
+    """I-11: github_token() lives in config.py; only gh.py imports it."""
     config_tree = _parse(HARNESS_DIR / "config.py")
     assert _find_function(config_tree, "github_token") is not None, (
         "config.py must define github_token() (RUN-DECISIONS-D2 §2)"
@@ -929,13 +900,12 @@ def test_i11_the_token_door_is_defined_in_config_and_imported_by_gh_py_only():
 
 
 # --------------------------------------------------------------------------------------
-# I-12 — no code path merges, approves or dismisses (name contains `merge` for D2-R3.5)
+# I-12 — no code path merges, approves or dismisses
 # --------------------------------------------------------------------------------------
 
 
 def test_i12_merge_approve_and_dismiss_endpoints_do_not_exist():
-    """I-12 / B109 (handoff §4.5, §12; D2-R3.4, R3.5): the code to merge, approve or dismiss
-    a review does not exist — no such endpoint string, no such payload, no such method."""
+    """I-12 / B109: no endpoint string, payload or method exists for any of the three."""
     review_grep = re.compile(r"/merge\b|event.*APPROVE|dismiss")
     violations: list[str] = []
 
@@ -988,12 +958,12 @@ def test_i12_merge_approve_and_dismiss_endpoints_do_not_exist():
 
 
 # --------------------------------------------------------------------------------------
-# I-13 — every gh.py write routes its payload through redact (name contains `redact`, R3.6)
+# I-13 — every gh.py write routes its payload through redact
 # --------------------------------------------------------------------------------------
 
 
 def test_i13_every_gh_write_method_routes_its_payload_through_redact():
-    """I-13 / B108 (handoff §12, D2-R3.6): each GitHubClient write method's body reaches a
+    """I-13 / B108: each GitHubClient write method's body reaches a
     `redact_json`/`redact` call, directly or through a helper defined in gh.py."""
     gh_tree = _parse(HARNESS_DIR / "gh.py")
     client = _class_def(gh_tree, "GitHubClient")
@@ -1041,13 +1011,13 @@ def test_i13_every_gh_write_method_routes_its_payload_through_redact():
 
 
 # --------------------------------------------------------------------------------------
-# I-14 — no issue is created outside this repository (name contains `issue_repo`, R3.7)
+# I-14 — no issue is created outside this repository
 # --------------------------------------------------------------------------------------
 
 
 def test_i14_create_issue_repo_is_always_self_repo():
-    """I-14 / B110 (handoff §4.6, §12; D2-R3.7): create_issue has no repo parameter and
-    targets self_repo; no call site passes one."""
+    """I-14 / B110: create_issue has no repo parameter and targets self_repo; no call site
+    passes one."""
     gh_tree = _parse(HARNESS_DIR / "gh.py")
     client = _class_def(gh_tree, "GitHubClient")
     assert client is not None, "harness/gh.py must define GitHubClient (RUN-DECISIONS-D2 §7)"
@@ -1092,7 +1062,7 @@ def test_i14_create_issue_repo_is_always_self_repo():
 
 
 def test_i15_reject_forbidden_diff_lives_in_implement_py_and_is_not_copied_into_deliver_py():
-    """I-15 (handoff §12, D2-R3.8): `_reject_forbidden_diff` exists in implement.py and
+    """I-15: `_reject_forbidden_diff` exists in implement.py and
     deliver.py carries no second copy of the check."""
     implement_tree = _parse(HARNESS_DIR / "stages" / "implement.py")
     assert _find_function(implement_tree, "_reject_forbidden_diff") is not None, (
@@ -1120,12 +1090,10 @@ def test_i15_reject_forbidden_diff_lives_in_implement_py_and_is_not_copied_into_
 
 
 def test_i15_one_protected_path_set_defined_in_clone_py_and_read_by_every_publisher():
-    """B308 / D67 (handoff 6.5): "divergent copies of a safety check are worse than one". With
-    the token's `workflow` scope granted, the path half of I-15 is code alone, so it lives once
-    -- `clone.PROTECTED_PUSH_PATHS` and its two readers, `protected_paths_in` and
-    `walk_harness_commits` -- and B64 (implement), the push guard (gh), the handoff (deliver)
-    and revise each read it rather than keep a set of their own. The PowerShell publisher's
-    copy is held to it by tests/test_local_mode.py and local/preflight.py."""
+    """B308: the protected path set lives once, as `clone.PROTECTED_PUSH_PATHS` and its two
+    readers, `protected_paths_in` and `walk_harness_commits`. B64 (implement), the push guard
+    (gh), the handoff (deliver) and revise all read it, and tests/test_local_mode.py and
+    local/preflight.py hold the PowerShell publisher's copy to it."""
     from harness import clone
     from harness.stages import implement
 
@@ -1147,9 +1115,8 @@ def test_i15_one_protected_path_set_defined_in_clone_py_and_read_by_every_publis
         used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         assert used & shared, f"harness/{rel} does not read the shared protected path set"
 
-    # A second copy would be a named collection holding the prefix. (identity.py's CODEOWNERS
-    # check lists "/.github/" among the paths a code owner must cover -- a different question,
-    # asked inline, and not a set anything publishes by.)
+    # A second copy is a module-level collection holding the prefix. identity.py's inline
+    # CODEOWNERS check also names "/.github/", but nothing publishes by it.
     def named_sets(tree: ast.Module) -> list[str]:
         found = []
         for node in tree.body:
@@ -1177,8 +1144,8 @@ def test_i15_one_protected_path_set_defined_in_clone_py_and_read_by_every_publis
 
 
 def test_i16_no_module_above_the_store_branches_on_execution_mode():
-    """I-16 (handoff §2, §12; D2-R3.9): the exact review grep finds nothing under stages/,
-    gates.py, packager.py or governor.py."""
+    """I-16: the execution-mode grep finds nothing under stages/, gates.py, packager.py or
+    governor.py."""
     pattern = re.compile(r"GITHUB_ACTIONS|RUNNER_OS|ACTIONS_MODE|is_actions|execution_mode")
     scanned: list[Path] = sorted(
         p for p in (HARNESS_DIR / "stages").rglob("*.py") if "__pycache__" not in p.parts
@@ -1201,12 +1168,12 @@ def test_i16_no_module_above_the_store_branches_on_execution_mode():
 
 
 # --------------------------------------------------------------------------------------
-# I-17 — stdlib only (name contains `stdlib`, R3.10)
+# I-17 — stdlib only
 # --------------------------------------------------------------------------------------
 
 
 def test_i17_stdlib_only_no_runtime_dependency_and_no_third_party_import():
-    """I-17 (handoff §12, D2-R1.12, R3.10): pyproject has no runtime dependency and every
+    """I-17: pyproject has no runtime dependency and every
     top-level import under harness/ is the standard library or the package itself."""
     pyproject = REPO_ROOT / "pyproject.toml"
     assert pyproject.is_file(), "pyproject.toml is required"
@@ -1238,8 +1205,8 @@ def test_i17_stdlib_only_no_runtime_dependency_and_no_third_party_import():
 
 
 def test_d2_style_no_threading_or_asyncio_under_harness():
-    """RUN-DECISIONS-D2 §17 (handoff R9.3 scan): no `threading` or `asyncio` import anywhere
-    under harness/; the local-loop heartbeat is a plain sleep loop."""
+    """No `threading`, `asyncio` or `concurrent` import under harness/; the local-loop heartbeat
+    is a plain sleep loop."""
     violations: list[str] = []
     for path in _harness_sources():
         for node in ast.walk(_parse(path)):
@@ -1260,7 +1227,7 @@ def test_d2_style_no_threading_or_asyncio_under_harness():
 
 
 def test_b142_compute_is_a_sha256_hex_stable_across_two_calls(tmp_path):
-    """B142 (handoff §10.4): compute() over the pinned set is deterministic."""
+    """B142: compute() over the pinned set is deterministic."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1273,7 +1240,7 @@ def test_b142_compute_is_a_sha256_hex_stable_across_two_calls(tmp_path):
 
 
 def test_b142_compute_matches_the_frozen_formula(tmp_path):
-    """B142 / RUN-DECISIONS-D2 §10: sha256 over (relative posix path + NUL + bytes) for each
+    """B142: sha256 over (relative posix path + NUL + bytes) for each
     pinned file in sorted order — gates.py, packager.py, redact.py and every prompt."""
     from harness import verify_pin
 
@@ -1283,7 +1250,7 @@ def test_b142_compute_matches_the_frozen_formula(tmp_path):
 
 
 def test_b142_pinned_set_names_exactly_the_three_result_defining_modules():
-    """B142 / RUN-DECISIONS-D2 §10: PINNED is gates.py, packager.py, redact.py (prompts/ is
+    """B142: PINNED is gates.py, packager.py, redact.py (prompts/ is
     added by directory walk, not by listing)."""
     from harness import verify_pin
 
@@ -1295,7 +1262,7 @@ def test_b142_pinned_set_names_exactly_the_three_result_defining_modules():
 
 
 def test_b142_one_changed_byte_in_a_prompt_changes_the_pin(tmp_path):
-    """B142 (handoff §10.4): prompts are pinned data; a single byte moves the hash."""
+    """B142: prompts are pinned data; a single byte moves the hash."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1309,7 +1276,7 @@ def test_b142_one_changed_byte_in_a_prompt_changes_the_pin(tmp_path):
 
 
 def test_b142_one_changed_byte_in_gates_py_changes_the_pin(tmp_path):
-    """B142 (handoff §10.4): the gate sequence is pinned; a single byte moves the hash."""
+    """B142: the gate sequence is pinned; a single byte moves the hash."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1321,7 +1288,7 @@ def test_b142_one_changed_byte_in_gates_py_changes_the_pin(tmp_path):
 
 
 def test_b142_a_new_file_under_prompts_changes_the_pin(tmp_path):
-    """B142 (handoff §10.4): every file under prompts/ is in the set, so adding one moves it."""
+    """B142: every file under prompts/ is in the set, so adding one moves it."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1332,7 +1299,7 @@ def test_b142_a_new_file_under_prompts_changes_the_pin(tmp_path):
 
 
 def test_b142_a_change_outside_the_pinned_set_does_not_change_the_pin(tmp_path):
-    """B142 (handoff §10.4): only the pinned set is hashed; an unrelated module is not."""
+    """B142: only the pinned set is hashed; an unrelated module is not."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1344,7 +1311,7 @@ def test_b142_a_change_outside_the_pinned_set_does_not_change_the_pin(tmp_path):
 
 
 def test_b142_check_passes_when_the_pin_matches(tmp_path):
-    """B142 (handoff §10.4): a matching .harness/PIN is accepted silently."""
+    """B142: a matching .harness/PIN is accepted silently."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1356,7 +1323,7 @@ def test_b142_check_passes_when_the_pin_matches(tmp_path):
 
 
 def test_b142_check_reads_the_first_token_of_the_first_line(tmp_path):
-    """B142 / RUN-DECISIONS-D2 §10: .harness/PIN is `<sha256> [anything]`, first line only."""
+    """B142: .harness/PIN is `<sha256> [anything]`, first line only."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1370,7 +1337,7 @@ def test_b142_check_reads_the_first_token_of_the_first_line(tmp_path):
 
 
 def test_b142_check_raises_pin_mismatch_on_a_wrong_pin(tmp_path):
-    """B142 (handoff §10.4): a wrong .harness/PIN is a startup failure, PinMismatch."""
+    """B142: a wrong .harness/PIN is a startup failure, PinMismatch."""
     from harness import verify_pin
     from harness.errors import PinMismatch
 
@@ -1382,7 +1349,7 @@ def test_b142_check_raises_pin_mismatch_on_a_wrong_pin(tmp_path):
 
 
 def test_b142_check_raises_pin_mismatch_after_a_prompt_edit(tmp_path):
-    """B142 (handoff §10.4): the pin that matched stops matching once a prompt changes."""
+    """B142: the pin that matched stops matching once a prompt changes."""
     from harness import verify_pin
     from harness.errors import PinMismatch
 
@@ -1399,14 +1366,14 @@ def test_b142_check_raises_pin_mismatch_after_a_prompt_edit(tmp_path):
 
 
 def test_b142_pin_mismatch_is_a_harness_error():
-    """B142 / RUN-DECISIONS-D2 §1: PinMismatch derives from HarnessError."""
+    """B142: PinMismatch derives from HarnessError."""
     from harness.errors import HarnessError, PinMismatch
 
     assert issubclass(PinMismatch, HarnessError)
 
 
 def test_b142_main_print_emits_the_computed_hash(tmp_path, monkeypatch, capsys):
-    """B142 / RUN-DECISIONS-D2 §10: `verify_pin --print` prints the hash and exits 0."""
+    """B142: `verify_pin --print` prints the hash and exits 0."""
     from harness import verify_pin
 
     root = _pin_repo(tmp_path / "repo")
@@ -1428,13 +1395,9 @@ def test_b142_main_print_emits_the_computed_hash(tmp_path, monkeypatch, capsys):
 def test_b143_pin_and_repo_halt_are_outside_allowed_roots_while_state_and_proposals_are_in(
     tmp_path, write_env
 ):
-    """B143 / RUN-DECISIONS-D2 R-E (handoff §10.4, D2-R11.7, R11.8): build_context adds exactly
-    two roots — state/ and proposals/ — to Delivery 1's eight (runs, packages, the db parent,
-    the halt file, and the package-root and cwd HUMAN.md/.env pairs); .harness/PIN and
-    .harness/HALT are not roots and lie under none.
-
-    Corrected at Delivery 2 reconcile (.fullsend/notes/test-corrections-d2.md): the count was
-    written as 6 + 2; Delivery 1's `context.py` already registers eight."""
+    """B143: build_context registers ten roots — runs, packages, the db parent, the halt file,
+    the package-root and cwd HUMAN.md/.env pairs, state/ and proposals/. `.harness/PIN` and
+    `.harness/HALT` are not roots and lie under none."""
     from harness import redact
     from harness.config import load_config
     from harness.context import build_context
@@ -1468,13 +1431,12 @@ def test_b143_pin_and_repo_halt_are_outside_allowed_roots_while_state_and_propos
 
 
 # --------------------------------------------------------------------------------------
-# D2-R1 — structural conformance (handoff §3)
+# The file map and the repository structure
 # --------------------------------------------------------------------------------------
 
 
 def test_a1_d2_file_map_is_complete_and_exclusive():
-    """A1 / D2-R1.13 (handoff §3): every harness/**/*.py of the D2 file map exists and no
-    other Python file exists under harness/."""
+    """A1: every harness/**/*.py in the file map exists, and no other Python file does."""
     missing = [rel for rel in D2_PACKAGE_FILES if not (REPO_ROOT / rel).is_file()]
     assert missing == [], "handoff §3 files missing: " + ", ".join(missing)
 
@@ -1489,19 +1451,19 @@ def test_a1_d2_file_map_is_complete_and_exclusive():
 
 
 def test_a1_d2_required_test_modules_and_fixtures_exist():
-    """A1 (handoff §3): every tests/ file marked NEW ships."""
+    """A1: every test module and fixture in the list exists."""
     missing = [rel for rel in D2_REQUIRED_TEST_FILES if not (REPO_ROOT / rel).is_file()]
     assert missing == [], "handoff §3 test files missing: " + ", ".join(missing)
 
 
 def test_a1_d2_every_new_non_python_file_exists():
-    """A1 / D2-R1.13 (handoff §3): every non-Python file marked NEW exists."""
+    """A1: every non-Python file in the list exists."""
     missing = [rel for rel in D2_REQUIRED_FILES if not (REPO_ROOT / rel).is_file()]
     assert missing == [], "handoff §3 files missing: " + ", ".join(missing)
 
 
 def test_d2_r1_1_the_store_is_a_package_with_the_three_modules():
-    """D2-R1.1 (handoff §2, §3): harness/store/{__init__,sqlite,github}.py exist."""
+    """harness/store/{__init__,sqlite,github}.py exist."""
     store_dir = HARNESS_DIR / "store"
     assert store_dir.is_dir(), "harness/store/ must be a package"
     for name in ("__init__.py", "sqlite.py", "github.py"):
@@ -1509,12 +1471,12 @@ def test_d2_r1_1_the_store_is_a_package_with_the_three_modules():
 
 
 def test_d2_r1_2_the_old_store_module_is_gone():
-    """D2-R1.2 (handoff §3, §13 phase 1): the move was a move, not a copy."""
+    """harness/store.py is gone; the store is a package."""
     assert not (HARNESS_DIR / "store.py").exists(), "harness/store.py must not exist (D2-R1.2)"
 
 
 def test_d2_r1_3_the_four_new_modules_exist():
-    """D2-R1.3 (handoff §3): dispatcher.py, ledger.py, keywords.py, trust.py."""
+    """dispatcher.py, ledger.py, keywords.py and trust.py exist."""
     present = sorted(
         name
         for name in ("dispatcher.py", "ledger.py", "keywords.py", "trust.py")
@@ -1524,7 +1486,7 @@ def test_d2_r1_3_the_four_new_modules_exist():
 
 
 def test_d2_r1_4_the_three_new_stages_exist():
-    """D2-R1.4 (handoff §3): stages/{revise,deliver,decompose}.py."""
+    """stages/{revise,deliver,decompose}.py exist."""
     present = sorted(
         name
         for name in ("revise.py", "deliver.py", "decompose.py")
@@ -1534,12 +1496,9 @@ def test_d2_r1_4_the_three_new_stages_exist():
 
 
 def test_d2_r1_5_the_workflow_set_is_the_handoffs_six_plus_only_what_was_written_down():
-    """D2-R1.5 (handoff §3, §7), widened once and deliberately.
-
-    The rule was "exactly these six". What it was protecting is not the number: it is that
-    nothing runs on this repository's schedule and secrets without a written reason. So the six
-    are still required and none may go, and anything else has to be named in `ADDED_WORKFLOWS`
-    with the decision that added it. An unexplained file still fails, which is the whole point.
+    """The original six all exist, and any other workflow is named in `ADDED_WORKFLOWS` with
+    the decision that added it, so nothing runs on this repository's schedule and secrets
+    without a written reason.
     """
     assert WORKFLOWS_DIR.is_dir(), ".github/workflows/ is required"
     found = sorted(p.name for p in WORKFLOWS_DIR.glob("*.yml"))
@@ -1556,8 +1515,7 @@ def test_d2_r1_5_the_workflow_set_is_the_handoffs_six_plus_only_what_was_written
 
 
 def test_every_added_workflow_cites_a_decision_and_the_decision_exists():
-    """The entry is only worth having if it points somewhere. A citation to a decision nobody
-    wrote is the same as no reason at all, just harder to notice."""
+    """Each `ADDED_WORKFLOWS` entry cites a decision DECISIONS.md carries as a heading."""
     import re
 
     decisions = (REPO_ROOT / "DECISIONS.md").read_text(encoding="utf-8")
@@ -1571,20 +1529,20 @@ def test_every_added_workflow_cites_a_decision_and_the_decision_exists():
 
 
 def test_d2_r1_6_governance_files_exist():
-    """D2-R1.6 (handoff §5.5): CODEOWNERS, .harness/trust.txt, .harness/config.json."""
+    """CODEOWNERS, .harness/trust.txt and .harness/config.json exist."""
     for rel in (".github/CODEOWNERS", ".harness/trust.txt", ".harness/config.json"):
         assert (REPO_ROOT / rel).is_file(), f"{rel} is required (D2-R1.6)"
 
 
 def test_d2_r1_7_no_submodule_and_no_vendored_product_repo():
-    """D2-R1.7 (handoff §3.1): no .gitmodules, no submodules/, no vendored product checkout."""
+    """No .gitmodules, no submodules/, no vendored product checkout."""
     assert not (REPO_ROOT / ".gitmodules").exists(), ".gitmodules must not exist"
     assert not (REPO_ROOT / "submodules").exists(), "submodules/ must not exist"
     assert not (REPO_ROOT / "brightboost").exists(), "no vendored copy of the product repo"
 
 
 def test_d2_r1_8_the_two_new_prompt_files_exist():
-    """D2-R1.8 (handoff §3, §4.6, §9): prompts/decompose.md and prompts/revise.md."""
+    """prompts/decompose.md and prompts/revise.md exist."""
     present = sorted(
         name for name in ("decompose.md", "revise.md") if (REPO_ROOT / "prompts" / name).is_file()
     )
@@ -1592,7 +1550,7 @@ def test_d2_r1_8_the_two_new_prompt_files_exist():
 
 
 def test_d2_r1_9_the_five_local_mode_control_files_exist():
-    """D2-R1.9 (handoff §3, §10.1): bb-start/stop/watcher.ps1, bb-configure.py, bb-config.json."""
+    """The root control plane is bb-start/stop/watcher.ps1, bb-configure.py and bb-config.json."""
     expected = ["bb-config.json", "bb-configure.py", "bb-start.ps1", "bb-stop.ps1", "bb-watcher.ps1"]
     found = sorted(
         p.name
@@ -1603,7 +1561,7 @@ def test_d2_r1_9_the_five_local_mode_control_files_exist():
 
 
 def test_d2_r1_10_local_has_at_least_seven_entries():
-    """D2-R1.10 (handoff §3, §10): local/ carries the container plumbing (>= 7 entries)."""
+    """local/ carries the container plumbing (at least seven entries)."""
     local = REPO_ROOT / "local"
     assert local.is_dir(), "local/ is required"
     entries = [p.name for p in local.iterdir()]
@@ -1621,7 +1579,7 @@ def test_d2_r1_10_local_has_at_least_seven_entries():
 
 
 def test_d2_r1_11_bb_work_and_runs_are_git_ignored():
-    """D2-R1.11 / RUN-DECISIONS-D2 §15 (handoff §3.1, §10.1): .gitignore covers bb-work and runs."""
+    """.gitignore covers bb-work and runs."""
     gitignore = REPO_ROOT / ".gitignore"
     assert gitignore.is_file()
     lines = {ln.strip() for ln in _read(gitignore).splitlines()}
@@ -1632,14 +1590,14 @@ def test_d2_r1_11_bb_work_and_runs_are_git_ignored():
 
 
 def test_d2_r1_12_pyproject_declares_no_runtime_dependency():
-    """D2-R1.12 (handoff §3, I-17): `project.dependencies` is [] or absent."""
+    """`project.dependencies` is [] or absent (I-17)."""
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"].get("dependencies", []) == []
 
 
 def test_a44_watchdog_filename_and_content_avoid_the_rk_wildcard():
-    """A44 (handoff §3, §10.1, D2-R9.12): local/watchdog-bb.ps1 exists and neither its name nor
-    its content contains the substring `watchdog.ps1`."""
+    """A44: local/watchdog-bb.ps1 exists, and neither its name nor its content contains
+    `watchdog.ps1`, the pattern rk's process kill matches."""
     path = REPO_ROOT / "local" / "watchdog-bb.ps1"
     assert path.is_file(), "local/watchdog-bb.ps1 is required"
     assert "watchdog.ps1" not in path.name
@@ -1647,26 +1605,23 @@ def test_a44_watchdog_filename_and_content_avoid_the_rk_wildcard():
 
 
 def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
-    """RUN-DECISIONS-D2 §15 (handoff §6.2): state/ledger.json = Ledger.empty("2026-09-07T00:00:00Z")."""
+    """state/ledger.json ships as Ledger.empty("2026-09-07T00:00:00Z")."""
     path = REPO_ROOT / "state" / "ledger.json"
     assert path.is_file(), "state/ledger.json is required (handoff §3)"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema"] == 1
     assert payload["window"]["period_start"] == "2026-09-07T00:00:00Z"
-    assert payload["window"]["spent_usd"] == 0
+    assert "spent_usd" not in payload["window"]
     assert payload["window"]["calls"] == 0
     assert payload["window"]["rate_limited_until"] is None
     assert payload["history"] == []
-    assert isinstance(payload["observations"], dict)
+    assert "observations" not in payload
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
-    """B112 / RUN-DECISIONS-D2 §2, §15 (handoff §5.5) as extended by RUN-DECISIONS-D3 "Config":
-    .harness/config.json is an object whose keys are exactly the operational knobs — Delivery
-    2's eleven, Delivery 3's five, and Delivery 4's `INBOX_ISSUE` — and nothing that alters what
-    the harness concludes. It was eleven until D3 added the two usage stops, the carry leeway and
-    the two run-window bounds; the count lives in `CONFIG_JSON_KEYS`, which this reads."""
+def test_b112_harness_config_json_carries_exactly_the_thirteen_knob_keys():
+    """B112: .harness/config.json's keys are exactly the operational knobs in `CONFIG_JSON_KEYS`
+    above, and nothing that alters what the harness concludes."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1675,11 +1630,9 @@ def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
 
 
 def test_d2_trust_file_lists_the_operator_and_codeowners_protects_the_governance_paths():
-    """Handoff §5.5 (D2-R4.8): .harness/trust.txt names jgoetzmann; CODEOWNERS assigns
+    """.harness/trust.txt names jgoetzmann at the level that may end work; CODEOWNERS assigns
     /.harness/, /prompts/, /.github/, /harness/gates.py, /harness/redact.py and /proposals/."""
-    # B269: the file carries `<level> <handle>` now, so it is read with the parser rather than
-    # split by hand. What D2-R4.8 pins is that the operator is in it; D60 adds that the
-    # operator is level 3, which is the level that may end work.
+    # B269: the file is read with the parser, which understands its `<level> <handle>` lines.
     from harness import trust as trust_mod
 
     trusted = trust_mod.load_trust(REPO_ROOT / ".harness" / "trust.txt")
@@ -1701,13 +1654,13 @@ def test_d2_trust_file_lists_the_operator_and_codeowners_protects_the_governance
 
 
 # --------------------------------------------------------------------------------------
-# Workflow hygiene — handoff §7 (read-only, regex over the YAML text)
+# Workflow hygiene (regex over the YAML text)
 # --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b124_every_cron_minute_is_non_zero_and_not_a_quarter_hour(name):
-    """B124 (handoff §7.1, D2-R7.1): every cron minute field is non-zero and non-round."""
+    """B124: every cron minute field is non-zero and non-round."""
     text = _d2_workflow(name)
     crons = _cron_values(text)
     if name in FROZEN_CRONS:
@@ -1723,8 +1676,7 @@ def test_b124_every_cron_minute_is_non_zero_and_not_a_quarter_hour(name):
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b124_crons_are_exactly_the_frozen_schedule(name):
-    """B124 / RUN-DECISIONS-D2 §15 (handoff §7.1): the four crons are the frozen ones and the
-    two event-driven workflows carry none."""
+    """B124: each scheduled workflow carries exactly its expected crons, and the others none."""
     crons = _cron_values(_d2_workflow(name))
     if name in FROZEN_CRONS:
         assert crons == FROZEN_CRONS[name], f"{name}: crons {crons} != {FROZEN_CRONS[name]}"
@@ -1769,7 +1721,7 @@ def test_b412_the_spending_crons_fire_inside_the_daily_run_window(name):
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b125_every_job_sets_a_timeout_of_at_most_120_minutes(name):
-    """B125 (handoff §7.1, D2-R7.2): `timeout-minutes` on every `jobs.<id>`, <= 120."""
+    """B125: `timeout-minutes` on every `jobs.<id>`, <= 120."""
     text = _d2_workflow(name)
     jobs = _workflow_jobs(text)
     assert jobs, f"{name}: no jobs found under `jobs:`"
@@ -1782,7 +1734,7 @@ def test_b125_every_job_sets_a_timeout_of_at_most_120_minutes(name):
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_b126_every_upload_artifact_step_runs_with_if_always(name):
-    """B126 (handoff §7.1, D2-R7.3): each spending workflow uploads runs/item-*/ under
+    """B126: each spending workflow uploads runs/item-*/ under
     `if: always()` so a cancelled or timed-out run still leaves evidence."""
     text = _d2_workflow(name)
     blocks = [block for block in _step_blocks(text) if "upload-artifact" in block]
@@ -1795,7 +1747,7 @@ def test_b126_every_upload_artifact_step_runs_with_if_always(name):
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b126_no_upload_artifact_step_anywhere_lacks_if_always(name):
-    """B126 (handoff §7.1, D2-R7.3): wherever an artifact is uploaded, it is guarded."""
+    """B126: wherever an artifact is uploaded, it is guarded."""
     text = _d2_workflow(name)
     always = re.compile(r"^\s*if:\s*(\$\{\{\s*)?always\(\)\s*(\}\})?\s*(#.*)?$", re.M)
     for block in _step_blocks(text):
@@ -1805,7 +1757,7 @@ def test_b126_no_upload_artifact_step_anywhere_lacks_if_always(name):
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_b118_ledger_writers_share_one_concurrency_group_without_cancellation(name):
-    """B118 (handoff §6.2, D2-R7.4): concurrency group harness-ledger, cancel-in-progress false."""
+    """B118: concurrency group harness-ledger, cancel-in-progress false."""
     text = _d2_workflow(name)
     assert re.search(r"^\s*concurrency:", text, re.M), f"{name}: no concurrency block (B118)"
     assert re.search(r"cancel-in-progress:\s*false\b", text), (
@@ -1819,15 +1771,14 @@ def test_b118_ledger_writers_share_one_concurrency_group_without_cancellation(na
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_r7_6_permissions_are_declared_and_never_write_all(name):
-    """D2-R7.6 (handoff §7.2, RUN-DECISIONS-D2 §15): least privilege — a permissions block
-    exists and `write-all` appears nowhere."""
+    """Least privilege: a permissions block exists and `write-all` appears nowhere."""
     text = _d2_workflow(name)
     assert "write-all" not in text, f"{name}: write-all is not least privilege (D2-R7.6)"
     assert re.search(r"^\s*permissions:", text, re.M), f"{name}: no permissions block (D2-R7.6)"
 
 
 def test_r7_8_pull_request_target_appears_in_no_workflow():
-    """D2-R7.8 (RUN-DECISIONS-D2 §15): `pull_request_target` is absent from every workflow."""
+    """`pull_request_target` is absent from every workflow."""
     assert WORKFLOWS_DIR.is_dir()
     offenders = sorted(
         p.name
@@ -1838,7 +1789,7 @@ def test_r7_8_pull_request_target_appears_in_no_workflow():
 
 
 def test_b129_selftest_runs_the_fake_backend_suite_on_linux_and_windows():
-    """B129 (handoff §7.3, D2-R7.7): selftest.yml triggers on pull_request, matrixes
+    """B129: selftest.yml triggers on pull_request, matrixes
     ubuntu-latest and windows-latest, runs pytest under BACKEND=fake."""
     text = _d2_workflow("selftest.yml")
     assert _has_pull_request_trigger(text), "selftest.yml must run on pull_request (B129)"
@@ -1850,7 +1801,7 @@ def test_b129_selftest_runs_the_fake_backend_suite_on_linux_and_windows():
 
 
 def test_b130_selftest_uses_no_secret_and_is_the_only_pull_request_workflow():
-    """B130 (handoff §7.3, D2-R7.7): selftest.yml references no secret; no other workflow
+    """B130: selftest.yml references no secret; no other workflow
     runs on pull_request."""
     selftest = _d2_workflow("selftest.yml")
     assert "secrets." not in selftest, "selftest.yml must not reference secrets (B130)"
@@ -1865,7 +1816,7 @@ def test_b130_selftest_uses_no_secret_and_is_the_only_pull_request_workflow():
 
 
 def test_b144_heartbeat_references_the_tracking_issue_and_spends_nothing():
-    """B144 (handoff §11.1, D2-R7.10): heartbeat.yml comments on TRACKING_ISSUE weekly and
+    """B144: heartbeat.yml comments on TRACKING_ISSUE weekly and
     never touches the Claude credential."""
     text = _d2_workflow("heartbeat.yml")
     assert "TRACKING_ISSUE" in text, "heartbeat.yml must reference TRACKING_ISSUE (B144)"
@@ -1875,12 +1826,8 @@ def test_b144_heartbeat_references_the_tracking_issue_and_spends_nothing():
 
 
 def test_b145_ops_listens_to_completed_runs_of_the_three_spending_workflows():
-    """B145 (handoff §11.2, D2-R7.9): ops.yml triggers on workflow_run completed and files
-    ops issues under the `kind:` family.
-
-    B145 said `harness:ops`; D4/B264 renamed the families, and the name in the workflow must be
-    the one `LABEL_SPECS` creates or `harness init --labels` and this workflow would each make
-    their own label and the issue list would carry both."""
+    """B145: ops.yml triggers on workflow_run completed and labels its issues with the `kind:`
+    label `LABEL_SPECS` creates, so the issue list never carries two ops labels (B264)."""
     from harness.store.sqlite import KIND_LABELS
 
     text = _d2_workflow("ops.yml")
@@ -1893,14 +1840,12 @@ def test_b145_ops_listens_to_completed_runs_of_the_three_spending_workflows():
 
 
 def test_b146_ops_never_retries_a_step_that_could_have_spent():
-    """B146 (handoff §11.2, D2-R7.9): a red gate is information, not a transient.
+    """B146: ops.yml retries a failed job only when the failing step is on an allow-list of
+    steps that run before anything is spent.
 
-    D65 replaced the `/run|revise|propose|gate/i` denial list with an allow-list, which is the
-    same rule made stronger: `reRunWorkflowRunFailedJobs` re-runs the whole JOB, so what matters
-    is not whether the failing step spent but whether the job had spent by the time it failed.
-    `Commit state/ledger.json` is the case the words missed — it runs after the spend, matches
-    none of them, and a retry there reloads the pre-run ledger and pays for the same model call
-    twice. So this asserts the property rather than the vocabulary.
+    `reRunWorkflowRunFailedJobs` re-runs the whole job, so a step that runs after the spend,
+    such as `Commit state/ledger.json`, is never retried: the retry reloads the pre-run ledger
+    and pays for the same model call twice.
     """
     text = _d2_workflow("ops.yml")
     allow = text.split("RETRYABLE_STEPS = [")[1].split("];")[0]
@@ -1918,22 +1863,19 @@ def test_b146_ops_never_retries_a_step_that_could_have_spent():
         "Upload run artifacts",
     ):
         assert step not in allow, f"ops.yml would retry a job that had already spent: {step!r}"
-    # And B146's own words are still in the file, so the rule stays findable by its name.
+    # The rule's own words stay in the file, so it can be found by name (B146).
     for word in ("revise", "propose", "gate", "spend"):
         assert re.search(word, text, re.I), f"ops.yml must still name {word!r} (B146)"
 
 
 def _fork_slug() -> str:
-    """The live fork, from the committed config: never spelled here, so it cannot rot (D67)."""
+    """The live fork, read from the committed config."""
     data = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
     return str(data["FORK_REPO"])
 
 
-#: B312/D67: how a workflow names the fork. Not only the literal slug -- no workflow spells it,
-#: they all reach it through the `FORK_REPO` repository variable -- but that variable too, in
-#: every form a workflow uses it: `${{ vars.FORK_REPO }}`, `env.FORK_REPO`, `$FORK_REPO`,
-#: `${FORK_REPO}`. A check that knew only the literal inspected no real line and passed on
-#: anything the workflows actually do with the fork (B306 fixed the rot, not this).
+#: How a workflow names the fork: the literal slug, or the `FORK_REPO` variable in any form a
+#: workflow uses it (`${{ vars.FORK_REPO }}`, `env.FORK_REPO`, `$FORK_REPO`, `${FORK_REPO}`).
 _FORK_VARIABLE = re.compile(r"(?:vars|env)\.FORK_REPO|\$\{?FORK_REPO\b")
 
 
@@ -1948,17 +1890,13 @@ def _pushes_github_to(line: str, fork: str) -> bool:
 
 
 def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():
-    """B105 / D2-R7.12 (handoff §4.4, §7): no push whose target is the fork carries a .github
-    path; the fork's default branch only ever moves by fast-forward.
+    """B105: no push whose target is the fork carries a .github path; the fork's default branch
+    only moves by fast-forward.
 
-    B306 / D67: this spelled the fork `brightboost-harness/brightboost`, a repository that does
-    not exist, so the loop never matched. B312/D67: reading the slug from config fixed the rot
-    but not the vacuity -- no workflow spells the fork literally either; they reach it through
-    the `FORK_REPO` variable, so a scan that knew only the slug still inspected no real line.
-    The matcher now counts that variable as naming the fork, this asserts the scan saw at least
-    one line that does, and the matcher is shown to fire on both spellings before it is trusted
-    to stay quiet. Static only: it reads workflow YAML and does NOT cover the runtime push path,
-    which is `gh.push_branch`'s commit walk (B298)."""
+    The fork slug is read from config (B306) and the `FORK_REPO` variable counts as naming it
+    (B312), so the matcher is shown to fire on both spellings and the scan must inspect at
+    least one line that names the fork. Static only: it reads workflow YAML and not the runtime
+    push path, which is `gh.push_branch`'s commit walk (B298)."""
     fork = _fork_slug()
     assert re.fullmatch(r"[\w.-]+/[\w.-]+", fork), f"FORK_REPO is not an owner/name: {fork!r}"
     assert _pushes_github_to(f"git push https://github.com/{fork}.git HEAD:.github/x", fork)
@@ -1983,8 +1921,7 @@ def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():
 
 
 def test_b127_implement_yml_orders_halt_doctor_sync_fork_dispatch_then_work():
-    """B127 / B150 / D2-R7.5 (handoff §7.2, §11.4): HALT check → doctor → sync-fork →
-    dispatch → run, in that order."""
+    """B127 / B150: HALT check → doctor → sync-fork → dispatch → run, in that order."""
     text = _d2_workflow("implement.yml")
     order = [
         ("halt", _first_line_index(text, r"\.harness/HALT")),
@@ -2002,7 +1939,7 @@ def test_b127_implement_yml_orders_halt_doctor_sync_fork_dispatch_then_work():
 
 
 def test_b127_implement_yml_triggers_on_a_proposal_push_and_passes_the_claude_token():
-    """B127 / B128 (handoff §7.2): push to main on proposals/** is the approval trigger,
+    """B127 / B128: a push to main on proposals/** is the approval trigger,
     workflow_dispatch exists, CLAUDE_CODE_OAUTH_TOKEN comes from secrets, the ledger commit
     carries [skip ci] (B115)."""
     text = _d2_workflow("implement.yml")
@@ -2018,8 +1955,7 @@ def test_b127_implement_yml_triggers_on_a_proposal_push_and_passes_the_claude_to
 def _halt_step_block(text: str) -> str | None:
     """The one `steps:` item that logs the repo halt, as its own text.
 
-    The exit code B149 demands belongs to *that* step. Searching the whole workflow for
-    `exit 0` finds, among others, the budget-stop comment in discover.yml's work step.
+    B149's exit code belongs to that step, not to the workflow as a whole.
     """
     blocks = [b for b in _step_blocks(text) if "halted by .harness/HALT" in b]
     return blocks[0] if len(blocks) == 1 else None
@@ -2027,13 +1963,11 @@ def _halt_step_block(text: str) -> str | None:
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatch(name):
-    """B149 / B150 / A43 (handoff §11.4, D2-R6.16): the .harness/HALT check precedes doctor
-    and the dispatcher, logs why, and exits 0.
+    """B149 / B150 / A43: the .harness/HALT check precedes doctor and the dispatcher, logs why,
+    and exits 0.
 
-    The exit-code half is scoped to the halt step's own block and to the lines after the log
-    line, and no other exit code may appear in that step: `re.search(..., re.S)` over the whole
-    file reduced to "the workflow contains `exit 0` somewhere", which a halt step that exited 1
-    would have satisfied."""
+    The exit-code check reads only the halt step's own lines after the log line, and that step
+    may exit no other way."""
     text = _d2_workflow(name)
     halt = _first_line_index(text, r"\.harness/HALT")
     assert halt is not None, f"{name}: no .harness/HALT check (B149)"
@@ -2067,7 +2001,7 @@ def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatc
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_b127_every_spending_workflow_runs_doctor_before_dispatching(name):
-    """B127 (handoff §7.2, RUN-DECISIONS-D2 §15): doctor precedes dispatch in every spending job."""
+    """B127: doctor precedes dispatch in every spending job."""
     text = _d2_workflow(name)
     doctor = _first_line_index(text, r"harness\s+doctor\b")
     dispatch = _first_line_index(text, r"harness\s+dispatch\b")
@@ -2081,29 +2015,42 @@ def test_b127_every_spending_workflow_runs_doctor_before_dispatching(name):
 # --------------------------------------------------------------------------------------
 
 
-def test_b113_branch_protection_is_a_named_human_prerequisite_and_codeowners_covers_governance():
-    """B113: main requires one approving review and no force-push; the harness's own proposal PRs are
-    subject to it. That is a repository setting a human applies (HUMAN.md item 9), and CODEOWNERS
-    keeps the governance files behind review."""
-    human = (REPO_ROOT / "HUMAN.md").read_text(encoding="utf-8").lower()
-    assert "branch protection" in human and "force-push" in human.replace("force push", "force-push")
+def test_b113_branch_protection_is_a_named_human_prerequisite_and_codeowners_covers_governance(
+    tmp_path, write_env
+):
+    """B113: main requires one approving review and no force-push, and the harness's own proposal
+    PRs are subject to it. A person applies that repository setting, so the setup document
+    `harness setup` renders names it; CODEOWNERS keeps the governance files behind review."""
+    from harness.config import load_config
+    from harness.identity import Identity
+
+    class _Account:
+        def get(self, path):
+            return {"login": "jgoetzmann-bot", "id": 424242}
+
+    identity = Identity(load_config(env_path=write_env(tmp_path / ".env"), environ={}), _Account())
+
+    human = identity.render_human_doc(identity.assess(2)).lower()
+
+    assert "branch protection" in human
+    assert "force-push" in human.replace("force push", "force-push")
     owners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     for path in ("/.harness/", "/prompts/", "/.github/", "/harness/gates.py", "/harness/redact.py"):
         assert path in owners, f"CODEOWNERS must cover {path}"
 
 
 def test_b134_operations_doc_states_the_event_driven_versus_polled_asymmetry():
-    """B134: commands on this repository are event-driven; on the product repository they are found by
-    the sweep with latency NOTIFY_POLL_HOURS. docs/OPERATIONS.md must say so, or it reads as a bug."""
+    """B134: commands on this repository are event-driven; on the product repository the sweep
+    finds them on feedback.yml's cron. docs/OPERATIONS.md says so."""
     ops = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
-    assert "NOTIFY_POLL_HOURS" in ops
+    assert "41 */3 * * 1-5" in ops
     lowered = ops.lower()
     assert "event" in lowered and ("poll" in lowered or "sweep" in lowered)
 
 
 def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_ignored():
-    """B149: `.harness/HALT` is a one-line commit on the default branch, so it must not be caught by
-    Delivery 1's `HALT` ignore line (I-6), which is for the local scratch kill file only."""
+    """B149: `.harness/HALT` is committable, while the root `HALT` ignore line (I-6) still
+    covers the local scratch kill file."""
     import subprocess
 
     def ignored(path: str) -> bool:
@@ -2114,13 +2061,11 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 
 
 # ======================================================================================
-# Delivery 3 additions — the implement schedule (RUN-DECISIONS-D3 "Workflows").
-# Appended by the D3 spec-tester (T2); additions only, nothing above was edited.
+# The implement schedule and the knob set.
 # ======================================================================================
 
-# RUN-DECISIONS-D3 "Workflows" bound implement.yml to the weekly Mon 08:00 → Tue 20:00 UTC
-# window. D72 replaced it with the daily 11:00 → 15:00 UTC window — one subscription session a
-# day — and moved discover to 11:07 to open that session. feedback and heartbeat are unchanged.
+# implement.yml runs hourly inside the daily 11:00 → 15:00 UTC window, and discover opens the
+# session at 11:07 (D72). feedback and heartbeat keep their own schedules.
 D72_IMPLEMENT_CRONS = ["23 11-14 * * *"]
 D72_UNCHANGED_CRONS = {
     "feedback.yml": "41 */3 * * 1-5",
@@ -2129,16 +2074,15 @@ D72_UNCHANGED_CRONS = {
 
 
 def test_b215_implement_yml_carries_exactly_the_d72_crons():
-    """D72, superseding RUN-DECISIONS-D3 "Workflows" (the schedule B209–B215's run window and
-    carry loop are built on): implement.yml is scheduled as four hourly passes, 11:23 to 14:23
-    UTC every day, and nothing else."""
+    """B215: implement.yml is scheduled as four hourly passes, 11:23 to 14:23 UTC every day, and
+    nothing else; B209's run window and carry loop run on that schedule (D72)."""
     crons = _cron_values(_d2_workflow("implement.yml"))
     assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 
 
 def test_b215_the_implement_crons_stay_inside_the_run_window():
-    """D72: every scheduled implement run fires every day, and B412 checks each firing against
-    the window `.harness/config.json` actually sets."""
+    """Every scheduled implement run fires every day, and B412 checks each firing against the
+    window `.harness/config.json` sets."""
     crons = _cron_values(_d2_workflow("implement.yml"))
     assert crons, "implement.yml carries no cron"
     for cron in crons:
@@ -2149,9 +2093,8 @@ def test_b215_the_implement_crons_stay_inside_the_run_window():
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b124_d3_every_cron_minute_is_still_non_zero_and_not_a_quarter_hour(name):
-    """B124 (handoff §7.1) re-checked over the D3 schedule: every cron minute in every
-    workflow is a literal, non-zero, non-round integer — no `*`, no `*/n`, no top of the
-    hour, so the harness never joins the crowd GitHub queues at :00."""
+    """B124: every cron minute in every workflow is a literal, non-zero, non-round integer, so
+    the harness never joins the load GitHub queues at the top of the hour."""
     crons = _cron_values(_d2_workflow(name))
     if name == "implement.yml":
         assert crons == D72_IMPLEMENT_CRONS, f"implement.yml must carry the D72 crons: {crons}"
@@ -2165,8 +2108,8 @@ def test_b124_d3_every_cron_minute_is_still_non_zero_and_not_a_quarter_hour(name
 
 
 def test_b215_d72_changed_only_the_discover_and_implement_schedules():
-    """D72: feedback.yml and heartbeat.yml keep their schedules, and the two event-driven
-    workflows are still unscheduled."""
+    """feedback.yml and heartbeat.yml keep their schedules, and ops.yml and selftest.yml carry
+    none."""
     for name, cron in D72_UNCHANGED_CRONS.items():
         assert _cron_values(_d2_workflow(name)) == [cron], name
     for name in ("ops.yml", "selftest.yml"):
@@ -2174,17 +2117,16 @@ def test_b215_d72_changed_only_the_discover_and_implement_schedules():
 
 
 def test_b215_implement_yml_documents_the_dst_drift():
-    """RUN-DECISIONS-D3 "Workflows": the wrap-up cron is pinned to UTC while the weekly reset
-    is quoted in Pacific time, so the drift is commented where the crons are, not inferred."""
+    """The crons are pinned to UTC while the usage reset is quoted in Pacific time, so
+    implement.yml comments the DST drift beside them."""
     text = _d2_workflow("implement.yml")
     lowered = text.lower()
     assert "dst" in lowered or "daylight" in lowered, "the DST drift must be commented"
     assert "utc" in lowered
 
 
-# RUN-DECISIONS-D3 "Config": the knob set in .harness/config.json is the D2 eleven grown by
-# exactly the five D3 adds. The union is over the D2 constant, so it says something: were the
-# five dropped from the shipped file, this set would still demand them.
+# The first seven knobs plus the five usage-governance ones and INBOX_ISSUE. Built as a union,
+# so the set still demands the newer keys if the shipped file drops them.
 D3_CONFIG_JSON_KEYS = tuple(
     sorted(
         set(D2_CONFIG_JSON_KEYS) | set(D3_NEW_CONFIG_JSON_KEYS) | set(D4_NEW_CONFIG_JSON_KEYS)
@@ -2193,10 +2135,8 @@ D3_CONFIG_JSON_KEYS = tuple(
 
 
 def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
-    """B112 / RUN-DECISIONS-D3 "Config" ("Knob keys in .harness/config.json: add the five to
-    the allowed set"): the file is still an object of operational knobs only — the two usage
-    stops, the carry leeway and the two run-window bounds join the D2 eleven, D4 adds
-    `INBOX_ISSUE`, and nothing else does."""
+    """B112: the two usage stops, the carry leeway, the two run-window bounds and `INBOX_ISSUE`
+    join the first seven knobs, nothing else does, and each knob has the right type."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2211,35 +2151,30 @@ def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
 
 
 # ======================================================================================
-# Audit fixes — the workflow half of the dispatcher contract.
-# Appended by FIXER B; additions only, nothing above was edited. Two couplings that live
-# half in Python and half in YAML, and were free to drift because no test read both halves:
+# Two contracts that live half in Python and half in YAML, pinned by reading the workflow text
+# against the source of truth:
 #   * a scheduled job's spend gate vs. the reason strings harness/dispatcher.py returns;
-#   * discover.yml's id harvester vs. what `harness discover` actually prints.
-# Both are pinned here by reading the workflow text against the source of truth.
+#   * discover.yml's id harvester vs. what `harness discover` prints.
 # ======================================================================================
 
 import fnmatch
 
 DISPATCHER_PY = HARNESS_DIR / "dispatcher.py"
 
-# A dispatcher reason that means "capacity is gone". A spending job that proceeds through one
-# of these reaches Governor.authorize, raises BudgetExhausted, exits EXIT_BUDGET=4 and pages an
-# operator for the scheduler working as designed — which DECISIONS D33 forbids in as many words.
+# The dispatcher reasons that mean capacity is gone. A spending job that proceeds through one
+# reaches Governor.authorize, exits EXIT_BUDGET and pages an operator for normal scheduling,
+# which D33 forbids.
 MUST_STOP_REASON_PREFIXES = frozenset({
     "rate limited until ",
     "halted",
-    # The commanded halt (`/harness halt`). It has to be classified separately because the
-    # workflow's `case` matched bare `halted` exactly, so `halted by @someone` would have fallen
-    # through to `proceed=true` and spent a discover call on a harness a human had just stopped.
+    # The commanded halt (`/harness halt`), classified apart so a `case` matching bare `halted`
+    # exactly still stops on it.
     "halted by @",
-    "reserve",
     "weekly usage ",
     "session usage ",
     "carry leeway ",
 })
-# The one stop reason that must NOT stop a cheap, non-window-gated job. D32 puts the run window
-# on implement.yml, whose own three crons keep it; discovery is one triage call on a Sunday.
+# The one stop reason that must not stop discovery, which the run window does not gate (D32).
 MAY_PROCEED_REASON_PREFIXES = frozenset({
     "outside run window (",
 })
@@ -2284,11 +2219,9 @@ def _reason_prefix_and_sample(node: ast.AST) -> tuple[str, str] | None:
     A plain string is its own prefix and sample; an f-string's prefix is the constant text
     before its first placeholder, and the sample fills every placeholder with ``1``.
 
-    Concatenation is how a reason gains detail without losing its token -- B295 appends the
-    subscription reading to ``reserve`` so an operator can see both bounds at once. The left
-    operand is the prefix, and the sample carries a suffix so a workflow matching the token
-    exactly rather than as a prefix fails here. It has done: ``halted`` was once a bare `case`
-    pattern, and ``halted by @someone`` fell straight through it to proceed=true.
+    A concatenation's prefix is its left operand -- B295 appends the subscription reading to
+    ``reserve`` -- and its sample carries a suffix, so a workflow that matches the token exactly
+    rather than as a prefix fails here.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value, node.value
@@ -2334,9 +2267,9 @@ def _plan_calls(tree: ast.AST) -> list[ast.Call]:
 def _dispatcher_reasons() -> dict[str, str]:
     """Every reason literal harness/dispatcher.py can hand a caller, as prefix -> sample.
 
-    Read from the source, not from a hand-copied list: a new reason string appears here the
-    moment it is written, and the tests below then demand that a human classify it as stopping
-    or not. The three sites are ``usage_stop``'s returns, ``_window_reason``'s return, and the
+    Read from the source, so a new reason string appears here as soon as it is written and the
+    tests below demand that somebody classify it. The three sites are ``usage_stop``'s returns,
+    ``_window_reason``'s return, and the
     literal ``reason=`` keywords of the ``Plan(...)`` constructions in ``plan``.
     """
     tree = _dispatcher_tree()
@@ -2411,10 +2344,8 @@ def _case_body_for(block: str, sample: str) -> str:
 
 
 def test_dispatcher_reasons_are_all_classified_as_stopping_or_not():
-    """Every reason literal in harness/dispatcher.py is either one that must stop a spending
-    job or one that explicitly may not. A new reason string fails here until a human decides
-    which it is — that is the whole point: Delivery 3 added four reasons nobody classified,
-    and discover.yml's gate went on matching the Delivery 2 three."""
+    """Every reason literal in harness/dispatcher.py is classified as stopping a spending job or
+    explicitly not, and a new reason fails here until somebody classifies it."""
     prefixes = set(_dispatcher_reasons())
     classified = MUST_STOP_REASON_PREFIXES | MAY_PROCEED_REASON_PREFIXES
     unclassified = sorted(prefixes - classified)
@@ -2431,10 +2362,8 @@ def test_dispatcher_reasons_are_all_classified_as_stopping_or_not():
 
 
 def test_discover_yml_spend_gate_stops_on_every_usage_reason():
-    """discover.yml's `case "$reason"` predated D3's usage stops, so a normal weekly usage stop
-    fell through to `proceed=true`, spent a discover call, hit BudgetExhausted and paged an
-    operator (D33). Every must-stop reason now sets proceed=false, evaluated the way sh
-    evaluates it: first matching clause wins."""
+    """Every must-stop reason sets proceed=false in discover.yml's `case "$reason"`, evaluated
+    the way sh evaluates it: the first matching clause wins (D33)."""
     reasons = _dispatcher_reasons()
     blocks = _case_blocks(_d2_workflow("discover.yml"))
     assert len(blocks) == 1, 'discover.yml must gate spend on exactly one `case "$reason"`'
@@ -2448,9 +2377,8 @@ def test_discover_yml_spend_gate_stops_on_every_usage_reason():
 
 
 def test_discover_yml_spend_gate_does_not_stop_on_the_run_window():
-    """The other half: the run window bounds implement.yml through its own crons (D32).
-    Discovery is a single cheap triage call and is deliberately not window-gated, so
-    "outside run window (...)" — which discover's Sunday cron always sees — must proceed."""
+    """The run window bounds implement.yml through its own crons (D32); discovery is a single
+    triage call and is not window-gated, so "outside run window (...)" must proceed."""
     reasons = _dispatcher_reasons()
     block = _case_blocks(_d2_workflow("discover.yml"))[0]
     for prefix in sorted(MAY_PROCEED_REASON_PREFIXES):
@@ -2461,21 +2389,18 @@ def test_discover_yml_spend_gate_does_not_stop_on_the_run_window():
         assert "proceed=false" not in body
 
 
-def test_discover_yml_spend_gate_proceeds_on_the_ordinary_budget_reason():
-    """The default clause still lets the ordinary B211 plan reason through, so the fix cannot
-    have turned the gate into a permanent stop."""
+def test_discover_yml_spend_gate_proceeds_on_the_ordinary_slots_reason():
+    """The default clause lets the ordinary B211 plan reason through."""
     block = _case_blocks(_d2_workflow("discover.yml"))[0]
-    ordinary = "budget 61% remaining, 1 of max 1 slots; weekly 39%, session 7%"
+    ordinary = "1 of max 1 slots; weekly 39%, session 7%"
     assert "proceed=true" in _case_body_for(block, ordinary)
 
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_no_spending_workflow_gates_on_reason_with_an_incomplete_stop_set(name):
-    """Whichever spending workflow chooses to gate on the dispatcher's reason must gate on the
-    whole stop set. implement.yml is structurally immune (it consumes `.start`, which is empty
-    under every stop) and feedback.yml deliberately has no gate at all — its keyword sweep and
-    its reconciliation of stranded items must keep working while capacity is gone — so this
-    test binds discover.yml today and any workflow that grows a reason gate later."""
+    """A spending workflow that gates on the dispatcher's reason gates on the whole stop set.
+    implement.yml consumes `.start`, which is empty under every stop, and feedback.yml has no
+    gate, so its keyword sweep and its reconciliation keep working while capacity is gone."""
     reasons = _dispatcher_reasons()
     for block in _case_blocks(_d2_workflow(name)):
         for prefix in sorted(MUST_STOP_REASON_PREFIXES):
@@ -2514,9 +2439,8 @@ def _discover_script(text: str) -> str | None:
 
 
 def test_cmd_discover_json_payload_is_the_created_key():
-    """The Python half of the contract, read from harness/__main__.py: with the global --json
-    flag `discover` prints one object whose only key is "created"; without it, one bare id per
-    line. The harvester below is written against the first form and nothing else."""
+    """With the global --json flag `discover` prints one object whose only key is "created";
+    without it, one bare id per line. The harvester below reads the first form."""
     tree = ast.parse((HARNESS_DIR / "__main__.py").read_text(encoding="utf-8"))
     func = next(
         node for node in ast.walk(tree)
@@ -2529,11 +2453,8 @@ def test_cmd_discover_json_payload_is_the_created_key():
 
 
 def test_discover_yml_asks_for_json_and_harvests_the_created_ids():
-    """The step used to run `harness discover --mode triage` (bare ids, one per line) and then
-    parse runs/discover.out as JSON, so the harvest was always empty and the only automatic
-    discovered→proposed path in the system was dead. The two halves must agree: the global
-    --json flag precedes the subcommand, and the reader takes `.created` out of the very file
-    the invocation tees into."""
+    """The two halves agree: the global --json flag precedes the subcommand, and the jq reader
+    takes `.created` out of the file the invocation tees into."""
     script = _discover_script(_d2_workflow("discover.yml"))
     assert script is not None, "discover.yml must invoke `harness discover`"
     lines = _shell_lines(script)
@@ -2554,9 +2475,8 @@ def test_discover_yml_asks_for_json_and_harvests_the_created_ids():
 
 
 def test_discover_yml_no_longer_carries_the_dead_json_guessing_parser():
-    """The replaced parser guessed at five shapes the CLI never emits and fell back to
-    `harness status --json`, which carries queue counts and no item ids at all. None of it may
-    come back: a reader that guesses is how the two halves drifted apart unnoticed."""
+    """The step carries no parser that guesses at output shapes, and no fallback to
+    `harness status --json`, which has queue counts and no item ids."""
     script = _discover_script(_d2_workflow("discover.yml"))
     assert script is not None
     for dead in ("pick_ids", "json.loads", "harness status"):
@@ -2565,8 +2485,7 @@ def test_discover_yml_no_longer_carries_the_dead_json_guessing_parser():
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_no_workflow_invokes_discover_without_the_global_json_flag(name):
-    """Whoever adds the next `harness discover` call to a workflow gets the same contract: ask
-    for JSON, or do not parse the output as JSON."""
+    """Every `harness discover` call in a workflow passes the global --json flag."""
     for script in _run_scripts(_d2_workflow(name)):
         for line in _shell_lines(script):
             match = _discover_call(line)
@@ -2592,9 +2511,8 @@ def _plan_to_json_keys() -> list[str]:
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
 def test_every_jq_key_read_off_the_dispatch_plan_exists_in_plan_to_json(name):
-    """The same agreement, for the other machine-readable output a workflow consumes:
-    `harness dispatch` always prints Plan.to_json (no --json flag involved), so every key
-    implement.yml and discover.yml pull out of it must be one Plan actually writes."""
+    """`harness dispatch` always prints Plan.to_json, with no --json flag involved, so every key
+    implement.yml and discover.yml pull out of the plan is one Plan writes."""
     keys = set(_plan_to_json_keys())
     referenced: set[str] = set()
     for script in _run_scripts(_d2_workflow(name)):
@@ -2611,9 +2529,7 @@ def test_every_jq_key_read_off_the_dispatch_plan_exists_in_plan_to_json(name):
 
 def test_implement_yml_takes_its_items_from_the_plans_start_list():
     """implement.yml needs no reason gate because it consumes `.start`, and every dispatcher
-    stop returns `Plan(start=(), ...)` — an empty list means the run step finds nothing to do
-    and exits 0. Pinning both halves is what makes the absence of a gate in implement.yml a
-    decision rather than an oversight."""
+    stop returns `Plan(start=(), ...)`, so the run step finds nothing to do and exits 0."""
     text = _d2_workflow("implement.yml")
     assert re.search(r"jq\s+-r\s+'\.start\[\]'", text), (
         "implement.yml must harvest its items from the plan's .start list"
@@ -2651,12 +2567,9 @@ def _exit_code_constant(name: str) -> int:
 
 
 def test_discover_yml_treats_a_budget_exit_as_a_normal_outcome():
-    """The reason gate closes the common path, but capacity can also run out between the
-    dispatch step and the model call, or partway through the propose loop — and then the CLI
-    exits EXIT_BUDGET, `set -e` fails the step, ops.yml opens an issue whose step name contains
-    "propose", and an operator is paged for the scheduler working as designed (D33, B120: a
-    limit is a normal outcome). Both spending commands guard on that code, and the number in
-    the workflow is the number harness/__main__.py actually returns."""
+    """Capacity can run out after the dispatch step, and a limit is a normal outcome (B120), so
+    both spending commands guard on EXIT_BUDGET, using the number harness/__main__.py
+    returns."""
     budget = _exit_code_constant("EXIT_BUDGET")
     script = _discover_script(_d2_workflow("discover.yml"))
     assert script is not None
@@ -2684,9 +2597,9 @@ def test_discover_yml_treats_a_budget_exit_as_a_normal_outcome():
 
 
 def test_discover_yml_still_fails_the_run_on_a_real_error():
-    """The budget guard must not swallow everything: any other non-zero exit from `harness
-    discover` still fails the step, and a `harness propose` that fails for a non-budget reason
-    still sets `failed`, so a genuinely broken run is still red and still reaches ops.yml."""
+    """Any other non-zero exit from `harness discover` fails the step, and a `harness propose`
+    that fails for a non-budget reason sets `failed`, so a broken run is red and reaches
+    ops.yml."""
     script = _discover_script(_d2_workflow("discover.yml"))
     lines = _shell_lines(script)
     assert 'exit "${status}"' in lines, "a non-budget discover failure must fail the step"
@@ -2700,8 +2613,8 @@ def test_discover_yml_still_fails_the_run_on_a_real_error():
 
 
 def test_b217_a_crlf_checkout_computes_the_same_pin(tmp_path):
-    """B217: `core.autocrlf` is true by default on Git for Windows, and actions/checkout
-    inherits it. Hashing raw bytes failed the pin closed on every Windows checkout."""
+    """B217: `core.autocrlf` is true by default on Git for Windows and actions/checkout inherits
+    it, so the pin is computed over normalised line endings."""
     from harness import verify_pin
 
     lf = _pin_repo(tmp_path / "lf")
@@ -2748,16 +2661,13 @@ def test_b217_the_committed_pin_matches_this_working_tree():
 
 
 def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
-    """`BACKEND=fake` is what README.md and LOCAL-MODE.md tell a new operator to run, and the
-    fake runner answers by reading `tests/fixtures/runner/<stage>.json`. A stage with no fixture
-    is a stage that cannot be tried without spending real money -- which is exactly the audience
-    that most needs to try it. Delivery 4 shipped `ask` and `audit` without one; this is what
-    should have caught that.
+    """`BACKEND=fake`, which README.md and LOCAL-MODE.md tell a new operator to run, answers
+    from `tests/fixtures/runner/<stage>.json`, so every stage that calls a model has a fixture
+    and can be tried without a credential.
     """
     from harness.runner.fake import DEFAULT_FIXTURES_DIR
 
-    # Every stage the fake runner can be asked for. `deliver` and `package`'s own model call
-    # goes through the `package` fixture; `discover`, `propose` and `implement` are D1's.
+    # Every stage the fake runner can be asked for; `deliver` uses the `package` fixture.
     reachable = {
         "discover", "propose", "implement", "package", "revise", "decompose",
         "diagnose_gate_failure", "ask", "audit",
@@ -2769,3 +2679,86 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
         "no fake fixture for: " + ", ".join(missing) + " — `BACKEND=fake` cannot reach "
         "those stages, so nobody can try them without a real credential"
     )
+
+
+# --------------------------------------------------------------------------------------
+# D74 - no dollar machinery survives anywhere
+# --------------------------------------------------------------------------------------
+
+#: Two places a retired name still belongs under `harness/`: the tuple that keeps an existing
+#: .env and .harness/config.json loading after D74 removed the keys it names, and the one line
+#: that drops a pre-D74 ledger's spend field the next time the ledger is saved.
+RETIRED_KEYS_TUPLE = re.compile(r"RETIRED_KEYS[^=]*=\s*\([^)]*\)", re.S)
+LEDGER_SPEND_DROP = re.compile(r'window\.pop\("spent_usd", None\)')
+
+DOLLAR_TOKENS = (
+    "max-budget-usd", "max_budget_usd", "cost_usd", "spent_usd", "static_usd", "total_cost_usd",
+)
+
+
+def test_B419_no_module_under_harness_computes_or_prints_a_dollar_figure():
+    """B419: D74 removed the weekly cap, the per-call cap and every estimate, so no source
+    under harness/ names one. The two exemptions are `config.RETIRED_KEYS` and the ledger's
+    one-line drop of a pre-D74 `spent_usd`; D74 names both, and each is exempt only in the
+    file it belongs to."""
+    offenders: list[str] = []
+    for path in _harness_sources():
+        text = _read(path)
+        if path.name == "config.py":
+            text = RETIRED_KEYS_TUPLE.sub("", text)
+        if path.name == "ledger.py":
+            text = LEDGER_SPEND_DROP.sub("", text)
+        lowered = text.lower()
+        for token in DOLLAR_TOKENS:
+            if token in lowered:
+                offenders.append(f"{_rel(path)}: {token}")
+        if re.search(r"\busd\b", lowered):
+            offenders.append(f"{_rel(path)}: usd")
+        if "dollar" in lowered:
+            offenders.append(f"{_rel(path)}: dollar")
+        if re.search(r"\$\d", text):
+            offenders.append(f"{_rel(path)}: a $ before a digit")
+    assert offenders == [], "dollar machinery under harness/: " + ", ".join(sorted(offenders))
+
+
+def test_B426_no_workflow_or_local_script_reads_a_dollar_figure():
+    """B426: the workflows and the host-side scripts read the ledger directly, so a field D74
+    removed from it must not still be read from one of them. Every workflow and every
+    PowerShell script is scanned, not a chosen few, so a new reader cannot arrive unnoticed."""
+    scanned = (
+        sorted(WORKFLOWS_DIR.glob("*.yml"))
+        + sorted(REPO_ROOT.glob("*.ps1"))
+        + sorted((REPO_ROOT / "local").glob("*.ps1"))
+    )
+    assert len(scanned) >= 11, f"expected every workflow and both script sets: {scanned}"
+    for path in scanned:
+        lowered = path.read_text(encoding="utf-8").lower()
+        for token in DOLLAR_TOKENS + ("weekly_cap_usd", "reserve_pct", "get-spend"):
+            assert token not in lowered, f"{_rel(path)} still reads {token}"
+    assert "reserve" not in _case_blocks(_d2_workflow("discover.yml"))[0]
+
+    # The host push still reads the token and the fork through this helper (D67).
+    watchdog = (REPO_ROOT / "local" / "watchdog-bb.ps1").read_text(encoding="utf-8")
+    assert "Read-EnvValue" in watchdog
+    run_ps1 = (REPO_ROOT / "local" / "run.ps1").read_text(encoding="utf-8")
+    assert "MAX_CONCURRENT_CLONES" not in run_ps1
+
+
+def test_B429_the_shipped_config_files_carry_no_retired_key():
+    """B429: the two committed configuration files name only live keys. `ANTHROPIC_API_KEY`
+    stays known, redacted and stripped from the runner's environment; its example line goes."""
+    from harness import config as config_mod
+    from harness.runner import cli as runner_cli
+
+    env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    shipped = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    for key in config_mod.RETIRED_KEYS:
+        assert key not in env_example, f".env.example still carries {key}"
+        assert key not in shipped, f".harness/config.json still carries {key}"
+
+    assert "ANTHROPIC_API_KEY=" not in env_example
+    keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
+    assert len(keys) == 41, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
+    assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
+    assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS

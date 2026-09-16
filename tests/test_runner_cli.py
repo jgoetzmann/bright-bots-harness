@@ -1,4 +1,4 @@
-"""B24-B30. HARNESS-SPEC section 5.4 and RUN-DECISIONS "Runner".
+"""B24-B30: the CLI runner.
 
 argv construction and result parsing only. No `claude` process is ever started:
 every runner here is built with the injectable ``spawn`` kwarg, which records
@@ -33,7 +33,7 @@ class SpawnRecorder:
         self.calls: list[dict] = []
 
     def __call__(self, *args, **kwargs) -> subprocess.CompletedProcess:
-        # Section 5.4.3 fixes "argv as a list" but not whether it is passed
+        # The contract fixes "argv as a list" but not whether it is passed
         # positionally or as args=; accept either.
         raw_argv = args[0] if args else kwargs.get("args")
         argv = list(raw_argv)
@@ -117,7 +117,7 @@ def test_b24_get_runner_returns_the_fake_runner_for_backend_fake(sample_config):
 
 @pytest.mark.parametrize("backend", ["api", "", "CLI", "claude", "http"])
 def test_b24_an_unknown_backend_raises_config_error(sample_config, backend):
-    """B24: only two backends ship in Delivery 1; anything else is a ConfigError."""
+    """B24: only two backends ship; anything else is a ConfigError."""
     config = dataclasses.replace(sample_config, backend=backend)
 
     with pytest.raises(ConfigError):
@@ -125,7 +125,7 @@ def test_b24_an_unknown_backend_raises_config_error(sample_config, backend):
 
 
 # --------------------------------------------------------------------------
-# B25 - argv is exactly section 5.4.3, in that order
+# B25 - argv is exactly this, in that order
 # --------------------------------------------------------------------------
 
 
@@ -248,7 +248,7 @@ def test_b25_the_claude_binary_is_injectable(tmp_path):
 
 
 def test_b25_the_subprocess_runs_in_the_request_cwd_with_the_request_timeout(tmp_path):
-    """B25: section 5.4.3 fixes cwd=request.cwd, timeout=request.timeout_s, shell=False."""
+    """B25: cwd=request.cwd, timeout=request.timeout_s, shell=False."""
     spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
     runner = ClaudeCliRunner(spawn=spawn)
     clone = tmp_path / "clone"
@@ -362,7 +362,7 @@ def test_b27_the_permission_mode_is_accept_edits(tmp_path):
 
 
 def test_b28_a_well_formed_result_populates_every_field(tmp_path):
-    """B28: result/num_turns/total_cost_usd/duration_ms/session_id map onto RunResult."""
+    """B28: result/num_turns/duration_ms/session_id map onto RunResult."""
     payload = {
         "result": "the patch is ready",
         "num_turns": 7,
@@ -380,7 +380,6 @@ def test_b28_a_well_formed_result_populates_every_field(tmp_path):
     assert result.ok is True
     assert result.text == "the patch is ready"
     assert result.turns == 7
-    assert result.cost_usd == pytest.approx(0.4275)
     assert result.duration_ms == 18234
     assert result.session_id == "01JABCDEF"
     assert result.exit_code == 0
@@ -388,7 +387,7 @@ def test_b28_a_well_formed_result_populates_every_field(tmp_path):
 
 
 def test_b28_the_text_key_is_accepted_as_well_as_result(tmp_path):
-    """B28: section 5.4.3 names result/text as alternatives for the body."""
+    """B28: result and text are alternatives for the body."""
     spawn = SpawnRecorder(stdout=json.dumps({"text": "from the text key", "num_turns": 2}))
     runner = ClaudeCliRunner(spawn=spawn)
 
@@ -398,20 +397,8 @@ def test_b28_the_text_key_is_accepted_as_well_as_result(tmp_path):
     assert result.turns == 2
 
 
-def test_b28_allowance_pct_is_none_because_the_cli_never_reports_it(tmp_path):
-    """B28: allowance_pct is not a CLI JSON field, so it is always None (RUN-DECISIONS)."""
-    spawn = SpawnRecorder(
-        stdout=json.dumps({"result": "ok", "num_turns": 1, "allowance_pct": 4.0})
-    )
-    runner = ClaudeCliRunner(spawn=spawn)
-
-    result = runner.run(minimal_request(tmp_path))
-
-    assert result.allowance_pct is None
-
-
 def test_b28_the_transcript_carries_prompt_reply_and_raw_json(tmp_path):
-    """B28: RUN-DECISIONS fixes the CLI transcript as user, assistant, raw."""
+    """B28: the CLI transcript is user, assistant, raw."""
     payload = {"result": "the patch is ready", "num_turns": 7}
     spawn = SpawnRecorder(stdout=json.dumps(payload))
     runner = ClaudeCliRunner(spawn=spawn)
@@ -426,7 +413,7 @@ def test_b28_the_transcript_carries_prompt_reply_and_raw_json(tmp_path):
 
 
 def test_b28_run_result_is_frozen(tmp_path):
-    """B28: RunResult is a frozen dataclass (section 5.4.1)."""
+    """B28: RunResult is a frozen dataclass."""
     spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
     runner = ClaudeCliRunner(spawn=spawn)
 
@@ -451,10 +438,8 @@ def test_b29_missing_optional_fields_become_none(tmp_path):
     assert result.ok is True
     assert result.text == "done"
     assert result.turns is None
-    assert result.cost_usd is None
     assert result.duration_ms is None
     assert result.session_id is None
-    assert result.allowance_pct is None
     assert result.exit_code == 0
 
 
@@ -462,7 +447,6 @@ def test_b29_missing_optional_fields_become_none(tmp_path):
     ("payload", "field"),
     [
         ({"result": "done", "num_turns": None}, "turns"),
-        ({"result": "done", "total_cost_usd": None}, "cost_usd"),
         ({"result": "done", "duration_ms": None}, "duration_ms"),
         ({"result": "done", "session_id": None}, "session_id"),
     ],
@@ -565,7 +549,7 @@ def test_b30_unparseable_stdout_is_not_ok(tmp_path, stdout):
 
 
 def test_b30_is_error_true_in_a_parsed_result_is_not_ok(tmp_path):
-    """B30: the model reporting its own failure is a failed run (RUN-DECISIONS)."""
+    """B30: the model reporting its own failure is a failed run."""
     spawn = SpawnRecorder(
         returncode=0, stdout=json.dumps({"result": "I could not do it", "is_error": True})
     )
@@ -590,18 +574,13 @@ def test_b30_a_non_zero_exit_with_parseable_json_is_still_not_ok(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Delivery 2 — B119 (handoff §6.3) and RUN-DECISIONS-D2 §1, §12: --max-budget-usd, rate-limit
-# classification, RunResult.reset_at, runner.base.is_rate_limited, FakeRunner replay.
-# Appended by the D2 spec-tester (T3); additions only (D2-R12.3).
+# B119: rate-limit classification, RunResult.reset_at, runner.base.is_rate_limited,
+# FakeRunner replay.
 # --------------------------------------------------------------------------
 
 RESET_AT = "2026-09-02T18:00:00Z"
 USAGE_LIMIT_STDERR = "You've hit your usage limit. Resets at 2026-09-02T18:00:00Z\n"
 D2_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "runner"
-
-
-def budgeted_request(cwd: Path, budget: float | None) -> RunRequest:
-    return dataclasses.replace(minimal_request(cwd), max_budget_usd=budget)
 
 
 def run_result(**overrides) -> RunResult:
@@ -610,8 +589,6 @@ def run_result(**overrides) -> RunResult:
         "ok": True,
         "text": "done",
         "turns": 1,
-        "cost_usd": 0.01,
-        "allowance_pct": None,
         "duration_ms": 10,
         "session_id": "s",
         "exit_code": 0,
@@ -624,13 +601,11 @@ def run_result(**overrides) -> RunResult:
 
 
 def rate_limited_payload(**overrides) -> dict:
-    """RUN-DECISIONS-D2 §12: a FakeRunner fixture carrying "rate_limited": true."""
+    """A FakeRunner fixture carrying "rate_limited": true."""
     payload = {
         "ok": False,
         "text": "",
         "turns": 0,
-        "cost_usd": 0.0,
-        "allowance_pct": None,
         "duration_ms": 12,
         "session_id": None,
         "exit_code": 1,
@@ -657,96 +632,48 @@ def implement_request(cwd: Path) -> RunRequest:
 
 
 # --------------------------------------------------------------------------
-# B119 - --max-budget-usd sits right after --max-turns, and only when requested
+# B418 - argv never carries --max-budget-usd
 # --------------------------------------------------------------------------
 
 
-def test_b119_max_budget_usd_follows_max_turns_in_argv(tmp_path):
-    """B119 / RUN-DECISIONS-D2 §12: `--max-budget-usd 3.0` immediately after `--max-turns 30`."""
-    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
-    runner = ClaudeCliRunner(spawn=spawn)
+def test_B418_argv_never_carries_max_budget_usd(tmp_path):
+    """B418: no dollar cap reaches the CLI, so `--max-turns` is followed straight by
+    `--permission-mode` in the minimal and the maximal shape alike, streaming or not."""
+    extra_a = tmp_path / "shared"
+    extra_b = tmp_path / "docs"
+    minimal = SpawnRecorder(stdout=json_stdout(result="ok"))
+    ClaudeCliRunner(spawn=minimal).run(minimal_request(tmp_path))
+    maximal = SpawnRecorder(stdout=stream_stdout(stream_result()))
+    ClaudeCliRunner(spawn=maximal, capture_usage=True).run(
+        maximal_request(tmp_path, extra_a, extra_b)
+    )
 
-    runner.run(budgeted_request(tmp_path, 3.0))
-
-    index = spawn.argv.index("--max-turns")
-    assert spawn.argv[index : index + 4] == ["--max-turns", "30", "--max-budget-usd", "3.0"]
-    assert spawn.argv.count("--max-budget-usd") == 1
-
-
-def test_b119_max_budget_usd_is_rendered_as_a_decimal_string(tmp_path):
-    """B119: the amount reaches claude as text, e.g. 2.5 → "2.5"."""
-    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
-    runner = ClaudeCliRunner(spawn=spawn)
-
-    runner.run(budgeted_request(tmp_path, 2.5))
-
-    index = spawn.argv.index("--max-budget-usd")
-    assert spawn.argv[index + 1] == "2.5"
-    assert all(isinstance(entry, str) for entry in spawn.argv)
-
-
-def test_b119_the_rest_of_argv_is_unchanged_by_the_budget_flag(tmp_path):
-    """B119 / B25: the flag is inserted, not substituted — everything else stays in order."""
-    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
-    runner = ClaudeCliRunner(spawn=spawn)
-
-    runner.run(budgeted_request(tmp_path, 3.0))
-
-    assert spawn.argv == [
+    assert minimal.argv == [
         "claude",
         "--print",
         "--output-format",
         "json",
         "--max-turns",
         "30",
-        "--max-budget-usd",
-        "3.0",
         "--permission-mode",
         "acceptEdits",
         "--allowed-tools",
         "Read,Glob,Grep",
     ]
-
-
-def test_b119_max_budget_usd_flag_is_omitted_when_none(tmp_path):
-    """B119 / RUN-DECISIONS-D2 §12: max_budget_usd=None → no flag, no "None" in argv."""
-    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
-    runner = ClaudeCliRunner(spawn=spawn)
-
-    runner.run(budgeted_request(tmp_path, None))
-
-    assert "--max-budget-usd" not in spawn.argv
-    assert "None" not in spawn.argv
-
-
-def test_b119_a_request_that_never_set_the_budget_omits_the_flag(tmp_path):
-    """B119: the D1 request shape (no budget) still produces the D1 argv."""
-    spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
-    runner = ClaudeCliRunner(spawn=spawn)
-
-    runner.run(minimal_request(tmp_path))
-
-    assert "--max-budget-usd" not in spawn.argv
-
-
-def test_b119_run_request_gains_max_budget_usd_as_its_last_field_defaulting_to_none(tmp_path):
-    """RUN-DECISIONS-D2 §12: RunRequest.max_budget_usd defaults to None and is the last field
-    Delivery 2 defines. B218 appends ``deny_read`` after it, exactly as Delivery 3 appended
-    ``usage`` after ``RunResult.reset_at``; what this pins is its position among the D2 fields
-    and its default."""
-    names = [f.name for f in dataclasses.fields(RunRequest)]
-    budget = dataclasses.fields(RunRequest)[names.index("max_budget_usd")]
-
-    assert names[-4:] == ["max_budget_usd", "deny_read", "model", "effort"]
-    assert budget.default is None
-    assert minimal_request(tmp_path).max_budget_usd is None
+    for argv in (minimal.argv, maximal.argv):
+        assert "--max-budget-usd" not in argv
+        assert argv[argv.index("--max-turns") + 2] == "--permission-mode"
+    request_names = [f.name for f in dataclasses.fields(RunRequest)]
+    assert request_names[-3:] == ["deny_read", "model", "effort"]
+    assert "max_budget_usd" not in request_names
+    result_names = [f.name for f in dataclasses.fields(RunResult)]
+    assert "cost_usd" not in result_names
+    assert "allowance_pct" not in result_names
 
 
 def test_b119_run_result_gains_reset_at_as_its_last_field_defaulting_to_none(tmp_path):
-    """RUN-DECISIONS-D2 §12: RunResult.reset_at defaults to None and is the last field the
-    Delivery 2 runner defines. Delivery 3 appends ``usage`` after it (RUN-DECISIONS-D3
-    "Runner"), so reset_at is now second from last; its position relative to the D2 fields
-    and its default are what this pins."""
+    """RunResult.reset_at defaults to None. ``usage`` follows it, so reset_at is second from
+    last; its position relative to the fields before it and its default are what this pins."""
     names = [f.name for f in dataclasses.fields(RunResult)]
     reset_at = next(f for f in dataclasses.fields(RunResult) if f.name == "reset_at")
 
@@ -774,7 +701,7 @@ def test_b119_a_successful_run_has_no_reset_at_and_is_not_rate_limited(tmp_path)
 
 
 def test_b119_usage_limit_on_stderr_is_classified_and_the_reset_extracted(tmp_path):
-    """B119 (handoff §6.3): non-zero exit + the CLI's usage-limit signature → ok=False,
+    """B119: non-zero exit + the CLI's usage-limit signature → ok=False,
     reset_at = the ISO timestamp, is_rate_limited() True — and no exception."""
     from harness.runner.base import is_rate_limited
 
@@ -791,7 +718,7 @@ def test_b119_usage_limit_on_stderr_is_classified_and_the_reset_extracted(tmp_pa
 
 
 def test_b119_usage_limit_on_stdout_is_also_classified(tmp_path):
-    """B119 / RUN-DECISIONS-D2 §12: the signature is matched on stderr or stdout."""
+    """B119: the signature is matched on stderr or stdout."""
     from harness.runner.base import is_rate_limited
 
     spawn = SpawnRecorder(returncode=1, stdout=USAGE_LIMIT_STDERR, stderr="")
@@ -815,7 +742,7 @@ def test_b119_usage_limit_on_stdout_is_also_classified(tmp_path):
     ],
 )
 def test_b119_a_limit_phrase_without_a_timestamp_is_rate_limited_with_no_reset(tmp_path, stderr):
-    """B119 / RUN-DECISIONS-D2 §12: the pattern is case-insensitive; without a reset time the
+    """B119: the pattern is case-insensitive; without a reset time the
     result is still rate-limited, reset_at None."""
     from harness.runner.base import is_rate_limited
 
@@ -837,7 +764,7 @@ def test_b119_a_limit_phrase_without_a_timestamp_is_rate_limited_with_no_reset(t
     ],
 )
 def test_b119_a_relative_reset_becomes_an_iso_duration(tmp_path, phrase, expected):
-    """B119 / RUN-DECISIONS-D2 §12: `resets in N (minutes|hours)` → "+PT30M"-style duration;
+    """B119: `resets in N (minutes|hours)` → "+PT30M"-style duration;
     the runner has no clock, so the stage resolves it."""
     from harness.runner.base import is_rate_limited
 
@@ -898,7 +825,7 @@ def test_b119_the_error_tail_is_still_redacted_when_rate_limited(tmp_path):
 
 
 def test_b119_rate_limited_error_carries_reset_at():
-    """RUN-DECISIONS-D2 §1: RateLimited(msg, reset_at=None) is a HarnessError with reset_at."""
+    """RateLimited(msg, reset_at=None) is a HarnessError with reset_at."""
     from harness.errors import HarnessError, RateLimited
 
     assert issubclass(RateLimited, HarnessError)
@@ -907,7 +834,7 @@ def test_b119_rate_limited_error_carries_reset_at():
 
 
 def test_b119_is_rate_limited_reads_reset_at_or_the_error_text():
-    """RUN-DECISIONS-D2 §12: is_rate_limited(result) is pure — True when reset_at is set or the
+    """is_rate_limited(result) is pure — True when reset_at is set or the
     error text carries the signature; False for a plain failure or a success."""
     from harness.runner.base import is_rate_limited
 
@@ -920,12 +847,12 @@ def test_b119_is_rate_limited_reads_reset_at_or_the_error_text():
 
 
 # --------------------------------------------------------------------------
-# B119 / RUN-DECISIONS-D2 §12 - the fake runner replays a rate-limit outcome
+# B119: the fake runner replays a rate-limit outcome
 # --------------------------------------------------------------------------
 
 
 def test_b119_fake_runner_replays_a_rate_limited_fixture(tmp_path):
-    """RUN-DECISIONS-D2 §12: a fixture with "rate_limited": true → ok=False, reset_at copied."""
+    """A fixture with "rate_limited": true → ok=False, reset_at copied."""
     from harness.runner.base import is_rate_limited
 
     runner = fake_runner_with(tmp_path, "implement", rate_limited_payload())
@@ -938,7 +865,7 @@ def test_b119_fake_runner_replays_a_rate_limited_fixture(tmp_path):
 
 
 def test_b119_fake_runner_rate_limited_fixture_without_a_reset_has_reset_at_none(tmp_path):
-    """RUN-DECISIONS-D2 §12: the flag alone marks the outcome; reset_at is copied as given."""
+    """The flag alone marks the outcome; reset_at is copied as given."""
     from harness.runner.base import is_rate_limited
 
     runner = fake_runner_with(tmp_path, "implement", rate_limited_payload(reset_at=None))
@@ -951,7 +878,7 @@ def test_b119_fake_runner_rate_limited_fixture_without_a_reset_has_reset_at_none
 
 
 def test_b119_fake_runner_without_the_flag_is_not_rate_limited(tmp_path):
-    """RUN-DECISIONS-D2 §12: an ordinary fixture has reset_at None and is not rate-limited."""
+    """An ordinary fixture has reset_at None and is not rate-limited."""
     from harness.runner.base import is_rate_limited
 
     payload = rate_limited_payload(ok=True, exit_code=0, error=None, text="implemented")
@@ -967,7 +894,7 @@ def test_b119_fake_runner_without_the_flag_is_not_rate_limited(tmp_path):
 
 
 def test_b119_the_shipped_rate_limited_fixture_replays_as_rate_limited(tmp_path):
-    """Handoff §3 / RUN-DECISIONS-D2 §12: tests/fixtures/runner/rate_limited.json ships with
+    """tests/fixtures/runner/rate_limited.json ships with
     "rate_limited": true and replays as a rate-limited implement outcome."""
     from harness.runner.base import is_rate_limited
 
@@ -985,7 +912,7 @@ def test_b119_the_shipped_rate_limited_fixture_replays_as_rate_limited(tmp_path)
 
 
 def test_b119_the_shipped_revise_fixture_replays_as_a_successful_revise(tmp_path):
-    """Handoff §3 / RUN-DECISIONS-D2 §12: tests/fixtures/runner/revise.json ships and is a
+    """tests/fixtures/runner/revise.json ships and is a
     successful RunResult for the revise stage."""
     shipped = D2_FIXTURES_DIR / "revise.json"
     assert shipped.is_file(), "tests/fixtures/runner/revise.json must ship (handoff §3)"
@@ -1001,16 +928,16 @@ def test_b119_the_shipped_revise_fixture_replays_as_a_successful_revise(tmp_path
 
 
 def test_d19_an_is_error_result_with_no_stderr_surfaces_the_cli_subtype(tmp_path):
-    """D19: `--max-budget-usd` binding reports `subtype: error_max_budget_usd` with empty stderr;
-    the RunResult must carry that name so a diagnose cycle can tell a budget stop from a crash."""
+    """An `is_error` result carrying an empty message reports its `subtype` with empty stderr;
+    the RunResult must carry that name so a diagnose cycle can tell a turn cap from a crash."""
     import json
     import subprocess
 
     from harness.runner.base import RunRequest
     from harness.runner.cli import ClaudeCliRunner
 
-    payload = {"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
-               "result": "", "num_turns": 1, "total_cost_usd": 0.153, "duration_ms": 51940}
+    payload = {"type": "result", "subtype": "error_max_turns", "is_error": True,
+               "result": "", "num_turns": 1, "duration_ms": 51940}
 
     def spawn(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 1, json.dumps(payload), "")
@@ -1018,20 +945,37 @@ def test_d19_an_is_error_result_with_no_stderr_surfaces_the_cli_subtype(tmp_path
     runner = ClaudeCliRunner(spawn=spawn)
     result = runner.run(RunRequest(stage="implement", prompt="x", system_prompt=None,
                                    allowed_tools=("Read",), disallowed_tools=(), max_turns=5,
-                                   cwd=tmp_path, timeout_s=60, max_budget_usd=0.001))
+                                   cwd=tmp_path, timeout_s=60))
     assert result.ok is False
-    assert result.error == "error_max_budget_usd"
-    assert result.cost_usd == 0.153
+    assert result.error == "error_max_turns"
+    assert result.turns == 1
+
+
+def test_B432_an_is_error_result_with_a_json_body_keeps_its_turns_and_its_own_message(tmp_path):
+    """B432: a non-zero exit carrying a complete JSON body is read, not dumped as stderr, so an
+    `error_max_turns` result keeps its turn count and the CLI's own message."""
+    from harness.runner.base import is_rate_limited
+
+    payload = stream_result(subtype="error_max_turns", is_error=True, num_turns=80,
+                            result="I have run out of turns.")
+    spawn = SpawnRecorder(returncode=1, stdout=json.dumps(payload), stderr="")
+    runner = ClaudeCliRunner(spawn=spawn)
+
+    result = runner.run(minimal_request(tmp_path))
+
+    assert result.ok is False
+    assert result.turns == 80
+    assert result.error == "I have run out of turns."
+    assert is_rate_limited(result) is False
 
 
 # --------------------------------------------------------------------------
-# Delivery 3 — RUN-DECISIONS-D3 "Runner" (B200-B203). Appended by the D3 spec-tester (T1);
-# additions only. The usage signal is the one rate_limit_event that
+# The usage signal (B200-B203): the one rate_limit_event that
 # `claude -p --output-format stream-json --verbose` emits per call; nothing here starts a
 # process — every runner is built with the injectable spawn kwarg.
 # --------------------------------------------------------------------------
 
-# RUN-DECISIONS-D3 "Config" — the five new keys with their .env.example values (inline).
+# The five new keys with their .env.example values (inline).
 D3_USAGE_ENV: dict[str, str] = {
     "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
@@ -1040,7 +984,7 @@ D3_USAGE_ENV: dict[str, str] = {
     "RUN_WINDOW_END": "tue 20:00",
 }
 
-# The verified 2026-09-03 event, verbatim from RUN-DECISIONS-D3 "Why".
+# The verified 2026-09-03 event, verbatim.
 FIVE_HOUR_EPOCH = 1788519600  # 2026-09-04T11:00:00Z
 SEVEN_DAY_EPOCH = 1788897600  # 2026-09-08T20:00:00Z (Tuesday 20:00 UTC)
 FIVE_HOUR_ISO = "2026-09-04T11:00:00Z"
@@ -1050,7 +994,7 @@ SEVEN_DAY_ISO = "2026-09-08T20:00:00Z"
 def rate_limit_event(*, five_hour: float = 0.07, seven_day: float = 0.49,
                      status: str = "allowed", five_hour_resets: int = FIVE_HOUR_EPOCH,
                      seven_day_resets: int = SEVEN_DAY_EPOCH) -> dict:
-    """One rate_limit_event line exactly as RUN-DECISIONS-D3 "Why" records it."""
+    """One rate_limit_event line exactly as the CLI emits it."""
     return {
         "type": "rate_limit_event",
         "rate_limit_info": {
@@ -1089,7 +1033,7 @@ def stream_stdout(*objects: dict) -> str:
 
 
 def usage_dict(**overrides) -> dict:
-    """The RunResult.usage shape of RUN-DECISIONS-D3 "Runner"."""
+    """The RunResult.usage shape."""
     payload = {
         "five_hour": {"utilization": 0.07, "resets_at": FIVE_HOUR_ISO},
         "seven_day": {"utilization": 0.49, "resets_at": SEVEN_DAY_ISO},
@@ -1106,8 +1050,6 @@ def usage_fixture_payload(**overrides) -> dict:
         "ok": True,
         "text": "implemented",
         "turns": 3,
-        "cost_usd": 0.5,
-        "allowance_pct": None,
         "duration_ms": 1200,
         "session_id": "fixture-session",
         "exit_code": 0,
@@ -1200,17 +1142,13 @@ def test_b200_capture_usage_false_explicitly_is_also_the_b25_argv(tmp_path):
 
 
 def test_b200_capture_usage_leaves_every_optional_flag_in_its_b25_order(tmp_path):
-    """B200/B25/B119: the swap is positional — the budget, tool, system-prompt and add-dir
+    """B200/B25: the swap is positional — the tool, system-prompt and add-dir
     flags keep their order, and the prompt is still last after the terminator."""
     extra_a = tmp_path / "shared"
     extra_b = tmp_path / "docs"
     spawn = SpawnRecorder(stdout=stream_stdout(stream_result()))
     runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
-    request = dataclasses.replace(
-        maximal_request(tmp_path, extra_a, extra_b), max_budget_usd=3.0
-    )
-
-    runner.run(request)
+    runner.run(maximal_request(tmp_path, extra_a, extra_b))
 
     assert spawn.argv == [
         "claude",
@@ -1220,8 +1158,6 @@ def test_b200_capture_usage_leaves_every_optional_flag_in_its_b25_order(tmp_path
         "--verbose",
         "--max-turns",
         "80",
-        "--max-budget-usd",
-        "3.0",
         "--permission-mode",
         "acceptEdits",
         "--allowed-tools",
@@ -1282,7 +1218,7 @@ def test_b201_parse_stream_returns_the_result_and_the_usage(tmp_path):
 
 
 def test_b201_parse_stream_leaves_observed_at_to_the_stage(tmp_path):
-    """RUN-DECISIONS-D3 "Runner": observed_at is filled by the stage from the clock, not by the
+    """observed_at is filled by the stage from the clock, not by the
     runner — the parsed usage carries no clock reading of its own."""
     from harness.runner.cli import parse_stream
 
@@ -1416,7 +1352,6 @@ def test_b201_capture_usage_run_carries_the_usage_onto_the_run_result(tmp_path):
     assert result.ok is True
     assert result.text == "the patch is ready"
     assert result.turns == 7
-    assert result.cost_usd == pytest.approx(0.4275)
     assert result.session_id == "01JABCDEF"
     assert result.usage is not None
     assert result.usage["five_hour"]["utilization"] == pytest.approx(0.07)
@@ -1461,7 +1396,7 @@ def test_b201_the_default_runner_reports_no_usage(tmp_path):
 
 
 def test_b201_run_result_gains_usage_as_its_last_field_defaulting_to_none(tmp_path):
-    """RUN-DECISIONS-D3: RunResult.usage is the LAST field, after reset_at, default None."""
+    """RunResult.usage is the LAST field, after reset_at, default None."""
     names = [f.name for f in dataclasses.fields(RunResult)]
 
     assert names[-2:] == ["reset_at", "usage"]
@@ -1470,7 +1405,7 @@ def test_b201_run_result_gains_usage_as_its_last_field_defaulting_to_none(tmp_pa
 
 
 def test_b201_is_rate_limited_is_unchanged_by_a_usage_carrying_result(tmp_path):
-    """RUN-DECISIONS-D3 "Runner": is_rate_limited unchanged — a successful call that happens to
+    """is_rate_limited unchanged — a successful call that happens to
     report 99 % weekly utilization is not a rate-limited call."""
     from harness.runner.base import is_rate_limited
 
@@ -1748,8 +1683,8 @@ def test_b225_model_and_effort_precede_the_spending_flags(tmp_path):
 
 
 def test_b225_an_unset_model_and_effort_leave_the_argv_untouched(tmp_path):
-    """B225: both are omitted when unset, so the Delivery 2 argv shape is what a request
-    without them still produces."""
+    """B225: both are omitted when unset, so a request without them produces the plain argv
+    shape."""
     spawn = SpawnRecorder(stdout=json_stdout(result="ok"))
     runner = ClaudeCliRunner(spawn=spawn)
 
@@ -1840,7 +1775,6 @@ def test_b396_a_rejected_usage_status_is_a_rate_limit_with_the_exhausted_windows
     assert result.error != "success"
     assert result.usage is not None and result.usage["status"] == "rejected"
     assert result.usage["seven_day"] == {"utilization": 1.0, "resets_at": REFUSAL_RESET}
-    assert result.cost_usd == 0.0
 
 
 def test_b396_the_refusal_keeps_the_raw_result_in_the_transcript(tmp_path):
@@ -1970,24 +1904,22 @@ def test_b396_is_rate_limited_reads_the_status_of_a_failed_result_only():
     assert not is_rate_limited(dataclasses.replace(run_result(), usage=rejected))
 
 
-def test_b396_the_budget_stop_stays_a_budget_stop_in_the_stream(tmp_path):
-    """D19 beside D71: `error_max_budget_usd` with an `allowed` event is a budget stop -- not
-    ok, not rate-limited, and the subtype is still the error because `result` is empty."""
+def test_b396_an_is_error_result_is_not_a_rate_limit_in_the_stream(tmp_path):
+    """B396 beside D71: `error_max_turns` with an `allowed` event is a plain failure -- not ok,
+    not rate-limited, and the subtype is still the error because `result` is empty."""
     from harness.runner.base import is_rate_limited
 
     event = rate_limit_event(five_hour=0.3, seven_day=0.6, status="allowed")
-    result_line = stream_result(subtype="error_max_budget_usd", is_error=True, result="",
-                                total_cost_usd=0.153)
+    result_line = stream_result(subtype="error_max_turns", is_error=True, result="")
     spawn = SpawnRecorder(returncode=1, stdout=stream_stdout(event, result_line))
     runner = ClaudeCliRunner(spawn=spawn, capture_usage=True)
 
-    result = runner.run(budgeted_request(tmp_path, 0.001))
+    result = runner.run(minimal_request(tmp_path))
 
     assert result.ok is False
     assert is_rate_limited(result) is False
     assert result.reset_at is None
-    assert result.error == "error_max_budget_usd"
-    assert result.cost_usd == 0.153
+    assert result.error == "error_max_turns"
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
@@ -2072,9 +2004,9 @@ def test_b395_stderr_is_the_fallback_when_the_message_is_empty(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# D71 review — B403-B405. Three places the first cut read more into the stream than the CLI
-# meant: a rejection on extra usage, a rejection by a limit that is not a unified window, and
-# limit wording in tool output beside a budget stop.
+# B403-B405: three places to read no more into the stream than the CLI means — a rejection on
+# extra usage, a rejection by a limit that is not a unified window, and limit wording in tool
+# output beside a budget stop.
 # --------------------------------------------------------------------------
 
 #: 2026-09-17T00:00:00Z, a model-specific weekly reset that no unified window carries.
@@ -2197,27 +2129,26 @@ def tool_output(text: str) -> dict:
     ["// rate limit added 2024-03-02T10:00:00Z", "retry: the rate limit resets in 15 minutes"],
     ids=["iso-date", "relative"],
 )
-def test_b405_limit_wording_in_tool_output_does_not_make_a_budget_stop_a_rate_limit(
+def test_b405_limit_wording_in_tool_output_does_not_make_an_is_error_result_a_rate_limit(
     tmp_path, tool_text
 ):
     """B405: at exit 1 with a result line, only the CLI's message and stderr are read, as at
-    exit 0. Tool output that mentions a limit beside a date left the D19 budget stop classified
-    as a rate limit with a reset from the tool output, and labelled a refusal that never was."""
+    exit 0. Tool output mentioning a limit beside a date would otherwise classify an ordinary
+    `error_max_turns` failure as a refusal, with a reset taken from that tool output."""
     from harness.runner.base import is_rate_limited
 
     event = rate_limit_event(five_hour=0.3, seven_day=0.6, status="allowed")
-    result_line = stream_result(subtype="error_max_budget_usd", is_error=True, result="",
-                                total_cost_usd=0.153)
+    result_line = stream_result(subtype="error_max_turns", is_error=True, result="")
     stdout = stream_stdout(event, tool_output(tool_text), result_line)
     runner = ClaudeCliRunner(spawn=SpawnRecorder(returncode=1, stdout=stdout),
                              capture_usage=True)
 
-    result = runner.run(budgeted_request(tmp_path, 0.001))
+    result = runner.run(minimal_request(tmp_path))
 
     assert result.ok is False
     assert is_rate_limited(result) is False
     assert result.reset_at is None
-    assert result.error == "error_max_budget_usd"
+    assert result.error == "error_max_turns"
     assert result.error != cli_mod.REFUSED_ERROR
 
 

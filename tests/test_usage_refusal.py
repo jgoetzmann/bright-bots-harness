@@ -1,16 +1,12 @@
-"""D71: the refusal of Sunday 2026-09-13 (issue #43). B398-B402.
+"""D71: a subscription refusal is a rate limit that ends at its reset. B398-B402.
 
-The weekly subscription allowance, which is shared with the operator's own interactive use, was
-exhausted. The scheduled discover call was refused in about two seconds: a `rate_limit_event`
-with status "rejected" and seven_day at 1.0, then a result with `subtype: "success"`,
-`is_error: true` and the message in `result`, at exit 0. The run went red with "error: triage
-ranking failed: success", `rate_limited_until` stayed null, the transcript that held the CLI's
-words was never uploaded, the ops issue's tail missed the error line, and the Monday heartbeat
-read the checked-in seed and said "not measured yet".
+An exhausted weekly allowance refuses a call in about two seconds: a `rate_limit_event` with
+status "rejected" and seven_day at 1.0, then a result with `subtype: "success"`,
+`is_error: true` and the message in `result`, at exit 0.
 
 B395-B397 (the runner) live in tests/test_runner_cli.py. This file holds what happens after
 the runner: the refusal as a B120 outcome end to end (B398), a stored reading that expires at
-its own reset (B399), and the three workflows that lost the evidence (B400-B402). Every clock
+its own reset (B399), and the three workflows that carry the evidence (B400-B402). Every clock
 here is frozen, on both sides of the reset.
 """
 
@@ -111,7 +107,7 @@ def test_b399_before_the_reset_the_stored_refusal_stops_everything(config, empty
 
     assert usage_stop(led, config, now=now) == "weekly usage 100% >= 90%"
     assert _plan(config, led, now).reason == "weekly usage 100% >= 90%"
-    governor = Governor(empty_store, config, FrozenClock(now), ledger=led)
+    governor = Governor(config, FrozenClock(now), led)
     with pytest.raises(BudgetExhausted, match="weekly usage 100%"):
         governor.authorize(1, "discover")
     assert priority.admit("audit", store=empty_store, ledger=led, config=config, now=now)
@@ -139,7 +135,7 @@ def test_b399_at_the_reset_the_refusal_expires_with_no_command(config, empty_sto
     assert usage_stop(led, config, carry=True, now=now) is None
     result = _plan(config, led, now)
     assert result.start == (816,), result.reason
-    governor = Governor(empty_store, config, FrozenClock(now), ledger=led)
+    governor = Governor(config, FrozenClock(now), led)
     assert isinstance(governor.authorize(1, "discover"), Authorization)
     for cls in ("audit", "suggested"):
         assert priority.admit(cls, store=empty_store, ledger=led, config=config, now=now) is None
@@ -152,7 +148,7 @@ def test_b399_the_governor_does_not_wait_for_its_own_week_to_roll(config, empty_
     which `authorize` does AFTER the usage stop has already refused. So the stop refused the one
     call that could have brought a fresh reading, on every run, however long after the reset."""
     led = incident_ledger(rate_limited_until=None)
-    governor = Governor(empty_store, config, FrozenClock(NEXT_SUNDAY), ledger=led)
+    governor = Governor(config, FrozenClock(NEXT_SUNDAY), led)
 
     assert governor.usage_stop_reason() is None
     assert isinstance(governor.authorize(1, "discover"), Authorization)

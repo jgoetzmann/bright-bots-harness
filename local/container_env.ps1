@@ -1,11 +1,10 @@
-# The credential filter (docs/delivery/DELIVERY-2-HANDOFF.md section 10.5; platform P4/P5).
-# Hand-written; never machine-generated. Builds the env file the container receives: everything
-# in .env EXCEPT every line starting with HARNESS_GITHUB_TOKEN= (and any comment naming that
-# key, so a grep of the result is clean). That token is what makes work public, so it stays on
-# the host: the container commits, local/watchdog-bb.ps1 pushes. CLAUDE_CODE_OAUTH_TOKEN passes
-# through - the loop needs it, and the filter is selective, not blanket (review R5.8).
-# Prints "dropped N line(s)" (A46: non-zero in every startup log, because .env.example ships the
-# key) and writes the path of the filtered file to the pipeline (Select-Object -Last 1 to read it).
+# The credential filter for the bb container (docs/LOCAL-MODE.md). Hand-written; never
+# machine-generated. Builds the env file the container receives: everything in .env except each
+# line naming HARNESS_GITHUB_TOKEN, comments included, so a grep of the result is clean. That
+# token is what makes work public, so it stays on the host: the container commits,
+# local/watchdog-bb.ps1 pushes. CLAUDE_CODE_OAUTH_TOKEN passes through; the loop needs it.
+# Prints "dropped N line(s)" (non-zero on every start, because .env.example ships the key) and
+# writes the path of the filtered file to the pipeline (Select-Object -Last 1 to read it).
 #   .\local\container_env.ps1 [-EnvFile <path>] [-OutFile <path>]
 param(
     [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env"),

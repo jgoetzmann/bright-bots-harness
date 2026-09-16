@@ -1,8 +1,8 @@
 """Documentation-drift invariants: prose that names a constant, a path, a cron or an argv
 element must still agree with the code it names.
 
-Every test here reads both sides — the document and the source it describes — and compares them,
-so the claim in the document cannot go stale silently. Nothing here runs the harness.
+Each test reads a document and the source it describes and compares them. Nothing here runs the
+harness.
 
 Stack: Python 3.13 standard library + pytest==8.3.4 only.
 """
@@ -31,7 +31,7 @@ NUMBER_WORDS = {
 
 
 def _spelled(word: str) -> int | None:
-    """A number word, including a hyphenated compound like ``twenty-three`` (Delivery 4)."""
+    """A number word, including a hyphenated compound like ``twenty-three``."""
     parts = word.split("-")
     if len(parts) == 1:
         return NUMBER_WORDS.get(parts[0])
@@ -47,7 +47,7 @@ def _read(relative: str) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# D70 / B386 — docs/PACKAGE-FORMAT.md's PR-body table names every section the body has
+# B386: docs/PACKAGE-FORMAT.md's PR-body table names every section the body has
 # --------------------------------------------------------------------------------------
 
 
@@ -60,11 +60,8 @@ def _pr_body_table() -> str:
 
 
 def test_B386_every_pr_body_heading_and_collapsed_section_is_in_the_package_format_table():
-    """`docs/PACKAGE-FORMAT.md` §6 listed four concatenated files and "Nothing is summarised" long
-    after `build_pr_body` had grown a steering table, a checklist, five collapsed sections and a
-    gate digest (D70). The body is built from the golden inputs, the self-audit line included;
-    every `## ` heading outside a collapsed section, and every collapsed section's title, must be
-    named in that section's table."""
+    """The body is built from the golden inputs, self-audit line included. Every `## ` heading
+    outside a collapsed section, and every collapsed section's title, is named in §6's table."""
     from types import SimpleNamespace
 
     from harness.stages.deliver import build_pr_body
@@ -88,7 +85,7 @@ def test_B386_every_pr_body_heading_and_collapsed_section_is_in_the_package_form
 
 
 # --------------------------------------------------------------------------------------
-# .github/CODEOWNERS — the reviewed-change guarantee covers everything that decides a result
+# .github/CODEOWNERS: the reviewed-change guarantee covers everything that decides a result
 # --------------------------------------------------------------------------------------
 
 
@@ -100,10 +97,9 @@ def test_B386_every_pr_body_heading_and_collapsed_section_is_in_the_package_form
     ),
 )
 def test_codeowners_covers_the_pinned_set_and_the_actor_gate(path):
-    """Every code file in `verify_pin.PINNED` needs an owner, or a member of the pinned set can be
-    changed without review; so does `verify_pin.py`, which *defines* PINNED and `.harness/PIN`'s
-    path; so do `trust.py` and `keywords.py`, the actor gate a keyword command passes through
-    (B131), which `.harness/README.md` already calls a code change rather than a knob."""
+    """Every file in `verify_pin.PINNED` has an owner, and so do `verify_pin.py`, which defines
+    PINNED and `.harness/PIN`'s path, and `trust.py` and `keywords.py`, the actor gate a keyword
+    command passes through (B131)."""
     codeowners = _read(".github/CODEOWNERS")
     pattern = r"^\s*/" + re.escape(path) + r"\s+.*@jgoetzmann"
     assert re.search(pattern, codeowners, re.M), f"CODEOWNERS must assign /{path} to @jgoetzmann"
@@ -117,15 +113,14 @@ def test_codeowners_covers_the_prompts_half_of_the_pinned_set():
 
 
 # --------------------------------------------------------------------------------------
-# .harness/config.json — a document that spells the knob count must spell the true one
+# .harness/config.json: a document that spells the knob count spells the true one
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("doc", ["docs/SAFETY.md", ".harness/README.md"])
+@pytest.mark.parametrize("doc", ["docs/SAFETY.md", ".harness/README.md", ".env.example"])
 def test_a_spelled_config_key_count_matches_len_config_json_keys(doc):
     """`load_config` accepts exactly `CONFIG_JSON_KEYS`. Where a document spells that number in
-    words near the constant, the word must be the current one — D31/D32 took it from eleven to
-    sixteen and left two documents behind."""
+    words near the constant, the word must be the current count."""
     text = _read(doc)
     expected = len(CONFIG_JSON_KEYS)
     for match in re.finditer(r"CONFIG_JSON_KEYS", text):
@@ -141,7 +136,7 @@ def test_a_spelled_config_key_count_matches_len_config_json_keys(doc):
 
 
 # --------------------------------------------------------------------------------------
-# Crons — an operator following a runbook must be given a time a workflow actually wakes at
+# Crons: a time a document quotes is one a workflow wakes at
 # --------------------------------------------------------------------------------------
 
 
@@ -156,10 +151,7 @@ def _live_crons() -> set[str]:
 
 @pytest.mark.parametrize("doc", ["docs/OPERATIONS.md", "README.md", ".harness/README.md"])
 def test_every_cron_a_live_document_quotes_is_one_a_workflow_carries(doc):
-    """docs/OPERATIONS.md §3 told the operator to wait for `23 */6 * * *`, which D32 replaced with
-    implement.yml's three window crons — a Wednesday reader would have waited until Monday. The
-    frozen delivery documents under docs/delivery/ are exempt: they record the superseded value on
-    purpose."""
+    """A backticked cron in a live document is one a workflow carries."""
     live = _live_crons()
     assert live, "no crons found in .github/workflows"
     quoted = re.findall(r"`((?:[0-9*/,\-]+\s+){4}[0-9*/,\-]+)`", _read(doc))
@@ -170,16 +162,15 @@ def test_every_cron_a_live_document_quotes_is_one_a_workflow_carries(doc):
 
 
 # --------------------------------------------------------------------------------------
-# heartbeat.yml — one precedence rule between the repository variables and .harness/config.json
+# heartbeat.yml: one precedence rule between the repository variables and .harness/config.json
 # --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("key", ["TRACKING_ISSUE", "FORK_REPO"])
 def test_heartbeat_reads_config_json_before_the_repository_variable(key):
     """.harness/README.md: the repository variables `FORK_REPO` and `TRACKING_ISSUE` are used
-    "only where this file leaves the knob empty". heartbeat.yml reads both sources itself, so it
-    must consult `.harness/config.json` first; reading `process.env` first would let a variable
-    changed without the file point the heartbeat at another issue and another fork."""
+    only where `.harness/config.json` leaves the knob empty. heartbeat.yml reads both sources
+    itself, so it must consult the file first."""
     text = _read(".github/workflows/heartbeat.yml")
     cfg_at = text.index(f"cfg.{key}")
     env_at = text.index(f"process.env.{key} ||")
@@ -191,40 +182,40 @@ def test_heartbeat_reads_config_json_before_the_repository_variable(key):
 @pytest.mark.parametrize("name", ["discover.yml", "implement.yml", "feedback.yml"])
 def test_the_env_writers_fill_config_json_only_where_it_leaves_a_knob_empty(name):
     """The same rule on the other three workflows, which apply it to `.harness/config.json` before
-    the harness loads it. This is the behaviour heartbeat.yml was made to match."""
+    the harness loads it."""
     text = (WORKFLOW_DIR / name).read_text(encoding="utf-8")
     assert 'if not cfg.get("FORK_REPO")' in text
     assert 'if cfg.get("TRACKING_ISSUE") in (None, "")' in text
 
 
 # --------------------------------------------------------------------------------------
-# docs/SAFETY.md I-3 — the argv the document describes is the argv the runner builds
+# docs/SAFETY.md I-3: the argv the document describes is the argv the runner builds
 # --------------------------------------------------------------------------------------
 
 
 def test_safety_i3_names_every_argv_element_the_runner_can_add():
-    """I-3's guarantee is that no permission-skipping flag can appear. The note under it lists what
-    *does* appear; D31 swapped `--output-format json` for `--output-format stream-json --verbose`
-    when usage capture is on (B200) and `get_runner` turns capture on for the real backend (B202),
-    so a reviewer reading I-3 as the current argv must be told about the pair."""
+    """I-3's note lists the flags the runner does add. With usage capture on (B200), which
+    `get_runner` enables for the real backend (B202), `--output-format stream-json --verbose`
+    replaces `--output-format json`, so the note names both. The runner passes no dollar cap, and
+    the note names none (B418)."""
     runner = _read("harness/runner/cli.py")
     safety = _read("docs/SAFETY.md")
     section = safety[safety.index("### I-3"):safety.index("### I-4")]
-    for flag in ("--max-budget-usd", "--output-format", "stream-json", "--verbose"):
+    for flag in ("--output-format", "stream-json", "--verbose"):
         assert flag in runner, f"{flag} is no longer in harness/runner/cli.py"
         assert flag in section, f"docs/SAFETY.md I-3 must name {flag}"
+    assert "--max-budget-usd" not in runner, "the runner no longer passes --max-budget-usd (D74)"
+    assert "--max-budget-usd" not in section, "docs/SAFETY.md I-3 must not name --max-budget-usd"
 
 
 # --------------------------------------------------------------------------------------
-# .env.example — a comment may not promise a check load_config does not make
+# .env.example: a comment may not promise a check load_config does not make
 # --------------------------------------------------------------------------------------
 
 
 def test_env_example_does_not_claim_an_equality_load_config_never_checks():
-    """`.env.example` asserted "UPSTREAM_REPO must equal REPO" while `load_config` validates the
-    two independently (`_require_repo` on each, no comparison) — and D25 records the two
-    `UPSTREAM_REPO == REPO` parametrizations being dropped because the rule was never in the
-    frozen handoff. Either the check exists in config.py or the comment must not promise it."""
+    """`load_config` validates `UPSTREAM_REPO` and `REPO` independently, so `.env.example` may
+    promise they are equal only if config.py compares them."""
     config_src = _read("harness/config.py")
     enforced = re.search(
         r"upstream_repo\s*(==|!=)\s*repo\b|\brepo\s*(==|!=)\s*upstream_repo\b", config_src
@@ -237,7 +228,7 @@ def test_env_example_does_not_claim_an_equality_load_config_never_checks():
 
 
 # --------------------------------------------------------------------------------------
-# README.md — the behavior ranges it claims are the ranges the suite actually cites
+# README.md: the behavior ranges it claims are the ranges the suite cites
 # --------------------------------------------------------------------------------------
 
 
@@ -259,9 +250,8 @@ def _cited_behaviors() -> set[int]:
 
 
 def test_readme_behavior_ranges_are_every_one_the_suite_cites():
-    """README's layout table claimed "every behavior B1–B150", which stopped being the whole story
-    when D31–D33 added B200–B215 (and was never the whole story for B87–B99, which no delivery
-    document defines). Every number inside the ranges the table names must be cited by a test."""
+    """Every number inside the ranges README's tests row names is cited by a test. B87–B99 were
+    never defined, so no range covers them."""
     cited = _cited_behaviors()
     missing = [
         n for low, high in _readme_behavior_ranges() for n in range(low, high + 1) if n not in cited
@@ -269,20 +259,21 @@ def test_readme_behavior_ranges_are_every_one_the_suite_cites():
     assert not missing, f"README claims these are cited by a test; they are not: {missing}"
 
 
+#: B1–B86 and B100–B150: the behaviors the original delivery specifications defined.
+SPECIFIED_BEHAVIORS = frozenset(range(1, 87)) | frozenset(range(100, 151))
+
+
 def test_readme_behavior_ranges_leave_no_specified_behavior_out():
-    """The other direction: a behavior defined in a delivery document must fall inside one of the
-    ranges README names, so the next series cannot be quietly excluded from the claim."""
-    spec = _read("docs/delivery/HARNESS-SPEC.md")
-    handoff = _read("docs/delivery/DELIVERY-2-HANDOFF.md")
-    defined = {int(m.group(1)) for m in re.finditer(r"\*\*B(\d{1,3})\.?\*\*", spec + handoff)}
-    assert defined, "no behaviors found in the delivery documents"
+    """The other direction: every specified behavior falls inside a range README names."""
     ranges = _readme_behavior_ranges()
-    outside = sorted(n for n in defined if not any(low <= n <= high for low, high in ranges))
+    outside = sorted(
+        n for n in SPECIFIED_BEHAVIORS if not any(low <= n <= high for low, high in ranges)
+    )
     assert not outside, f"README's ranges omit specified behaviors: {outside}"
 
 
 # --------------------------------------------------------------------------------------
-# FOR-MAINTAINERS.md — the page a second maintainer reads first, and often the only one
+# FOR-MAINTAINERS.md: the page a maintainer reads first
 # --------------------------------------------------------------------------------------
 
 
@@ -291,17 +282,14 @@ def _for_maintainers() -> str:
 
 
 def test_for_maintainers_names_only_real_verbs():
-    """It is the first page anybody reads, so a verb it names that does not exist is a person's
-    first command doing nothing — and a command that parses to nothing gets no reply."""
+    """Every verb the page names exists; a command that parses to nothing gets no reply."""
     from harness.keywords import VERBS
 
     named = {m.group(1).lower() for m in re.finditer(r"`/harness (\w+)", _for_maintainers())}
 
-    # Guard against the vacuous pass: if the page stops naming any verb at all, the subtraction
-    # below is empty and this test would go green on a page that had lost its whole point.
+    # Guard against a vacuous pass on a page that names no verbs.
     assert len(named) >= 6, f"FOR-MAINTAINERS.md names almost no verbs: {sorted(named)}"
-    # An alias is a real word to type, so naming one is not drift -- naming something that is
-    # neither is.
+    # An alias is a real word to type, so the page may name one.
     from harness.keywords import ALIASES
 
     unknown = sorted(named - set(VERBS) - set(ALIASES))
@@ -313,7 +301,7 @@ def test_for_maintainers_names_only_real_stage_labels():
 
     named = {m.group(0) for m in re.finditer(r"stage:[a-z-]+", _for_maintainers())}
 
-    # The two "your move" stages are the reason the page exists; it must still name both.
+    # The page names both stages where a maintainer acts.
     assert {"stage:needs-approval", "stage:needs-review"} <= named, (
         f"the page no longer names both human gates: {sorted(named)}"
     )
@@ -322,9 +310,7 @@ def test_for_maintainers_names_only_real_stage_labels():
 
 
 def test_for_maintainers_links_the_inbox_the_config_actually_points_at():
-    """The doc hard-codes the inbox issue's URL, because a link is what a reader can follow.
-    If `INBOX_ISSUE` moves and the link does not, the page sends its only audience to the wrong
-    thread — and comments on the wrong thread are read by nothing."""
+    """The page hard-codes the inbox URL, so it must link the issue `INBOX_ISSUE` names."""
     config = json.loads(_read(".harness/config.json"))
     inbox = int(config.get("INBOX_ISSUE") or 0)
     if not inbox:
@@ -338,7 +324,7 @@ def test_for_maintainers_links_the_inbox_the_config_actually_points_at():
 
 
 def test_for_maintainers_quotes_the_run_window_the_config_sets():
-    """§6 tells a maintainer when work runs, and that is the number they will plan around."""
+    """The page quotes the run window `.harness/config.json` sets."""
     config = json.loads(_read(".harness/config.json"))
     start = str(config.get("RUN_WINDOW_START", ""))
     end = str(config.get("RUN_WINDOW_END", ""))
@@ -353,7 +339,7 @@ def test_for_maintainers_quotes_the_run_window_the_config_sets():
 
 
 # --------------------------------------------------------------------------------------
-# COMMANDS.md — the page that claims to document every command
+# COMMANDS.md: the page that documents every command
 # --------------------------------------------------------------------------------------
 
 
@@ -362,8 +348,7 @@ def _commands_md() -> str:
 
 
 def test_commands_md_documents_every_verb_and_invents_none():
-    """Its whole claim is completeness. A verb missing from it is a capability nobody learns
-    about; a verb in it that does not exist is a command that silently does nothing when typed."""
+    """The page documents every verb and names none that does not exist."""
     from harness.keywords import VERBS
 
     named = {m.group(1).lower() for m in re.finditer(r"/harness (\w+)", _commands_md())}
@@ -374,7 +359,7 @@ def test_commands_md_documents_every_verb_and_invents_none():
 
 
 def test_commands_md_documents_every_cli_subcommand():
-    """Same claim, other surface. Checked against the parser rather than a hand-kept list."""
+    """The page names every CLI subcommand in `harness.__main__.COMMANDS`."""
     from harness.__main__ import COMMANDS
 
     text = _commands_md()
@@ -384,14 +369,11 @@ def test_commands_md_documents_every_cli_subcommand():
 
 
 def test_commands_md_states_each_verbs_real_level():
-    """The level table is the one thing a reader acts on before trying a command, and getting it
-    wrong wastes somebody's time on a refusal they were told would not happen."""
+    """Each verb appears in its level's row of the page's level table."""
     from harness.keywords import VERB_LEVEL
 
     text = _commands_md()
-    # The page carries a "who may run what" table. Its rows are checked individually, because
-    # "the word `reject` and the string `level 3` both appear somewhere on the page" is not the
-    # same claim as "the table says reject is level 3".
+    # Rows are checked one by one: both words appearing somewhere on the page is not enough.
     rows = {
         int(m.group(1)): m.group(2)
         for m in re.finditer(r"^\|\s*\*\*(\d)\*\*\s*\|[^|]*\|([^|]*)\|", text, re.M)
@@ -405,9 +387,8 @@ def test_commands_md_states_each_verbs_real_level():
 
 
 def test_commands_md_does_not_confuse_the_two_kill_switches():
-    """`harness halt` writes `HALT_FILE` (the gitignored root file, which stops a local run);
-    `.harness/HALT` is committed and is what the workflows read. An operator told the CLI command
-    stops the fleet would believe they had switched it off while it kept spending."""
+    """`harness halt` writes `HALT_FILE`, the gitignored root file that stops a local run;
+    `.harness/HALT` is committed and is what the workflows read."""
     text = _commands_md()
 
     assert "harness halt" in text
@@ -419,7 +400,7 @@ def test_commands_md_does_not_confuse_the_two_kill_switches():
 
 
 # --------------------------------------------------------------------------------------
-# The machine PAT's scopes (D67) — no live document says the token lacks one it carries
+# The machine PAT's scopes: no live document says the token lacks one it carries
 # --------------------------------------------------------------------------------------
 
 #: GitHub's classic token scopes, so a backticked word can be told from a scope name.
@@ -438,16 +419,16 @@ _NAMES = r"((?:`[a-z_:]+`(?:\s*,\s*|\s+and\s+|\s+)?)+)"
 
 
 def _carried() -> frozenset[str]:
-    """What the token carries is what doctor checks it for (B305); one set, read, not copied."""
+    """What the token carries: the set doctor checks it for (B305)."""
     from harness.__main__ import EXPECTED_TOKEN_SCOPES
 
     return frozenset(EXPECTED_TOKEN_SCOPES)
 
 
 def _scope_live_docs() -> list[str]:
-    """Every document read as the present truth. Not `docs/delivery/` (frozen, amended by
-    DECISIONS.md) and not DECISIONS.md, which records what was true when it was written."""
-    fixed = ["README.md", "HUMAN.md", ".env.example", "local/README.md", ".harness/README.md"]
+    """Every document read as current. DECISIONS.md is excluded: it records what was true when
+    each decision was written."""
+    fixed = ["README.md", ".env.example", "local/README.md", ".harness/README.md"]
     globbed = [
         path.relative_to(REPO_ROOT).as_posix()
         for pattern in ("docs/*.md", "prompts/*.md", ".github/workflows/*.yml")
@@ -512,11 +493,9 @@ def _need_not_check_spans(text: str) -> list[str]:
 
 @pytest.mark.parametrize("doc", _scope_live_docs())
 def test_b310_no_live_document_says_the_token_lacks_a_scope_it_carries(doc):
-    """B310 / D67: the machine PAT carries `public_repo`, `notifications` and `workflow`. Some
-    forty statements said it held `public_repo` alone, that `workflow`'s absence was I-15, or
-    that GitHub enforced I-15 -- including the rotation runbook, which would have reverted D67
-    at the next rotation, and the body of every delivery PR. This is what stops the census being
-    needed twice: the set is the one doctor checks, so the next grant moves both together."""
+    """B310: the machine PAT carries `public_repo`, `notifications` and `workflow`. No live
+    document says it holds `public_repo` alone, that `workflow`'s absence is I-15, or that GitHub
+    enforces I-15. The set is the one doctor checks, so a new grant moves both together."""
     false = _false_scope_claims(_read(doc), _carried())
 
     assert false == [], f"{doc} says something D67 made false: {false}"
@@ -524,9 +503,8 @@ def test_b310_no_live_document_says_the_token_lacks_a_scope_it_carries(doc):
 
 @pytest.mark.parametrize("doc", _scope_live_docs())
 def test_b310_no_reviewer_is_told_a_github_change_needs_no_check(doc):
-    """B310 / D67: USING.md and PACKAGE-FORMAT.md filed `.github/**` under "things you do not
-    need to check for", because GitHub refused the push. It no longer does; the harness's own
-    check is the only one, so a reviewer who skips the file list skips the one backstop left."""
+    """B310: GitHub does not refuse a `.github/` push for this token, so the harness's own check is
+    the only one, and no document tells a reviewer a `.github` change needs no check."""
     spans = [span for span in _need_not_check_spans(_read(doc)) if ".github" in span]
 
     assert spans == [], f"{doc} tells a reviewer a .github change needs no check: {spans}"
@@ -549,8 +527,8 @@ def test_b310_no_reviewer_is_told_a_github_change_needs_no_check(doc):
     ],
 )
 def test_b310_the_matcher_catches_each_sentence_d67_corrected(stale):
-    """B310: a drift guard whose matcher never fires passes forever (B105's did, until D67).
-    Each of these is a sentence this change corrected, verbatim or nearly."""
+    """B310, as for B105: a drift guard is trusted only once its matcher is shown to fire. Each
+    stale sentence below must match."""
     assert _false_scope_claims(stale, _carried()), f"the matcher misses {stale!r}"
 
 
@@ -568,7 +546,7 @@ def test_b310_the_matcher_passes_what_is_true_now(current):
     assert _false_scope_claims(current, _carried()) == []
 
 
-def test_b310_the_reviewer_matcher_catches_the_old_using_md_list():
+def test_b310_the_reviewer_matcher_catches_a_need_not_check_list():
     old = (
         "Three things you do not need to check for, because the code to do them does not "
         "exist:\n\n- The harness cannot merge, approve, or dismiss a review (I-12).\n"
@@ -577,22 +555,20 @@ def test_b310_the_reviewer_matcher_catches_the_old_using_md_list():
     assert any(".github" in span for span in _need_not_check_spans(old))
 
 
-#: Every passage that tells a person -- or the model -- which scopes the token holds or should.
+#: Every passage that tells a person or the model which scopes the token holds or should.
 SCOPE_INSTRUCTIONS = (
     ("docs/OPERATIONS.md", "2. Generate a new one", "\n3. "),
     (".env.example", "# Classic GitHub PAT", "HARNESS_GITHUB_TOKEN="),
     ("README.md", "**One GitHub credential", "The only other secret"),
     ("docs/SAFETY.md", "holds one classic PAT", "\n- has"),
     ("prompts/system.md", "holds exactly one", "It is used by"),
-    ("HUMAN.md", "Classic personal access token on", "https://"),
 )
 
 
 @pytest.mark.parametrize("doc, start, end", SCOPE_INSTRUCTIONS)
 def test_b311_every_scope_instruction_names_exactly_what_doctor_expects(doc, start, end):
-    """B311 / D67: the rotation runbook said "`public_repo` only; `workflow` stays off". A person
-    following it after a leak would mint a token that cannot sync the fork, and nothing would
-    say why until doctor's warning. Each place that says what to grant names doctor's set."""
+    """B311: every passage that says what to grant names exactly the set doctor checks, so a
+    token minted from it can sync the fork."""
     text = _read(doc)
     begin = text.index(start)
     passage = text[begin:text.index(end, begin + len(start))]
@@ -603,14 +579,8 @@ def test_b311_every_scope_instruction_names_exactly_what_doctor_expects(doc, sta
 
 
 # --------------------------------------------------------------------------------------
-# D69 / B351 — the tier table is a function of keywords.VERB_LEVEL, wherever it is written
+# B351: the level table is a function of keywords.VERB_LEVEL, wherever it is written
 # --------------------------------------------------------------------------------------
-#
-# The drift had already happened and only the tested page escaped it: `.harness/trust.txt` said
-# level 1 was "`ask` only" and README said "`ask` alone", while VERB_LEVEL gives level 1 both
-# `ask` and `status`. COMMANDS.md was right precisely because a test read it. The trust file's
-# own header is the first thing anybody reads before editing it, so it is the worst page of the
-# three to leave unchecked.
 
 
 def _tiers() -> dict[int, set[str]]:
@@ -648,8 +618,8 @@ def _commands_md_level_names() -> dict[int, str]:
 def _trust_file_level_rows() -> dict[int, tuple[str, str]]:
     """``(name, verbs)`` per level, from the header an operator reads while editing the file.
 
-    The names in the pattern come from `trust.LEVEL_NAMES` rather than being spelled here, so a
-    tier renamed in code and not in the file stops matching and the assertion below says so.
+    Level names come from `trust.LEVEL_NAMES`, so a level renamed in code but not in the file
+    stops matching.
     """
     from harness.trust import LEVEL_NAMES
 
@@ -683,8 +653,7 @@ def _readme_level_spans() -> dict[int, str]:
 
 @pytest.mark.parametrize("level", [1, 2, 3])
 def test_b351_the_commands_md_level_table_names_exactly_its_levels_verbs(level):
-    """Both directions. A verb missing from its row is a capability nobody is told they have;
-    a verb in the wrong row sends somebody to type a command that will be refused."""
+    """The row names exactly its level's verbs, no more and no fewer."""
     named = _verbs_in(_commands_md_level_rows()[level], backticked=True)
 
     assert named == _tiers()[level], (
@@ -695,7 +664,7 @@ def test_b351_the_commands_md_level_table_names_exactly_its_levels_verbs(level):
 
 @pytest.mark.parametrize("level", [1, 2, 3])
 def test_b351_the_trust_file_header_names_exactly_its_levels_verbs(level):
-    """The header an operator reads while adding somebody. It said level 1 was `ask` only."""
+    """The header an operator reads while adding somebody names each level's verbs exactly."""
     named = _verbs_in(_trust_file_level_rows()[level][1], backticked=False)
 
     assert named == _tiers()[level], (
@@ -706,7 +675,7 @@ def test_b351_the_trust_file_header_names_exactly_its_levels_verbs(level):
 
 @pytest.mark.parametrize("level", [1, 2, 3])
 def test_b351_readme_names_exactly_each_levels_verbs(level):
-    """README said level 1 was "`ask` alone", which has been wrong since `status` joined it."""
+    """README's per-level clauses name each level's verbs exactly."""
     named = _verbs_in(_readme_level_spans()[level], backticked=True)
 
     assert named == _tiers()[level], (
@@ -717,10 +686,8 @@ def test_b351_readme_names_exactly_each_levels_verbs(level):
 
 @pytest.mark.parametrize("level", [1, 2, 3])
 def test_b351_every_page_calls_a_level_by_the_name_the_code_gives_it(level):
-    """A level's NAME is as much of the table as its verbs, and comes from the same source:
-    `harness trust show` and `harness doctor` both render `trust.LEVEL_NAMES`. README called
-    level 1 "trusted" -- a word that in this codebase means "in the trust file at all", which
-    is levels 1 to 3 -- while the code, the CLI and every other page called it "asker"."""
+    """Each page calls a level by its `trust.LEVEL_NAMES` name, which `harness trust show` and
+    `harness doctor` render. "Trusted" covers levels 1 to 3, so it never names level 1."""
     from harness.trust import LEVEL_NAMES
 
     name = LEVEL_NAMES[level]
@@ -731,23 +698,21 @@ def test_b351_every_page_calls_a_level_by_the_name_the_code_gives_it(level):
 
 
 def test_b351_the_matcher_would_notice_the_drift_it_was_written_for():
-    """A drift guard whose matcher never fires passes for ever (B105's did, until D67). These
-    are the sentences this change corrected, and a row that has lost a verb."""
+    """The matchers fire on stale wording and on a row that has lost a verb."""
     from harness.trust import LEVEL_NAMES
 
     assert _verbs_in("level 1 (trusted) `ask` alone", backticked=True) == {"ask"}
     assert _verbs_in("1  asker       ask only", backticked=False) == {"ask"}
     assert _verbs_in("`ask` and `status`", backticked=True) == {"ask", "status"}
-    assert _tiers()[1] == {"ask", "status"}, "level 1 is both verbs, which is the whole point"
-    # README's own words for level 1, before and after. The first is what the name check has
-    # to reject, or it is a check that cannot fail.
+    assert _tiers()[1] == {"ask", "status"}, "level 1 gives both verbs"
+    # The name check rejects README's old wording for level 1 and accepts the current one.
     assert LEVEL_NAMES[1] not in " (trusted) `ask` and `status`, level 0"
     assert LEVEL_NAMES[1] in " (asker) `ask` and `status`, level 0"
 
 
 def test_b351_every_verb_lands_in_exactly_one_tier():
-    """The table cannot quietly lose one: `harness trust show` and three documents are all
-    generated from it, so a verb absent here is a verb absent from every page at once."""
+    """`harness trust show` and three documents are checked against this table, so every verb
+    lands in exactly one tier."""
     from harness.keywords import VERB_LEVEL
 
     tiers = _tiers()

@@ -827,7 +827,7 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
 
 # B112: one override per knob
 # `config.CONFIG_JSON_KEYS` admits. Every value here differs from the value the `.env`
-# carries for the same key (D2_ENV above, plus conftest's DEFAULT_ENV for RESERVE_PCT),
+# carries for the same key (D2_ENV above),
 # so an override that were silently dropped would leave the .env value behind and fail the
 # matching assertion. `test_b112_the_config_json_overrides_all_differ_from_the_env_values`
 # holds that property; without it an override could pass while doing nothing.

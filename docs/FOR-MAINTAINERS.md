@@ -27,6 +27,9 @@ A sentence or a link to a brightboost issue is enough. Within one sweep a work i
 issue and a reply in the inbox links to it. The same words or link find that item again. That
 **queues** it; §9 says when it becomes a plan, and when code.
 
+**Never put a credential, token or private data in a work item.** What you write is read by a model
+and copied into the run's transcript, and the item itself is a public issue.
+
 **Or comment on the brightboost issue itself**, mentioning the bot: `@jgoetzmann-bot /harness work`.
 The harness finds brightboost comments through its notifications, and an issue it has never touched
 sends none without the mention. Assigning the bot rarely helps: GitHub offers it as an assignee only

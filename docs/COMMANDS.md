@@ -91,7 +91,8 @@ until that pull request is merged.
 
 ## Comment commands
 
-The form is either of these at the **start of a line**; the rest of the line is the argument:
+The form is either of these at the **start of a line**; the rest of the line is the argument, and
+only that line — a multi-line note reaches the harness as its first line:
 
 ```
 /harness work make the activity cards keyboard reachable

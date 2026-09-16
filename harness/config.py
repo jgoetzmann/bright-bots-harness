@@ -89,7 +89,7 @@ FIELD_KEYS: tuple[str, ...] = (
     "RUN_WINDOW_END",
     "MODEL",
     "EFFORT",
-    # Delivery 4 (DELIVERY-4-HANDOFF section 7): asking for work.
+    # Asking for work (D53).
     "INBOX_ISSUE",
     "SUGGEST_MAX_PER_RUN",
     "COMMENT_UPSTREAM",
@@ -582,7 +582,7 @@ def load_config(
         if not fork_repo:
             raise ConfigError("PERMISSION_TIER=2 requires a non-empty FORK_REPO (owner/name)")
 
-    # Delivery 4 (DELIVERY-4-HANDOFF section 7).
+    # Asking for work (D53).
     inbox_issue = _require_int(values, "INBOX_ISSUE")
     if inbox_issue < 0:
         raise ConfigError(f"INBOX_ISSUE must be 0 or an issue number; got {inbox_issue}")

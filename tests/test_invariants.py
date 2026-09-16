@@ -2723,17 +2723,23 @@ def test_B419_no_module_under_harness_computes_or_prints_a_dollar_figure():
 
 def test_B426_no_workflow_or_local_script_reads_a_dollar_figure():
     """B426: the workflows and the host-side scripts read the ledger directly, so a field D74
-    removed from it must not still be read from one of them."""
-    heartbeat = _d2_workflow("heartbeat.yml")
-    for token in ("WEEKLY_CAP_USD", "RESERVE_PCT", "spent_usd", "$${"):
-        assert token not in heartbeat, f"heartbeat.yml still reads {token}"
+    removed from it must not still be read from one of them. Every workflow and every
+    PowerShell script is scanned, not a chosen few, so a new reader cannot arrive unnoticed."""
+    scanned = (
+        sorted(WORKFLOWS_DIR.glob("*.yml"))
+        + sorted(REPO_ROOT.glob("*.ps1"))
+        + sorted((REPO_ROOT / "local").glob("*.ps1"))
+    )
+    assert len(scanned) >= 11, f"expected every workflow and both script sets: {scanned}"
+    for path in scanned:
+        lowered = path.read_text(encoding="utf-8").lower()
+        for token in DOLLAR_TOKENS + ("weekly_cap_usd", "reserve_pct", "get-spend"):
+            assert token not in lowered, f"{_rel(path)} still reads {token}"
     assert "reserve" not in _case_blocks(_d2_workflow("discover.yml"))[0]
 
-    watchdog = (REPO_ROOT / "local" / "watchdog-bb.ps1").read_text(encoding="utf-8")
-    assert "Get-Spend" not in watchdog and "WEEKLY_CAP_USD" not in watchdog
     # The host push still reads the token and the fork through this helper (D67).
+    watchdog = (REPO_ROOT / "local" / "watchdog-bb.ps1").read_text(encoding="utf-8")
     assert "Read-EnvValue" in watchdog
-    assert "spent_usd" not in (REPO_ROOT / "bb-watcher.ps1").read_text(encoding="utf-8")
     run_ps1 = (REPO_ROOT / "local" / "run.ps1").read_text(encoding="utf-8")
     assert "MAX_CONCURRENT_CLONES" not in run_ps1
 

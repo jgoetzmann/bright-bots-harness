@@ -492,13 +492,25 @@ def doctor(tmp_path, monkeypatch, capsys, *, trust=TRUST, gh=None) -> tuple[int,
     )
     (tmp_path / ".harness").mkdir(exist_ok=True)
     (tmp_path / ".harness" / "trust.txt").write_text(trust, encoding="utf-8")
-    env = write_env(tmp_path / ".env", TRUST_FILE=".harness/trust.txt", SELF_REPO=SELF_REPO)
+    # doctor also measures free disk on the drive holding tmp_path, which is not the drive the
+    # repository is on: below the 5 GB default floor it exits 3 whatever the trust file says.
+    # A floor of 0 is what tests/test_cli.py's doctor tests use.
+    env = write_env(
+        tmp_path / ".env",
+        TRUST_FILE=".harness/trust.txt",
+        SELF_REPO=SELF_REPO,
+        MIN_FREE_DISK_GB=0,
+    )
     client = gh if gh is not None else UsersGh({NATHAN.lower(): NATHAN_ID})
     monkeypatch.setattr(cli, "_context", lambda config, args, run_id: SimpleNamespace(gh=client))
     code = cli.main(["--config", str(env), "doctor"])
     out = capsys.readouterr().out
     assert cli.main(["--config", str(env), "--json", "doctor"]) == code
-    return code, out, json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)
+    # Nothing a trust file does is a problem, so a problem here is a probe of the machine that
+    # escaped the fakes above. Named, because the tests below fail as `assert 3 == 0`.
+    assert payload["problems"] == [], payload["problems"]
+    return code, out, payload
 
 
 def test_B329_doctor_lists_the_vouch_and_says_nothing_more_when_the_id_matches(

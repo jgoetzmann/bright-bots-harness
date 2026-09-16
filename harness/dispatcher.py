@@ -11,27 +11,13 @@ from harness.clock import iso
 from harness.config import Config, in_run_window, is_daily_window, run_window_label
 from harness.ledger import Ledger
 
-__all__ = ["STATIC_USD", "Candidate", "Plan", "plan", "usage_stop", "estimate_usd"]
-
-STATIC_USD: dict[str, float] = {
-    "discover": 0.20,
-    "propose": 0.50,
-    "implement": 2.50,
-    "revise": 1.00,
-    "decompose": 0.30,
-    "package": 0.05,
-    "ask": 0.05,
-    "audit": 3.00,
-    "selfaudit": 0.50,
-    "selfaudit_fix": 1.00,
-}
+__all__ = ["Candidate", "Plan", "plan", "usage_stop"]
 
 
 @dataclass(frozen=True)
 class Candidate:
     issue: int
     depends_on: tuple[int, ...] = ()
-    stage: str = "implement"
     created_at: str = ""
     #: The operator asked for this item now, so the run window does not hold it back. The
     #: window governs when the harness chooses work on its own (B285).
@@ -55,14 +41,6 @@ class Plan:
         return json.dumps(payload, indent=2, sort_keys=False)
 
 
-def estimate_usd(ledger: Ledger, stage: str) -> float:
-    """The observed median once three observations exist, else the static table."""
-    observed = ledger.median_usd(stage)
-    if observed:
-        return float(observed)
-    return float(STATIC_USD[stage])
-
-
 def usage_stop(
     ledger: Ledger, config: Config, carry: bool = False, now: datetime | None = None
 ) -> str | None:
@@ -70,13 +48,11 @@ def usage_stop(
 
     Pure, and the single implementation of the rule: ``Governor.usage_stop_reason`` delegates
     here, so the admission check and the plan cannot disagree. With no observation at all the
-    answer is ``None`` and the USD path governs alone.
+    answer is ``None``.
 
     ``carry=True`` is the item carried across a weekly reset: it may keep going until weekly
-    usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``.
-
-    ``now`` expires an observation whose window has reset since: a 100% reading stops work
-    until its ``resets_at``. Both callers pass their clock.
+    usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``. ``now`` expires an
+    observation whose window has reset since, so both callers pass their clock.
     """
     weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
@@ -130,7 +106,8 @@ def plan(
     merged: Collection[int],
     halted: bool,
 ) -> Plan:
-    """Select in order: rate limit, halted, usage stop, reserve, run window, then candidates.
+    """Select in order: rate limit, halted, commanded halt, carry, usage stop, run window,
+    then candidates.
 
     Pure: the same inputs give a byte-identical plan.
     """
@@ -162,16 +139,6 @@ def plan(
     stopped = usage_stop(ledger, config, now=now)
     if stopped is not None and not carry_ok:
         return Plan(start=(), reason=stopped, skipped={})
-
-    weekly_cap = float(config.weekly_cap_usd)
-    reserve_pct = float(config.reserve_pct)
-    spent = float(ledger.window.get("spent_usd", 0.0) or 0.0)
-    ceiling = weekly_cap * (1.0 - reserve_pct / 100.0)
-    if spent >= ceiling:
-        # `implement.yml` matches the bare token "reserve", so the word stays (B122). The
-        # subscription readings are appended once both windows have been observed.
-        return Plan(start=(), reason="reserve" + _usage_suffix(ledger), skipped={})
-    remaining = ceiling - spent
 
     max_slots = int(config.max_concurrent_items)
     if config.store_backend != "github":
@@ -205,19 +172,13 @@ def plan(
         if unmet:
             skipped[key] = f"depends_on {unmet[0]} not merged"
             continue
-        usd = estimate_usd(ledger, candidate.stage)
-        if usd > remaining:
-            skipped[key] = f"estimate ${usd:.2f} exceeds remaining ${remaining:.2f}"
-            continue
         if len(start) >= max_slots:
             skipped[key] = "slots full"
             continue
         start.append(int(candidate.issue))
 
-    pct = remaining / weekly_cap * 100.0
-    # The observed utilizations are appended when they are known (B211).
-    reason = (
-        f"budget {pct:.0f}% remaining, {len(start)} of max {max_slots} slots"
-        f"{_usage_suffix(ledger)}"
-    )
+    # The observed utilizations are appended when they are known (B211). Kept in a local: an
+    # f-string inlined into the Plan(...) call would be collected as a stop reason by
+    # `tests/test_invariants.py` and then demand a classification it does not have.
+    reason = f"{len(start)} of max {max_slots} slots{_usage_suffix(ledger)}"
     return Plan(start=tuple(start), reason=reason, skipped=skipped)

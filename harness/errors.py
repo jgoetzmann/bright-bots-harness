@@ -52,7 +52,8 @@ class IllegalTransition(StoreError):
 
 
 class BudgetExhausted(HarnessError):
-    """The governor cannot fund the requested stage from the remaining allowance."""
+    """The harness declined to start a model call: a usage stop, a stored rate limit, or a
+    priority refusal. A normal outcome, which the CLI reports at exit 4 (D33)."""
 
 
 class RateCeilingReached(HarnessError):

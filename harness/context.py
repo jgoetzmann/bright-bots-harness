@@ -142,7 +142,7 @@ def build_context(
         else load_trust(config.trust_file)
     )
 
-    governor = Governor(the_store, config, the_clock, ledger=the_ledger)
+    governor = Governor(config, the_clock, the_ledger)
     the_runner: Runner = runner if runner is not None else get_runner(config)
     the_clones = clones if clones is not None else CloneManager(config, the_clock)
 

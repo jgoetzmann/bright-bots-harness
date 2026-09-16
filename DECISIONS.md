@@ -706,3 +706,43 @@ renaming `EXIT_BUDGET` and its stderr phrase, which three workflows parse; delet
 from the B101 parser instead of making it optional, which would stop the comments already on live
 issues from rebuilding; bumping `LAYOUT_VERSION` to drop two unused columns, which rebuilds the
 table for no behaviour.
+
+## D75 / B433-B434 - the suite tests the tree it lives in, not the host
+
+Decision:
+- `tests/conftest.py` carries an autouse fixture that removes every name in
+  `config.KNOWN_KEYS + config.RETIRED_KEYS` from `os.environ` for the duration of each test. The
+  names are read from `harness.config`, so a key added later is covered the day it is added. The
+  fixture is set up before the test body, so `monkeypatch.setenv` inside a test still decides what
+  that test sees, and the two `tests/test_usage_refusal.py` helpers that already clear the keys by
+  hand keep working unchanged. The fixture is function-scoped, so a fixture of wider scope is set
+  up before it and still reads the host value. B433's own module-scoped export is exactly that,
+  and it is the only fixture in the suite wider than a function.
+- `pyproject.toml` sets `pythonpath = ["."]` under `[tool.pytest.ini_options]`, so the rootdir is
+  first on `sys.path` for a bare `pytest` as well as for `python -m pytest`.
+- `harness/config.py` is unchanged. `os.environ` still overrides `.env` key for key (B1), and
+  `config.py` stays the only module that reads it (I-4).
+
+Why: `load_config` merges `os.environ` over the file it reads and nothing cleared those names, so
+any variable a developer's shell or a runner happened to export - `BACKEND`, `PERMISSION_TIER`,
+`MIN_FREE_DISK_GB`, `REPO`, `MODEL` - silently changed what the suite tested, and every test that
+goes through the CLI loads its config that way. The import path had the same shape: the editable
+install maps `harness` to the main checkout through a meta-path finder it appends, which only a
+`sys.path` entry beats, so a bare `pytest` inside a worktree exercised the main checkout's source
+while reporting on the worktree's tests. Both are the failure that made five trust tests flap one
+layer down, where `doctor` measured free disk on the host's C: drive rather than on anything the
+test had set up.
+
+B433 proves the first: a module-scoped fixture exports `MIN_FREE_DISK_GB=99` before the autouse
+fixture runs, and the test asserts that a config loaded with no `environ` argument reads the `.env`
+value of 5. Without the autouse fixture it reads 99. B434 proves the second: `harness.__file__`
+resolves inside the repository root the tests live in, and `pyproject.toml` still declares the path
+entry.
+
+Rejected: having `load_config` ignore `os.environ` under a test flag, which puts test-only
+behaviour in the one module the invariants keep smallest; clearing the keys in each test that needs
+it, which is what `tests/test_usage_refusal.py` does twice already and what every later test would
+have to remember; setting `PYTHONSAFEPATH` in CI, which hides the import-path hole behind an option
+nobody sets locally.
+
+Allocates B433-B434.

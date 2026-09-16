@@ -32,7 +32,9 @@ through interop). The system `python3` is 3.12, which is too old.
 ```
 
 - The suite runs entirely under `BACKEND=fake`: no network, no model, and time frozen at
-  2026-09-01T12:00Z, a Tuesday (`tests/conftest.py`).
+  2026-09-01T12:00Z, a Tuesday (`tests/conftest.py`). An autouse fixture there clears every
+  `.env` key name from `os.environ` for each test, and `pyproject.toml` puts the rootdir first
+  on `sys.path`, so a run tests the tree it lives in rather than the host (D75).
 - `--config PATH`, `--json`, `--dry-run` (record GitHub writes instead of sending them) and
   `--verbose` are global flags. They go before the subcommand.
 - CI (`selftest.yml`, the only PR workflow) runs `pip install -e ".[dev]"`, `verify_pin --check` and

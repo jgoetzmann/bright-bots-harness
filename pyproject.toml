@@ -31,3 +31,7 @@ include = ["harness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The rootdir goes first on sys.path, so the suite imports the tree it lives in. Without it a
+# bare `pytest`, or any run under PYTHONSAFEPATH, imports whichever checkout the editable
+# install maps `harness` to, which in a worktree is a different source tree (D75).
+pythonpath = ["."]

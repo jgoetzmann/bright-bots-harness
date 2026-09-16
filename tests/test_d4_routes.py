@@ -687,8 +687,9 @@ def test_B292_the_head_quotes_the_plan_when_the_plan_is_the_authority(tmp_path):
     assert _head_reason(
         Plan(start=(), reason="r", skipped={"4": "slots full"}), rows, None
     )["reason"] == "slots full"
-    assert _head_reason(Plan(start=(), reason="reserve", skipped={}), rows, None)["reason"] == (
-        "reserve")
+    assert _head_reason(
+        Plan(start=(), reason="weekly usage 91% >= 90%", skipped={}), rows, None
+    )["reason"] == "weekly usage 91% >= 90%"
 
 
 def test_B292_an_empty_queue_says_so(tmp_path):
@@ -840,8 +841,6 @@ def test_a_sub_issue_inherits_how_its_parent_arrived(tmp_path):
                 "ok": True,
                 "text": "1. First slice — do the first part.\n2. Second slice — then this.\n",
                 "turns": 2,
-                "cost_usd": 0.01,
-                "allowance_pct": 1.0,
                 "duration_ms": 10,
                 "session_id": "s",
                 "exit_code": 0,
@@ -1335,7 +1334,7 @@ def _cmd(verb, surface="inbox", number=19, args="", actor="jgoetzmann"):
                    comment_id="IC_x", actor=actor, level=3)
 
 
-def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
+def test_usage_reports_the_subscription_the_queue_and_what_happens_next(tmp_path):
     """The answer to "why is nothing happening", from the same sources the CLI reads, so a
     comment and `harness status`/`ledger`/`dispatch` cannot disagree."""
     import harness.__main__ as main_mod
@@ -1355,8 +1354,8 @@ def test_usage_reports_the_spend_the_queue_and_what_happens_next(tmp_path):
     assert "40% used" in out and "50 points" in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
-    # Subscription usage is the whole report: no dollar figure follows it (D73).
-    assert "nobody bills it" not in out and "$" not in out
+    # Subscription usage is the whole report: there is no dollar figure to follow it (D74).
+    assert "$" not in out and "dollar" not in out.lower()
 
 
 def test_queue_is_an_alias_for_go_now(tmp_path):
@@ -1420,14 +1419,14 @@ def test_resume_lifts_it_and_says_whose_halt(tmp_path):
 
 
 def test_the_dispatcher_names_who_halted_it(tmp_path):
-    """`dispatch` printing a healthy budget beside a queue that will never move is exactly the
-    failure this avoids: the reason has to name the halt, not the budget."""
+    """`dispatch` printing free slots beside a queue that will never move is exactly the
+    failure this avoids: the reason has to name the halt, not the slot count."""
     from harness.clock import parse_iso
     from harness.dispatcher import Candidate, plan
     from tests.test_dispatcher import NOW_ISO, PERIOD_START, github_config
 
     config = github_config(tmp_path, slots=1)
-    candidate = Candidate(issue=4, stage="implement", created_at="2026-09-01T10:00:00Z")
+    candidate = Candidate(issue=4, created_at="2026-09-01T10:00:00Z")
 
     led = Ledger.empty(PERIOD_START)
     healthy = plan(now=parse_iso(NOW_ISO), ledger=led, config=config,

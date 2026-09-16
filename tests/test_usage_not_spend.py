@@ -16,20 +16,18 @@ from harness import links, priority
 CONFIG = SimpleNamespace(
     weekly_usage_stop_pct=90.0,
     session_usage_stop_pct=70.0,
-    weekly_cap_usd=400.0,
-    reserve_pct=10.0,
     audit_min_headroom_pct=75.0,
     suggest_min_headroom_pct=50.0,
 )
 
 
-def _ledger(*, weekly=None, session=None, spent=0.0, calls=0):
+def _ledger(*, weekly=None, session=None, calls=0):
     usage = {}
     if weekly is not None:
         usage["seven_day"] = {"utilization": weekly}
     if session is not None:
         usage["five_hour"] = {"utilization": session}
-    window = {"spent_usd": spent, "calls": calls}
+    window = {"calls": calls}
     if usage:
         window["usage"] = usage
     return SimpleNamespace(window=window)
@@ -40,11 +38,11 @@ def _ledger(*, weekly=None, session=None, spent=0.0, calls=0):
 # --------------------------------------------------------------------------------------
 
 
-def test_the_headline_leads_with_the_subscription_not_the_dollars():
+def test_the_headline_names_no_dollar_figure():
     text = "\n".join(links.usage_headline(_ledger(weekly=0.18, session=0.01), CONFIG))
 
     assert text.startswith("**Allowance**")
-    assert "$" not in text, "the headline reports the allowance, not an estimate of dollars"
+    assert "$" not in text and "dollar" not in text.lower()
     assert "18% used" in text
 
 
@@ -80,8 +78,8 @@ def test_unmeasured_is_said_as_unmeasured_and_not_as_zero():
 
 
 def test_no_dollar_figure_is_reported_whatever_the_ledger_holds():
-    """B295: a ledger carrying a spend still reports the allowance and no dollar figure."""
-    for led in (_ledger(weekly=0.18, spent=0.2809, calls=1), _ledger(spent=12.5, calls=3)):
+    """B295: measured or not, the headline reports the allowance and no dollar figure."""
+    for led in (_ledger(weekly=0.18, calls=1), _ledger(calls=3)):
         text = "\n".join(links.usage_headline(led, CONFIG))
 
         assert "$" not in text and "dollar" not in text.lower()
@@ -99,9 +97,8 @@ def test_no_dollar_footer_is_offered_for_a_reply():
 
 
 def test_an_audit_is_refused_when_the_week_is_nearly_gone():
-    """An audit is the longest single call the harness makes, and `AUDIT_CAP_USD` does not
-    bound it on a subscription. Starting one with a fifth of the week left leaves the allowance
-    gone the next time the operator needs it."""
+    """An audit is the longest single call the harness makes. Starting one with a fifth of the
+    week left leaves the allowance gone the next time the operator needs it."""
     refused = priority.admit(
         "audit", store=None, ledger=_ledger(weekly=0.80), config=CONFIG
     )
@@ -140,7 +137,7 @@ def test_work_a_person_asked_for_is_never_refused_here(cls):
 
 # --------------------------------------------------------------------------------------
 # Against a real ledger. The fakes above are a SimpleNamespace with no `period_start` and no
-# `observed_at`, so they never reach the staleness guard `roll_window` makes necessary.
+# `observed_at`, so they never reach the staleness guard a window turnover makes necessary.
 # --------------------------------------------------------------------------------------
 
 

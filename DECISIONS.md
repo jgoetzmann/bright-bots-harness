@@ -13,7 +13,7 @@ specs were removed in D73 and remain in git history.
 | D5 | On Windows, `doctor` and the CLI runner resolve `claude`/`npm`/`npx` through `shutil.which` before spawning. | The entry points are `.CMD` shims and `CreateProcess` will not find them by bare name. Injected spawns still receive the unresolved argv so B25 stays testable. |
 | D6 | Halt is honoured inside `implement` (after install, after baseline, after the post-change gates, before each diagnose cycle), not only at stage boundaries. On halt the clone is released and the item reset to `approved`. | A10 and R7.7. A halt that waits for a 30-minute gate run to finish is not a kill switch. |
 | D7 | `Config` carries two extra trailing fields, `github_token_present` and `github_token_shape_ok`, and `config.py` exposes `environ_snapshot()`, `secret_values()`, `read_secret()`. | I-4 confines `os.environ` to `config.py`, yet the CLI runner must build a child environment (B26), the redactor must scrub configured secret values (§5.8), and `identity` must detect presence without reading the value (§5.12). These are the narrowest seams that satisfy all three. |
-| D8 | The session budget lives in memory on the `Governor`, per process. | §5.3 gives no persistence for it and every command is a fresh process; the weekly budget is the durable one and is in the store. |
+| D8 | The session budget lives in memory on the `Governor`, per process. D74 removed it: admission is the two subscription-usage stops and the stored rate limit. | §5.3 gives no persistence for it and every command is a fresh process; the weekly budget is the durable one and is in the store. |
 | D9 | Directed discover leaves the row in `discovered` as created; `packaged → shipped` is accepted by the store's state machine. | §5.2.2 lists the pair and B10 requires every listed pair to be accepted. The stage that would use it does not exist, which is the actual Tier-2 guard (§9 I-1). |
 | D10 | The two secret keys (`HARNESS_GITHUB_TOKEN`, `ANTHROPIC_API_KEY`) are optional in `.env`; every other key is required. | B79 needs "absent" to be a legal state; B3 needs typo'd budget keys to fail. |
 | D11 | `redact()` replaces the whole match of the generic `key: value` pattern, key name included, and also scrubs `Bearer <token>`. | B49 says the pattern is replaced with `[REDACTED]`. The spec's own `\S+` stops at the space after `Bearer`, which would leave the token behind. |
@@ -39,7 +39,7 @@ the lines of `DELIVERY-2-HANDOFF.md`, or records something the handoff asked to 
 | D16 | The `packaged` state is kept from Delivery 1 and represented by the label `harness:packaged`, sitting between `harness:running` and `harness:shipped`. `STATES` and `LABELS` carry twelve entries; `harness init --labels` creates all twelve. | The handoff's §4.2 table omits it, but `package` is a distinct stage with a distinct state in Delivery 1 (`archive` refuses anything else), and `deliver` needs a state to require. Dropping it would change `packager.py`'s contract, which is a do-not-touch file. |
 | D17 | `redact.allowed_roots()` gains exactly two roots: `<repo root>/state` and `<repo root>/proposals`. `.harness/` — including `PIN` and `HALT` — is deliberately **not** a root. | The ledger (§6.2) and the proposal files (§4.3) are the two new things the harness writes in the repository, and R11.7 asks that each addition be deliberate and named. B143 requires the pin to be outside the roots so the harness cannot change what it is measured against; the same reasoning covers the trust list, the config, and the repo-level kill switch. Handoff §1.1 says "the roots list gains nothing"; the handoff's own §4.3, §6.2 and R11.7 contradict that, and the two roots are the minimum that makes those sections implementable. |
 | D18 | `bb-net` is a plain bridge. No egress allowlist. | Handoff §10.6, verbatim: "An allowlist is rejected. The product repository's `npm ci` pulls from the npm registry and its CDN backers, whose addresses rotate; the platform document's own caveat is that hostnames resolve once when rules are applied, so such an allowlist breaks unpredictably weeks later with no error. A rule set that must be disabled the first time it bites is worse than none, because it is believed. `bb-net` is a plain bridge and this paragraph is the ruling." |
-| D19 | `claude --max-budget-usd` **binds under subscription auth** — verified 2026-09-03 on CLI 2.1.257: a 700-word essay with `--max-budget-usd 0.001` returned `is_error: true`, `subtype: error_max_budget_usd`, an empty result and exit 1, while the uncapped control cost $0.116. The cap is enforced at the **turn boundary**: the over-budget turn completes and is charged ($0.153 here), then the run stops. So `PER_CALL_CAP_USD` bounds a multi-turn `implement` to roughly one turn past the cap, not to the cap exactly; the harness's own accounting (WEEKLY_CAP_USD, the ledger) remains the primary control and the CLI cap the backstop — §6.1's "enforced twice" holds. The session JSON carries `usage`/`modelUsage` but no remaining-allowance signal (§1.3 confirmed). |
+| D19 | `claude --max-budget-usd` **binds under subscription auth** — verified 2026-09-03 on CLI 2.1.257: a 700-word essay with `--max-budget-usd 0.001` returned `is_error: true`, `subtype: error_max_budget_usd`, an empty result and exit 1, while the uncapped control cost $0.116. The cap is enforced at the **turn boundary**: the over-budget turn completes and is charged ($0.153 here), then the run stops. So `PER_CALL_CAP_USD` bounds a multi-turn `implement` to roughly one turn past the cap, not to the cap exactly; the harness's own accounting (WEEKLY_CAP_USD, the ledger) remains the primary control and the CLI cap the backstop — §6.1's "enforced twice" holds. The session JSON carries `usage`/`modelUsage` but no remaining-allowance signal (§1.3 confirmed). D74 removed the flag and `PER_CALL_CAP_USD`; the `is_error`-with-a-JSON-body branch this experiment justified stays, because an `error_max_turns` result needs it to report its turns (B432). |
 | D20 | No `threading` and no `asyncio` anywhere under `harness/`. The `local-loop` command's heartbeat is synchronous: the entrypoint writes the first `HEARTBEAT`, and the loop rewrites it at the top of every unit and every 10 s between units from a plain sleep loop. | R9.3 scans `harness/` for `threading`; a daemon thread in the CLI would fail it. A synchronous heartbeat with a 180 s staleness window and units that poll `STOP` at their boundaries is enough for the watchdog, and it keeps the package single-threaded, which is what every Delivery 1 invariant test assumes. |
 | D21 | An issue on the upstream (product) repository is never read as a command source. Keyword commands are honoured from exactly three surfaces: pull requests on the product repository (delivery PRs the harness opened), and issues and pull requests on this repository. `keywords.sweep` filters notifications to those surfaces. | Handoff §8.3 lists the surfaces as "proposal PR", "delivery PR", and "any issue here". The machine account owns no issue upstream and is not a collaborator there, so a command on an upstream issue has no item to act on and would only widen the surface an untrusted actor can probe. The trust gate (B131) would still deny it; not reading it at all is cheaper and leaves nothing to get wrong. |
 
@@ -60,7 +60,7 @@ Postgres) remains open; the database gates are still reported as omitted.
 | D28 | `state/ledger.json` is committed by the workflows to a dedicated unprotected branch `harness-state` (loaded at job start, pushed at job end from a one-file worktree). The checked-in copy on `main` is the initial ledger and local mode's baseline. | B113 (main requires one approving review) and B115 (the workflow commits the ledger directly) cannot both hold on `main`: the Actions token cannot open or approve a PR for itself. The state branch keeps both properties without a bypass rule. |
 | D29 | The machine account is `jgoetzmann-bot` (fork `jgoetzmann-bot/brightboost`), not the spec's `brightboost-harness`. `Identity.handle` is derived from the owner of `FORK_REPO` when it is set; the spec's default name applies only until then. The harness's commit-author email stays `harness@brightboost-harness` — an internal marker for B139, not a mailbox. | The operator chose the name (2026-09-03); the fork owner IS the machine account (handoff §5.1), so one setting rules both. |
 | D30 | Nathan (`BrightBoost-Tech`) has **no access** to `jgoetzmann/bright-bots-harness`: not a collaborator, not in CODEOWNERS. He stays in `.harness/trust.txt`, which is what makes his comments on delivery PRs in the product repository count (B131: trust file AND his OWNER/MEMBER association *there*). Proposal review (gate 1) is therefore "only jgoetzmann". | A write collaborator on this repo could put code on `main` that a spending workflow runs with both secrets in scope; the design needs nothing from him here — gate 2 lives upstream, where he is already the maintainer. Decided 2026-09-03. |
-| D34 | (Ruled after Delivery 3; filed in this table because it concerns the Delivery 1 and Delivery 2 documents.) The four delivery documents — `HARNESS-SPEC.md`, `HARNESS-REVIEW.md`, `DELIVERY-2-HANDOFF.md`, `DELIVERY-2-REVIEW.md` — move (`git mv`) from the repository root to `docs/delivery/`, with `docs/delivery/README.md` as their index. `HUMAN.md` and this file stay at the root. Cross-references between the four stay bare filenames (they are siblings now); the one path that actually broke, D2-R2's `pathlib.Path("DELIVERY-2-HANDOFF.md")`, is repointed. The frozen §3 file map in the handoff still shows the old root layout and is **not** edited — this row is its amendment, as D31 was for §1.3. D73 later deleted all of `docs/delivery/` (the documents remain in git history) and took `HUMAN.md` out of git; `harness setup` still writes it at the root. | The root had eleven markdown files and a reader could not tell the two operator entry points from the four frozen delivery artefacts. `HUMAN.md` cannot move: B82 requires `harness setup` to write it at the repository root and five tests assert that path. `DECISIONS.md` cannot move either: `identity.budget_experiment_recorded()` reads `<repo root>/DECISIONS.md`, the pull-request template names it as the place a pin change is justified, and fifteen files cite it by bare name. Moving what nothing resolves and leaving what something does is the whole of the rule. |
+| D34 | (Ruled after Delivery 3; filed in this table because it concerns the Delivery 1 and Delivery 2 documents.) The four delivery documents — `HARNESS-SPEC.md`, `HARNESS-REVIEW.md`, `DELIVERY-2-HANDOFF.md`, `DELIVERY-2-REVIEW.md` — move (`git mv`) from the repository root to `docs/delivery/`, with `docs/delivery/README.md` as their index. `HUMAN.md` and this file stay at the root. Cross-references between the four stay bare filenames (they are siblings now); the one path that actually broke, D2-R2's `pathlib.Path("DELIVERY-2-HANDOFF.md")`, is repointed. The frozen §3 file map in the handoff still shows the old root layout and is **not** edited — this row is its amendment, as D31 was for §1.3. D73 later deleted all of `docs/delivery/` (the documents remain in git history) and took `HUMAN.md` out of git; `harness setup` still writes it at the root. | The root had eleven markdown files and a reader could not tell the two operator entry points from the four frozen delivery artefacts. `HUMAN.md` cannot move: B82 requires `harness setup` to write it at the repository root and five tests assert that path. `DECISIONS.md` cannot move either: `identity.budget_experiment_recorded()` reads `<repo root>/DECISIONS.md`, the pull-request template names it as the place a pin change is justified, and fifteen files cite it by bare name. Moving what nothing resolves and leaving what something does is the whole of the rule. D74 deleted `identity.budget_experiment_recorded()`; the pull-request template and the bare-name citations still hold this file at the root. |
 
 ---
 
@@ -71,7 +71,7 @@ behaviors B200–B215). Numbering continues from D30. Every earlier decision, D1
 
 | # | Decision | Why |
 |---|---|---|
-| D31 | The subscription **does** expose its remaining allowance, and the harness now reads it: `claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call carrying `five_hour` and `seven_day` utilization as fractions 0..1 (shape quoted in full below). It comes from the inference response headers, so the long-lived `setup-token` receives it in Actions mode too. `seven_day.resetsAt` is the subscription's weekly reset. This supersedes DELIVERY-2-HANDOFF §1.3's "no signal exists" and D19's closing sentence. **B114 is kept, restated as a must-not-depend rule**: no decision may DEPEND on the signal being present. With `usage=None` — fake backend, older CLI, a call that never reached inference — the USD path (`WEEKLY_CAP_USD`, `RESERVE_PCT`, `PER_CALL_CAP_USD`) governs exactly as in Delivery 2, and `Governor.usage_stop_reason` returns `None` rather than guessing (B207). | Verified 2026-09-03 on the CLI. A signal that is present on every real call and absent on every fake one cannot be made a precondition without making the fake backend a different program; keeping B114 as "must not depend" is what lets the same code path serve both, and it is the difference between reading a number and trusting it. Recorded as an amendment with its evidence rather than a silent reversal, per R12.3 — the same treatment D13 gave I-1. `WEEKLY_CAP_USD`'s default rises 25.00 → 400.00 for the same reason: a dollar cap sized for Delivery 2 would bind first and the usage stop would never be reached, which would make the new signal decorative. |
+| D31 | The subscription **does** expose its remaining allowance, and the harness now reads it: `claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call carrying `five_hour` and `seven_day` utilization as fractions 0..1 (shape quoted in full below). It comes from the inference response headers, so the long-lived `setup-token` receives it in Actions mode too. `seven_day.resetsAt` is the subscription's weekly reset. This supersedes DELIVERY-2-HANDOFF §1.3's "no signal exists" and D19's closing sentence. **B114 is kept, restated as a must-not-depend rule**: no decision may DEPEND on the signal being present. With `usage=None` — fake backend, older CLI, a call that never reached inference — the USD path (`WEEKLY_CAP_USD`, `RESERVE_PCT`, `PER_CALL_CAP_USD`) governs exactly as in Delivery 2, and `Governor.usage_stop_reason` returns `None` rather than guessing (B207). D74 removed that USD path; the amended B114 in D74 says what bounds a call when no reading is in force. | Verified 2026-09-03 on the CLI. A signal that is present on every real call and absent on every fake one cannot be made a precondition without making the fake backend a different program; keeping B114 as "must not depend" is what lets the same code path serve both, and it is the difference between reading a number and trusting it. Recorded as an amendment with its evidence rather than a silent reversal, per R12.3 — the same treatment D13 gave I-1. `WEEKLY_CAP_USD`'s default rises 25.00 → 400.00 for the same reason: a dollar cap sized for Delivery 2 would bind first and the usage stop would never be reached, which would make the new signal decorative. |
 | D32 | The run window for this account is `RUN_WINDOW_START=mon 08:00` to `RUN_WINDOW_END=tue 20:00` UTC, and `implement.yml` runs three crons inside it: `17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2`. The window is enforced by the dispatcher; the crons only decide when GitHub wakes the job. The DST drift is documented in the workflow and in OPERATIONS §13.3 and deliberately **not** corrected in code. | The subscription's weekly allowance resets Tuesday 20:00 UTC (13:00 PT). Spreading work across the whole week meant hitting the seven-day ceiling on a random Thursday with a branch half-written; concentrating it at the head of the window means a fresh allowance and a known reset to plan against, and the Tuesday 20:23 row is the wrap-up that spends what is left before it evaporates. Round-the-clock `23 */6 * * *` also competed with interactive use every single day. On DST: GitHub cron is UTC and never shifts while the reset is quoted in Pacific time, so for the PST months the wrap-up fires 37 minutes early, sees the old window, and spends nothing extra; the following Monday picks the new one up. A skipped wrap-up per winter is cheaper than a timezone table in a cron file, and an operator who cares moves that row and `RUN_WINDOW_END` together. |
 | D33 | A usage stop or rate limit inside `implement`/`continue`/`package`/`deliver` is a **handoff**, not a failure: uncommitted work is committed as `wip: handoff (<reason>)`, the branch is pushed to the fork only (never upstream, never forced — B212), `runs/item-N/HANDOFF.md` is written and posted as a comment, the item returns to `approved`, the ledger records one `carry`, and the command exits 0. The carried item is the first thing the next run starts — even outside the run window — via `harness revise <id> --source continue`, spending against `OVERRUN_PCT` rather than `WEEKLY_USAGE_STOP_PCT` until it is green. | Delivery 2's answer to running out mid-item was to leave the item where it stood; with a weekly reset that lands in the middle of an implementation, that is a branch abandoned halfway every week. Carrying it costs one ledger field and one file, and `HANDOFF.md` is the same evidence a human would need anyway. Continuing outside the window is the one exception the window has, because the alternative is holding a half-finished branch for six days. The leeway is bounded (`OVERRUN_PCT`, default 10 %) so a carry cannot quietly consume the new week, and only one item is ever carried. Exit 0 because B120 already settled that a limit is a normal outcome: a red exit code here would page someone for the scheduler working as designed. |
 
@@ -330,6 +330,10 @@ suggestion floor because somebody asked for the audit.
 Review: every reader goes through the ledger's accessors, so last window's reading is never
 reported as this window's and cannot refuse every audit after a roll; the tests build real `Ledger`
 objects and roll a window; a figure under one point says so; the heartbeat drops a stale reading.
+
+D74 removed the dollar machinery three of those bullets describe: `harness status` has no
+budget-unit accounting, `reserve` is no longer a reason, and the runner passes no `--max-budget-usd`
+cap. Subscription usage leads every report because it is now the only measure there is.
 
 ## D67 / B296-B315 - the token carries `workflow`; the harness guards `.github/` itself
 
@@ -604,7 +608,101 @@ Decision:
   in the D71 merge, is restored.
 - `prompts/README.md` is rewritten, and `.harness/PIN` is regenerated. No model prompt changes.
 - Commits and pull requests carry no AI attribution.
-- Configuration cleanup: to be filled in.
+- Configuration cleanup: D74.
 
 Why: the deleted documents were frozen build specs or further copies of topics other pages cover,
 and several copies had drifted from the code. One page per topic is what the drift tests can hold.
+
+## D74 / B414-B432 - no dollar figure anywhere
+
+Decision:
+- Every dollar mechanism is removed: the weekly USD budget and the reserve under it, the per-call
+  `claude --max-budget-usd` cap, the static per-stage estimates and their observed medians, the
+  session budget, the `budget_period` table, the cost line on transition comments, the dollar
+  figures in `harness status`, `harness ledger` and `/harness status`, and the local watchdog's
+  spend stop. What bounds a call is the run window, `MAX_CONCURRENT_ITEMS`, the `MAX_TURNS_*`
+  ceilings, the five priority classes, both kill switches and the commanded halt, the two
+  subscription-usage stops, and the subscription's own refusal (D71).
+- Ten keys go with them: `WEEKLY_BUDGET_PCT`, `SESSION_BUDGET_PCT`, `RESERVE_PCT`,
+  `WEEKLY_RESET_DAY`, `MAX_CONCURRENT_CLONES`, `WEEKLY_CAP_USD`, `PER_CALL_CAP_USD`,
+  `NOTIFY_POLL_HOURS`, `AUDIT_CAP_USD` and `ASK_CAP_USD`. `config.CONFIG_JSON_KEYS` holds nineteen,
+  `.harness/config.json` ships thirteen, and `.env.example` ships forty-one keys and no
+  `ANTHROPIC_API_KEY` line - that key stays known, redacted and stripped from the model's
+  environment.
+- `config.RETIRED_KEYS` carries those ten names. They are accepted wherever a key is accepted and
+  ignored, in `.env`, in `.harness/config.json` and in the environment, so an existing file keeps
+  loading. `harness doctor` names each one as a warning and never as a problem, because a problem
+  exits 3 and stops the fleet, and a stale line in the operator's own file must not.
+- `Governor(config, clock, ledger)` takes no store and requires the ledger. `authorize` checks the
+  usage stop, then the stored rate limit, and returns `Authorization(id, work_item_id, stage,
+  max_turns)`. `record` observes the usage before it counts the call, because `observe_usage` zeroes
+  `window["calls"]` on a seven-day turnover (B431).
+- The dispatcher's ordinary reason is `<k> of max <n> slots`, with `; weekly X%, session Y%`
+  appended once both windows are observed. `reserve` leaves the reason vocabulary,
+  `discover.yml`'s gate and `MUST_STOP_REASON_PREFIXES`, and `skipped` carries only
+  `depends_on N not merged`, `outside run window` and `slots full`.
+- The ledger keeps `schema` 1 and loses `window.spent_usd`, the `observations` map and
+  `history[].usd`. `Ledger.record(ts, stage, issue, run)` appends one entry and counts one call;
+  `roll_window` is gone, because `observe_usage`'s turnover is what moves `period_start`. The B101
+  transition comment's `cost:` line becomes an optional group, so the comments already on live
+  issues still parse. `harness ledger --rebuild` replays the history and the call count into the
+  window it finds on disk, keeping `period_start`, the cursors, `window.usage`, `window.carry` and
+  `rate_limited_until` (B430).
+- Kept: `EXIT_BUDGET = 4`, `errors.BudgetExhausted` and the stderr line
+  `budget exhausted: <reason>`, which now mean the harness declined to start a model call - a usage
+  stop, a stored rate limit or a priority refusal, and never a dollar figure. The exit code and the
+  phrase are a contract with `discover.yml`, `feedback.yml` and `ops.yml`'s `ERROR_LINE_RE`.
+- Kept: `runner/cli.py`'s branch for an `is_error` result carrying a complete JSON body. It is what
+  keeps an `error_max_turns` result reporting its turns and its own message rather than a stderr
+  dump (B432).
+- `harness status --json` replaces its `budget` block with `usage` (`weekly_pct`, `session_pct`,
+  `rate_limited_until`), and its `in_flight` rows lose `allowance_pct` and `cost_usd` with the
+  `StageRun` fields. `harness run --session-pct` is gone. `packager.py`'s manifest `stages` entries
+  become `{stage, turns}`, which is an edit to a pinned file, so `.harness/PIN` is regenerated in
+  the same change.
+- `store/sqlite.py` drops the `budget_period` DDL, the four budget methods and the two `stage_run`
+  columns, with no `LAYOUT_VERSION` bump and no `DROP`: `migrate()` stays additive, an existing
+  database keeps the unused columns and the orphan table, and nothing reads them. This amends the
+  "§5.2.1 verbatim" claim the store's docstrings make.
+
+**B114, as amended.** No decision may *depend* on the subscription usage signal being present, and
+none falls back to a dollar figure - there is no dollar figure. With no reading in force (a fake
+backend, an older CLI, a call that never reached inference, or a reading whose window has reset),
+the usage stops and the headroom gates admit: unknown is not a stop. What bounds a call then is the
+run window, `MAX_CONCURRENT_ITEMS`, the `MAX_TURNS_*` ceilings, both kill switches and the
+commanded halt, and the subscription's own refusal, which D71 records as `rate_limited_until` and
+which ends at its reset. When a reading is present it stops work exactly as before
+(`WEEKLY_USAGE_STOP_PCT`, `SESSION_USAGE_STOP_PCT`, `OVERRUN_PCT`, `AUDIT_MIN_HEADROOM_PCT`,
+`SUGGEST_MIN_HEADROOM_PCT`).
+
+Why: the dollar figures were an API-equivalent estimate computed from token counts, on a
+subscription that bills none of them, so each was a number the harness invented and then governed
+itself with. Two of them could stop real work: a weekly cap sized for Delivery 2 and the reserve
+line under it. D31 brought in the signal that measures what actually runs out and D66 put it first
+in every report; removing the estimate beside it leaves one measure instead of two that disagree.
+The `--max-budget-usd` cap goes with them, because a per-call ceiling denominated in dollars binds
+on the same invented number.
+
+Consequences, stated plainly:
+- The local watchdog loses its independent spend stop. The container's remaining external stops are
+  heartbeat staleness, free disk, battery and sustained host CPU.
+- A pre-D74 ledger loads unchanged and is saved without `spent_usd`, `observations` or
+  `history[].usd`, while `period_start`, the cursors, the reading, the carry, the rate limit and the
+  history order survive. Pre-D74 code reading a D74 file also loads, and loses only accumulated
+  spend, which no longer means anything.
+- `dispatcher.Candidate` loses its `stage` field, and every construction drops the keyword.
+- `B419` scans `harness/` for a dollar figure. Two exemptions are expected, each only in the file
+  it belongs to: the `RETIRED_KEYS` tuple in `config.py`, and `ledger.py`'s
+  `window.pop("spent_usd", None)`, which is how a ledger written before D74 sheds the field the
+  next time it is saved. Any further exemption the scan turns up is recorded here.
+
+Amends B5, B16-B19, B21-B23, B101, B114, B116, B117, B119, B122 and B211, and annotates D8 (the
+session budget), D19 (the `--max-budget-usd` experiment), D31 (the USD path it fell back to), D34
+(`identity.budget_experiment_recorded()`, one of its two reasons this file stays at the root) and
+D66 (the budget-unit line, the `reserve` token and the per-call cap). Allocates B414-B432.
+
+Rejected: keeping `WEEKLY_CAP_USD` as an advisory figure, which leaves a number nothing may act on;
+renaming `EXIT_BUDGET` and its stderr phrase, which three workflows parse; deleting the `cost:` line
+from the B101 parser instead of making it optional, which would stop the comments already on live
+issues from rebuilding; bumping `LAYOUT_VERSION` to drop two unused columns, which rebuilds the
+table for no behaviour.

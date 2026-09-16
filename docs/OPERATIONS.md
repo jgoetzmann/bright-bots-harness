@@ -42,16 +42,17 @@ issue by hand: the dispatcher's `depends_on` check waits on that label, so an it
 
 ```bash
 harness status --json     # the queue as this store sees it
-harness ledger            # subscription usage, medians, rate-limit state, cursors
+harness ledger            # subscription usage, calls made, rate-limit state, cursors
 harness dispatch          # what would start now, and why not; starts nothing
 harness doctor            # every config key with its value; exit 3 names any missing one
 ```
 
 `harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
-`reason` string is the fastest diagnosis: `halted`, `reserve`, `rate limited until …`,
+`reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
 `weekly usage 91% >= 90%`, `session usage 82% >= 80%`, `carry leeway 10% reached`,
-`outside run window (daily 11:00-15:00 UTC)`, or `budget N% remaining, k of max n slots` (with
-`; weekly 49%, session 7%` appended when subscription usage is known). The last four are §13.
+`outside run window (daily 11:00-15:00 UTC)`, or `k of max n slots` (with
+`; weekly 49%, session 7%` appended when subscription usage is known). The usage stops, the leeway
+and the window are §13.
 
 ---
 
@@ -78,7 +79,9 @@ Read the `kind:ops` issue before the Actions log; the newest one names the faili
   reason in a comment, or reset to its previous state by the next run's reconciliation (§3).
 - **The ledger commit**: `state/ledger.json` conflicted on `harness-state`. Rebuild it there with
   `harness ledger --rebuild` and §12's worktree recipe, never on `main`, whose copy is only the seed
-  and is protected (B113). A lost ledger loses accuracy only (B117).
+  and is protected (B113). The rebuild replays the transition comments into the history and the call
+  count and keeps the window it finds on disk: the reading, the carry, the cursors and any stored
+  rate limit (B430).
 
 To re-run one item by hand once the cause is fixed, run `harness run --item N` from a checkout whose
 `.env` has `STORE_BACKEND=github` and `PERMISSION_TIER=2`, or Actions → `implement.yml` → Run
@@ -317,7 +320,7 @@ Commands are event-driven on this repository and polled on the product repositor
 and acts in the same run, so latency is minutes. On the product repository the harness receives no
 events, because the machine account is not a collaborator there: `harness sweep` finds commands by
 reading the machine account's notifications since the ledger cursor (B140) on `feedback.yml`'s
-schedule, `41 */3 * * 1-5`. Latency there is up to `NOTIFY_POLL_HOURS` (three hours) on a weekday,
+schedule, `41 */3 * * 1-5`. Latency there is up to three hours on a weekday,
 and until Monday for a comment left at the weekend.
 
 So `/harness revise` on an upstream PR at 14:00 UTC on a Friday is acted on at about 15:41; at 20:00
@@ -475,7 +478,7 @@ Actions mode receives it too. The runner keeps the last one of a call, the stage
 `observed_at` from the clock, and the governor stores it under `window.usage`:
 
 ```bash
-harness ledger --json                       # window.usage, window.carry, medians, rate-limit state
+harness ledger --json                       # window.usage, window.carry, rate-limit state
 git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the copy Actions uses
 ```
 
@@ -488,9 +491,13 @@ refused call also sets `rate_limited_until` to the same instant (B396), which li
 `harness ledger` and `harness status` then print `window reset since; no longer stops anything` for
 that window instead of STOPPED (B406).
 
-Nothing depends on the signal (B114). With `usage` absent — a fake backend, an older CLI, a call
-that never reached inference — the usage stops cannot trip, and the configured caps and reserve are
-the only bounds.
+**Nothing depends on the signal** (B114, as D74 amends it). No decision may *depend* on the usage
+signal being present, and none falls back to a dollar figure — there is no dollar figure. With no
+reading in force — a fake backend, an older CLI, a call that never reached inference, or a reading
+whose window has reset — the usage stops and the headroom gates admit: unknown is not a stop. What
+bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, the `MAX_TURNS_*` ceilings, both kill
+switches and the commanded halt, and the subscription's own refusal, which D71 records as
+`rate_limited_until` and which ends at its reset.
 
 ### 13.2 The two stops
 
@@ -502,8 +509,9 @@ the only bounds.
 `.harness/config.json` overrides `.env`, so Actions mode stops new session calls at 80%. A stop
 trips when that window's `utilization * 100` is at or above the knob.
 
-The governor raises `BudgetExhausted(reason)` before the cap checks, and the dispatcher applies the
-same rule in its own order: rate limit → halted → usage stop → reserve → run window → candidates. A
+The governor raises `BudgetExhausted(reason)` before it authorises a call, and the dispatcher
+applies the same rule in its own order: rate limit → halted → commanded halt → carry → usage
+stop → run window → candidates. A
 stop is a normal outcome: the command exits 0, the item is handed off (§13.4), and the next window
 picks it up. `harness dispatch` prints an empty `start` with the reason, the item keeps its label,
 and no comment claims failure. To get the work done anyway, wait for the reset in `window.usage`, or
@@ -574,5 +582,5 @@ Ranges are enforced at startup: `0 < WEEKLY_USAGE_STOP_PCT <= 100`,
 `0 < SESSION_USAGE_STOP_PCT <= 100`, `0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT`, and both window
 keys either empty or matching `^(mon|tue|wed|thu|fri|sat|sun|daily) ([01]\d|2[0-3]):[0-5]\d$`, with
 both ends `daily` or both weekdays. A typo is a `harness doctor` failure naming the key. The knobs
-cannot make the harness merge anything, move a gate, or lift the caps and the reserve that apply
-underneath them.
+cannot make the harness merge anything, move a gate, or lift the turn caps, the kill switches and
+the gate sequence that apply underneath them.

@@ -77,10 +77,10 @@ through interop). The system `python3` is 3.12, which is too old.
   labels are still read) and keeps SQLite as scratch. `STORE_BACKEND` picks one. `stage_run`'s
   CHECK names every stage, so a new stage also bumps `LAYOUT_VERSION` and moves the rebuild
   probe in `migrate()` to the new name. A new stage also needs entries in
-  `dispatcher.STATIC_USD`, `governor.STATIC_ESTIMATES`/`_TURNS_FALLBACK` and
-  `priority.CLASS_OF_STAGE`.
+  `governor._TURNS_FALLBACK` and `priority.CLASS_OF_STAGE`.
 - Governance:
-  - `governor.py`: budgets and the two subscription-usage stops.
+  - `governor.py`: admission — the two subscription-usage stops, the stored rate limit and the
+    per-stage turn caps.
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
     starts nothing.
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
@@ -147,14 +147,16 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
   - every CLI subcommand (`COMMANDS.md`)
   - `stage:` labels, the inbox issue number and the run window (`FOR-MAINTAINERS.md`)
   - every cron quoted in `README.md`, `OPERATIONS.md` and `.harness/README.md`
-  - a `CONFIG_JSON_KEYS` count spelled in words (`SAFETY.md`, `.harness/README.md`)
+  - a `CONFIG_JSON_KEYS` count spelled in words (`SAFETY.md`, `.harness/README.md`,
+    `.env.example`)
   - README's behavior ranges
   - the token scopes every live doc, prompt and workflow claims (B310, B311)
   - the delivery PR body table in `PACKAGE-FORMAT.md` §6
 
   If you rename or add one of these, update the docs in the same change.
 - Adding a required config key means updating `.env.example`, `DEFAULT_ENV` in `tests/conftest.py`,
-  and the other test `.env` helpers (D22).
+  and the other test `.env` helpers (D22). Removing one means adding it to `config.RETIRED_KEYS`
+  and updating the same helpers, so an existing `.env` keeps loading (D74).
 
 ## Conventions
 
@@ -175,8 +177,8 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
   merges. Commits and PR descriptions carry no AI attribution: no `Co-Authored-By` trailer and no
   generated-with line.
 - `.handoffs/` is untracked and not gitignored. Stage explicit paths and never `git add -A`.
-- User-facing output reports subscription usage, not dollars (D66). The `$` figures are internal
-  estimates.
+- The harness computes and prints no dollar figure. What every surface reports is subscription
+  usage (D74).
 - Never print a secret value. Refer to tokens by key name only. `.env` holds the real machine
   PAT and the Claude OAuth token.
 - Comments, docstrings and docs state behaviour in the present tense: what the code does when the

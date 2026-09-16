@@ -13,9 +13,9 @@ harness reads these files and never writes them: `.harness/` is not one of its w
 
 ## What may go in `config.json`
 
-A knob that changes how much or how often the harness works: caps and reserve, concurrency,
-revise cycles, poll cadence, decomposition bound, the usage stops and carry leeway, the run
-window, the fork and upstream names, the inbox and tracking issues, and the trust file path.
+A knob that changes how much or how often the harness works: concurrency, revise cycles,
+decomposition bound, the usage stops and carry leeway, the run window, the fork and upstream
+names, the inbox and tracking issues, and the trust file path.
 [docs/OPERATIONS.md](../docs/OPERATIONS.md) explains the usage stops, the run window and the
 leeway, and how to change them.
 

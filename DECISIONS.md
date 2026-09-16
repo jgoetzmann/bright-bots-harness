@@ -691,8 +691,10 @@ Consequences, stated plainly:
   history order survive. Pre-D74 code reading a D74 file also loads, and loses only accumulated
   spend, which no longer means anything.
 - `dispatcher.Candidate` loses its `stage` field, and every construction drops the keyword.
-- `B419` scans `harness/` for a dollar figure. The one expected exemption is the `RETIRED_KEYS`
-  tuple in `config.py`; any further exemption the scan turns up is recorded here.
+- `B419` scans `harness/` for a dollar figure. Two exemptions are expected, each only in the file
+  it belongs to: the `RETIRED_KEYS` tuple in `config.py`, and `ledger.py`'s
+  `window.pop("spent_usd", None)`, which is how a ledger written before D74 sheds the field the
+  next time it is saved. Any further exemption the scan turns up is recorded here.
 
 Amends B5, B16-B19, B21-B23, B101, B114, B116, B117, B119, B122 and B211, and annotates D8 (the
 session budget), D19 (the `--max-budget-usd` experiment), D31 (the USD path it fell back to), D34

@@ -934,7 +934,8 @@ def test_A30_doctor_names_every_new_config_key(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     for key in D2_DOCTOR_KEYS:
         assert key in out, f"doctor must name {key} (A30)"
-    assert ".harness/trust.txt" in out
+    # Doctor prints the resolved path, which is backslashed on Windows.
+    assert ".harness/trust.txt" in out.replace("\\", "/")
 
 
 def test_A30_doctor_exits_3_and_names_a_missing_max_subissues(tmp_path, monkeypatch, capsys):

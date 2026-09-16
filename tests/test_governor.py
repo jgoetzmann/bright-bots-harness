@@ -638,8 +638,10 @@ def test_B431_record_observes_the_usage_before_it_counts_the_call(sample_config,
 
 
 def test_B16_B17_B18_B19_B21_B23_the_weekly_allowance_governor_is_retired(governor):
-    """B16-B19, B21 and B23: the weekly percentage allowance, its period bookkeeping, the
-    session allowance and the observed-median estimate went with the dollar machinery (D74)."""
+    """B16, B17, B18, B19, B21 and B23: the weekly percentage allowance, its period
+    bookkeeping, the session allowance and the observed-median estimate went with the dollar
+    machinery (D74). Each number is spelled out because the citation scan counts only the
+    numbers a test names literally."""
     import harness.governor as governor_module
     from harness.store import Store
 

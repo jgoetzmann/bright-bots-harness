@@ -208,8 +208,8 @@ class GitHubStore:
         # the footer `links._who` writes: a reader of a public thread can then see whether
         # their own comment would be honoured (D69).
         self.trusted = trusted if isinstance(trusted, Trust) else tuple(trusted)
-        # item id -> (stage, usd) of the latest finish_stage_run in this process (B101 comment).
-        self._last_run: dict[int, tuple[str, float]] = {}
+        # item id -> stage of the latest finish_stage_run in this process (B101 comment).
+        self._last_run: dict[int, str] = {}
         # run id -> (item id, stage) for runs started in this process.
         self._runs: dict[int, tuple[int, str]] = {}
 
@@ -296,11 +296,8 @@ class GitHubStore:
         meta["previous_state"] = from_state
         meta["ts"] = iso(self._clock.now())
         self._set_state_label(issue, to_state)
-        stage, usd = self._last_run.get(item_id, ("-", 0.0))
-        body = (
-            f"**harness** `{stage}` → `{to_state}`\n"
-            f"run: {self.run_url}\ncost: ${usd:.2f}\n{reason}"
-        )
+        stage = self._last_run.get(item_id, "-")
+        body = f"**harness** `{stage}` → `{to_state}`\nrun: {self.run_url}\n{reason}"
         self.gh.comment(self.self_repo, item_id, redact(body + "\n\n" + _meta_marker(meta)))
         item = _item_from(issue, meta, to_state)
         self.scratch._mirror_work_item(item)
@@ -585,8 +582,6 @@ class GitHubStore:
         *,
         status: str,
         turns: int | None,
-        allowance_pct: float | None,
-        cost_usd: float | None,
         exit_reason: str | None,
         transcript_path: str | None,
     ) -> None:
@@ -594,22 +589,17 @@ class GitHubStore:
             run_id,
             status=status,
             turns=turns,
-            allowance_pct=allowance_pct,
-            cost_usd=cost_usd,
             exit_reason=exit_reason,
             transcript_path=transcript_path,
         )
         owner = self._runs.get(run_id)
         if owner is not None:
-            self._last_run[owner[0]] = (owner[1], float(cost_usd or 0.0))
+            self._last_run[owner[0]] = owner[1]
 
     def list_stage_runs(
         self, work_item_id: int | None = None, status: str | None = None
     ) -> list[StageRun]:
         return self.scratch.list_stage_runs(work_item_id, status)
-
-    def completed_allowances(self, stage: str) -> list[float]:
-        return self.scratch.completed_allowances(stage)
 
     # -------------------------------------------------------------------- events
 
@@ -620,19 +610,6 @@ class GitHubStore:
 
     def events(self, work_item_id: int | None = None) -> list[dict]:
         return self.scratch.events(work_item_id)
-
-    # -------------------------------------------------------------------- budget
-
-    def ensure_budget_period(
-        self, unit: str, period_start: str, period_end: str, allocated: float
-    ) -> None:
-        self.scratch.ensure_budget_period(unit, period_start, period_end, allocated)
-
-    def budget_period(self, unit: str, period_start: str) -> tuple[float, float]:
-        return self.scratch.budget_period(unit, period_start)
-
-    def consume_budget(self, unit: str, period_start: str, amount: float) -> None:
-        self.scratch.consume_budget(unit, period_start, amount)
 
     # ---------------------------------------------------------------- http cache
 

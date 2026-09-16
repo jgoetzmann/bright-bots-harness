@@ -230,7 +230,7 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
     scope = str(lens or "").strip()
     if not scope:
         # Refused before any GitHub read and before any model call: an audit with no lens is
-        # "look at everything", which the budget cannot bound (B256).
+        # "look at everything", which no turn cap can bound (B256).
         raise HarnessError(
             "audit needs a lens: what should it look for? `/harness audit accessibility in "
             "src/components`, say, or `/harness audit redundant code`."

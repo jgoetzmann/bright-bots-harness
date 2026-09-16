@@ -206,9 +206,9 @@ def run_model(
     """One model call with its bookkeeping, including the rate-limit outcome (B120).
 
     Every model call the harness makes passes through here, so admission lives here: priority
-    says whether this class of call should run at all right now, then the governor says whether
-    there is allowance for it. Priority never overrules the governor: a class-0 `ask` past a
-    usage stop does not run.
+    says whether this class of call should run at all right now, then the governor applies the
+    usage stops and the stored rate limit. Priority never overrules the governor: a class-0
+    `ask` past a usage stop does not run.
     """
     # Both switches, via the context: the file and the commanded halt. Every stage checks at its
     # own entry too, so a halted harness does not clone a repository before finding out.
@@ -237,7 +237,6 @@ def run_model(
         cwd=cwd,
         timeout_s=timeout_s,
         add_dirs=add_dirs,
-        max_budget_usd=auth.max_budget_usd,
         deny_read=deny_read_paths(ctx.config),
         model=getattr(ctx.config, "model", None),
         effort=getattr(ctx.config, "effort", None),
@@ -253,20 +252,15 @@ def run_model(
     if limited:
         reset_iso = resolve_reset(getattr(result, "reset_at", None), ctx.clock.now())
 
-    allowance = result.allowance_pct
-    if allowance is None:
-        allowance = ctx.governor.estimate(stage)
     if run_id is not None:
         ctx.store.finish_stage_run(
             run_id,
             status="ok" if result.ok else "failed",
             turns=result.turns,
-            allowance_pct=allowance,
-            cost_usd=result.cost_usd,
             exit_reason=f"rate limited until {reset_iso}" if limited else result.error,
             transcript_path=str(transcript_path),
         )
-    ctx.governor.record(auth, allowance_pct=allowance, cost_usd=result.cost_usd, usage=usage)
+    ctx.governor.record(auth, usage=usage)
 
     if limited:
         _rate_limited(

@@ -107,8 +107,6 @@ class RunRequest:
     cwd: Path
     timeout_s: int
     add_dirs: tuple[Path, ...] = ()
-    #: ``claude --max-budget-usd``; omitted from argv when ``None`` (B119).
-    max_budget_usd: float | None = None
     #: Absolute paths the model must not read (B218). Each becomes one ``permissions.deny``
     #: rule passed through ``--settings``. The CLI does not confine ``Read`` to ``cwd``: under
     #: ``--permission-mode acceptEdits`` it reads any absolute path it is given, including the
@@ -131,8 +129,6 @@ class RunResult:
     ok: bool
     text: str
     turns: int | None
-    cost_usd: float | None
-    allowance_pct: float | None
     duration_ms: int | None
     session_id: str | None
     exit_code: int

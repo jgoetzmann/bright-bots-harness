@@ -265,7 +265,7 @@ def answer(text, *effects):
 
 def rate_limited() -> RunResult:
     return RunResult(
-        ok=False, text="", turns=0, cost_usd=0.0, allowance_pct=None, duration_ms=12,
+        ok=False, text="", turns=0, duration_ms=12,
         session_id=None, exit_code=1, transcript=(),
         error=f"You've hit your usage limit. Resets at {RESET_AT}", reset_at=RESET_AT,
     )
@@ -1121,7 +1121,8 @@ def test_B378_a_layout_2_database_migrates_and_keeps_every_row(tmp_path, frozen_
         "CREATE TABLE stage_run_copy AS SELECT * FROM stage_run;\n"
         "DROP TABLE stage_run;\n"
         + LAYOUT_2_STAGE_RUN
-        + "INSERT INTO stage_run SELECT * FROM stage_run_copy;\n"
+        + "INSERT INTO stage_run (id, work_item_id, stage, backend, status, started_at, "
+        "ended_at, turns, exit_reason, transcript_path) SELECT * FROM stage_run_copy;\n"
         "DROP TABLE stage_run_copy;\n"
         "CREATE INDEX idx_stage_run_item ON stage_run(work_item_id);\n"
         "PRAGMA user_version=2;\n"

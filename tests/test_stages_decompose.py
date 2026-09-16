@@ -62,11 +62,6 @@ BASE_ENV = {
     "REPO": UPSTREAM,
     "PERMISSION_TIER": "2",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "90",
-    "SESSION_BUDGET_PCT": "90",
-    "RESERVE_PCT": "5",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -81,14 +76,11 @@ BASE_ENV = {
     "FULLSEND_ENABLED": "false",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
-    "WEEKLY_CAP_USD": "100.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": FORK,
     "UPSTREAM_REPO": UPSTREAM,
     "TRUST_FILE": "trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
@@ -96,10 +88,8 @@ BASE_ENV = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -492,13 +482,13 @@ class RecordingRunner:
 
 
 def write_fixtures(dir_: Path, *, decompose_text: str | None = DECOMPOSE_TEXT) -> Path:
-    base = {"turns": 2, "cost_usd": 0.12, "allowance_pct": None, "duration_ms": 800,
+    base = {"turns": 2, "duration_ms": 800,
             "session_id": "sess-2", "exit_code": 0, "transcript": [], "error": None,
             "reset_at": None}
     if decompose_text is not None:
         _w(dir_ / "decompose.json", json.dumps({"ok": True, "text": decompose_text, **base}))
     _w(dir_ / "rate_limited.json", json.dumps({
-        "ok": False, "text": "", "turns": None, "cost_usd": 0.0, "allowance_pct": None,
+        "ok": False, "text": "", "turns": None,
         "duration_ms": 40, "session_id": None, "exit_code": 1, "transcript": [],
         "error": "Claude usage limit reached. Resets at 2026-09-02T13:30:00Z",
         "reset_at": "2026-09-02T13:30:00Z", "rate_limited": True}))

@@ -308,16 +308,6 @@ class Identity:
             return False
         return len(trusted) >= 2
 
-    def budget_experiment_recorded(self) -> bool:
-        root = getattr(self.config, "repo_root", None)
-        if not root:
-            return False
-        try:
-            text = (Path(root) / "DECISIONS.md").read_text(encoding="utf-8")
-        except OSError:
-            return False
-        return "max-budget-usd" in text
-
     # ---------------------------------------------------------------- assess
 
     def assess(self, target_tier: int) -> Readiness:
@@ -607,19 +597,6 @@ class Identity:
                     "makes it mechanical. Decide it with Nathan, then commit the line."
                 ),
                 verify="grep -n proposals .github/CODEOWNERS",
-            ),
-            Prerequisite(
-                id="max-budget-experiment",
-                title="Verified whether `claude --max-budget-usd` binds under subscription auth",
-                tier_required=2,
-                satisfied=self.budget_experiment_recorded(),
-                actor="you",
-                detail=(
-                    "A five-minute experiment. If it does not bind on a subscription, "
-                    "`PER_CALL_CAP_USD` is advisory and \"enforced twice\" becomes \"enforced "
-                    "once\". Record the result in `DECISIONS.md` either way."
-                ),
-                verify="grep -n max-budget-usd DECISIONS.md",
             ),
             Prerequisite(
                 id="docker",

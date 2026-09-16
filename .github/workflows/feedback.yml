@@ -195,7 +195,7 @@ jobs:
 
         # One notifications call since the ledger cursor; keywords are authorised before they are
         # parsed, and acted on at most once (B135). The sweep spends nothing itself; the revise
-        # and propose actions it enqueues are budgeted by their stages.
+        # and propose actions it enqueues are admitted by their stages.
       - name: Sweep keywords (harness sweep; may run revise/propose)
         if: steps.halt.outputs.halted != 'true'
         shell: bash

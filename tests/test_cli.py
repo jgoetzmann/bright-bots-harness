@@ -30,11 +30,6 @@ BACKEND=fake
 REPO=Bright-Bots-Initiative/brightboost
 PERMISSION_TIER=0
 ALLOWLIST_LABEL=harness-ok
-WEEKLY_BUDGET_PCT=100
-SESSION_BUDGET_PCT=100
-RESERVE_PCT=0
-WEEKLY_RESET_DAY=monday
-MAX_CONCURRENT_CLONES=1
 MAX_TURNS_DISCOVER=10
 MAX_TURNS_PROPOSE=30
 MAX_TURNS_IMPLEMENT=80
@@ -47,14 +42,11 @@ RUNS_DIR=runs
 PACKAGES_DIR=packages
 HALT_FILE=HALT
 FULLSEND_ENABLED=false
-WEEKLY_CAP_USD=25.00
-PER_CALL_CAP_USD=3.00
 MAX_CONCURRENT_ITEMS=1
 MAX_REVISE_CYCLES=3
 FORK_REPO=
 UPSTREAM_REPO=Bright-Bots-Initiative/brightboost
 TRUST_FILE=.harness/trust.txt
-NOTIFY_POLL_HOURS=3
 MAX_SUBISSUES=8
 SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
@@ -67,10 +59,8 @@ RUN_WINDOW_END=
 MODEL=opus
 EFFORT=xhigh
 INBOX_ISSUE=0
-AUDIT_CAP_USD=20.00
 SUGGEST_MAX_PER_RUN=5
 COMMENT_UPSTREAM=true
-ASK_CAP_USD=0.50
 ASK_MAX_PER_DAY=20
 SUGGEST_MIN_HEADROOM_PCT=50
 AUDIT_MIN_HEADROOM_PCT=75
@@ -363,7 +353,7 @@ def test_B67_doctor_exits_3_when_the_halt_file_is_present(tmp_path, monkeypatch,
 # --------------------------------------------------------------------------
 
 
-def test_B68_status_json_emits_valid_json_with_queue_and_budget(tmp_path, monkeypatch, capsys):
+def test_B68_status_json_emits_valid_json_with_queue_and_usage(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     write_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -374,11 +364,10 @@ def test_B68_status_json_emits_valid_json_with_queue_and_budget(tmp_path, monkey
 
     payload = json.loads(capsys.readouterr().out)
     assert "queue" in payload
-    assert "budget" in payload
+    assert "budget" not in payload
     assert payload["queue"]["proposed"] == 1
-    assert "weekly_remaining_pct" in payload["budget"]
-    assert "session_remaining_pct" in payload["budget"]
-    assert "spendable_pct" in payload["budget"]
+    for key in ("weekly_pct", "session_pct", "rate_limited_until"):
+        assert key in payload["usage"]
 
 
 # --------------------------------------------------------------------------
@@ -503,14 +492,11 @@ from datetime import timezone
 
 # The new keys with their .env.example values.
 D2_ENV_LINES = """\
-WEEKLY_CAP_USD=25.00
-PER_CALL_CAP_USD=3.00
 MAX_CONCURRENT_ITEMS=1
 MAX_REVISE_CYCLES=3
 FORK_REPO=
 UPSTREAM_REPO=Bright-Bots-Initiative/brightboost
 TRUST_FILE=.harness/trust.txt
-NOTIFY_POLL_HOURS=3
 MAX_SUBISSUES=8
 SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
@@ -519,15 +505,11 @@ STORE_BACKEND=sqlite
 D2_ENV_BODY = ENV_BODY  # ENV_BODY already carries the D2 keys (DECISIONS D22)
 # The keys `doctor` must name (A30).
 D2_DOCTOR_KEYS = (
-    "WEEKLY_CAP_USD",
-    "PER_CALL_CAP_USD",
-    "RESERVE_PCT",
     "MAX_CONCURRENT_ITEMS",
     "MAX_REVISE_CYCLES",
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
-    "NOTIFY_POLL_HOURS",
     "MAX_SUBISSUES",
 )
 FORK = "brightboost-harness/brightboost"
@@ -635,7 +617,6 @@ def iso_now(offset_seconds: int = 0) -> str:
 def write_ledger(
     tmp_path: Path,
     *,
-    spent_usd: float = 0.0,
     rate_limited_until: str | None = None,
     calls: int = 0,
     usage: dict | None = None,
@@ -645,12 +626,10 @@ def write_ledger(
         "schema": 1,
         "window": {
             "period_start": iso_now(-60),
-            "spent_usd": spent_usd,
             "calls": calls,
             "rate_limited_until": rate_limited_until,
             "usage": usage,
         },
-        "observations": {},
         "cursors": {
             "notifications_last_seen": None,
             "seen_comment_ids": [],
@@ -679,8 +658,6 @@ def rate_limited_fixture() -> dict:
         "ok": False,
         "text": "",
         "turns": 0,
-        "cost_usd": 0.0,
-        "allowance_pct": None,
         "duration_ms": 12,
         "session_id": None,
         "exit_code": 1,
@@ -756,7 +733,7 @@ def test_B149_repo_halt_beats_a_config_error(tmp_path, monkeypatch, capsys):
     """B149 / B150: a broken .env would exit non-zero; the halt check runs first
     and wins with exit 0."""
     monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, WEEKLY_CAP_USD="-1")
+    write_d2_repo(tmp_path, MAX_SUBISSUES="0")
     engage_repo_halt(tmp_path)
     forbid_everything(monkeypatch)
 
@@ -822,7 +799,7 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     assert plan["head"] == {"item": item_id, "reason": "starting now"}
     assert plan["queue"][0]["class"] == "directed" and plan["queue"][0]["forced"] is False
     assert plan["skipped"] == {}
-    assert plan["reason"] == "budget 100% remaining, 1 of max 1 slots"
+    assert plan["reason"] == "1 of max 1 slots"
     assert stage_run_count(tmp_path) == 0
     assert item_state(tmp_path, item_id) == "approved"
     assert not list((tmp_path / "runs").glob("*/clone"))
@@ -836,7 +813,7 @@ def test_R6_5_two_dispatches_over_an_unchanged_ledger_are_byte_identical(
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
     make_item(tmp_path, state="approved")
-    write_ledger(tmp_path, spent_usd=1.25, calls=2)
+    write_ledger(tmp_path, calls=2)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
@@ -855,7 +832,7 @@ def test_B122_dispatch_does_not_modify_the_ledger_file(tmp_path, monkeypatch, ca
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
     make_item(tmp_path, state="approved")
-    ledger_path = write_ledger(tmp_path, spent_usd=1.25, calls=2)
+    ledger_path = write_ledger(tmp_path, calls=2)
     before = ledger_path.read_bytes()
     forbid_everything(monkeypatch)
     capsys.readouterr()
@@ -916,63 +893,6 @@ def test_B121_dispatch_resumes_once_the_rate_limit_has_passed(tmp_path, monkeypa
     assert "rate limited" not in plan["reason"]
 
 
-def test_R6_7_dispatch_at_the_reserve_boundary_emits_an_empty_plan_with_reason_reserve(
-    tmp_path, monkeypatch, capsys
-):
-    """B122 selection step 3: spent >= cap × (1 − reserve/100) → empty
-    plan, reason `reserve`. Cap 25, reserve 10 %, spent 22.50."""
-    monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, RESERVE_PCT="10")
-    assert cli.main(["init"]) == 0
-    make_item(tmp_path, state="approved")
-    write_ledger(tmp_path, spent_usd=22.5, calls=9)
-    forbid_everything(monkeypatch)
-    capsys.readouterr()
-
-    plan = dispatch_plan(capsys)
-
-    assert plan["start"] == []
-    assert plan["reason"] == "reserve"
-    assert stage_run_count(tmp_path) == 0
-
-
-def test_R6_7_dispatch_beyond_the_reserve_is_also_reserve(tmp_path, monkeypatch, capsys):
-    """B122 selection step 3: overspend past the cap is still `reserve`."""
-    monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, RESERVE_PCT="10")
-    assert cli.main(["init"]) == 0
-    make_item(tmp_path, state="approved")
-    write_ledger(tmp_path, spent_usd=26.0, calls=12)
-    forbid_everything(monkeypatch)
-    capsys.readouterr()
-
-    plan = dispatch_plan(capsys)
-
-    assert plan["start"] == []
-    assert plan["reason"] == "reserve"
-
-
-def test_R6_7_dispatch_just_below_the_reserve_skips_an_unaffordable_item(
-    tmp_path, monkeypatch, capsys
-):
-    """B122 selection step 6: remaining 0.50 < the 2.50
-    static implement estimate → the item is skipped with the exact reason string."""
-    monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, RESERVE_PCT="10")
-    assert cli.main(["init"]) == 0
-    item_id = make_item(tmp_path, state="approved")
-    write_ledger(tmp_path, spent_usd=22.0, calls=8)
-    forbid_everything(monkeypatch)
-    capsys.readouterr()
-
-    plan = dispatch_plan(capsys)
-
-    assert plan["start"] == []
-    assert plan["skipped"] == {str(item_id): "estimate $2.50 exceeds remaining $0.50"}
-    assert plan["reason"].startswith("budget ")
-    assert plan["reason"].endswith("0 of max 1 slots")
-
-
 def test_B122_dispatch_with_the_d1_halt_file_starts_nothing(tmp_path, monkeypatch, capsys):
     """B122 selection step 2: `halted = repo_halted(...) or
     halted(config.halt_file)`. The D1 HALT file is `config.halt_file`, not `.harness/HALT`,
@@ -1014,13 +934,13 @@ def test_A30_doctor_names_every_new_config_key(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     for key in D2_DOCTOR_KEYS:
         assert key in out, f"doctor must name {key} (A30)"
-    assert "25.00" in out or "25.0" in out
+    assert ".harness/trust.txt" in out
 
 
-def test_A30_doctor_exits_3_and_names_a_missing_weekly_cap(tmp_path, monkeypatch, capsys):
-    """A30: WEEKLY_CAP_USD removed from .env → exit 3, the key named."""
+def test_A30_doctor_exits_3_and_names_a_missing_max_subissues(tmp_path, monkeypatch, capsys):
+    """A30: MAX_SUBISSUES removed from .env → exit 3, the key named."""
     monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, WEEKLY_CAP_USD=None)
+    write_d2_repo(tmp_path, MAX_SUBISSUES=None)
     doctor_ok(monkeypatch)
     forbid_everything(monkeypatch)
     capsys.readouterr()
@@ -1028,15 +948,14 @@ def test_A30_doctor_exits_3_and_names_a_missing_weekly_cap(tmp_path, monkeypatch
     assert cli.main(["doctor"]) == 3
 
     captured = capsys.readouterr()
-    assert "WEEKLY_CAP_USD" in captured.out + captured.err
+    assert "MAX_SUBISSUES" in captured.out + captured.err
 
 
 @pytest.mark.parametrize(
     ("key", "value"),
     [
         ("MAX_SUBISSUES", "51"),
-        ("NOTIFY_POLL_HOURS", "0"),
-        ("PER_CALL_CAP_USD", "0"),
+        ("MAX_REVISE_CYCLES", "-1"),
         ("STORE_BACKEND", "bogus"),
         ("MAX_CONCURRENT_ITEMS", "2"),
     ],
@@ -1062,7 +981,7 @@ def test_B112_doctor_exits_3_and_names_an_unknown_config_json_key(tmp_path, monk
     write_d2_repo(tmp_path)
     (tmp_path / ".harness").mkdir()
     (tmp_path / ".harness" / "config.json").write_text(
-        json.dumps({"WEEKLY_CAP_USD": 25.0, "WEEKLY_CAP_USDD": 30.0}) + "\n",
+        json.dumps({"MAX_SUBISSUES": 8, "MAX_SUBISSUESS": 30}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -1073,7 +992,7 @@ def test_B112_doctor_exits_3_and_names_an_unknown_config_json_key(tmp_path, monk
     assert cli.main(["doctor"]) == 3
 
     captured = capsys.readouterr()
-    assert "WEEKLY_CAP_USDD" in captured.out + captured.err
+    assert "MAX_SUBISSUESS" in captured.out + captured.err
 
 
 # --------------------------------------------------------------------------
@@ -1082,8 +1001,8 @@ def test_B112_doctor_exits_3_and_names_an_unknown_config_json_key(tmp_path, monk
 
 
 def test_ledger_json_prints_valid_json_with_the_window(tmp_path, monkeypatch, capsys):
-    """`ledger --json` prints the window, observations
-    and rate-limit state as JSON; B116's ledger shape is what comes back."""
+    """`ledger --json` prints the window and the rate-limit state as JSON; B116's ledger shape
+    is what comes back."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
@@ -1094,8 +1013,9 @@ def test_ledger_json_prints_valid_json_with_the_window(tmp_path, monkeypatch, ca
 
     payload = json.loads(capsys.readouterr().out)
     assert "window" in payload
-    assert "observations" in payload
-    for key in ("period_start", "spent_usd", "calls", "rate_limited_until"):
+    assert "observations" not in payload
+    assert "spent_usd" not in payload["window"]
+    for key in ("period_start", "calls", "rate_limited_until"):
         assert key in payload["window"]
 
 
@@ -1104,31 +1024,30 @@ def test_ledger_json_reflects_the_ledger_file(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
-    write_ledger(tmp_path, spent_usd=12.41, calls=37, rate_limited_until=RESET_AT)
+    write_ledger(tmp_path, calls=37, rate_limited_until=RESET_AT)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
     assert cli.main(["ledger", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["window"]["spent_usd"] == pytest.approx(12.41)
     assert payload["window"]["calls"] == 37
     assert payload["window"]["rate_limited_until"] == RESET_AT
 
 
-def test_ledger_plain_output_mentions_the_spend_and_the_rate_limit(tmp_path, monkeypatch, capsys):
-    """The human form prints spend and rate-limit state."""
+def test_ledger_plain_output_mentions_the_calls_and_the_rate_limit(tmp_path, monkeypatch, capsys):
+    """The human form prints the call count and the rate-limit state."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
-    write_ledger(tmp_path, spent_usd=12.41, calls=37, rate_limited_until=RESET_AT)
+    write_ledger(tmp_path, calls=37, rate_limited_until=RESET_AT)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
     assert cli.main(["ledger"]) == 0
 
     out = capsys.readouterr().out
-    assert "12.41" in out
+    assert "37" in out
     assert RESET_AT in out
 
 
@@ -1856,14 +1775,14 @@ def test_A30_doctor_config_keys_cover_every_key_config_json_may_override():
 def test_B112_a_typod_superstring_key_does_not_indict_the_correctly_spelled_one(
     tmp_path, monkeypatch, capsys
 ):
-    """B112 boundary: `WEEKLY_CAP_USDD` in .harness/config.json is a startup error naming the
-    typo, but `WEEKLY_CAP_USD` is spelled correctly and in range. The per-key verdict is
+    """B112 boundary: `MAX_SUBISSUESS` in .harness/config.json is a startup error naming the
+    typo, but `MAX_SUBISSUES` is spelled correctly and in range. The per-key verdict is
     whole-word, so doctor must not also report the real key as invalid."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     (tmp_path / ".harness").mkdir()
     (tmp_path / ".harness" / "config.json").write_text(
-        json.dumps({"WEEKLY_CAP_USD": 25.0, "WEEKLY_CAP_USDD": 30.0}) + "\n",
+        json.dumps({"MAX_SUBISSUES": 8, "MAX_SUBISSUESS": 30}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -1875,16 +1794,16 @@ def test_B112_a_typod_superstring_key_does_not_indict_the_correctly_spelled_one(
 
     payload = json.loads(capsys.readouterr().out)
     problems = payload["problems"]
-    assert any("WEEKLY_CAP_USDD" in problem for problem in problems), problems
-    assert "config key invalid or out of range: WEEKLY_CAP_USD" not in problems, problems
-    assert payload["config_keys"]["WEEKLY_CAP_USD"] in ("25.0", "25.00")
+    assert any("MAX_SUBISSUESS" in problem for problem in problems), problems
+    assert "config key invalid or out of range: MAX_SUBISSUES" not in problems, problems
+    assert payload["config_keys"]["MAX_SUBISSUES"] == "8"
 
     capsys.readouterr()
     assert cli.main(["doctor"]) == 3
     captured = capsys.readouterr()
     text = captured.out + captured.err
-    assert "WEEKLY_CAP_USDD" in text
-    assert "config key invalid or out of range: WEEKLY_CAP_USD\n" not in text
+    assert "MAX_SUBISSUESS" in text
+    assert "config key invalid or out of range: MAX_SUBISSUES\n" not in text
 
 
 def test_A30_an_out_of_range_key_still_earns_its_own_per_key_verdict(
@@ -2396,7 +2315,7 @@ def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
-    write_ledger(tmp_path, spent_usd=1.22, calls=1, usage=USAGE_SAMPLE)
+    write_ledger(tmp_path, calls=1, usage=USAGE_SAMPLE)
     reading_time = datetime(2026, 9, 4, 10, 30, tzinfo=timezone.utc)
     freeze_run_clock(monkeypatch, reading_time)
     align_ledger_window(tmp_path, reading_time)
@@ -2419,7 +2338,7 @@ def test_b221_ledger_says_so_plainly_when_usage_was_never_observed(tmp_path, mon
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
-    write_ledger(tmp_path, spent_usd=1.22, calls=1)
+    write_ledger(tmp_path, calls=1)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
@@ -2429,8 +2348,10 @@ def test_b221_ledger_says_so_plainly_when_usage_was_never_observed(tmp_path, mon
     assert "not measured yet" in out
     # No number at all in that block. B295 renamed the heading from `usage:` to `subscription:`,
     # because "usage" reads as a synonym for spend and this is the thing that actually runs out.
-    block = out.split("subscription:")[1].split("observations:")[0]
+    block = out.split("subscription:")[1].split("rate limited now:")[0]
     assert "%" not in block, f"no signal must not print as a figure: {block!r}"
+    # D74: with nothing measured, the block names the bounds that do apply, never a figure.
+    assert "$" not in block and "dollar" not in block.lower()
 
 
 def test_b221_a_utilization_past_the_stop_reads_as_stopped(tmp_path, monkeypatch, capsys):
@@ -2439,7 +2360,7 @@ def test_b221_a_utilization_past_the_stop_reads_as_stopped(tmp_path, monkeypatch
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
     usage = dict(USAGE_SAMPLE, five_hour={"utilization": 0.72, "resets_at": "z"})
-    write_ledger(tmp_path, spent_usd=1.22, calls=1, usage=usage)
+    write_ledger(tmp_path, calls=1, usage=usage)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
@@ -2456,7 +2377,7 @@ def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeyp
     write_d2_repo(tmp_path)
     assert cli.main(["init"]) == 0
     usage = dict(USAGE_SAMPLE, five_hour={"utilization": 0.696, "resets_at": "z"})
-    write_ledger(tmp_path, spent_usd=1.0, calls=1, usage=usage)
+    write_ledger(tmp_path, calls=1, usage=usage)
     forbid_everything(monkeypatch)
     capsys.readouterr()
 
@@ -2465,6 +2386,144 @@ def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "0.4 to go" in out
     assert "STOPPED" not in out
+
+
+# --------------------------------------------------------------------------------------
+# D74 - the dollar machinery is gone from the CLI surface
+# --------------------------------------------------------------------------------------
+
+
+def test_B417_doctor_warns_about_a_retired_config_key_and_still_exits_zero(
+    tmp_path, monkeypatch, capsys
+):
+    """B417: a key D74 removed is a stale line in the operator's own file, not a fault. It is a
+    warning, because a problem exits 3 and that exit code gates the spending workflows."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, WEEKLY_CAP_USD="400.00")
+    (tmp_path / ".harness").mkdir(exist_ok=True)
+    (tmp_path / ".harness" / "config.json").write_text(
+        json.dumps({"RESERVE_PCT": 10}) + "\n", encoding="utf-8", newline="\n"
+    )
+    doctor_ok(monkeypatch)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["doctor", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    warned = " ".join(payload["warnings"])
+    assert "WEEKLY_CAP_USD" in warned and ".env" in warned
+    assert "RESERVE_PCT" in warned and ".harness/config.json" in warned
+    assert not any("WEEKLY_CAP_USD" in p or "RESERVE_PCT" in p for p in payload["problems"])
+
+
+def test_B417_no_retired_key_means_no_such_warning(tmp_path, monkeypatch, capsys):
+    """The other half: the warning appears only when a retired key is actually present."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    doctor_ok(monkeypatch)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["doctor", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert not any("retired config key" in w for w in payload["warnings"])
+
+
+def test_B420_dispatch_over_a_ledger_with_old_spend_starts_the_item(
+    tmp_path, monkeypatch, capsys
+):
+    """B420: a ledger written before D74 still carries `spent_usd` and `observations`. Nothing
+    reads them any more, so the plan is the ordinary slot count and the item starts."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    path = write_ledger(tmp_path, calls=12)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["spent_usd"] = 26.0
+    payload["observations"] = {"implement": {"n": 4, "median_usd": 2.5}}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    plan = dispatch_plan(capsys)
+
+    assert plan["start"] == [item_id]
+    assert plan["reason"] == "1 of max 1 slots"
+    assert plan["skipped"] == {}
+
+
+def test_B425_status_and_ledger_print_no_dollar_figure(tmp_path, monkeypatch, capsys):
+    """B425: what runs out is the subscription allowance. Nothing computes a dollar figure, so
+    no surface prints one, measured or not."""
+    from harness import links
+
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    write_ledger(tmp_path, calls=3, usage=USAGE_SAMPLE)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    for argv in (["status"], ["status", "--json"], ["ledger"], ["ledger", "--json"]):
+        assert cli.main(argv) == 0
+        out = capsys.readouterr().out
+        lowered = out.lower()
+        assert "$" not in out, f"{argv} printed a dollar sign: {out!r}"
+        assert "usd" not in lowered and "dollar" not in lowered, f"{argv}: {out!r}"
+        assert "internal allowance" not in lowered and "observations" not in lowered
+    assert not hasattr(links, "spend_estimate")
+
+
+def test_B427_run_no_longer_takes_session_pct(tmp_path, monkeypatch):
+    """B427: the flag set a share of a weekly allowance measured in dollars, which is gone."""
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["run", "--session-pct", "5"])
+
+    assert caught.value.code == 2
+    assert "--session-pct" not in cli.build_parser().format_help()
+
+
+def test_B430_rebuild_replays_the_history_without_discarding_the_window(
+    tmp_path, monkeypatch, capsys
+):
+    """B430: a rebuild recovers the history from the transition comments, and nothing else is
+    in them. The window state no comment carries -- the period start, the usage reading, the
+    carry, the rate limit and the cursors -- is kept rather than reset to an empty ledger."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    path = write_ledger(tmp_path, calls=0, rate_limited_until=RESET_AT, usage=USAGE_SAMPLE)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    period_start = payload["window"]["period_start"]
+    payload["window"]["carry"] = {
+        "issue": 7, "since": iso_now(-120), "reason": "weekly usage 91% >= 90%"
+    }
+    payload["cursors"]["seen_comment_ids"] = ["IC_kept"]
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+    comment = {
+        "body": "**harness** `implement` -> `packaged`\nrun: https://example/run/1\ncost: $1.23",
+        "created_at": "2026-09-08T10:00:00Z",
+        "issue": 4,
+    }
+    monkeypatch.setattr(cli, "_self_repo_comments", lambda ctx, config: [comment])
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["ledger", "--rebuild"]) == 0
+
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert [entry["issue"] for entry in after["history"]] == [4]
+    assert after["window"]["calls"] == 1
+    assert after["window"]["period_start"] == period_start
+    assert after["window"]["rate_limited_until"] == RESET_AT
+    assert after["window"]["carry"]["issue"] == 7
+    assert after["window"]["usage"]["seven_day"]["utilization"] == 0.58
+    assert after["cursors"]["seen_comment_ids"] == ["IC_kept"]
 
 
 # --------------------------------------------------------------------------------------

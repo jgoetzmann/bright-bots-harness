@@ -69,7 +69,6 @@ $overrides["TRUST_FILE"] = "/harness/.harness/trust.txt"
 $overrides["PERMISSION_TIER"] = "0"          # no GitHub credential inside, so the token door stays shut (I-11)
 $overrides["STORE_BACKEND"] = "sqlite"       # local mode uses the SQLite store on /data
 $overrides["MAX_CONCURRENT_ITEMS"] = "1"     # B123: concurrency above 1 is Actions mode only
-$overrides["MAX_CONCURRENT_CLONES"] = "1"    # B123
 $seen = @{}
 $loopEnv = @(
     "# Written by local/run.ps1 on every start from the filtered host .env (local/container_env.ps1).",

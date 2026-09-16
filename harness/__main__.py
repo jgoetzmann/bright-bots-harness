@@ -16,6 +16,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 from harness import __version__, keywords, links, verify_pin
+from harness import config as config_mod
 from harness import ledger as ledger_mod
 from harness.clock import iso
 from harness.clone import Lease, sync_fork
@@ -94,15 +95,11 @@ MAX_TURNS_PROBE_ARGV = ["claude", "-p", "--max-turns", "1", "--output-format", "
 # Every key doctor reports, with the Config field that carries it once the config has loaded.
 # Every key of ``config.CONFIG_JSON_KEYS`` is here, so doctor confirms a knob change.
 CONFIG_KEYS: tuple[tuple[str, str], ...] = (
-    ("WEEKLY_CAP_USD", "weekly_cap_usd"),
-    ("PER_CALL_CAP_USD", "per_call_cap_usd"),
-    ("RESERVE_PCT", "reserve_pct"),
     ("MAX_CONCURRENT_ITEMS", "max_concurrent_items"),
     ("MAX_REVISE_CYCLES", "max_revise_cycles"),
     ("FORK_REPO", "fork_repo"),
     ("UPSTREAM_REPO", "upstream_repo"),
     ("TRUST_FILE", "trust_file"),
-    ("NOTIFY_POLL_HOURS", "notify_poll_hours"),
     ("MAX_SUBISSUES", "max_subissues"),
     ("SELF_REPO", "self_repo"),
     ("TRACKING_ISSUE", "tracking_issue"),
@@ -118,10 +115,8 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("EFFORT", "effort"),
     # What may ask for work, and what bounds the answers.
     ("INBOX_ISSUE", "inbox_issue"),
-    ("AUDIT_CAP_USD", "audit_cap_usd"),
     ("SUGGEST_MAX_PER_RUN", "suggest_max_per_run"),
     ("COMMENT_UPSTREAM", "comment_upstream"),
-    ("ASK_CAP_USD", "ask_cap_usd"),
     ("ASK_MAX_PER_DAY", "ask_max_per_day"),
     ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
     ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
@@ -175,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup = sub.add_parser("setup", help="assess identity readiness and regenerate HUMAN.md")
     setup.add_argument("--tier", type=int, default=1, metavar="N", help="target tier (default 1)")
 
-    status = sub.add_parser("status", help="queue by state, budget remaining, in-flight runs")
+    status = sub.add_parser("status", help="queue by state, subscription usage, in-flight runs")
     status.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     discover = sub.add_parser("discover", help="find work")
@@ -195,7 +190,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="serial loop over approved items")
     run.add_argument("--item", type=int, default=None, metavar="ID")
-    run.add_argument("--session-pct", type=float, default=None, dest="session_pct", metavar="P")
     run.add_argument("--until", default=None, metavar="HH:MM")
 
     package = sub.add_parser("package", help="build the review package for an item")
@@ -266,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
         "relabel", help="migrate open issues from the harness:* labels to stage:/kind:/via:"
     )
 
-    ledger = sub.add_parser("ledger", help="print spend, medians, window state")
+    ledger = sub.add_parser("ledger", help="print the window, the calls and the measured usage")
     ledger.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     ledger.add_argument(
         "--rebuild",
@@ -642,7 +636,7 @@ def _doctor_config_keys(
             problems.append(f"missing config key: {key}")
             continue
         keys[key] = raw[key]
-        # Whole-word match, so a typo'd WEEKLY_CAP_USDD does not also indict WEEKLY_CAP_USD.
+        # Whole-word match, so a typo'd MAX_SUBISSUESS does not also indict MAX_SUBISSUES.
         if re.search(rf"\b{re.escape(key)}\b", error_text):
             problems.append(f"config key invalid or out of range: {key}")
     return keys
@@ -691,6 +685,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except HarnessError as exc:
         config_error = str(exc)
         problems.append(f"config invalid: {exc}")
+    if config is not None:
+        # A stale line in the operator's own .env warns rather than stopping anything: a problem
+        # exits 3, and that exit code gates the spending workflows (D74).
+        for key, where in config_mod.retired_keys_seen():
+            warnings.append(
+                f"retired config key ignored: {key} (in {where}) -- D74 removed it; delete it"
+            )
 
     disk: dict[str, object] = {}
     halt_present = False
@@ -1085,6 +1086,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------
 
 
+def _as_pct(fraction: float | None) -> float | None:
+    """A utilization fraction as a percentage, or None where this window has no live reading."""
+    return None if fraction is None else float(fraction) * 100.0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="status")
@@ -1093,28 +1099,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     for item in ctx.store.list_work_items():
         queue[item.state] = queue.get(item.state, 0) + 1
 
-    budget = {
-        "weekly_remaining_pct": ctx.governor.remaining_weekly_pct(),
-        "session_remaining_pct": ctx.governor.remaining_session_pct(),
-        "spendable_pct": ctx.governor.spendable_pct(),
+    now = ctx.clock.now()
+    usage = {
+        "weekly_pct": _as_pct(ctx.ledger.weekly_utilization(now)),
+        "session_pct": _as_pct(ctx.ledger.session_utilization(now)),
+        "rate_limited_until": dict(ctx.ledger.window).get("rate_limited_until"),
     }
 
     in_flight = [dataclasses.asdict(r) for r in ctx.store.list_stage_runs(status="running")]
 
     halt = ctx.ledger.halt_request()
-    payload = {"queue": queue, "budget": budget, "in_flight": in_flight, "halt": halt}
+    payload = {"queue": queue, "usage": usage, "in_flight": in_flight, "halt": halt}
 
-    # The halt comes first, so the numbers below are not read as a running harness.
+    # The halt comes first, so what follows is not read as a running harness.
     lines = _halt_lines(ctx.ledger)
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
-    # The subscription first, because it is what runs out. The block below is the harness's own
-    # accounting in budget units, a different percentage, so each is labelled.
-    lines.extend(_usage_lines(ctx.ledger, config, ctx.clock.now()))
-    lines.append("internal allowance (budget units, not the subscription):")
-    lines.append(f"  weekly remaining  {budget['weekly_remaining_pct']:.2f}%")
-    lines.append(f"  session remaining {budget['session_remaining_pct']:.2f}%")
-    lines.append(f"  spendable         {budget['spendable_pct']:.2f}%")
+    lines.extend(_usage_lines(ctx.ledger, config, now))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
         lines.append(
@@ -1265,8 +1266,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         for item_id in item_ids:
             ctx = _context(config, args, run_id=f"item-{item_id}")
-            if args.session_pct is not None:
-                ctx.governor.begin_session(args.session_pct)
 
             try:
                 # implement, or continue where a handoff stopped (B215)
@@ -1312,9 +1311,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                     if pr_url:
                         delivered.append(pr_url)
             except (BudgetExhausted, RateLimited) as exc:
-                # A usage stop, a budget stop and a rate limit are normal outcomes (B120): the
-                # item is handed off with its work committed and carried in the ledger, and the
-                # run exits 0 without starting anything else.
+                # A declined call and a rate limit are normal outcomes (B120): the item is handed
+                # off with its work committed and carried in the ledger, and the run exits 0
+                # without starting anything else.
                 if isinstance(exc, RateLimited):
                     rate_limited_until = exc.reset_at or "unknown"
                 handed_off = _hand_off(ctx, item_id, exc)
@@ -1493,7 +1492,6 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         Candidate(
             issue=int(item.id),
             depends_on=_depends_on(config, item),
-            stage="implement",
             created_at=str(getattr(item, "created_at", "") or ""),
             forced=int(item.id) in forced,
             cls=priority.class_of("", via=priority.via_of(item)),
@@ -2283,8 +2281,9 @@ def _usage_lines(led, config, now=None) -> list[str]:
         return [
             "subscription:",
             "  (not measured yet -- the signal rides on the headers of a real model call, so",
-            "   until one has been made the dollar estimate is the only bound there is. B114:",
-            "   no decision may DEPEND on the signal being present.)",
+            "   until one has been made there is nothing to report. B114: no decision may",
+            "   DEPEND on it. What bounds a call meanwhile is the run window, the turn caps,",
+            "   both halts and the subscription's own refusal.)",
         ]
     rows = [
         ("session (5h) ", "five_hour", float(config.session_usage_stop_pct)),
@@ -2395,13 +2394,26 @@ def cmd_relabel(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _rebuilt(current, comments):
+    """`--rebuild`'s ledger: the replayed history and call count, over the window on disk.
+
+    A transition comment carries the history and nothing else, so the state no comment can
+    reconstruct -- the period start, the usage reading, the carry, the rate limit and the
+    cursors -- is kept rather than reset to an empty ledger (D74).
+    """
+    replayed = ledger_mod.rebuild(comments)
+    current.history = list(replayed.history)
+    current.window["calls"] = int(replayed.window.get("calls", 0) or 0)
+    return current
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="ledger")
     led = ctx.ledger
     rebuilt = False
     if getattr(args, "rebuild", False):
-        led = ledger_mod.rebuild(_self_repo_comments(ctx, config))
+        led = _rebuilt(led, _self_repo_comments(ctx, config))
         ledger_mod.save(led, ctx.ledger_path)
         rebuilt = True
 
@@ -2415,24 +2427,9 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     lines.extend(_halt_lines(led))
     lines.append("window:")
     lines.append(f"  period_start        {window.get('period_start')}")
-    # The JSON field is `spent_usd`; the text labels it as an estimate.
-    lines.append(
-        f"  est. api-equiv usd  {float(window.get('spent_usd') or 0.0):.2f}  "
-        "(estimated from tokens; nobody bills it)"
-    )
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
     lines.append(f"  rate_limited_until  {window.get('rate_limited_until') or 'none'}")
     lines.extend(_usage_lines(led, config, ctx.clock.now()))
-    lines.append("observations:")
-    if led.observations:
-        for stage in sorted(led.observations):
-            row = led.observations[stage]
-            lines.append(
-                f"  {stage:<12} n={int(row.get('n') or 0):<4} "
-                f"median_usd={float(row.get('median_usd') or 0.0):.2f}"
-            )
-    else:
-        lines.append("  (none)")
     limited = "yes" if led.rate_limited(now_iso) else "no"
     lines.append(f"rate limited now: {limited} (now {now_iso})")
     lines.append(f"history: {len(led.history)} entr{'y' if len(led.history) == 1 else 'ies'}")
@@ -2530,7 +2527,6 @@ def _local_unit(args: argparse.Namespace, work: Path) -> None:
             json=False,
             dry_run=getattr(args, "dry_run", False),
             item=int(item_id),
-            session_pct=None,
             until=None,
         )
         try:
@@ -2843,6 +2839,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"halted: {exc}", file=sys.stderr)
         return EXIT_HALTED
     except BudgetExhausted as exc:
+        # The harness declined to start a model call: a usage stop, a stored rate limit or a
+        # priority refusal. This exit code and this phrase are a workflow contract (D74).
         print(f"budget exhausted: {exc}", file=sys.stderr)
         return EXIT_BUDGET
     except RateLimited as exc:

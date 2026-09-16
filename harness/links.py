@@ -36,7 +36,7 @@ __all__ = [
 VERB_HELP: tuple[tuple[str, str], ...] = (
     ("work <what, or a link>", "open a work item for this and put it in the queue"),
     ("ask <question>", "answer a question about the code; changes nothing"),
-    ("status", "show usage, the queue, and when the next thing happens"),
+    ("status", "show subscription usage, the queue, and when the next thing happens"),
     ("audit <what to look for>", "read the product repository and open one issue of findings"),
     ("promote <n>", "turn finding n of an audit into a work item of its own"),
     ("revise <notes>", "redo it with your notes: the plan on a proposal, the code on a delivery"),
@@ -93,9 +93,9 @@ def usage_headline(ledger: Any, config: Any, now: Any = None) -> list[str]:
     return lines
 
 
-#: The ledger accessor for each window. `roll_window` moves `period_start` and leaves the last
-#: observation in place, and the accessors' staleness check is what stops last week's figure
-#: being reported as this week's, so these are used rather than `window["usage"]` directly.
+#: The ledger accessor for each window. A window turnover moves `period_start` and leaves the
+#: last observation in place, and the accessors' staleness check is what stops last week's
+#: figure being reported as this week's, so these are used rather than `window["usage"]`.
 _LEDGER_ACCESSOR = {"seven_day": "weekly_utilization", "five_hour": "session_utilization"}
 
 

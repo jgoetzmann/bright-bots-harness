@@ -1,6 +1,6 @@
 # watchdog.yml: when feedback.yml's schedule has not fired, dispatch a run, and file an ops issue
 # once the schedule has stopped. Spends nothing itself; feedback.yml applies its own halt, window
-# and budget checks (B294).
+# and usage-stop checks (B294).
 name: watchdog
 
 on:

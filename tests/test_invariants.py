@@ -592,14 +592,10 @@ D2_REQUIRED_FILES = [
     "bb-config.json",
 ]
 
-# The first eleven .harness/config.json knob keys (B112).
+# The first seven .harness/config.json knob keys (B112).
 D2_CONFIG_JSON_KEYS = (
-    "WEEKLY_CAP_USD",
-    "PER_CALL_CAP_USD",
-    "RESERVE_PCT",
     "MAX_CONCURRENT_ITEMS",
     "MAX_REVISE_CYCLES",
-    "NOTIFY_POLL_HOURS",
     "MAX_SUBISSUES",
     "TRACKING_ISSUE",
     "FORK_REPO",
@@ -622,14 +618,11 @@ CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS + D4_NEW_CONFIG
 
 # The .env keys and values the build_context test writes, kept inline.
 D2_ENV_KEYS: dict[str, str] = {
-    "WEEKLY_CAP_USD": "25.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": "",
     "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
     "TRUST_FILE": ".harness/trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
@@ -1618,15 +1611,15 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema"] == 1
     assert payload["window"]["period_start"] == "2026-09-07T00:00:00Z"
-    assert payload["window"]["spent_usd"] == 0
+    assert "spent_usd" not in payload["window"]
     assert payload["window"]["calls"] == 0
     assert payload["window"]["rate_limited_until"] is None
     assert payload["history"] == []
-    assert isinstance(payload["observations"], dict)
+    assert "observations" not in payload
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_sixteen_knob_keys():
+def test_b112_harness_config_json_carries_exactly_the_thirteen_knob_keys():
     """B112: .harness/config.json's keys are exactly the operational knobs in `CONFIG_JSON_KEYS`
     above, and nothing that alters what the harness concludes."""
     path = REPO_ROOT / ".harness" / "config.json"
@@ -2048,9 +2041,9 @@ def test_b113_branch_protection_is_a_named_human_prerequisite_and_codeowners_cov
 
 def test_b134_operations_doc_states_the_event_driven_versus_polled_asymmetry():
     """B134: commands on this repository are event-driven; on the product repository the sweep
-    finds them within NOTIFY_POLL_HOURS. docs/OPERATIONS.md says so."""
+    finds them on feedback.yml's cron. docs/OPERATIONS.md says so."""
     ops = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
-    assert "NOTIFY_POLL_HOURS" in ops
+    assert "41 */3 * * 1-5" in ops
     lowered = ops.lower()
     assert "event" in lowered and ("poll" in lowered or "sweep" in lowered)
 
@@ -2132,7 +2125,7 @@ def test_b215_implement_yml_documents_the_dst_drift():
     assert "utc" in lowered
 
 
-# The first eleven knobs plus the five usage-governance ones and INBOX_ISSUE. Built as a union,
+# The first seven knobs plus the five usage-governance ones and INBOX_ISSUE. Built as a union,
 # so the set still demands the newer keys if the shipped file drops them.
 D3_CONFIG_JSON_KEYS = tuple(
     sorted(
@@ -2143,7 +2136,7 @@ D3_CONFIG_JSON_KEYS = tuple(
 
 def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
     """B112: the two usage stops, the carry leeway, the two run-window bounds and `INBOX_ISSUE`
-    join the first eleven knobs, nothing else does, and each knob has the right type."""
+    join the first seven knobs, nothing else does, and each knob has the right type."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2177,7 +2170,6 @@ MUST_STOP_REASON_PREFIXES = frozenset({
     # The commanded halt (`/harness halt`), classified apart so a `case` matching bare `halted`
     # exactly still stops on it.
     "halted by @",
-    "reserve",
     "weekly usage ",
     "session usage ",
     "carry leeway ",
@@ -2397,10 +2389,10 @@ def test_discover_yml_spend_gate_does_not_stop_on_the_run_window():
         assert "proceed=false" not in body
 
 
-def test_discover_yml_spend_gate_proceeds_on_the_ordinary_budget_reason():
+def test_discover_yml_spend_gate_proceeds_on_the_ordinary_slots_reason():
     """The default clause lets the ordinary B211 plan reason through."""
     block = _case_blocks(_d2_workflow("discover.yml"))[0]
-    ordinary = "budget 61% remaining, 1 of max 1 slots; weekly 39%, session 7%"
+    ordinary = "1 of max 1 slots; weekly 39%, session 7%"
     assert "proceed=true" in _case_body_for(block, ordinary)
 
 
@@ -2687,3 +2679,80 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
         "no fake fixture for: " + ", ".join(missing) + " — `BACKEND=fake` cannot reach "
         "those stages, so nobody can try them without a real credential"
     )
+
+
+# --------------------------------------------------------------------------------------
+# D74 - no dollar machinery survives anywhere
+# --------------------------------------------------------------------------------------
+
+#: Two places a retired name still belongs under `harness/`: the tuple that keeps an existing
+#: .env and .harness/config.json loading after D74 removed the keys it names, and the one line
+#: that drops a pre-D74 ledger's spend field the next time the ledger is saved.
+RETIRED_KEYS_TUPLE = re.compile(r"RETIRED_KEYS[^=]*=\s*\([^)]*\)", re.S)
+LEDGER_SPEND_DROP = re.compile(r'window\.pop\("spent_usd", None\)')
+
+DOLLAR_TOKENS = (
+    "max-budget-usd", "max_budget_usd", "cost_usd", "spent_usd", "static_usd", "total_cost_usd",
+)
+
+
+def test_B419_no_module_under_harness_computes_or_prints_a_dollar_figure():
+    """B419: D74 removed the weekly cap, the per-call cap and every estimate, so no source
+    under harness/ names one. The two exemptions are `config.RETIRED_KEYS` and the ledger's
+    one-line drop of a pre-D74 `spent_usd`; D74 names both, and each is exempt only in the
+    file it belongs to."""
+    offenders: list[str] = []
+    for path in _harness_sources():
+        text = _read(path)
+        if path.name == "config.py":
+            text = RETIRED_KEYS_TUPLE.sub("", text)
+        if path.name == "ledger.py":
+            text = LEDGER_SPEND_DROP.sub("", text)
+        lowered = text.lower()
+        for token in DOLLAR_TOKENS:
+            if token in lowered:
+                offenders.append(f"{_rel(path)}: {token}")
+        if re.search(r"\busd\b", lowered):
+            offenders.append(f"{_rel(path)}: usd")
+        if "dollar" in lowered:
+            offenders.append(f"{_rel(path)}: dollar")
+        if re.search(r"\$\d", text):
+            offenders.append(f"{_rel(path)}: a $ before a digit")
+    assert offenders == [], "dollar machinery under harness/: " + ", ".join(sorted(offenders))
+
+
+def test_B426_no_workflow_or_local_script_reads_a_dollar_figure():
+    """B426: the workflows and the host-side scripts read the ledger directly, so a field D74
+    removed from it must not still be read from one of them."""
+    heartbeat = _d2_workflow("heartbeat.yml")
+    for token in ("WEEKLY_CAP_USD", "RESERVE_PCT", "spent_usd", "$${"):
+        assert token not in heartbeat, f"heartbeat.yml still reads {token}"
+    assert "reserve" not in _case_blocks(_d2_workflow("discover.yml"))[0]
+
+    watchdog = (REPO_ROOT / "local" / "watchdog-bb.ps1").read_text(encoding="utf-8")
+    assert "Get-Spend" not in watchdog and "WEEKLY_CAP_USD" not in watchdog
+    # The host push still reads the token and the fork through this helper (D67).
+    assert "Read-EnvValue" in watchdog
+    assert "spent_usd" not in (REPO_ROOT / "bb-watcher.ps1").read_text(encoding="utf-8")
+    run_ps1 = (REPO_ROOT / "local" / "run.ps1").read_text(encoding="utf-8")
+    assert "MAX_CONCURRENT_CLONES" not in run_ps1
+
+
+def test_B429_the_shipped_config_files_carry_no_retired_key():
+    """B429: the two committed configuration files name only live keys. `ANTHROPIC_API_KEY`
+    stays known, redacted and stripped from the runner's environment; its example line goes."""
+    from harness import config as config_mod
+    from harness.runner import cli as runner_cli
+
+    env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    shipped = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    for key in config_mod.RETIRED_KEYS:
+        assert key not in env_example, f".env.example still carries {key}"
+        assert key not in shipped, f".harness/config.json still carries {key}"
+
+    assert "ANTHROPIC_API_KEY=" not in env_example
+    keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
+    assert len(keys) == 41, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
+    assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
+    assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS

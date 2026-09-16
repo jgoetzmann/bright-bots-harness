@@ -113,17 +113,17 @@ function Show-Snapshot {
     $free = "-"
     try { $free = [string]([math]::Round([double](Get-Item $root).PSDrive.Free / 1GB, 1)) + " GB free" } catch {}
     Write-Host "  disk:         $free  (watchdog floor: $(Cfg 'watchdog' 'min_free_gb' 5) GB)"
-    $spend = "no ledger yet (bb-work\state\ledger.json)"
+    $ledgerLine = "no ledger yet (bb-work\state\ledger.json)"
     $ledger = Join-Path $work "state\ledger.json"
     if (Test-Path $ledger) {
         try {
             $L = Get-Content $ledger -Raw | ConvertFrom-Json
             $rl = "-"
             if ($L.window.rate_limited_until) { $rl = $L.window.rate_limited_until }
-            $spend = "$($L.window.spent_usd) USD spent since $($L.window.period_start), $($L.window.calls) calls, rate-limited until: $rl"
-        } catch { $spend = "ledger unreadable" }
+            $ledgerLine = "$($L.window.calls) calls since $($L.window.period_start), rate-limited until: $rl"
+        } catch { $ledgerLine = "ledger unreadable" }
     }
-    Write-Host "  ledger:       $spend"
+    Write-Host "  ledger:       $ledgerLine"
 
     # Work: runs\item-*, newest first, with what the host has pushed.
     Write-Host ""

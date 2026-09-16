@@ -22,8 +22,6 @@ PROPOSE_PAYLOAD = {
     "ok": True,
     "text": "# fix(scripts): bundle size check misreports esm chunks\n",
     "turns": 12,
-    "cost_usd": 0.1875,
-    "allowance_pct": 1.8,
     "duration_ms": 20100,
     "session_id": "fixture-propose",
     "exit_code": 0,
@@ -38,8 +36,6 @@ FAILED_PAYLOAD = {
     "ok": False,
     "text": "",
     "turns": 1,
-    "cost_usd": None,
-    "allowance_pct": None,
     "duration_ms": 900,
     "session_id": None,
     "exit_code": 1,
@@ -91,8 +87,6 @@ def test_s542_the_fixture_is_returned_verbatim(fixtures_dir, tmp_path):
     assert result.ok is True
     assert result.text == PROPOSE_PAYLOAD["text"]
     assert result.turns == 12
-    assert result.cost_usd == pytest.approx(0.1875)
-    assert result.allowance_pct == pytest.approx(1.8)
     assert result.duration_ms == 20100
     assert result.session_id == "fixture-propose"
     assert result.exit_code == 0
@@ -226,8 +220,7 @@ def test_s542_a_fixture_recording_a_failure_round_trips(fixtures_dir, tmp_path):
     assert result.exit_code == 1
     assert result.error == "the model gave up on the gate loop"
     assert result.transcript == ()
-    assert result.cost_usd is None
-    assert result.allowance_pct is None
+    assert result.turns == 1
 
 
 def test_s542_one_missing_stage_does_not_poison_the_others(fixtures_dir, tmp_path):

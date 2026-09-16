@@ -40,11 +40,6 @@ BACKEND=fake
 REPO=Bright-Bots-Initiative/brightboost
 PERMISSION_TIER=0
 ALLOWLIST_LABEL=harness-ok
-WEEKLY_BUDGET_PCT=100
-SESSION_BUDGET_PCT=100
-RESERVE_PCT=0
-WEEKLY_RESET_DAY=monday
-MAX_CONCURRENT_CLONES=1
 MAX_TURNS_DISCOVER=10
 MAX_TURNS_PROPOSE=30
 MAX_TURNS_IMPLEMENT=80
@@ -57,14 +52,11 @@ RUNS_DIR=runs
 PACKAGES_DIR=packages
 HALT_FILE=HALT
 FULLSEND_ENABLED={fullsend}
-WEEKLY_CAP_USD=25.00
-PER_CALL_CAP_USD=3.00
 MAX_CONCURRENT_ITEMS=1
 MAX_REVISE_CYCLES=3
 FORK_REPO=
 UPSTREAM_REPO=Bright-Bots-Initiative/brightboost
 TRUST_FILE=.harness/trust.txt
-NOTIFY_POLL_HOURS=3
 MAX_SUBISSUES=8
 SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
@@ -77,10 +69,8 @@ RUN_WINDOW_END=
 MODEL=opus
 EFFORT=xhigh
 INBOX_ISSUE=0
-AUDIT_CAP_USD=20.00
 SUGGEST_MAX_PER_RUN=5
 COMMENT_UPSTREAM=true
-ASK_CAP_USD=0.50
 ASK_MAX_PER_DAY=20
 SUGGEST_MIN_HEADROOM_PCT=50
 AUDIT_MIN_HEADROOM_PCT=75
@@ -207,8 +197,6 @@ def write_runner_fixtures(
             "ok": True,
             "text": texts[stage],
             "turns": 3,
-            "cost_usd": 0.01,
-            "allowance_pct": 1.0,
             "duration_ms": 1234,
             "session_id": f"sess-{stage}",
             "exit_code": 0,
@@ -778,7 +766,7 @@ def test_B58_ignore_allowlist_admits_an_issue_without_the_allowlist_label(tmp_pa
 
 def test_B256_audit_mode_without_a_lens_is_refused_before_any_model_call(tmp_path):
     """B256 (superseding B59): the mode exists now, but "audit everything" does not. A lens is
-    what bounds the surface area, and the budget cannot bound it on its own."""
+    what bounds the surface area, and no turn cap can bound it on its own."""
     rig = triage_rig(tmp_path, issues=(gh_issue(101),))
 
     with pytest.raises(HarnessError) as excinfo:
@@ -1532,7 +1520,7 @@ def test_b219_propose_releases_the_clone_without_keeping_it(tmp_path):
 
 
 def test_b219_a_failed_propose_still_releases_the_clone(tmp_path):
-    """B219: MAX_CONCURRENT_CLONES is 1, so a leaked lease would wedge the next item."""
+    """B219: a leaked lease would wedge the next item, so a failure releases the clone too."""
     rig, item_id = proposable(tmp_path, propose_text="no proposal block here at all")
 
     with pytest.raises(HarnessError):

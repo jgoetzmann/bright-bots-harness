@@ -35,7 +35,7 @@ def ask(ctx: Context, *, question: str, actor: str = "") -> str:
     """Answer one question about the product repository. Returns the reply, as markdown.
 
     Nothing else happens: no work item, no transition, no branch, no pull request. The call is
-    authorised like any other and capped by `ASK_CAP_USD` instead of the per-call cap (B288).
+    authorised like any other and bounded by the ask turn cap and `ASK_MAX_PER_DAY` (B288).
     """
     ctx.check_halt()
     text = str(question or "").strip()

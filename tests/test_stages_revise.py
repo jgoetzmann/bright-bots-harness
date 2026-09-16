@@ -68,11 +68,6 @@ BASE_ENV = {
     "REPO": UPSTREAM,
     "PERMISSION_TIER": "2",
     "ALLOWLIST_LABEL": "harness-ok",
-    "WEEKLY_BUDGET_PCT": "90",
-    "SESSION_BUDGET_PCT": "90",
-    "RESERVE_PCT": "5",
-    "WEEKLY_RESET_DAY": "monday",
-    "MAX_CONCURRENT_CLONES": "1",
     "MAX_TURNS_DISCOVER": "10",
     "MAX_TURNS_PROPOSE": "30",
     "MAX_TURNS_IMPLEMENT": "80",
@@ -87,14 +82,11 @@ BASE_ENV = {
     "FULLSEND_ENABLED": "false",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
-    "WEEKLY_CAP_USD": "100.00",
-    "PER_CALL_CAP_USD": "3.00",
     "MAX_CONCURRENT_ITEMS": "1",
     "MAX_REVISE_CYCLES": "3",
     "FORK_REPO": FORK,
     "UPSTREAM_REPO": UPSTREAM,
     "TRUST_FILE": "trust.txt",
-    "NOTIFY_POLL_HOURS": "3",
     "MAX_SUBISSUES": "8",
     "SELF_REPO": SELF_REPO,
     "TRACKING_ISSUE": "",
@@ -102,10 +94,8 @@ BASE_ENV = {
     "MODEL": "opus",
     "EFFORT": "xhigh",
     "INBOX_ISSUE": "0",
-    "AUDIT_CAP_USD": "20.00",
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
-    "ASK_CAP_USD": "0.50",
     "ASK_MAX_PER_DAY": "20",
     "SUGGEST_MIN_HEADROOM_PCT": "50",
     "AUDIT_MIN_HEADROOM_PCT": "75",
@@ -584,7 +574,7 @@ REVISE_TEXT = """Revised src/pages/Dashboard.tsx: the selector now optional-chai
 and falls back to the string "Guest" while the session query is pending."""
 
 RATE_LIMITED = {
-    "ok": False, "text": "", "turns": None, "cost_usd": 0.0, "allowance_pct": None,
+    "ok": False, "text": "", "turns": None,
     "duration_ms": 40, "session_id": None, "exit_code": 1, "transcript": [],
     "error": f"Claude usage limit reached. Resets at {RESET_AT}",
     "reset_at": RESET_AT, "rate_limited": True,
@@ -592,7 +582,7 @@ RATE_LIMITED = {
 
 
 def write_fixtures(dir_: Path, *, rate_limited: bool = False) -> Path:
-    base = {"turns": 3, "cost_usd": 0.31, "allowance_pct": None, "duration_ms": 1200,
+    base = {"turns": 3, "duration_ms": 1200,
             "session_id": "sess-1", "exit_code": 0, "transcript": [], "error": None,
             "reset_at": None}
     _w(dir_ / "revise.json",
@@ -729,7 +719,7 @@ def setup_revise(tmp_path: Path, monkeypatch, *, state="shipped", tip_email=HARN
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
     for i in range(prior_revise_runs):
         ledger.record(ts=iso(T0 - timedelta(hours=6 * (i + 1))), stage="revise", issue=ITEM,
-                      usd=0.9, run=f"{RUN_URL[:-4]}{4000 + i}")
+                      run=f"{RUN_URL[:-4]}{4000 + i}")
     runner = RecordingRunner(FakeRunner(write_fixtures(tmp_path / "fixtures",
                                                        rate_limited=rate_limited)))
     clones = FakeClones(repo, base, BRANCH)

@@ -182,8 +182,6 @@ FAKE_RUN_RESULT = {
     "ok": True,
     "text": "packaged",
     "turns": 1,
-    "cost_usd": 0.0,
-    "allowance_pct": 0.5,
     "duration_ms": 10,
     "session_id": "fake-session",
     "exit_code": 0,
@@ -285,11 +283,6 @@ def _env_text(tmp_path: Path) -> str:
             f"REPO={REPO_SLUG}",
             "PERMISSION_TIER=0",
             "ALLOWLIST_LABEL=harness-ok",
-            "WEEKLY_BUDGET_PCT=40",
-            "SESSION_BUDGET_PCT=15",
-            "RESERVE_PCT=10",
-            "WEEKLY_RESET_DAY=monday",
-            "MAX_CONCURRENT_CLONES=1",
             "MAX_TURNS_DISCOVER=10",
             "MAX_TURNS_PROPOSE=30",
             "MAX_TURNS_IMPLEMENT=80",
@@ -302,14 +295,11 @@ def _env_text(tmp_path: Path) -> str:
             f"PACKAGES_DIR={(tmp_path / 'packages').as_posix()}",
             f"HALT_FILE={(tmp_path / 'HALT').as_posix()}",
             "FULLSEND_ENABLED=false",
-            "WEEKLY_CAP_USD=25.00",
-            "PER_CALL_CAP_USD=3.00",
             "MAX_CONCURRENT_ITEMS=1",
             "MAX_REVISE_CYCLES=3",
             "FORK_REPO=",
             f"UPSTREAM_REPO={REPO_SLUG}",
             "TRUST_FILE=.harness/trust.txt",
-            "NOTIFY_POLL_HOURS=3",
             "MAX_SUBISSUES=8",
             "SELF_REPO=jgoetzmann/bright-bots-harness",
             "TRACKING_ISSUE=",
@@ -322,10 +312,8 @@ def _env_text(tmp_path: Path) -> str:
             "MODEL=opus",
             "EFFORT=xhigh",
             "INBOX_ISSUE=0",
-            "AUDIT_CAP_USD=20.00",
             "SUGGEST_MAX_PER_RUN=5",
             "COMMENT_UPSTREAM=true",
-            "ASK_CAP_USD=0.50",
             "ASK_MAX_PER_DAY=20",
             "SUGGEST_MIN_HEADROOM_PCT=50",
             "AUDIT_MIN_HEADROOM_PCT=75",
@@ -421,8 +409,6 @@ def state(tmp_path):
         propose_run,
         status="ok",
         turns=12,
-        allowance_pct=1.75,
-        cost_usd=None,
         exit_reason=None,
         transcript_path=None,
     )
@@ -431,8 +417,6 @@ def state(tmp_path):
         implement_run,
         status="ok",
         turns=41,
-        allowance_pct=7.25,
-        cost_usd=None,
         exit_reason=None,
         transcript_path=str(run_dir / "transcript" / "implement.jsonl"),
     )
@@ -548,9 +532,9 @@ def test_b73_manifest_stages_gates_and_touched_paths(built):
     stages = manifest["stages"]
     assert isinstance(stages, list) and stages
     for entry in stages:
-        assert {"stage", "turns", "allowance_pct"} <= set(entry)
-    seen = {(e["stage"], e["turns"], e["allowance_pct"]) for e in stages}
-    assert {("propose", 12, 1.75), ("implement", 41, 7.25)} <= seen
+        assert {"stage", "turns"} == set(entry)
+    seen = {(e["stage"], e["turns"]) for e in stages}
+    assert {("propose", 12), ("implement", 41)} <= seen
 
     gates = manifest["gates"]
     assert isinstance(gates, list) and gates

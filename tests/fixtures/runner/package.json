@@ -2,8 +2,6 @@
   "ok": true,
   "text": "Review package assembled: 1 patch against the recorded base sha, verbatim baseline and post-change gate output in EVIDENCE.md, and all five acceptance criteria marked with the evidence line that satisfies them.\n",
   "turns": 2,
-  "cost_usd": 0.0091,
-  "allowance_pct": 0.3,
   "duration_ms": 4102,
   "session_id": "fake-package-0001",
   "exit_code": 0,

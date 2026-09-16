@@ -268,7 +268,7 @@ class ClaudeCliRunner:
     # -- argv and environment ------------------------------------------------
 
     def build_argv(self, request: RunRequest) -> list[str]:
-        """The frozen argv order (B25), with ``--max-budget-usd`` after ``--max-turns``.
+        """The frozen argv order (B25).
 
         With ``capture_usage`` the ``--output-format json`` pair becomes ``--output-format
         stream-json --verbose`` in that same position, and nothing else moves.
@@ -284,9 +284,9 @@ class ClaudeCliRunner:
             else ["--output-format", "json"]
         )
         argv: list[str] = [self.claude_bin, "--print", *output_format]
-        # What the session is (format, model, effort) precedes what it may spend (turns,
-        # budget), what it may do (permission mode, tools) and what it may read (settings,
-        # system prompt, add-dir). Model and effort are omitted when unset (B225).
+        # What the session is (format, model, effort) precedes what it may spend (turns), what
+        # it may do (permission mode, tools) and what it may read (settings, system prompt,
+        # add-dir). Model and effort are omitted when unset (B225).
         if request.model:
             argv.append("--model")
             argv.append(str(request.model))
@@ -295,9 +295,6 @@ class ClaudeCliRunner:
             argv.append(str(request.effort))
         argv.append("--max-turns")
         argv.append(str(request.max_turns))
-        if request.max_budget_usd is not None:
-            argv.append("--max-budget-usd")
-            argv.append(str(request.max_budget_usd))
         argv.extend(
             [
                 "--permission-mode",
@@ -394,9 +391,9 @@ class ClaudeCliRunner:
                     reset_at=reset_at,
                     usage=usage,
                 )
-            # A budget stop (`subtype` error_max_budget_usd) exits 1 with a complete JSON
-            # result, so keep its cost, turns and reason instead of dumping the JSON as the
-            # error.
+            # An `is_error` result at a non-zero exit with a complete JSON body, such as
+            # `error_max_turns`, keeps its turns and its own message instead of being dumped
+            # as stderr (B432).
             if reported_error:
                 return self._from_json(request, data, stderr, exit_code, usage=usage)
             return self._failure(request, exit_code, stderr or stdout, usage=usage)
@@ -466,7 +463,7 @@ class ClaudeCliRunner:
         if is_error:
             # What the CLI said, first: it carries its message in `result` and often leaves
             # stderr empty, and on a refusal the subtype reads "success". Then stderr, then the
-            # subtype, which is all a budget stop (error_max_budget_usd) reports (B395).
+            # subtype, which is all a result with an empty message reports (B395).
             message = (_as_str(data.get("result")) or "").strip()
             subtype = str(data.get("subtype") or "")
             if message:
@@ -482,8 +479,6 @@ class ClaudeCliRunner:
             ok=not is_error,
             text=text,
             turns=_as_int(data.get("num_turns")),
-            cost_usd=_as_float(data.get("total_cost_usd")),
-            allowance_pct=None,
             duration_ms=_as_int(data.get("duration_ms")),
             session_id=_as_str(data.get("session_id")),
             exit_code=exit_code,
@@ -511,8 +506,6 @@ class ClaudeCliRunner:
             ok=False,
             text="",
             turns=None,
-            cost_usd=None,
-            allowance_pct=None,
             duration_ms=None,
             session_id=None,
             exit_code=exit_code,

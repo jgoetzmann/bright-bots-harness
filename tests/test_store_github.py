@@ -545,13 +545,14 @@ def test_B100_transition_of_an_invisible_issue_is_refused_without_writes(gh, sto
 
 
 # --------------------------------------------------------------------------------------
-# B101 - every transition writes exactly one comment: stage, run URL, cost, resulting state
+# B423 - every transition writes exactly one comment: stage, run URL, resulting state
 # --------------------------------------------------------------------------------------
-def test_B101_transition_comment_names_stage_state_run_url_and_cost(gh, store):
-    """B101: one comment per transition; it names the stage, the resulting state, run URL and $."""
+def test_B423_the_transition_comment_names_stage_state_and_run_and_no_cost(gh, store):
+    """B423: one comment per transition, naming the stage, the resulting state and the run URL,
+    and carrying no cost line."""
     n = _create(store)
     run_id = store.start_stage_run(n, "propose", "fake")
-    store.finish_stage_run(run_id, status="ok", turns=7, allowance_pct=None, cost_usd=0.42,
+    store.finish_stage_run(run_id, status="ok", turns=7,
                            exit_reason=None, transcript_path=None)
     comments_before = _comment_calls(gh)
     posted_before = len(gh.comments_of(n))
@@ -563,11 +564,12 @@ def test_B101_transition_comment_names_stage_state_run_url_and_cost(gh, store):
     assert "propose" in body
     assert "proposed" in body
     assert RUN_URL in body
-    assert "$0.42" in body
+    assert "$" not in body
+    assert "cost:" not in body
 
 
-def test_B101_transition_without_a_stage_run_still_comments_with_a_dollar_cost(gh, store):
-    """B101: with no stage run in this process the comment still carries the URL and $0.00."""
+def test_B101_transition_without_a_stage_run_still_comments_with_the_run_url(gh, store):
+    """B101: with no stage run in this process the comment still carries the run URL."""
     n = _create(store)
     store.transition(n, "proposing", reason="x")  # discovered->blocked is not a legal pair (D1 5.2.2)
     comments_before = _comment_calls(gh)
@@ -576,7 +578,7 @@ def test_B101_transition_without_a_stage_run_still_comments_with_a_dollar_cost(g
     body = gh.comments_of(n)[-1]["body"]
     assert "blocked" in body
     assert RUN_URL in body
-    assert "$0.00" in body
+    assert "$" not in body
 
 
 def test_B101_every_transition_in_a_lifecycle_adds_exactly_one_comment(gh, store):
@@ -894,12 +896,12 @@ def test_stage_runs_delegate_to_scratch_and_write_nothing_to_github(gh, store):
     n = _create(store)
     sent_before = len(gh.sent)
     rid = store.start_stage_run(n, "propose", "fake")
-    store.finish_stage_run(rid, status="ok", turns=3, allowance_pct=None, cost_usd=0.42,
+    store.finish_stage_run(rid, status="ok", turns=3,
                            exit_reason=None, transcript_path=None)
     runs = store.list_stage_runs(work_item_id=n)
     assert len(runs) == 1
     assert runs[0].status == "ok"
-    assert runs[0].cost_usd == 0.42
+    assert runs[0].turns == 3
     assert len(gh.sent) == sent_before
 
 

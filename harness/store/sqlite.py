@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -66,24 +65,12 @@ CREATE TABLE {name} (
   started_at      TEXT    NOT NULL,
   ended_at        TEXT,
   turns           INTEGER,
-  allowance_pct   REAL,
-  cost_usd        REAL,
   exit_reason     TEXT,
   transcript_path TEXT
 );
 """
 
 _OTHER_TABLES_SQL = """
-CREATE TABLE budget_period (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit         TEXT NOT NULL CHECK (unit IN ('allowance_pct','usd')),
-  period_start TEXT NOT NULL,
-  period_end   TEXT NOT NULL,
-  allocated    REAL NOT NULL,
-  consumed     REAL NOT NULL DEFAULT 0,
-  UNIQUE (unit, period_start)
-);
-
 CREATE TABLE event (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   work_item_id INTEGER REFERENCES work_item(id),
@@ -264,8 +251,6 @@ STAGE_RUN_COLUMNS: tuple[str, ...] = (
     "started_at",
     "ended_at",
     "turns",
-    "allowance_pct",
-    "cost_usd",
     "exit_reason",
     "transcript_path",
 )
@@ -312,8 +297,6 @@ class StageRun:
     started_at: str
     ended_at: str | None
     turns: int | None
-    allowance_pct: float | None
-    cost_usd: float | None
     exit_reason: str | None
     transcript_path: str | None
 
@@ -357,8 +340,6 @@ def _stage_run(row: sqlite3.Row) -> StageRun:
         started_at=row["started_at"],
         ended_at=row["ended_at"],
         turns=row["turns"],
-        allowance_pct=row["allowance_pct"],
-        cost_usd=row["cost_usd"],
         exit_reason=row["exit_reason"],
         transcript_path=row["transcript_path"],
     )
@@ -701,8 +682,6 @@ class SqliteStore:
         *,
         status: str,
         turns: int | None,
-        allowance_pct: float | None,
-        cost_usd: float | None,
         exit_reason: str | None,
         transcript_path: str | None,
     ) -> None:
@@ -711,18 +690,9 @@ class SqliteStore:
             raise StoreError("finish_stage_run needs a terminal status, not 'running'")
         try:
             cur = self.conn.execute(
-                "UPDATE stage_run SET status = ?, ended_at = ?, turns = ?, allowance_pct = ?, "
-                "cost_usd = ?, exit_reason = ?, transcript_path = ? WHERE id = ?",
-                (
-                    status,
-                    self._now(),
-                    turns,
-                    allowance_pct,
-                    cost_usd,
-                    exit_reason,
-                    transcript_path,
-                    run_id,
-                ),
+                "UPDATE stage_run SET status = ?, ended_at = ?, turns = ?, "
+                "exit_reason = ?, transcript_path = ? WHERE id = ?",
+                (status, self._now(), turns, exit_reason, transcript_path, run_id),
             )
         except sqlite3.Error as exc:
             raise StoreError(f"cannot finish stage run {run_id}: {exc}") from exc
@@ -747,15 +717,6 @@ class SqliteStore:
         rows = self.conn.execute(sql, tuple(params)).fetchall()
         return [_stage_run(r) for r in rows]
 
-    def completed_allowances(self, stage: str) -> list[float]:
-        """Observed allowance_pct of every ``ok`` run of a stage, oldest first."""
-        rows = self.conn.execute(
-            "SELECT allowance_pct FROM stage_run "
-            "WHERE stage = ? AND status = 'ok' AND allowance_pct IS NOT NULL ORDER BY id",
-            (stage,),
-        ).fetchall()
-        return [float(r["allowance_pct"]) for r in rows]
-
     # -------------------------------------------------------------------- events
 
     def append_event(self, work_item_id: int | None, level: str, message: str) -> None:
@@ -776,58 +737,6 @@ class SqliteStore:
                 "SELECT * FROM event WHERE work_item_id = ? ORDER BY id", (work_item_id,)
             ).fetchall()
         return [dict(r) for r in rows]
-
-    # -------------------------------------------------------------------- budget
-
-    def ensure_budget_period(
-        self, unit: str, period_start: str, period_end: str, allocated: float
-    ) -> None:
-        """Idempotent insert; an existing period keeps its allocation and consumption."""
-        try:
-            self.conn.execute(
-                "INSERT INTO budget_period (unit, period_start, period_end, allocated, consumed) "
-                "VALUES (?, ?, ?, ?, 0) ON CONFLICT (unit, period_start) DO NOTHING",
-                (unit, period_start, period_end, float(allocated)),
-            )
-        except sqlite3.Error as exc:
-            raise StoreError(f"cannot create budget period {unit}/{period_start}: {exc}") from exc
-
-    def budget_period(self, unit: str, period_start: str) -> tuple[float, float]:
-        """``(allocated, consumed)``; ``(0.0, 0.0)`` when no period row exists."""
-        row = self.conn.execute(
-            "SELECT allocated, consumed FROM budget_period WHERE unit = ? AND period_start = ?",
-            (unit, period_start),
-        ).fetchone()
-        if row is None:
-            return (0.0, 0.0)
-        return (float(row["allocated"]), float(row["consumed"]))
-
-    def consume_budget(self, unit: str, period_start: str, amount: float) -> None:
-        """B14: one transaction. Anything that fails leaves ``consumed`` untouched."""
-        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
-            raise StoreError(f"budget amount must be a number, got {type(amount).__name__}")
-        value = float(amount)
-        if math.isnan(value) or math.isinf(value):
-            raise StoreError("budget amount must be finite")
-        if value < 0:
-            raise StoreError("budget amount must not be negative")
-        conn = self.conn
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            cur = conn.execute(
-                "UPDATE budget_period SET consumed = consumed + ? "
-                "WHERE unit = ? AND period_start = ?",
-                (value, unit, period_start),
-            )
-            if cur.rowcount == 0:
-                raise StoreError(f"no budget period {unit}/{period_start}")
-            conn.execute("COMMIT")
-        except sqlite3.Error as exc:
-            conn.execute("ROLLBACK")
-            raise StoreError(f"cannot consume budget {unit}/{period_start}: {exc}") from exc
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
 
     # ---------------------------------------------------------------- http cache
 

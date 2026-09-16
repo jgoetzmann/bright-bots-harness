@@ -3,8 +3,6 @@
   "ok": false,
   "text": "",
   "turns": 0,
-  "cost_usd": null,
-  "allowance_pct": null,
   "duration_ms": 1180,
   "session_id": "fake-rate-limited-0001",
   "exit_code": 1,

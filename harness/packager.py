@@ -236,14 +236,7 @@ def build(ctx: Context, item_id: int, lease: Lease, *, git_runner=None) -> Path:
                 gate_flags[key] = bool(loaded.get(key, False))
 
     stage_rows = [asdict(row) for row in ctx.store.list_stage_runs(work_item_id=item_id)]
-    stages = [
-        {
-            "stage": row.get("stage"),
-            "turns": row.get("turns"),
-            "allowance_pct": row.get("allowance_pct"),
-        }
-        for row in stage_rows
-    ]
+    stages = [{"stage": row.get("stage"), "turns": row.get("turns")} for row in stage_rows]
 
     # --- patches (B75): format-patch against the exact base, so `git am` onto BASE works.
     clone = lease.path

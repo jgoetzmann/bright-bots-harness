@@ -1,6 +1,7 @@
 """Keyword commands: parsing `/harness` lines, and the actor gate (B131-B135, B140, B141)."""
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from collections.abc import Mapping
@@ -72,6 +73,11 @@ VERB_LEVEL: dict[str, int] = {
     "reject": 3,
 }
 
+#: The verbs `harness ack` answers by itself, in the workflow that takes no lock (B440). One
+#: place, because `ack` claims a comment only when every verb in it is one of these and the
+#: sweep skips one only on the same test; two spellings of that rule could disagree.
+ACK_ANSWERS: frozenset[str] = frozenset({"status"})
+
 #: Appended to a command by the operator to start it outside the run window (B283).
 FORCE_FLAG = "--force"
 
@@ -87,6 +93,43 @@ _COMMAND_RE = re.compile(
 )
 _THREAD_NUMBER_RE = re.compile(r"/(?:issues|pulls)/(\d+)/?$")
 _EPOCH = "1970-01-01T00:00:00Z"
+
+#: `@<machine account> <verb>` at the start of a line: the same command, said the obvious way.
+#:
+#: Naming the bot is what a person tries first, and until B435 it did nothing at all -- the two
+#: comment-driven workflows woke only on `/harness`, so the run was skipped before any parser
+#: saw the words. Restricted to the machine account, because `@nathan status` is a sentence
+#: about Nathan and not a command.
+#:
+#: `(\w+)` cannot match `/harness`, so `@bot /harness work` parses once, through
+#: :data:`_COMMAND_RE`, and never twice.
+_MENTION_COMMAND_TEMPLATE = r"^[ \t]*@{handle}[ \t]+(\w+)([^\n]*)"
+
+#: The same mention at the start of a line, with no verb required: what `ack` nudges about.
+_MENTION_LINE_TEMPLATE = r"^[ \t]*@{handle}\b"
+
+
+@functools.lru_cache(maxsize=8)
+def _mention_re(mention: str) -> "re.Pattern[str] | None":
+    """The `@<handle> <verb>` matcher for one handle, or None when there is no handle."""
+    handle = str(mention or "").strip().lstrip("@")
+    if not handle:
+        return None
+    return re.compile(
+        _MENTION_COMMAND_TEMPLATE.format(handle=re.escape(handle)),
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+
+@functools.lru_cache(maxsize=8)
+def _mention_line_re(mention: str) -> "re.Pattern[str] | None":
+    """The matcher for a line that addresses `mention`, whatever follows it."""
+    handle = str(mention or "").strip().lstrip("@")
+    if not handle:
+        return None
+    return re.compile(
+        _MENTION_LINE_TEMPLATE.format(handle=re.escape(handle)), re.MULTILINE | re.IGNORECASE
+    )
 
 #: How far a first sweep looks back when the ledger carries no cursor yet. An unset cursor
 #: means the harness has never run here, so older comments are history and are left alone. One
@@ -160,15 +203,27 @@ def strip_fences(body: str) -> str:
     return _FENCE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), body)
 
 
-def parse_all(body: str) -> list[tuple[str, str]]:
+def parse_all(body: str, *, mention: str = "") -> list[tuple[str, str]]:
     """Every command in `body`, in the order typed, as `(resolved verb, args)` pairs."""
-    return [(verb, args) for verb, args, _typed in parse_typed(body)]
+    return [(verb, args) for verb, args, _typed in parse_typed(body, mention=mention)]
 
 
-def parse_typed(body: str) -> list[tuple[str, str, str]]:
-    """`parse_all`, plus the word that was actually typed, which may be an alias."""
+def parse_typed(body: str, *, mention: str = "") -> list[tuple[str, str, str]]:
+    """`parse_all`, plus the word that was actually typed, which may be an alias.
+
+    `mention` is the machine account, and naming it at the start of a line is the second way to
+    give a command (B435). Empty means the mention form is off, which is what every caller that
+    does not know the account gets, so the `/harness` form is unchanged.
+    """
+    text = strip_fences(body or "")
+    matches = list(_COMMAND_RE.finditer(text))
+    mention_re = _mention_re(mention)
+    if mention_re is not None:
+        matches.extend(mention_re.finditer(text))
+    # Both forms are commands, so a comment using each in turn runs them in the order typed.
+    matches.sort(key=lambda found: found.start())
     out: list[tuple[str, str, str]] = []
-    for match in _COMMAND_RE.finditer(strip_fences(body or "")):
+    for match in matches:
         typed = match.group(1).lower()
         verb = resolve(typed)
         if verb not in VERBS:
@@ -180,10 +235,68 @@ def parse_typed(body: str) -> list[tuple[str, str, str]]:
     return out
 
 
-def parse(body: str) -> tuple[str, str] | None:
+def parse(body: str, *, mention: str = "") -> tuple[str, str] | None:
     """The first command in `body`, or None. For callers that want exactly one."""
-    found = parse_all(body)
+    found = parse_all(body, mention=mention)
     return found[0] if found else None
+
+
+def mentions_without_command(body: str, mention: str) -> bool:
+    """True when `body` addresses `mention` at the start of a line and gives it no verb (B436).
+
+    The case the nudge exists for: somebody names the bot and then writes a sentence. Naming it
+    mid-prose -- "thanks @bot" -- is not addressing it and gets nothing.
+    """
+    line_re = _mention_line_re(mention)
+    if line_re is None:
+        return False
+    text = strip_fences(body or "")
+    if not line_re.search(text):
+        return False
+    return not parse_typed(text, mention=mention)
+
+
+def answered_by_ack(
+    gh: Any,
+    repo: str,
+    comment: Mapping[str, Any],
+    machine: str = "",
+    *,
+    review: bool = False,
+) -> bool:
+    """True when `ack` has already answered this comment, so the sweep says nothing (B441).
+
+    The fact is a reaction one of `gh.machine_logins` left on the comment, not text in a
+    reply: the harness republishes issue titles and model answers verbatim, so any marker it
+    can publish is one a stranger can choose (B455). Anything unreadable answers False, so a
+    failure here costs a repeated answer rather than a maintainer's command: the caller has
+    already marked this run's commands seen and its `finally` commits that, so an exception
+    escaping here would lose them for good (B458).
+    """
+    # Function-local: `keywords` is imported by the CLI, and `gh` must not be a hard dependency.
+    from harness.gh import ANSWERED_REACTION, machine_logins
+
+    reader = getattr(gh, "comment_reactions", None)
+    if not callable(reader):
+        return False
+    ident = comment.get("id")
+    if not ident:
+        return False
+    logins = machine_logins(machine)
+    try:
+        for row in reader(repo, ident, review=review):
+            if str(row.get("content") or "").strip().lower() != ANSWERED_REACTION:
+                continue
+            author = str(((row.get("user") or {}).get("login")) or "").lstrip("@").lower()
+            if author in logins:
+                return True
+    except (GitHubError, ValueError, TypeError, AttributeError) as exc:
+        # Shapes the live API does not send -- a non-numeric id, a string where `user` should
+        # be an object -- must not escape. The walk is inside the guard for that reason: see
+        # the docstring on what an escaping exception costs (B458).
+        log.warning("reactions unreadable for comment %s, answering it: %s", ident, exc)
+        return False
+    return False
 
 
 def split_force(args: str) -> tuple[str, bool]:
@@ -241,7 +354,9 @@ def commands_from(
         return []
     if not authorise(comment, trusted, ledger):
         return []
-    parsed = parse_typed(comment.get("body") or "")
+    # The machine account is both the comment author this refuses above and the handle the
+    # mention form names, so one parameter carries both and they cannot disagree (B435).
+    parsed = parse_typed(comment.get("body") or "", mention=machine)
     if not parsed:
         return []
     ledger.mark_seen(cid)
@@ -386,21 +501,35 @@ def sweep(
         if (repo.lower(), number) in seen_threads:
             return
         seen_threads.add((repo.lower(), number))
-        comments = list(gh.issue_comments(repo, number))
+        # The endpoint a reaction is read from differs between the two kinds, so which list a
+        # comment came from is carried with it.
+        rows = [(row, False) for row in gh.issue_comments(repo, number)]
         if surface in ("proposal_pr", "delivery_pr"):
             # Only a pull request has review comments; asking an issue for them is a 404.
-            comments.extend(gh.pull_review_comments(repo, number))
-        for comment in comments:
-            commands.extend(
-                commands_from(
-                    comment,
-                    surface=surface,
-                    number=number,
-                    trusted=trusted,
-                    ledger=ledger,
-                    machine=machine,
-                )
+            rows += [(row, True) for row in gh.pull_review_comments(repo, number)]
+        for comment, review in rows:
+            found = commands_from(
+                comment,
+                surface=surface,
+                number=number,
+                trusted=trusted,
+                ledger=ledger,
+                machine=machine,
             )
+            if not found:
+                continue
+            # Only what `ack` can answer is asked about, which keeps this to one read per
+            # status comment; `commands_from` has marked it seen, so it is asked once (B441).
+            # Only on this repository: `ack.yml` fires on its own `issue_comment` events, and
+            # `github-actions[bot]` is a per-repository identity, so a rocket upstream is some
+            # other bot's and would drop a maintainer's command in silence (B457).
+            if (
+                repo.lower() == self_repo.lower()
+                and all(command.verb in ACK_ANSWERS for command in found)
+                and answered_by_ack(gh, repo, comment, machine, review=review)
+            ):
+                continue
+            commands.extend(found)
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))

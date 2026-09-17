@@ -23,18 +23,23 @@ jobs:
   ack:
     name: ack
     # Saves runner minutes only; `harness ack` applies trust and parsing with the sweep's code.
+    # Naming the bot is a command form of its own (B435/B437), so the filter wakes on the mention
+    # too: a job condition is evaluated before any step, so a parser change alone would be inert.
+    # The handle is hard-coded because this expression cannot read `.harness/config.json`; a drift
+    # test pins it to the owner of FORK_REPO.
     # The second clause skips the harness's own comments, which name `/harness` commands and would
     # wake this workflow for ever. It tests the body's marker because this expression cannot read
     # `.harness/config.json` and the machine account is an ordinary user, not a `Bot` type.
     if: >-
-      contains(github.event.comment.body, '/harness')
+      (contains(github.event.comment.body, '/harness')
+       || contains(github.event.comment.body, '@jgoetzmann-bot'))
       && (!contains(github.event.comment.body, '<!-- bright-bots-harness -->')
           || contains(github.event.comment.body, '> <!-- bright-bots-harness -->'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      issues: write                # the acknowledgement comment and the eyes reaction
+      issues: write                # the acknowledgement comment and the two reactions
       pull-requests: write
     steps:
       - name: Checkout
@@ -73,6 +78,35 @@ jobs:
           pathlib.Path(".env").write_text("\n".join(out) + "\n", encoding="utf-8")
           PY
 
+      # The live ledger is on `harness-state`; this checkout holds only main's seed. Read through
+      # the contents API with the run's own token, exactly as heartbeat.yml reads it and as the
+      # spending workflows read .harness/HALT, so no git credential is needed. Read-only:
+      # `harness ack` never saves a ledger, which is what keeps this workflow out of the
+      # `harness-ledger` group while still answering `status` itself (B440).
+      - name: Load state/ledger.json from harness-state (read-only)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          mkdir -p state
+          # curl prints `000` itself when it cannot connect and then exits non-zero, so the
+          # fallback sits outside the substitution (B408).
+          code="$(curl -sS -o state/ledger.json.new -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/${REPO}/contents/state/ledger.json?ref=harness-state")" || true
+          code="${code:-000}"
+          if [ "${code}" = "200" ] && python -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' state/ledger.json.new 2>/dev/null; then
+            mv state/ledger.json.new state/ledger.json
+            echo "ledger loaded from harness-state"
+          else
+            rm -f state/ledger.json.new
+            echo "no readable ledger on harness-state (HTTP ${code}); the acknowledgement stands in"
+          fi
+
       # The body is untrusted and `${{ }}` is substituted before bash parses the line, so it
       # reaches python through the environment and is written to a file.
       - name: Capture the comment body
@@ -106,6 +140,8 @@ jobs:
           pathlib.Path("ack.md").write_text(comment, encoding="utf-8")
           print("react=" + ("true" if d.get("react") else "false"))
           print("say=" + ("true" if comment.strip() else "false"))
+          # True only when the comment above IS the answer, which is what the sweep is told.
+          print("answered=" + ("true" if d.get("answered") else "false"))
           PY
 
       # Reacts whenever the harness will act, including fast verbs that get no comment.
@@ -127,6 +163,7 @@ jobs:
       # `continue-on-error` too: `issues.createComment` 403s on a locked issue, on a fork pull
       # request's read-only token and at GitHub's secondary content-creation limit.
       - name: Say it
+        id: say
         if: steps.ack.outputs.say == 'true'
         continue-on-error: true
         uses: actions/github-script@v7
@@ -140,3 +177,23 @@ jobs:
               owner, repo, issue_number: number,
               body: fs.readFileSync('ack.md', 'utf8').trim(),
             });
+
+      # How the sweep knows this comment is answered, so it does not answer it again minutes
+      # later. A reaction under one of the harness's own logins: the harness repeats issue
+      # titles and model answers verbatim, so a marker in the text of a reply is one a stranger
+      # can make it publish (D76). Only after `Say it` succeeded -- `createComment` 403s on a
+      # locked issue, and marking an unanswered comment answered is silence. `continue-on-error`
+      # like the others: a failed reaction costs a repeated answer, never a red X on a thread.
+      - name: Mark it answered
+        if: steps.ack.outputs.answered == 'true' && steps.say.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const id = context.payload.comment.id;
+            const isReview = context.eventName === 'pull_request_review_comment';
+            const fn = isReview
+              ? github.rest.reactions.createForPullRequestReviewComment
+              : github.rest.reactions.createForIssueComment;
+            await fn({ owner, repo, comment_id: id, content: 'rocket' });

@@ -382,6 +382,58 @@ def test_create_label_posts_to_the_given_repo_labels_endpoint_redacted_and_needs
     assert unarmed.sent == []
 
 
+def test_delete_issue_comment_sends_no_body_is_tier_gated_and_records_the_id(tmp_path):
+    """D76: removing a comment is a write like any other -- tier-gated, recorded in `sent`, and
+    routed through redact. It does not go through `_write`, which sends whatever it records:
+    this verb carries no body at all, so the recorded payload is the audit line."""
+    from harness.clock import FrozenClock
+    from harness.errors import TierViolation
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    client = GitHubClient(
+        "o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, self_repo="me/self", dry_run=True
+    )
+
+    assert client.delete_issue_comment("me/self", 4242) == {"deleted": 4242}
+
+    (call,) = client.sent
+    assert call["method"] == "DELETE"
+    assert call["url"].endswith("/repos/me/self/issues/comments/4242")
+    assert call["payload"] == {"repo": "me/self", "comment_id": 4242}
+
+    unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
+    with pytest.raises(TierViolation):
+        unarmed.delete_issue_comment("me/self", 1)
+    assert unarmed.sent == []
+
+
+def test_comment_reactions_reads_who_reacted_from_either_kind_of_comment(tmp_path):
+    """D76/B441: how the sweep learns `ack` already answered. The author GitHub puts on a
+    reaction is the whole point, so this reads the endpoint that returns one — and it is a
+    read: the harness writes no reaction from Python, so `sent` stays empty (I-13)."""
+    from harness.gh import GitHubClient
+
+    clock = FrozenClock(FROZEN_AT)
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    rows = [{"id": 1, "content": "rocket", "user": {"login": "github-actions[bot]"}}]
+    opener = FakeOpener(FakeResponse(rows), FakeResponse(rows))
+    client = GitHubClient("o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, opener=opener)
+
+    assert client.comment_reactions("me/self", 4242) == rows
+    assert client.comment_reactions("me/self", 4242, review=True) == rows
+
+    assert opener.urls[0].startswith(f"{API}/repos/me/self/issues/comments/4242/reactions")
+    assert opener.urls[1].startswith(f"{API}/repos/me/self/pulls/comments/4242/reactions")
+    assert [request.get_method() for request in opener.requests] == ["GET", "GET"]
+    assert client.sent == [], "a read is not a write"
+
+
 # --------------------------------------------------------------------------------------
 # B229 - the push carries its own hook suppression, and says why it failed (D49)
 # --------------------------------------------------------------------------------------

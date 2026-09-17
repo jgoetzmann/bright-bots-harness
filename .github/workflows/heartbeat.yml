@@ -262,6 +262,10 @@ jobs:
               lines.push('', '<details><summary>harness status --json (runner-local view)</summary>', '', '```json', statusCli.slice(0, 6000), '```', '</details>');
             }
             lines.push('', '_Absence of this weekly comment is the alarm (B144)._');
+            // `github-script` posts this, so the transport never marks it the way `gh.comment`
+            // does -- and the body names `/harness work <what>`, so every heartbeat woke both
+            // comment-driven workflows and recorded a bogus keyword_denied entry (B454).
+            lines.push('', '<!-- bright-bots-harness -->');
 
             await github.rest.issues.createComment({ owner, repo, issue_number: tracking, body: lines.join('\n') });
             core.info(`heartbeat posted to #${tracking}`);

@@ -746,3 +746,151 @@ have to remember; setting `PYTHONSAFEPATH` in CI, which hides the import-path ho
 nobody sets locally.
 
 Allocates B433-B434.
+
+## D76 / B435-B456 - the inbox answers, and the pinned issues keep themselves
+
+Decision:
+- **Naming the machine account is a command.** `@jgoetzmann-bot <verb> [args]` at the start of a
+  line is `/harness <verb> [args]`, on every surface. `keywords._mention_re` matches only the one
+  handle, so `@nathan status` stays a sentence about Nathan, and `(\w+)` cannot match `/harness`,
+  so `@jgoetzmann-bot /harness work` parses once rather than twice. `commands_from` and `sweep`
+  already carried the machine account as `machine`; that one parameter now feeds the mention form
+  too, so the handle the sweep refuses as an author and the handle it accepts as a mention cannot
+  drift apart. `parse_typed`, `parse_all` and `parse` take `mention=""`, which is the mention form
+  off, so every existing caller and test is unchanged.
+- **The filters had to move first.** Both `ack.yml` and `feedback.yml` gated on
+  `contains(comment.body, '/harness')`. A job condition is evaluated before any step runs, so the
+  two `@jgoetzmann-bot audit <lens>` comments on the live inbox produced two SKIPPED runs and total
+  silence: no parser was ever reached, and a `keywords.py` change alone would have been provably
+  inert. Both `if:` expressions now also wake on the mention. The handle is hard-coded there
+  because a workflow expression cannot read `.harness/config.json`, exactly as `MACHINE_MARKER` is
+  hard-coded; B437 pins it to `stages.discover.machine_account`'s own derivation, the owner of
+  `FORK_REPO`, so renaming the fork fails the build rather than silently deafening the bot.
+- **The runner-minutes trade, accepted deliberately.** Any comment naming the bot now starts a run,
+  prose included. `ack.yml` absorbs most of it: five-minute timeout, no install, no lock, tier 0.
+  The machine-marker clause still guards the self-wake loop. There is no new exposure, because a
+  stranger could already wake a full `feedback` run by typing `/harness`; the mention is a second
+  word that does the same thing. Traffic here is low single digits a day.
+- **A mention with no verb gets one nudge** naming the two or three verbs that make sense on that
+  surface (`links.nudge` over `SURFACE_HINTS`). It is marked, so it does not wake the workflows.
+  `mentions_without_command` is false whenever anything parsed, so an actor whose verbs were all
+  above their level still gets the sweep's refusal, which names the level they needed, rather than
+  a nudge that ignores what they asked for.
+
+**The cancelled command lost nothing, and here is the proof.** The operator read the CANCELLED
+`/harness status` run as a command discarded by the `/harness help` that followed. It was not.
+`keywords.sweep` reads the inbox *before* `gh.notifications(since)` and independently of the
+cursor: `if inbox_issue: read(self_repo, "inbox", int(inbox_issue))`. `since` bounds only the
+notifications feed. The cancelled run was cancelled while queued, so it executed no step, marked
+nothing seen and committed no ledger; the comment stayed unseen, and the next run's sweep found
+both comments and answered both. What was real is the silence, and the latency behind it.
+
+The one genuine loss window is narrower and is knowingly left alone: `commands_from` marks a
+comment seen at *parse* time, before `_act_on_command` runs, and `cmd_sweep`'s `finally` saves the
+ledger while `feedback.yml`'s `if: always()` step commits it. A run killed *after it has started*
+therefore consumes commands it collected but never acted on. Moving `mark_seen` after the act
+would reopen double-execution on a crash between acting and saving - paying for the same model
+call twice - which is the worse failure. Recorded, not fixed.
+
+- **The fast lane lives in `ack.yml`, and B118 is untouched.** The real defect behind complaint 4
+  is that `status` and `help`, which spend nothing, queue behind a twenty-minute audit because
+  `feedback.yml` is in the `harness-ledger` group. Sharding that group is off the table: every
+  workflow that writes `state/ledger.json` shares one group and never cancels a run. Instead the
+  free verbs move to the workflow that writes no ledger at all. `ack.yml` already takes no lock.
+  `harness ack` gains a **read-only** ledger load - the contents API read of `harness-state` that
+  `heartbeat.yml` already does with the run's own token - and never calls `ledger.save`. The proof
+  obligation is discharged by B440, which asserts that `harness ack` writes no `state/ledger.json`
+  and that `ack.yml` carries no commit step, so the ledger still has exactly one writer group.
+- **What tells the sweep a comment is answered is a reaction, not text.** `ack.yml` leaves
+  `gh.ANSWERED_REACTION` (`rocket`) on the comment it answered, under whichever login posted the
+  answer, and only once `Say it` has succeeded: marking a comment nobody answered is silence,
+  which is the failure this surface exists to prevent, while a reaction that fails to land costs
+  a repeated answer. `keywords.answered_by_ack` reads that comment's reactions and skips it when
+  one of `gh.machine_logins` left that content. It is asked only of a comment whose commands are
+  all in `keywords.ACK_ANSWERS`, and `commands_from` has already marked the comment seen, so the
+  cost is one read per status comment and never one per sweep. Nobody can react as those logins,
+  and no text the harness republishes can become a reaction (B455). `eyes` means read, not
+  answered, which is why the two contents differ. `ack` claims a comment only when *every* verb
+  in it resolves to `status` - a mixed comment is left whole to the sweep, which owns the
+  refusals for the rest.
+- **The queue is published on the pinned issue.** A new `harness tidy` subcommand, called from one
+  new `feedback.yml` step after the sweep and before the ledger commit, rewrites only the span
+  between `<!-- queue:start -->` and `<!-- queue:end -->` on `TRACKING_ISSUE` through the existing
+  `gh.update_issue_body`. If either marker is missing it writes nothing and says so - it never
+  appends, because the rest of that body is a person's prose. If the rendered block is
+  byte-identical it sends no request, so there is no edit noise in the timeline. The rows come
+  from `links.queue_lines`, which `/harness status` now uses too, so the thread and the pinned
+  issue cannot disagree. Cadence is every `feedback` run: the three-hourly cron, every command and
+  every mention.
+- **Hygiene, on the same command.** `gh.delete_issue_comment` deletes a comment only when **both**
+  halves hold: one of the `gh.machine_logins` wrote it, *and* its body carries `MACHINE_MARKER`.
+  This decision first said the marker alone was sufficient, and that was wrong. GitHub's **Quote
+  reply** copies the source comment's raw markdown, HTML comments included, so a person who
+  quote-replies the harness is carrying the marker in a comment they wrote - and the marker alone
+  deleted it. Both comment-driven workflow `if:` filters already carried a `> <!-- ... -->` clause
+  for exactly that reason. Nobody but the harness can post as either login, so author-and-marker
+  is a test a person cannot pass. Only `INBOX_ISSUE` and `TRACKING_ISSUE` are swept. A comment is deleted only when it
+  is **both** older than `PRUNE_AFTER_DAYS` (30) **and** outside the newest `PRUNE_KEEP` (20)
+  machine comments on that issue, so recent context survives regardless of age and an old thread
+  never empties. The prune runs at most every `PRUNE_EVERY_DAYS` (7), from a new ledger cursor
+  `cursors["pruned_at"]`, which `to_json` renders only once it is set.
+
+**Three defects this fixes, all found by reading the code rather than by a failing test.**
+1. `harness/__main__.py` called `ledger_mod.Ledger.load(Path(config.ledger_path))` in two places.
+   `Ledger` has no `load` classmethod - `load` is a module-level function - and `Config` has no
+   `ledger_path`, which lives on `Context`. Both raised, and both were swallowed by a bare
+   `except Exception`. So `_ack_halt_reason` never reported a **commanded** halt (its passing test
+   only exercised the `.harness/HALT` branch above it, which returns first), and the audit-headroom
+   check never fired, so `ack` promised "up to twenty minutes" for an audit `priority.admit` would
+   refuse. Both now call `ledger_mod.load(ledger_path_for(config))`, and B438 covers each.
+   `_ack_halt_reason` also read `halt["actor"]`, which `request_halt` never writes; it is `by`.
+2. `heartbeat.yml` posts through `github-script`, so the transport never marked its comment, and
+   its body names `` `/harness work <what>` ``. Every weekly heartbeat therefore woke both
+   comment-driven workflows. The marker literal is now appended to the body (B454).
+3. That unmarked heartbeat was also recorded by the sweep as a `keyword_denied` entry for
+   `github-actions[bot]`, and was unprunable. Both follow from the fix.
+
+**Three more the adversarial pass found in the first cut of this change, fixed before it merged.**
+All three come back to one missing fact: the harness speaks under *two* logins, and the marker
+alone identifies neither. `gh.machine_logins` is now the one place that names them.
+1. The prune chose its candidates by `MACHINE_MARKER in body` with no author check. A reviewer ran
+   the committed code against a quote-reply and a person's comment was deleted. Both halves are
+   required now, at both sites that ask "did we write this?".
+2. `keywords.answered_ids` required the machine account, which `ack.yml` never posts as, so the
+   `answered:` marker was honoured only under the fake and never in production. Same helper.
+3. `links.queue_block` interpolated row labels - which are issue titles, and on the product
+   repository anybody can choose one - without neutralising the markers. A title carrying
+   `<!-- queue:end -->` anchored the next splice inside the block and stranded a row below it on
+   every sweep, without bound. Both markers are now defused in the rendered rows at that one
+   choke point, before wrapping, as the entity form that renders the same and matches neither.
+
+**The first cut of this decision put the answered fact in text, and that was the defect.** The
+fast answer carried `<!-- answered:<comment id> -->` and `keywords.answered_ids` harvested the ids
+out of harness-authored comments. Author-checking the harvest was not enough, because the attacker
+never posts the marker - *the harness does*. It repeats untrusted text verbatim: a
+product-repository issue title reaches a `/harness status` reply as a queue row label through
+`priority.queue` and `links.queue_lines`, and a model's answer reaches a thread through any stage
+reply. So an issue titled `fix the cards <!-- answered:IC_boss -->` made the harness publish the
+marker itself, in its own marked comment, and the next sweep read a maintainer's command as
+already answered and marked it seen for ever. A reviewer executed it end to end, with a clean
+title as the control. Defusing the marker wherever it is published would have been a third round
+of the same chase, so the fact left text altogether: `ANSWERED_RE`, `answered_ids`, the marker and
+`ack --comment-id` are gone. `cmd_ack`'s `"answered"` key, dropped in the first cut as a key no
+step read, is back and is now read - it is what `ack.yml` writes the reaction from - so the
+command prints the same three keys on every path.
+
+Rejected: sharding the `harness-ledger` concurrency group, which is B118 and would let two runs
+write `state/ledger.json` at once; having `ack` record the answered fact in the ledger, which puts
+it in that group and costs the fast lane the one thing it exists for; having the sweep write it
+there instead, which is where the fact already ends up - the skip marks the comment seen - but
+which answers where to keep it rather than how the sweep learns it, and so still needs a channel
+of its own; `cancel-in-progress: true` on `feedback`, which would discard
+in-flight work rather than queued work; deleting comments by age alone, which would eventually
+reach a person's; a `queue.yml` workflow, which costs an `ADDED_WORKFLOWS` entry, a cron that must
+dodge B124 and `FROZEN_CRONS`, and a second holder of the ledger lock, for a job one step does;
+putting the queue in a comment rather than in the issue body, which grows the thread without bound
+and is the thing the hygiene half exists to stop; reacting to a bare mention instead of replying,
+which tells somebody they were heard when nothing will act on it - the failure
+`test_ack_says_nothing_to_an_untrusted_commenter` exists to prevent.
+
+Allocates B435-B456.

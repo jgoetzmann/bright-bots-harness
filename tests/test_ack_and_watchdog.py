@@ -115,6 +115,10 @@ def test_the_acknowledgement_says_the_answer_is_a_separate_comment():
 # --------------------------------------------------------------------------------------
 
 
+#: What `ack` prints when it has nothing to say: the same three keys on every path.
+SILENT = {"react": False, "comment": "", "answered": False}
+
+
 def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER",
              trust="3 jgoetzmann\n2 nathan\n") -> dict:
     """`harness ack` through the CLI the workflow actually calls, as the dict it prints."""
@@ -124,10 +128,11 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
 
     body_file = tmp_path / "comment.txt"
     body_file.write_text(body, encoding="utf-8")
-    code = main([
+    argv = [
         "--config", str(_env(tmp_path, trust=trust)), "ack",
         "--body-file", str(body_file), "--actor", actor, "--association", association,
-    ])
+    ]
+    code = main(argv)
     assert code == 0, "ack must never fail the run it precedes"
     out = capsys.readouterr().out
     # Always exactly one JSON object, on every path. The workflow parses this with a `{}`
@@ -144,6 +149,9 @@ def _env(tmp_path, trust="3 jgoetzmann\n2 nathan\n") -> Path:
         "BACKEND": "fake",
         "PERMISSION_TIER": "0",
         "STORE_BACKEND": "sqlite",
+        # The machine account is derived from the fork's owner, and the mention form is the
+        # handle it yields, so the fixture has to have one.
+        "FORK_REPO": "jgoetzmann-bot/brightboost",
         "TRUST_FILE": str(trust_file),
         "DB_PATH": str(tmp_path / "h.db"),
         "RUNS_DIR": str(tmp_path / "runs"),
@@ -166,13 +174,15 @@ def test_ack_acknowledges_a_trusted_slow_command(tmp_path, capsys):
     assert "Working on it" in out["comment"] and "/harness ask" in out["comment"]
 
 
-def test_ack_reacts_but_says_nothing_for_a_fast_command(tmp_path, capsys):
+def test_ack_reacts_but_says_nothing_for_a_fast_command_it_cannot_answer(tmp_path, capsys):
     """The two decisions are separate on purpose. The sweep IS going to act, so the reaction is
-    earned; the answer arrives about as fast as a comment would, so the comment is not."""
-    out = _run_ack(tmp_path, capsys, "/harness-status")
+    earned; the answer arrives about as fast as a comment would, so the comment is not. `status`
+    is the exception, because `ack` answers that one itself (B440)."""
+    out = _run_ack(tmp_path, capsys, "/harness go")
 
     assert out["react"] is True
     assert out["comment"] == ""
+    assert out["answered"] is False
 
 
 def test_ack_never_reacts_to_the_machine_account(tmp_path, capsys):
@@ -181,7 +191,7 @@ def test_ack_never_reacts_to_the_machine_account(tmp_path, capsys):
     cannot catch it either -- the machine account is an ordinary user, not a `Bot` type."""
     out = _run_ack(tmp_path, capsys, "/harness ask x", actor="jgoetzmann-bot")
 
-    assert out == {"react": False, "comment": ""}
+    assert out == SILENT
 
 
 def test_ack_says_nothing_to_an_untrusted_commenter(tmp_path, capsys):
@@ -189,14 +199,14 @@ def test_ack_says_nothing_to_an_untrusted_commenter(tmp_path, capsys):
     both: it tells somebody they were heard when they were not, and it does so where everybody
     can see it."""
     assert _run_ack(tmp_path, capsys, "/harness ask x", actor="mallory",
-                    association="NONE") == {"react": False, "comment": ""}
+                    association="NONE") == SILENT
 
 
 def test_ack_applies_the_association_half_of_the_gate_too(tmp_path, capsys):
     """B131 is BOTH halves. A handle in the trust file whom GitHub does not vouch for on this
     repository is refused by the sweep, so the acknowledgement must refuse it identically."""
     assert _run_ack(tmp_path, capsys, "/harness ask x",
-                    association="CONTRIBUTOR") == {"react": False, "comment": ""}
+                    association="CONTRIBUTOR") == SILENT
 
 
 def test_ack_uses_the_same_parser_as_the_sweep(tmp_path, capsys):
@@ -204,7 +214,7 @@ def test_ack_uses_the_same_parser_as_the_sweep(tmp_path, capsys):
     ship a paste-me block, and an acknowledgement that read it would announce work the sweep is
     never going to do."""
     body = "look:\n```\n/harness-audit accessibility\n```\n"
-    assert _run_ack(tmp_path, capsys, body) == {"react": False, "comment": ""}
+    assert _run_ack(tmp_path, capsys, body) == SILENT
 
 
 def test_ack_reads_the_hyphenated_form_and_the_aliases(tmp_path, capsys):
@@ -217,9 +227,8 @@ def test_ack_is_silent_rather_than_loud_when_it_cannot_tell(tmp_path, capsys):
     """Every path that cannot confirm what will happen prints nothing and exits 0. An
     acknowledgement that can break the run it precedes is a worse bargain than no
     acknowledgement at all."""
-    silent = {"react": False, "comment": ""}
-    assert _run_ack(tmp_path, capsys, "no commands here at all") == silent
-    assert _run_ack(tmp_path, capsys, "") == silent
+    assert _run_ack(tmp_path, capsys, "no commands here at all") == SILENT
+    assert _run_ack(tmp_path, capsys, "") == SILENT
 
 
 def test_ack_survives_a_body_file_that_is_not_there(tmp_path, capsys):
@@ -235,7 +244,7 @@ def test_ack_survives_a_body_file_that_is_not_there(tmp_path, capsys):
     ])
 
     assert code == 0
-    assert json.loads(capsys.readouterr().out) == {"react": False, "comment": ""}
+    assert json.loads(capsys.readouterr().out) == SILENT
 
 
 # --------------------------------------------------------------------------------------
@@ -483,6 +492,9 @@ def test_every_step_of_every_spending_workflow_is_classified():
         "Sweep keywords (harness sweep; may run revise/propose)",
         "Queue issues assigned to the bot (harness discover --mode assigned)",
         "Reconcile stale harness:running items (harness run)",
+        # Spends nothing itself, but it runs after the sweep, so a re-run of the whole job
+        # would re-spend what came before it (D76).
+        "Publish the queue and prune old comments (harness tidy)",
         "Commit state/ledger.json",
         "Upload run artifacts",
     }
@@ -633,7 +645,7 @@ def test_a_level_one_actor_with_nothing_allowed_is_answered_by_the_sweep_not_her
     out = _run_ack(tmp_path, capsys, "/harness audit accessibility", actor="asker",
                    association="MEMBER", trust="1 asker\n")
 
-    assert out == {"react": False, "comment": ""}
+    assert out == SILENT
 
 
 @pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
@@ -667,12 +679,12 @@ def test_a_comment_driven_workflow_checks_out_the_default_branch_not_the_pull_re
 
 
 def test_neither_comment_step_can_red_somebody_elses_thread():
-    """Both writes are courtesies. `issues.createComment` 403s on a locked issue, on a fork pull
-    request's read-only token, and on GitHub's secondary content-creation limit — none of which
-    is the commenter's fault, and all of which would put a red cross on their thread."""
+    """Every write here is a courtesy. `issues.createComment` 403s on a locked issue, on a fork
+    pull request's read-only token, and on GitHub's secondary content-creation limit — none of
+    which is the commenter's fault, and all of which would put a red cross on their thread."""
     text = _wf("ack.yml")
 
-    for step in ("React", "Say it"):
+    for step in ("React", "Say it", "Mark it answered"):
         block = text.split(f"- name: {step}\n", 1)[1].split("uses:", 1)[0]
         assert "continue-on-error: true" in block, f"{step} can fail the run"
 
@@ -687,3 +699,307 @@ def test_the_watchdog_does_not_claim_to_catch_its_own_disablement():
 
     assert "heartbeat" in text, "the workflow must name the alarm that outlives it"
     assert "60 days" in docs and "heartbeat" in docs.split("60 days")[1][:800]
+
+
+# --------------------------------------------------------------------------------------
+# B435-B438 - naming the bot, and the two defects found reading cmd_ack
+# --------------------------------------------------------------------------------------
+
+MACHINE = "jgoetzmann-bot"
+
+
+def test_B436_a_bare_mention_from_a_trusted_actor_gets_one_nudge_naming_this_surfaces_verbs(
+    tmp_path, capsys
+):
+    """B436: naming the bot and then writing a sentence is somebody asking for attention.
+    Silence there is the failure this whole surface exists to avoid."""
+    out = _run_ack(tmp_path, capsys, f"@{MACHINE} can you look at the activity cards")
+
+    assert out["react"] is True
+    assert "no command" in out["comment"].lower()
+    assert "/harness status" in out["comment"], "it says what to say instead"
+    assert f"@{MACHINE} <verb>" in out["comment"], "including the form they just tried"
+
+
+def test_B436_a_bare_mention_from_an_untrusted_actor_is_still_silent(tmp_path, capsys):
+    """A public repository. The trust gate decides before anything is said, exactly as it does
+    for `/harness`."""
+    assert _run_ack(tmp_path, capsys, f"@{MACHINE} hello", actor="mallory",
+                    association="NONE") == SILENT
+
+
+def test_B436_a_mention_carrying_a_real_verb_is_acknowledged_rather_than_nudged(tmp_path, capsys):
+    """The case the operator actually typed, twice. It is a command now, so it gets the
+    acknowledgement a command gets."""
+    out = _run_ack(tmp_path, capsys, f"@{MACHINE} audit accessibility in src/components")
+
+    assert out["react"] is True
+    assert "/harness audit" in out["comment"] and "twenty minutes" in out["comment"]
+
+
+def test_B436_the_nudge_carries_the_marker_so_it_does_not_wake_the_workflows(tmp_path, capsys):
+    """It names `/harness` verbs, and both comment-driven workflows wake on that word."""
+    out = _run_ack(tmp_path, capsys, f"@{MACHINE} hello there")
+
+    assert "<!-- bright-bots-harness -->" in out["comment"]
+
+
+def test_B436_a_verb_above_the_actors_level_is_left_to_the_sweep_rather_than_nudged(
+    tmp_path, capsys
+):
+    """A nudge there would ignore what they asked for. The sweep's refusal names the level they
+    needed, which the nudge cannot."""
+    out = _run_ack(tmp_path, capsys, f"@{MACHINE} audit accessibility", actor="asker",
+                   association="MEMBER", trust="1 asker\n")
+
+    assert out == SILENT
+
+
+@pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
+def test_B437_both_comment_driven_workflows_wake_on_a_mention_of_the_machine_account(name):
+    """B437: the filter had to move first. A job condition is evaluated before any step runs, so
+    both live `@jgoetzmann-bot audit` comments produced SKIPPED runs and no parser was ever
+    reached -- a keywords.py change alone would have been provably inert."""
+    condition = _wf(name).split("jobs:", 1)[1].split("runs-on:", 1)[0]
+
+    assert f"contains(github.event.comment.body, '@{MACHINE}')" in condition
+    assert "contains(github.event.comment.body, '/harness')" in condition, "both forms wake it"
+
+
+def test_B437_the_handle_the_filters_name_is_the_one_fork_repo_owns():
+    """A workflow `if:` cannot read `.harness/config.json`, so the handle is hard-coded exactly
+    as MACHINE_MARKER is. This pins it to the code's own derivation, so renaming the fork fails
+    the build instead of silently deafening the bot."""
+    import json
+    from types import SimpleNamespace
+
+    from harness.stages.discover import machine_account
+
+    config = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    handle = machine_account(SimpleNamespace(fork_repo=config.get("FORK_REPO", "")))
+
+    assert handle, ".harness/config.json names no FORK_REPO, so there is no handle to pin"
+    for name in ("ack.yml", "feedback.yml"):
+        assert f"contains(github.event.comment.body, '@{handle}')" in _wf(name), (
+            f"{name} names a handle that is not the owner of FORK_REPO"
+        )
+
+
+def _write_ledger(tmp_path, ledger) -> None:
+    """The ledger where `ledger_path_for` looks for it, written without the write guard."""
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "ledger.json").write_text(ledger.to_json(), encoding="utf-8")
+
+
+def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str) -> dict:
+    """`harness ack` against a ledger on disk, from a cwd with no committed halt in it."""
+    import json
+
+    from harness.__main__ import main
+
+    env = _env(tmp_path)
+    _write_ledger(tmp_path, ledger)
+    path = tmp_path / "c.txt"
+    path.write_text(body, encoding="utf-8")
+    argv = ["--config", str(env), "ack", "--body-file", str(path),
+            "--actor", "jgoetzmann", "--association", "OWNER"]
+    monkeypatch.chdir(tmp_path)
+    assert main(argv) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_B438_a_commanded_halt_is_named_in_the_acknowledgement(tmp_path, capsys, monkeypatch):
+    """Fails on main. `_ack_halt_reason` called `ledger_mod.Ledger.load(config.ledger_path)`:
+    `Ledger` has no `load` and `Config` has no `ledger_path`, so it raised and the bare
+    `except` swallowed it. The passing test above only ever exercised the `.harness/HALT`
+    branch, which returns first -- so a commanded halt was never reported here at all."""
+    from harness.ledger import Ledger
+
+    led = Ledger.empty("2026-08-31T00:00:00Z")
+    led.request_halt("jgoetzmann", "the usage looks wrong", "2026-09-01T12:00:00Z")
+
+    out = _ack_with_ledger(tmp_path, capsys, monkeypatch, led, "/harness audit accessibility")
+
+    assert out["react"] is True
+    assert "halted" in out["comment"].lower()
+    assert "@jgoetzmann" in out["comment"], "and it says who stopped it"
+    assert "the usage looks wrong" in out["comment"], "and why"
+    assert "twenty minutes" not in out["comment"]
+
+
+def test_B438_an_audit_the_headroom_gate_will_refuse_is_not_promised_twenty_minutes(
+    tmp_path, capsys, monkeypatch
+):
+    """Fails on main, for the same two reasons: the headroom read raised and was swallowed, so
+    `ack` promised twenty minutes of audit that `priority.admit` then declined."""
+    from harness.ledger import Ledger
+
+    led = Ledger.empty("2026-08-31T00:00:00Z")
+    led.observe_usage(
+        {
+            "seven_day": {"utilization": 0.88, "resets_at": "2026-09-08T00:00:00Z"},
+            "five_hour": {"utilization": 0.10, "resets_at": "2026-09-01T17:00:00Z"},
+        },
+        "2026-09-01T11:00:00Z",
+    )
+
+    out = _ack_with_ledger(tmp_path, capsys, monkeypatch, led, "/harness audit accessibility")
+
+    assert out["react"] is True
+    assert "Not now" in out["comment"]
+    assert "88%" in out["comment"]
+    assert "twenty minutes" not in out["comment"]
+
+
+# --------------------------------------------------------------------------------------
+# B440-B444 - the fast lane
+#
+# A free verb queued behind a twenty-minute audit because both shared `harness-ledger`. The
+# lock is not sharded (B118); the free verb moved to the workflow that writes no ledger.
+# --------------------------------------------------------------------------------------
+
+
+def test_B440_a_status_only_comment_is_answered_by_ack_itself(tmp_path, capsys):
+    out = _run_ack(tmp_path, capsys, "/harness status")
+
+    assert out["react"] is True
+    assert set(out) == {"react", "comment", "answered"}, "the same shape on every path"
+    assert "**Allowance**" in out["comment"], "the answer itself, not an acknowledgement"
+    assert out["answered"] is True, "which is what the workflow writes the reaction from"
+    assert "answered:" not in out["comment"], "and the fact is not text in the reply (B455)"
+    assert "<!-- bright-bots-harness -->" in out["comment"]
+
+
+def test_B440_the_answered_flag_is_set_only_beside_an_answer_ack_gave(tmp_path, capsys):
+    """`ack.yml` writes the reaction from this flag alone, so a flag set beside anything else
+    is a comment the sweep skips and nobody ever answered."""
+    for body in ("/harness ask what does the registry do", f"@{MACHINE} hello there"):
+        out = _run_ack(tmp_path, capsys, body)
+
+        assert out["answered"] is False, body
+        assert out["comment"], "it still says something; it just did not answer"
+
+
+def test_B440_ack_never_writes_the_ledger_so_it_needs_no_lock(tmp_path, capsys):
+    """The proof obligation behind putting the fast lane here. B118 says every workflow that
+    writes state/ledger.json shares one group and never cancels a run; `ack.yml` sits outside
+    that group, so `harness ack` must never write the ledger at all."""
+    from harness.ledger import Ledger
+
+    _env(tmp_path)
+    _write_ledger(tmp_path, Ledger.empty("2026-08-31T00:00:00Z"))
+    path = tmp_path / "state" / "ledger.json"
+    before = path.read_text(encoding="utf-8")
+
+    out = _run_ack(tmp_path, capsys, "/harness status")
+
+    assert out["answered"] is True and "**Allowance**" in out["comment"], "it did the work"
+    assert path.read_text(encoding="utf-8") == before, "and wrote nothing"
+    groups = re.findall(r"^  group: (.+)$", _wf("ack.yml"), re.M)
+    assert groups and "harness-ledger" not in groups, "ack.yml must stay outside the lock"
+    text = _wf("ack.yml")
+    assert "Commit state/ledger.json" not in text and "git commit" not in text
+
+
+def test_B443_a_comment_mixing_status_with_another_verb_is_left_to_the_sweep(tmp_path, capsys):
+    """B443: the sweep owns the rest of the comment, including any refusal. Claiming it here
+    would consume the whole comment and drop what ack cannot do."""
+    out = _run_ack(tmp_path, capsys,
+                   "/harness status\n/harness ask what does the registry do")
+
+    assert out["answered"] is False, "so nothing marks the comment answered"
+    assert "Working on it" in out["comment"]
+
+
+def test_B444_an_unreadable_ledger_falls_back_to_the_acknowledgement(tmp_path, capsys):
+    """Every path that cannot confirm what will happen degrades to what it did before."""
+    _env(tmp_path)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "ledger.json").write_text("{not json at all", encoding="utf-8")
+
+    out = _run_ack(tmp_path, capsys, "/harness status")
+
+    assert out == {"react": True, "comment": "", "answered": False}
+
+
+def test_B454_the_heartbeat_comment_carries_the_marker_so_it_does_not_wake_the_workflows():
+    """B454: heartbeat.yml posts through `github-script`, so the transport never marked it --
+    and its body names `/harness work <what>`. Every weekly heartbeat therefore woke both
+    comment-driven workflows and left a bogus keyword_denied entry behind it."""
+    from harness.gh import MACHINE_MARKER
+
+    text = _wf("heartbeat.yml")
+
+    assert "/harness work" in text, "the body still names a command, which is why it needs this"
+    marker_at = text.index(f"'{MACHINE_MARKER}'")
+    assert marker_at < text.index("issues.createComment"), (
+        "the marker must be pushed into the body before the body is posted"
+    )
+
+
+def test_B442_the_ack_reply_is_authored_by_the_actions_bot_not_the_machine_account():
+    """The fact `keywords.answered_by_ack` has to encode, pinned against the workflow that
+    decides it. Both `github-script` steps run with no `github-token:` override, so the answer
+    and the reaction marking it are authored by `github-actions[bot]`, never by the machine
+    account. An author test naming only the machine account is never satisfied in production:
+    the reaction is never honoured, and every fast answer is followed by the full one (D76)."""
+    from harness.gh import ACTIONS_BOT, machine_logins
+
+    text = _wf("ack.yml")
+    say = text.split("- name: Say it", 1)[1].split("- name:", 1)[0]
+    mark = text.split("- name: Mark it answered", 1)[1]
+
+    assert "actions/github-script" in say and "actions/github-script" in mark
+    assert "github-token:" not in say and "github-token:" not in mark, (
+        "an override would change who the answer and its mark come from"
+    )
+    assert ACTIONS_BOT in machine_logins("jgoetzmann-bot"), (
+        "the sweep must count the Actions bot as one of the logins the harness posts under"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# B455/B456 - the answered fact is a reaction, and the workflow that writes it
+# --------------------------------------------------------------------------------------
+
+
+def test_B456_the_answered_reaction_the_workflow_writes_is_the_one_the_sweep_looks_for():
+    """Two spellings of one fact, in two languages. A workflow expression cannot import the
+    constant, so this is what keeps them the same reaction."""
+    from harness.gh import ANSWERED_REACTION
+
+    text = _wf("ack.yml")
+    mark = text.split("- name: Mark it answered", 1)[1]
+    eyes = text.split("- name: React", 1)[1].split("- name:", 1)[0]
+
+    assert f"content: '{ANSWERED_REACTION}'" in mark
+    assert "content: 'eyes'" in eyes
+    assert ANSWERED_REACTION != "eyes", "read and answered must be different reactions"
+
+
+def test_B456_a_comment_is_marked_answered_only_after_the_answer_has_landed():
+    """`issues.createComment` 403s on a locked issue and at the content-creation limit. Marking
+    before it lands leaves the sweep skipping a comment nobody answered, which is silence — the
+    failure this whole surface exists to prevent."""
+    text = _wf("ack.yml")
+    mark = text.split("- name: Mark it answered", 1)[1].split("uses:", 1)[0]
+
+    assert "id: say" in text.split("- name: Say it", 1)[1].split("uses:", 1)[0]
+    assert "steps.ack.outputs.answered == 'true'" in mark
+    assert "steps.say.outcome == 'success'" in mark, (
+        "`outcome` is the step's own result; `conclusion` reads 'success' even when it failed"
+    )
+    assert text.index("- name: Say it") < text.index("- name: Mark it answered")
+
+
+def test_B456_the_fast_lane_answers_exactly_the_verbs_the_sweep_will_skip():
+    """`ack` claims a comment only when every verb in it is one of these, and the sweep skips
+    one only on the same test. Two spellings of that rule could disagree; one constant cannot."""
+    from harness import keywords
+
+    assert keywords.ACK_ANSWERS == frozenset({"status"})
+    assert keywords.ACK_ANSWERS <= set(keywords.VERBS)
+    assert not any(links.is_slow(verb) for verb in keywords.ACK_ANSWERS), (
+        "a verb that calls a model cannot be answered in the workflow that takes no lock"
+    )

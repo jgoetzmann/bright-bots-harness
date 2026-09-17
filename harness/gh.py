@@ -60,6 +60,35 @@ def mark_machine_written(body: str) -> str:
     return f"{text}\n\n{MACHINE_MARKER}" if text.strip() else MACHINE_MARKER
 
 
+#: The other login the harness speaks under. `gh.comment` posts as the machine account, but a
+#: comment a workflow posts through `actions/github-script` is authored by this one: those steps
+#: run with the job's own `GITHUB_TOKEN` and set no `github-token:` override.
+ACTIONS_BOT = "github-actions[bot]"
+
+
+def machine_logins(machine: str = "") -> frozenset[str]:
+    """Every login the harness itself posts under, lower-cased (D76).
+
+    The marker is not an author test and never was: GitHub's quote-reply copies the source
+    comment's raw markdown, HTML comments included, so a person who quote-replies the harness
+    carries `MACHINE_MARKER` in a comment they wrote. Nobody else can post as either of these
+    logins, so membership here *plus* the marker is a test a person cannot pass -- which is what
+    deleting a comment, or suppressing somebody's command, has to be sure of.
+    """
+    logins = {ACTIONS_BOT}
+    handle = str(machine or "").strip().lstrip("@").lower()
+    if handle:
+        logins.add(handle)
+    return frozenset(logins)
+
+
+#: The reaction `ack` leaves on a comment it has answered itself, written under one of the
+#: `machine_logins` (D76). A reaction rather than text in the reply: the harness repeats
+#: untrusted text verbatim, so any marker it can publish is one a stranger can choose, while
+#: nobody outside these logins can react as them.
+ANSWERED_REACTION = "rocket"
+
+
 def _header(headers: Any, name: str) -> str | None:
     """Read one header off any object exposing ``.get`` (or nothing at all)."""
     if headers is None:
@@ -436,6 +465,22 @@ class GitHubClient(GitHubReadOnly):
         )
         return data if isinstance(data, dict) else {}
 
+    def delete_issue_comment(self, repo: str, comment_id: int) -> dict:
+        """Remove one comment — only ever one the harness itself wrote and marked (D76).
+
+        Not routed through `_write`, which sends whatever it records. This verb carries no
+        body at all, so the recorded payload is the audit line and the request itself has
+        nothing in it to redact.
+        """
+        self._require_write("delete_issue_comment")
+        ident = int(comment_id)
+        payload = redact.redact_json({"repo": str(repo), "comment_id": ident})
+        self._record("DELETE", self._url(f"/repos/{repo}/issues/comments/{ident}"), payload)
+        if self.dry_run:
+            return {"deleted": ident}
+        self._send("DELETE", f"/repos/{repo}/issues/comments/{ident}", None)
+        return {"deleted": ident}
+
     def set_labels(self, repo: str, number: int, labels: Sequence[str]) -> list[dict]:
         self._require_write("set_labels")
         n = int(number)
@@ -738,6 +783,21 @@ class GitHubClient(GitHubReadOnly):
     def issue_comments(self, repo: str, number: int) -> list[dict]:
         pairs = [("per_page", str(PER_PAGE))]
         return self._paginate(f"/repos/{repo}/issues/{int(number)}/comments?{_query(pairs)}")
+
+    def comment_reactions(
+        self, repo: str, comment_id: int | str, *, review: bool = False
+    ) -> list[dict]:
+        """Who reacted to one comment, and with what: each row carries `user` and `content`.
+
+        A read. The harness adds no reaction from Python -- `ack.yml` does that through
+        `github-script` -- so this stays off the write surface (I-13). `review` picks the
+        pull-request review comment endpoint; issue-comment and review-comment ids number
+        independently, so the caller carries which list a comment came from.
+        """
+        kind = "pulls" if review else "issues"
+        pairs = [("per_page", str(PER_PAGE))]
+        path = f"/repos/{repo}/{kind}/comments/{int(comment_id)}/reactions"
+        return self._paginate(f"{path}?{_query(pairs)}")
 
     def pull(self, repo: str, number: int) -> dict:
         data = self.get(f"/repos/{repo}/pulls/{int(number)}")

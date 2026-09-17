@@ -110,3 +110,4 @@ Coverage: the issue asks for a unit test that a second tap does not bump score o
 - **`disabled` on a shadcn `Button`** must reach the underlying `<button>` for behavior 3 to hold. The K-2 path at `:673` already relies on this, so the risk is low, but the test asserts the disabled state directly rather than trusting it.
 - **The issue body contained no instructions aimed at an AI agent**, no prompt-injection attempt, and no request to change anything outside `SkyShieldGame.tsx`. It is a plain, accurate bug report; the only correction this package makes to it is that the guard is half-wired rather than absent.
 - Nothing in this package touches `.github/`, `prisma/`, `migrations/`, `backend/scripts/predeploy*`, CI config, or dependencies, and it adds no runtime dependency.
+

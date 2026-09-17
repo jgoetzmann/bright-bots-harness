@@ -99,3 +99,4 @@ Rejected: changing the `Stats` type at `:13-26`. `target` genuinely comes from t
 - `STEM_SET_3_IDS` still holds three reserved placeholder slots (`shared/progression/stemSetIds.ts:63-75`), so the honest Set 3 target is 5 even though only `track-maker` and `echo-avenue` are shippable games today. This package deliberately mirrors whatever the API returns rather than reporting "reachable" games; narrowing that is #676's business and changing it here would desynchronise the fallback from `/student/stats` again.
 - If a canonical set array were ever emptied, `pct` at `:327` would evaluate `0 / 0` to `NaN`. Not reachable today — all three arrays are non-empty `as const` literals — and this package adds no guard, to keep the diff to the actual defect.
 - No path under `.github/` is touched. Nothing under `prisma/`, `migrations/` or `backend/scripts/predeploy*` is touched. No gate is widened, skipped or retimed, no dependency is added, and no whole-tree formatter is run.
+

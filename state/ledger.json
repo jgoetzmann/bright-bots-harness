@@ -2,19 +2,19 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 10,
+    "calls": 15,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.23,
-        "resets_at": "2026-09-17T09:30:00Z"
+        "utilization": 0.03,
+        "resets_at": "2026-09-17T20:30:00Z"
       },
       "seven_day": {
-        "utilization": 0.23,
+        "utilization": 0.27,
         "resets_at": "2026-09-22T20:00:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-17T05:25:09Z"
+      "observed_at": "2026-09-17T15:59:11Z"
     },
     "carry": {
       "issue": 50,
@@ -149,6 +149,36 @@
       "ts": "2026-09-17T05:25:09Z",
       "stage": "audit",
       "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T15:32:28Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T15:40:40Z",
+      "stage": "propose",
+      "issue": 68,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T15:48:07Z",
+      "stage": "propose",
+      "issue": 66,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T15:53:30Z",
+      "stage": "propose",
+      "issue": 69,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T15:59:11Z",
+      "stage": "propose",
+      "issue": 67,
       "run": ""
     }
   ]

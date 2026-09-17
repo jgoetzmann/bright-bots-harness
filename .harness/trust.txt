@@ -23,7 +23,7 @@
 # What each level may give. This table is checked against `keywords.VERB_LEVEL` by
 # `tests/test_docs_drift.py`, so it cannot drift from what the gate enforces:
 #
-#   3  operator    halt, resume, reject — and everything below
+#   3  operator    block, halt, resume, reject — and everything below
 #   2  maintainer  audit, go, promote, rebase, revise, split, stop, work
 #   1  asker       ask, status
 #   0  everyone else — the absence of a line. The comment is read, denied, and ignored.

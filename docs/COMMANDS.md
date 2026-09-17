@@ -32,8 +32,9 @@ nothing.
 | see what is going on | `/harness status` | anywhere it reads |
 | stop everything | `/harness halt` | anywhere it reads |
 | start it again | `/harness resume` | anywhere it reads |
+| give it time you are not using | `/harness block <n>` | anywhere it reads |
 
-`go` and `split` make up the twelve verbs. `/harness-<verb>` works as well as `/harness <verb>`.
+`go` and `split` make up the thirteen verbs. `/harness-<verb>` works as well as `/harness <verb>`.
 
 ## Where the harness is reading
 
@@ -122,7 +123,7 @@ nothing inside a fenced code block is a command. Capitalisation does not matter 
 `@mentions` are allowed, but `as discussed, /harness stop` is prose, not a command. Each comment is
 acted on once; editing it does not re-run it.
 
-### The twelve
+### The thirteen
 
 | Verb | What it does | Level |
 |---|---|---|
@@ -138,9 +139,12 @@ acted on once; editing it does not re-run it.
 | `split` | break it into child issues | 2 |
 | `halt` | stop all spending | 3 |
 | `resume` | lift the halt | 3 |
+| `block` | suspend the run window for n five-hour sessions | 3 |
 
-Six other words are understood: `fix` → `revise`, `reject` → `stop` (at level 3), `queue` → `go`,
-and `usage`, `ledger` and `help` → `status`.
+Eight other words are understood: `fix` → `revise`, `reject` → `stop` (at level 3), `queue` → `go`,
+`blocks` and `sessions` → `block`, and `usage`, `ledger` and `help` → `status`. There is
+deliberately no `unblock`: an alias carries the verb and never the argument, so it would report a
+block rather than cancel one. `/harness block 0` cancels.
 
 ### `work` — open a work item
 
@@ -175,9 +179,11 @@ makes no model call.
 /harness status
 ```
 
-Replies with the subscription left against both usage stops, the queue in priority order, whether
-the harness is halted, whether the run window is open, when the next sweep runs, and whether
-suggested work is admitted. Changes nothing. Try it first when nothing seems to be happening.
+Replies with the subscription left against both usage stops, the queue in priority order, what
+GitHub Actions is running or has queued behind the ledger lock (and what it cancelled in the last
+six hours), whether the harness is halted or blocked out, whether the run window is open, when the
+next sweep runs, and whether suggested work is admitted. Changes nothing. Try it first when
+nothing seems to be happening: it is what tells "queued behind a build" from "asleep".
 
 ### `audit` — one lens, one findings issue
 
@@ -291,6 +297,34 @@ again, and children inherit the parent's `via:` label.
 Level 3 only. The workflows keep running, so the sweep still reads the `/harness resume`. The other
 two switches are under [kill switches](#three-kill-switches-and-what-each-one-stops).
 
+### `block` — give it sessions you are not using
+
+```
+/harness block 3
+/harness block 1 away this afternoon
+/harness block 0
+```
+
+**Level 3**, because it is the operator's subscription being spent — the same reason `--force` is.
+It suspends the run window for the next `n` five-hour subscription sessions, so the dispatcher
+stops holding approved work back until it expires. At most six sessions (thirty hours), and never
+longer than the count however the session reading reads; more is refused and nothing changes,
+because a longer dedication is a run-window change, which is a reviewed edit to
+`.harness/config.json`.
+
+The end is measured **once**, when the command is acted on: the remainder of the session in
+progress plus `n − 1` whole ones when a reading exists, otherwise `n × 5 h` from now. A later
+reading never moves it. It expires by itself — nothing has to run for it to end — and
+`/harness block 0` cancels it early. With no argument it reports the block that stands, if any.
+
+**It lifts the calendar and nothing else.** Both usage stops (90% weekly, 80% session),
+`.harness/HALT`, `/harness halt`, the trust gate and both human gates still apply, and it does not
+raise `MAX_CONCURRENT_ITEMS`: one item at a time, as always.
+
+A block creates no workflow runs. It takes effect on runs that already happen — a gate-1 merge
+starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or a manual dispatch
+— so the reply names the next scheduled sweep. At a weekend `feedback.yml` does not run at all.
+
 ### `--force`
 
 ```
@@ -322,7 +356,7 @@ file who has neither access nor a vouch.
 
 | Level | Who | Commands |
 |---|---|---|
-| **3** | operator | everything below, plus `halt`, `resume`, `reject` and `--force` |
+| **3** | operator | everything below, plus `block`, `halt`, `resume`, `reject` and `--force` |
 | **2** | maintainer | `audit` `go` `promote` `rebase` `revise` `split` `stop` `work` |
 | **1** | asker | `ask` and `status` |
 | **0** | not in the file | nothing; the comment body is never parsed |
@@ -339,8 +373,9 @@ before the subcommand: `harness --json discover …`, not `harness discover --js
 
 ```bash
 harness doctor      # binaries, versions, disk, halt, config, pin, trust levels
-harness status      # queue by state, subscription usage, what is in flight
+harness status      # queue by state, subscription usage, what is in flight, what Actions is doing
 harness dispatch    # what may start now, the priority queue, why the head is not moving
+harness block       # with no argument, the block that stands (if any)
 harness ledger      # usage against each stop, calls made, window state
 ```
 
@@ -402,6 +437,7 @@ instead of sending them, but the ranking call still runs. `discover.yml` takes t
 ```bash
 harness propose 4       # the work package -> a proposal pull request (gate 1)
 harness approve 4       # proposed -> approved by hand; normally the gate-1 merge does this
+harness approve --merged   # approve every proposed item whose proposal file is on main (gate 1)
 harness run --item 4    # implement, gates, package; bypasses the run window, not the usage stops
 harness package 4       # build the review package
 harness deliver 4       # push the branch to the fork and open the upstream PR (gate 2)
@@ -415,6 +451,7 @@ harness decompose 4     # split into sub-issues
 harness halt                 # create the local halt file (HALT_FILE, default ./HALT)
 harness resume               # remove it
 harness resume --commanded   # also lift a halt set by `/harness halt`
+harness block 3              # suspend the run window for three five-hour sessions; 0 cancels
 harness sweep                # poll notifications, parse /harness commands, act on them
 harness tidy                 # rewrite the queue on the pinned issue; prune old bot comments
 harness relabel              # migrate open issues from harness:* to stage:/kind:/via:

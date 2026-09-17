@@ -453,6 +453,14 @@ spending workflow (B149, B150). `HALT_FILE` stops a local run at the next stage 
 code 5. `.\bb-stop.ps1` stops the container at the next unit boundary. `docs/OPERATIONS.md` §8 has
 the procedure, and §7 the order of steps when a credential leaks.
 
+`/harness block <n>` is not a fourth switch, and it is not the reverse of one. It suspends the run
+window for a few five-hour sessions so the operator can lend the harness time they are not going to
+use (D77), and it lifts the calendar alone: both usage stops, all three kill switches, the trust
+gate and the two human gates apply exactly as they did, no extra item may run at once, and the
+grant expires by itself without anything having to run. It is capped at six sessions, a count
+above that is refused rather than quietly reduced, and no grant runs longer than the count
+whatever the session reading says.
+
 ---
 
 ## The worst a single bad run can do

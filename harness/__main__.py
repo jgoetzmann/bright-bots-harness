@@ -133,6 +133,16 @@ DEFAULT_LOOP_SECONDS = 300
 
 PROPOSE_BRANCH_RE = re.compile(r"harness/propose-(\d+)$")
 
+#: `proposals/<id>-<slug>.md` — the committed record a merged proposal leaves on main (D46). It
+#: is what `harness approve --merged` reconciles against, because the file survives the run that
+#: merged it while a push diff exists only inside that one event (D78).
+PROPOSAL_FILE_RE = re.compile(r"^(\d+)-.*\.md$")
+
+#: How many workflow runs the Actions section asks GitHub for: one page, newest first, and the
+#: largest page the endpoint serves. A page that comes back full means older runs went unread,
+#: which `_actions_rows` reports rather than rendering as an idle queue (D79).
+ACTIONS_PER_PAGE = 100
+
 
 # --------------------------------------------------------------------------------------
 # parser
@@ -184,9 +194,14 @@ def build_parser() -> argparse.ArgumentParser:
     propose = sub.add_parser("propose", help="produce the work package for an item")
     propose.add_argument("item_id", type=int, metavar="item-id")
 
-    approve = sub.add_parser("approve", help="proposed -> approved")
-    approve.add_argument("item_id", type=int, metavar="item-id")
+    approve = sub.add_parser("approve", help="proposed -> approved (gate 1)")
+    approve.add_argument("item_id", type=int, nargs="?", default=None, metavar="item-id")
     approve.add_argument("--note", default=None, metavar="TEXT")
+    approve.add_argument(
+        "--merged",
+        action="store_true",
+        help="approve every proposed item whose proposal file is on main (D78)",
+    )
 
     run = sub.add_parser("run", help="serial loop over approved items")
     run.add_argument("--item", type=int, default=None, metavar="ID")
@@ -206,6 +221,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also lift a halt set by `/harness halt` (recorded in the ledger)",
     )
+
+    block = sub.add_parser(
+        "block", help="suspend the run window for the next N five-hour sessions (0 cancels)"
+    )
+    block.add_argument("sessions", nargs="?", default=None, metavar="N")
+    block.add_argument("--reason", default="", metavar="TEXT")
 
     sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
 
@@ -849,6 +870,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     feed = _doctor_notifications(config, args, payload)
     if feed:
         warnings.append(feed)
+    # What `/harness status` reports about Actions, checked before a run rather than discovered
+    # in a reply (D79). A warning, never a problem.
+    actions = _doctor_actions(config, args, payload)
+    if actions:
+        warnings.append(actions)
     # What the token holds, against what it is expected to hold (B305).
     warnings.extend(_doctor_token_scopes(config, args, payload, feed_unreadable=bool(feed)))
     scopes = payload.get("token_scopes") or {}
@@ -895,6 +921,32 @@ def _doctor_notifications(config, args, payload) -> str:
     except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
         return ""
     payload["notifications"] = {"readable": True}
+    return ""
+
+
+def _doctor_actions(config, args, payload) -> str:
+    """Empty when the Actions run list reads; otherwise the warning to file (D79).
+
+    Never a problem: a problem exits 3, and that exit code gates the three spending workflows.
+    Losing a status line must not stop the fleet, which is the rule D74/B305 already applies to
+    the scope check and the notifications feed.
+    """
+    payload["actions"] = {"readable": None}
+    if config is None or getattr(config, "permission_tier", 0) < 2:
+        return ""  # tier 0 reads this unauthenticated on demand; nothing to check up front
+    try:
+        ctx = _context(config, args, run_id="doctor")
+        rows, error, _ = _actions_rows(ctx.gh, str(getattr(config, "self_repo", "") or ""))
+    except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
+        return ""
+    if error:
+        payload["actions"] = {"readable": False, "error": error[:200]}
+        return (
+            f"the Actions run list is not readable ({error}), so `/harness status` cannot say "
+            "what is running or queued. Everything else still works, and a public repository "
+            "needs no extra scope for this read."
+        )
+    payload["actions"] = {"readable": True, "runs": len(rows)}
     return ""
 
 
@@ -1114,13 +1166,27 @@ def cmd_status(args: argparse.Namespace) -> int:
     in_flight = [dataclasses.asdict(r) for r in ctx.store.list_stage_runs(status="running")]
 
     halt = ctx.ledger.halt_request()
-    payload = {"queue": queue, "usage": usage, "in_flight": in_flight, "halt": halt}
+    # What Actions is actually doing, so "nothing is happening" can be told from "it is queued
+    # behind the lock" (D79).
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
+    payload = {
+        "queue": queue,
+        "usage": usage,
+        "in_flight": in_flight,
+        "halt": halt,
+        "block": ctx.ledger.block_grant(),
+        "actions": {"runs": runs, "error": actions_error or None, "truncated": actions_cut},
+    }
 
     # The halt comes first, so what follows is not read as a running harness.
     lines = _halt_lines(ctx.ledger)
+    standing = links.block_line(ctx.ledger, now)
+    if standing:
+        lines.append(standing)
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.extend(_usage_lines(ctx.ledger, config, now))
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
         lines.append(
@@ -1171,7 +1237,88 @@ def cmd_propose(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _proposal_on_main(directory: Path, item_id: int) -> str | None:
+    """The committed proposal file for `item_id`, by name, or None (D46)."""
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        match = PROPOSAL_FILE_RE.match(path.name)
+        if match and int(match.group(1)) == int(item_id):
+            return path.name
+    return None
+
+
+def _approve_merged(args: argparse.Namespace) -> int:
+    """Approve every `proposed` item whose proposal file is on main (D78).
+
+    Bounded by the queue rather than by `proposals/`, which only grows: one label query under
+    the GitHub store, and only `proposed -> approved` is ever made. What keeps a stopped item
+    from being resurrected is the state machine together with the fact that nothing puts an
+    item back into `proposed`: an item stopped after its proposal merged is `blocked` or
+    `abandoned`, so it is not `proposed` and is left alone.
+    """
+    config = _load(args)
+    ctx = _context(config, args, run_id="approve")
+    directory = Path(config.repo_root) / "proposals"
+    approved: list[int] = []
+    skipped: dict[str, str] = {}
+    failed: dict[str, str] = {}
+    for item in ctx.store.list_work_items(state="proposed"):
+        item_id = int(item.id)
+        name = _proposal_on_main(directory, item_id)
+        if name is None:
+            skipped[str(item_id)] = "no proposal file on main"
+            continue
+        try:
+            ctx.store.transition(
+                item_id, "approved", reason=f"gate 1: proposals/{name} is on main"
+            )
+        except HarnessError as exc:
+            # One item that cannot move must not strand the others: this pass is what recovers a
+            # burst, and stopping at the first failure would lose the rest of it.
+            LOG.warning("approve --merged: item %s did not transition: %s", item_id, exc)
+            failed[str(item_id)] = str(exc)
+            continue
+        approved.append(item_id)
+    head = f"approved {len(approved)} item(s)"
+    if approved:
+        head += ": " + ", ".join(f"#{n}" for n in approved)
+    lines = [head]
+    lines.extend(f"  skipped #{key}: {why}" for key, why in sorted(skipped.items()))
+    lines.extend(f"  failed #{key}: {why}" for key, why in sorted(failed.items()))
+    for key, why in sorted(failed.items()):
+        # On stderr, so `--json` stdout stays parseable; Actions reads a workflow command from
+        # either stream.
+        print(
+            f"::warning::harness approve --merged: item {key} did not transition: {why}",
+            file=sys.stderr,
+        )
+    _emit({"approved": approved, "skipped": skipped, "failed": failed}, "\n".join(lines), args)
+    # Never non-zero. This runs before `harness dispatch` and, in feedback.yml, before
+    # `harness sweep`, so failing it would take the keyword surface down over one stuck item,
+    # and a warning must not take the fleet down (D74/B305). The next run reconciles again.
+    return EXIT_OK
+
+
 def cmd_approve(args: argparse.Namespace) -> int:
+    """`proposed -> approved`. With `--merged`, reconcile every proposal on main (D78).
+
+    Merging a proposal pull request is gate 1, and the push it makes starts an implement run.
+    GitHub keeps one run in progress and one pending per concurrency group, so a burst of merges
+    cancels the pending ones — and the approval each carried died with it, because the old step
+    read its own push diff, which exists only inside that event. Reconciling the committed files
+    against item state instead makes an approval recoverable by any later run.
+    """
+    if getattr(args, "merged", False):
+        if args.item_id is not None:
+            raise HarnessError(
+                "harness approve --merged takes no item id; it reconciles every proposal on main"
+            )
+        return _approve_merged(args)
+    if args.item_id is None:
+        raise HarnessError("harness approve needs an item id, or --merged")
     config = _load(args)
     ctx = _context(config, args, run_id=f"item-{args.item_id}")
     item = _require_item(ctx, args.item_id)
@@ -1219,7 +1366,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
         # Outside the run window only the carried item may start (B210). `--item` bypasses the
         # window and nothing else: every stage still passes through the governor's usage stops.
-        if not in_run_window(config, listing_ctx.clock.now()):
+        # A block opens the window here exactly as it does in the plan, and lifts nothing else
+        # (D77).
+        now = listing_ctx.clock.now()
+        if not in_run_window(config, now) and not listing_ctx.ledger.block_open(now):
             window = _window_text(config)
             # A daily window holds the carried item back too, as in dispatcher.plan (B413).
             carry_exempt = carry is not None and not is_daily_window(config)
@@ -1573,6 +1723,13 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
     )
     payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
+    # The block is reported here rather than in `Plan.reason`: a new reason literal would have to
+    # be classified as stopping or proceeding and would change `discover.yml`'s `case` contract,
+    # while the plan already tells the truth by starting the work (D77).
+    payload["block"] = {
+        "open": ctx.ledger.block_open(ctx.clock.now()),
+        "grant": ctx.ledger.block_grant(),
+    }
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 
@@ -1697,6 +1854,31 @@ def _next_scheduled(now) -> str:
     return iso(nxt)
 
 
+def _actions_rows(gh, repo: str) -> tuple[list[dict], str, bool]:
+    """`(rows, error, truncated)` for the Actions section (D79).
+
+    "Nothing is running" and "I could not look" call for opposite actions, so an empty list never
+    stands in for a failure; `truncated` is the third answer, because one page is all that is read
+    and a full page says nothing about the runs behind it. A client that cannot list runs at all
+    is unreadable rather than idle, the rule `keywords.answered_by_ack` applies to
+    `comment_reactions`. Every failure costs one line and leaves the rest whole.
+    """
+    reader = getattr(gh, "workflow_runs", None)
+    if not callable(reader) or not repo:
+        return [], "could not be read (this client cannot list workflow runs)", False
+    try:
+        rows = reader(repo, per_page=ACTIONS_PER_PAGE)
+    except RateCeilingReached:
+        return [], "not read (GitHub request ceiling reached)", False
+    except HarnessError as exc:
+        return [], f"could not be read ({str(exc)[:120]})", False
+    except Exception:  # pragma: no cover - a status line must never fail the command it is in
+        return [], "could not be read", False
+    if not isinstance(rows, list):
+        return [], "could not be read (the run listing had an unexpected shape)", False
+    return [row for row in rows if isinstance(row, dict)], "", len(rows) >= ACTIONS_PER_PAGE
+
+
 def _usage_report(ctx, config, now) -> str:
     """The `/harness status` reply: usage, the queue, and what happens next.
 
@@ -1715,6 +1897,11 @@ def _usage_report(ctx, config, now) -> str:
         )
         lines.append("")
 
+    standing = links.block_line(led, now)
+    if standing:
+        lines.append(standing)
+        lines.append("")
+
     lines.extend(links.usage_headline(led, config, now))
     lines.append("")
 
@@ -1728,6 +1915,10 @@ def _usage_report(ctx, config, now) -> str:
         # The same renderer the pinned issue uses, so the reply and the pinned queue cannot
         # disagree about what is waiting (D76).
         lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
+    lines.append("")
+
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append("")
 
     blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config, now=now)
@@ -1816,6 +2007,91 @@ _GO_DEAD_ENDS: dict[str, str] = {
 }
 
 
+#: What a block still cannot do, said on every reply that grants one. It lifts the calendar and
+#: nothing else, and the surest way to be misread is to leave that implicit.
+_BLOCK_KEEPS = (
+    "Still in force: both usage stops, `.harness/HALT`, `/harness halt`, the trust gate and "
+    "both human gates. One item at a time, as always."
+)
+
+
+def _block_command(ctx, cmd) -> str:
+    """`/harness block <n>` — suspend the run window for the next n sessions (D77).
+
+    The operator lending the harness sessions they are not going to use. Level 3, because it is
+    their subscription being spent and because `--force` already needs that level to lift the
+    window for one item.
+    """
+    now = ctx.clock.now()
+    raw = (cmd.args or "").strip()
+    if not raw:
+        # No count is a question, not a guess at one.
+        standing = links.block_line(ctx.ledger, now)
+        if standing:
+            return standing
+        return (
+            "No block stands, so work waits for the run window as usual. `/harness block 3` "
+            f"gives it the next three five-hour sessions (at most {ledger_mod.MAX_BLOCK_SESSIONS})."
+        )
+    token = raw.split()[0]
+    reason = raw[len(token):].strip()
+    if not (token.isascii() and token.isdigit()):
+        return (
+            f"`{token}` is not a number of sessions, so nothing was changed. The form is "
+            f"`/harness block <n>`, where n is 0 to {ledger_mod.MAX_BLOCK_SESSIONS} five-hour "
+            "sessions; `/harness block 0` cancels a block that stands."
+        )
+    sessions = int(token)
+    if sessions == 0:
+        was = ctx.ledger.block_grant()
+        if was is None:
+            return "No block was standing, so there was nothing to cancel."
+        ctx.ledger.clear_block()
+        return (
+            f"**Block cancelled** by @{cmd.actor}. The block @{was.get('by', 'someone')} set is "
+            "lifted, and work waits for the run window again."
+        )
+    if sessions > ledger_mod.MAX_BLOCK_SESSIONS:
+        # Refused rather than clamped: a clamp grants something other than what was asked for,
+        # which is the rule `trust.parse_trust` applies to a level out of range.
+        hours = ledger_mod.MAX_BLOCK_SESSIONS * ledger_mod.SESSION_HOURS
+        return (
+            f"{sessions} sessions is more than the {ledger_mod.MAX_BLOCK_SESSIONS} one block may "
+            f"cover ({hours} hours), so nothing was changed. Ask for fewer, or change the run "
+            "window in `.harness/config.json`, which is a reviewed pull request."
+        )
+    grant = ctx.ledger.request_block(cmd.actor, sessions, now, reason)
+    anchor = str(grant.get("anchor") or "")
+    word = "session" if sessions == 1 else "sessions"
+    lines = [
+        f"**Blocked out {sessions} {word}.** The run window is suspended until "
+        f"**{grant['until']}**."
+    ]
+    if anchor:
+        more = "" if sessions == 1 else f", plus {sessions - 1} more"
+        lines.append(
+            f"- measured from the five-hour session that resets {anchor}{more} — once, and not "
+            "again: a later reading does not move it."
+        )
+    else:
+        lines.append(
+            f"- no session reading yet, so this is measured from now: {sessions} × "
+            f"{ledger_mod.SESSION_HOURS} h. The first reading will not move it."
+        )
+    lines.append(
+        "- work starts on the next run: a merged proposal starts one immediately, otherwise the "
+        f"next scheduled sweep is **{_next_scheduled(now)}**."
+    )
+    lines.append("- it expires by itself. `/harness block 0` cancels it.")
+    lines.append(f"- {_BLOCK_KEEPS}")
+    if ctx.ledger.halt_request() is not None:
+        lines.append(
+            "- **the harness is halted**, so nothing spends until `/harness resume`, block or no "
+            "block."
+        )
+    return "\n".join(lines)
+
+
 def _act_on_command(ctx, config, cmd) -> str:
     """Apply one authorised keyword command. Returns the reply text."""
     # The typed word, so the log says `reject` when `reject` was typed.
@@ -1861,6 +2137,10 @@ def _act_on_command(ctx, config, cmd) -> str:
             return "not halted"
         ctx.ledger.clear_halt()
         return f"resumed by @{cmd.actor}; the halt set by @{was.get('by', 'someone')} is lifted"
+
+    if cmd.verb == "block":
+        # No item is involved, so this answers before `_item_for_command` is consulted (D77).
+        return _block_command(ctx, cmd)
 
     if cmd.verb == "ask":
         # An answer only; no item is involved (B274).
@@ -2153,10 +2433,25 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
     try:
         led = ledger_mod.load(ledger_path_for(config))
         now = datetime.now(timezone.utc)
+        # A block opens the window, so the line that reports the window has to say so (D77).
+        open_now = in_run_window(config, now) or led.block_open(now)
         window = (
             f"`{config.run_window_start}` → `{config.run_window_end}` UTC"
-            + ("; open now" if in_run_window(config, now) else "; closed now")
+            + ("; open now" if open_now else "; closed now")
         )
+        # What Actions is doing, read unauthenticated so `ack` stays tier 0, takes no lock and
+        # carries no credential (B440). A failure here omits the section and nothing else.
+        try:
+            runs, actions_error, actions_cut = _actions_rows(
+                PUBLIC_READER(), str(getattr(config, "self_repo", "") or "")
+            )
+        except Exception:  # pragma: no cover - a courtesy inside a courtesy
+            runs, actions_error, actions_cut = None, "", False
+        if actions_error:
+            # A failure here omits the section (D79). This read is unauthenticated against a
+            # ceiling shared by every job on the runner's address, so it is refused routinely,
+            # and an error line about a read nobody asked for is worse than no line.
+            runs, actions_error, actions_cut = None, "", False
         text = links.fast_status(
             config,
             led,
@@ -2164,6 +2459,9 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
             window=window,
             next_sweep=_next_scheduled(now),
             queue_issue=getattr(config, "tracking_issue", 0) or 0,
+            actions=runs,
+            actions_error=actions_error,
+            actions_truncated=actions_cut,
         )
     except Exception:  # pragma: no cover - a courtesy must never fail the run it precedes
         return ""
@@ -2283,6 +2581,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     config = _load(args)
     check_halt(config.halt_file)
     ctx = _context(config, args, run_id="sweep")
+    # A block ends by the clock, so nothing depends on this running; clearing a spent grant here
+    # only keeps it off the surfaces that report one (D77).
+    if ctx.ledger.block_grant() is not None and not ctx.ledger.block_open(ctx.clock.now()):
+        ctx.ledger.clear_block()
     try:
         commands = keywords.sweep(
             ctx.gh,
@@ -2331,6 +2633,10 @@ def _queue_block_lines(ctx, config, now) -> list[str]:
             "Nothing will spend until `/harness resume`."
         )
         lines.append("")
+    standing = links.block_line(led, now)
+    if standing:
+        lines.append(standing)
+        lines.append("")
     lines.extend(links.usage_headline(led, config, now))
     lines.append("")
     try:
@@ -2339,6 +2645,9 @@ def _queue_block_lines(ctx, config, now) -> list[str]:
         lines.append(f"**Queue** — could not be read: {exc}")
     else:
         lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
+    lines.append("")
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append("")
     lines.append("**Next**")
     lines.append(
@@ -2673,6 +2982,9 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     window = dict(led.window)
     lines = [f"ledger {ctx.ledger_path}" + ("  (rebuilt)" if rebuilt else "")]
     lines.extend(_halt_lines(led))
+    standing = links.block_line(led, ctx.clock.now())
+    if standing:
+        lines.append(standing)
     lines.append("window:")
     lines.append(f"  period_start        {window.get('period_start')}")
     lines.append(f"  calls               {int(window.get('calls') or 0)}")
@@ -3038,8 +3350,59 @@ def cmd_trust(args: argparse.Namespace) -> int:
     return _trust_show(args)
 
 
+def cmd_block(args: argparse.Namespace) -> int:
+    """Suspend the run window for the next N five-hour sessions; `0` cancels (D77).
+
+    The CLI half of `/harness block`, for the operator at a keyboard. It writes the same grant
+    in the same place, so the two forms cannot come to mean different things.
+    """
+    config = _load(args)
+    ctx = _context(config, args, run_id="block")
+    now = ctx.clock.now()
+    raw = getattr(args, "sessions", None)
+    if raw is None:
+        text = links.block_line(ctx.ledger, now) or "no block stands"
+        _emit(
+            {"block": ctx.ledger.block_grant(), "open": ctx.ledger.block_open(now)}, text, args
+        )
+        return EXIT_OK
+    token = str(raw).strip()
+    if not (token.isascii() and token.isdigit()):
+        raise HarnessError(
+            f"sessions must be a whole number 0..{ledger_mod.MAX_BLOCK_SESSIONS}; got {raw!r}"
+        )
+    sessions = int(token)
+    if sessions > ledger_mod.MAX_BLOCK_SESSIONS:
+        raise HarnessError(
+            f"{sessions} sessions is more than the {ledger_mod.MAX_BLOCK_SESSIONS} one block may "
+            "cover; nothing was changed"
+        )
+    if sessions == 0:
+        was = ctx.ledger.block_grant()
+        ctx.ledger.clear_block()
+        ctx.save_ledger()
+        _emit(
+            {"block": None, "cleared": was},
+            "block cancelled" if was else "no block was standing",
+            args,
+        )
+        return EXIT_OK
+    grant = ctx.ledger.request_block(
+        "operator", sessions, now, str(getattr(args, "reason", "") or "")
+    )
+    ctx.save_ledger()
+    _emit(
+        {"block": grant, "open": True},
+        f"run window suspended for {sessions} session(s), until {grant['until']}\n"
+        f"  {_BLOCK_KEEPS}",
+        args,
+    )
+    return EXIT_OK
+
+
 COMMANDS = {
     "init": cmd_init,
+    "block": cmd_block,
     "doctor": cmd_doctor,
     "setup": cmd_setup,
     "status": cmd_status,

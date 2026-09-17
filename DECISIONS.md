@@ -894,3 +894,198 @@ which tells somebody they were heard when nothing will act on it - the failure
 `test_ack_says_nothing_to_an_untrusted_commenter` exists to prevent.
 
 Allocates B435-B456.
+
+## D77 / B459-B471 - a block: the operator lends the harness sessions
+
+Decision:
+- `/harness block <n>` suspends the **run window** for the next `n` five-hour subscription
+  sessions. Level 3 and a thirteenth verb, with `blocks` and `sessions` as aliases. There is no
+  `unblock`: an alias carries the verb and never the argument, so it would resolve to a bare
+  `block` and *report* rather than cancel. `/harness block 0` cancels, and every reply says so.
+- The grant lives in `state/ledger.json` under `window["block"]`, beside `window["carry"]` and
+  `window["halt"]` - the same class of fact, a scheduling exemption no store backend needs a
+  column for. `to_json` writes it only once granted, so a ledger that has never seen one is
+  byte-identical to the file it was.
+- The end is measured **once**, when the command is acted on. With a live `five_hour.resets_at`
+  it is that reset plus `n - 1` whole sessions; with no reading, an unreadable one, or one
+  already past, it is `n x SESSION_HOURS` from now. `anchor` is recorded for the reply and never
+  read again: re-measuring against each new observation would walk the block forward for ever.
+- A missing signal is never unlimited, and a bad one cannot stretch a grant. `block_until` has no
+  branch that returns nothing and clamps to `now + n x SESSION_HOURS`, so a reading the ledger
+  copied verbatim - a seven-day value landing in the five-hour slot - grants n sessions and not
+  days (B488). `block_open` is False when `until` is absent or unreadable - a block lifts a
+  restriction, so anything unreadable about it must mean "not lifted". `MAX_BLOCK_SESSIONS` is
+  6 (thirty hours), and a larger count is **refused** rather than clamped, because a clamp
+  grants something other than what was asked for (the rule `trust.parse_trust` applies to a
+  level out of range). `SESSION_HOURS` and `MAX_BLOCK_SESSIONS` are module constants, not config
+  keys, as `HISTORY_CAP` and `PRUNE_KEEP` are.
+- It lifts the window and nothing else: `dispatcher.plan` reads
+  `in_run_window(...) or ledger.block_open(now)` on one line, and `cmd_run`'s no-`--item` branch
+  does the same. `governor.authorize`'s two usage stops, `priority.admit`, `ctx.check_halt()`,
+  `.harness/HALT`, the trust gate, both human gates and `MAX_CONCURRENT_ITEMS` are untouched. The
+  usage stop is checked **before** the window branch in `plan`, so a block can never outlive one.
+- It adds **no dispatcher reason literal**. A new one would have to be classified in
+  `MUST_STOP_REASON_PREFIXES`/`MAY_PROCEED_REASON_PREFIXES` and would change `discover.yml`'s
+  `case "$reason"` contract; the plan already tells the truth by starting the work. The block is
+  reported in `cmd_dispatch`'s payload under `block`, which no workflow reads.
+- It expires by the clock alone - nothing has to run for it to end. `cmd_sweep` additionally
+  clears a spent grant when it happens to run, purely so the surfaces stay tidy; no decision
+  depends on that cleanup happening, and `dispatcher.plan` stays pure and only reads.
+- One renderer, `links.block_line`, is consumed by `/harness status`, `links.fast_status`, the
+  pinned issue, `harness status` and `harness ledger`, so no two surfaces can disagree - the
+  `queue_lines` pattern. `usage_headline` is untouched.
+
+Why: the account's plan is five-hour sessions shared with the operator's own use, and D72 set the
+window to the one session a day they are least likely to want (11:00-15:00 UTC). An operator with
+an afternoon they are not going to use had no way to say so short of editing
+`.harness/config.json` in a reviewed pull request, which is the wrong instrument for "today".
+
+The honest limitation, stated in the reply and here: a block creates no workflow runs. Outside
+11:23-14:23 UTC no `implement.yml` run is scheduled, so it takes effect on runs that already
+happen - a gate-1 merge (immediately), `feedback.yml`'s three-hourly weekday sweep, which calls
+`harness run` with no `--item`, or a manual dispatch. At a weekend `feedback.yml` does not run at
+all, so the reply names `_next_scheduled(now)` and the operator sees the real latency.
+
+Rejected: level 2 with a per-actor session cap, which splits "who spends the allowance" into two
+rules that can disagree; widening `implement.yml`'s cron, which B412 makes a window change rather
+than a cron change; giving the harness an Actions-dispatch write, a new write surface for a
+scheduling convenience; re-measuring the end against each new reading, which never ends; clamping
+an over-large count instead of refusing it.
+
+Allocates B459-B471, and B488 for the clamp.
+
+## D78 / B472-B479 - an approval survives the run that was cancelled
+
+Decision:
+- `harness approve --merged` reconciles every `proposed` work item against the proposal files on
+  `main`: `list_work_items(state="proposed")`, then `proposals/<id>-*.md` by `PROPOSAL_FILE_RE`,
+  then `proposed -> approved` with the reason `gate 1: proposals/<name> is on main`, which is the
+  B101 comment the thread records. The item id becomes optional; `--merged` with an id is an
+  error.
+- **Only `proposed -> approved`.** What prevents a resurrection is the state machine together
+  with the fact that nothing puts an item back into `proposed`: an item stopped after its proposal
+  merged is `blocked` or `abandoned`, so it is left alone. The transition table does not itself
+  forbid re-entry into `proposed`, and a `stage:` label set by hand is the route that reaches it,
+  so a stage that ever moves an item back there makes a merged proposal a standing approval and
+  has to be weighed against this.
+- A failure on one item is logged, warned about, and the rest continue, and the command exits
+  **0** (B489). It runs before `harness dispatch` and, in `feedback.yml`, before `harness sweep`,
+  so a non-zero exit over one locked or transferred issue would stop `/harness halt`,
+  `/harness resume` and `/harness block` being read at all, on every three-hourly run, while
+  `ack.yml` kept acknowledging - and `ops.yml` retries neither an `IllegalTransition` nor a 403.
+  `feedback.yml` carries `continue-on-error: true` on the step besides. The `failed` key stays in
+  the payload, and an item that stops moving shows up in the pinned queue `harness tidy` rewrites
+  and in `heartbeat.yml`'s weekly queue depth per `stage:` label. `watchdog.yml` does not report
+  it: that one watches whether `feedback.yml`'s schedule fired at all (B294).
+- It runs on **every** `implement.yml` run, not only on a push: the `github.event_name == 'push'`
+  condition and the `BEFORE`/`AFTER` shell loop are gone, and the step keeps its place between
+  sync-fork and dispatch (B127/B150). The same step is added to `feedback.yml` in the same
+  position, so a burst merged outside the implement window is approved within three hours rather
+  than waiting for 11:23 UTC. `ops.yml`'s `RETRYABLE_STEPS` names the new step, which runs before
+  any spend in both workflows.
+- Bounded by the queue rather than by `proposals/`, which only grows: one label query under the
+  GitHub store, and an item that is no longer `proposed` is never revisited.
+
+Why, with the evidence: the operator merged five proposal pull requests within 44 seconds. Each
+merge pushed to `proposals/**` and started an `implement` run in the `harness-ledger` group.
+`cancel-in-progress` is false, so GitHub kept one run in progress and **one** pending, and each new
+arrival cancelled the previously pending one: four of five runs died without executing a step. The
+approve step was gated on `github.event_name == 'push'` and read its own push diff
+(`BEFORE..AFTER`) - a diff that exists only inside that event payload - so the four cancelled runs
+never recorded their approvals, and all five items stayed at `stage:needs-approval` with nothing to
+recover them. The cancellation is not the bug; the bug is that a cancelled run held the only copy
+of work nothing else would redo. This is the same class as D46 and "`runs/` does not survive":
+anything needed across runs must come from a durable source, and the committed proposal file is
+one.
+
+Against today's incident: the one run that survives checks out a `main` that already carries all
+five files and approves all five. Every later run - cron, sweep, dispatch - re-reconciles for free,
+so even if every push run had died the next scheduled run repairs it.
+
+**B118 is untouched, and the proof is B479.** No workflow is added, no concurrency group is added
+or changed, `cancel-in-progress` is still `false` on all three, and no new writer of
+`state/ledger.json` exists: `harness approve --merged` runs inside jobs that already hold the lock.
+The only new writer outside Actions is the operator's terminal, the seat `harness resume
+--commanded` already occupies. Gate 1 is unchanged: merging the proposal is still the approval and
+still takes effect on the run that merge triggers; it now also takes effect on the next run if that
+one dies.
+
+Rejected: a queued-run-aware trigger or a debounce, which needs state the push run writes - and the
+push run is the thing being cancelled, often before any step runs; a second workflow outside the
+group, which costs an `ADDED_WORKFLOWS` entry and makes a second ledger writer (B118);
+`cancel-in-progress: true`, which discards in-flight work and was already rejected in D76;
+sharding `harness-ledger`, which is B118 and off the table; "idempotent implement, let the next run
+catch up" on its own, which fixes nothing, because what was lost was the *approval* and not the
+implement work.
+
+Out of scope and unchanged: D76's narrow comment-path window. `commands_from` marks a comment seen
+at parse time, so a run killed *after starting* consumes commands it never acted on; moving
+`mark_seen` after the act reopens paying twice for one model call. The operator's two cancelled
+`/harness promote all` runs were cancelled while **queued**, executed no step and marked nothing
+seen, so the next sweep re-read them - the comment path self-heals from its cursor where the push
+path could not.
+
+Allocates B472-B479, and B489 for the exit code.
+
+## D79 / B480-B487 - status says what Actions is doing
+
+Decision:
+- `GitHubReadOnly.workflow_runs(repo, per_page=100)` reads
+  `GET /repos/{repo}/actions/runs` and takes the list out of the object's `workflow_runs` key. A
+  **read**: one GET through the same ETag-cached, metered path every other read takes, so nothing
+  joins `GH_WRITE_METHODS` and I-13, which governs writes, does not apply. It is on
+  `GitHubReadOnly` rather than `GitHubClient`, so `gh.public_reader()` inherits it. One page and
+  no pagination - the endpoint lists newest first, and walking a history that grows with every
+  comment is what `watchdog.yml` already refuses to do - so the page asked for is the largest the
+  endpoint serves. Thirty rows was minutes on a busy morning, which put a live run off the page
+  and reported "nothing running or queued" as fact during exactly the burst an operator would be
+  investigating (B490).
+- One renderer, `links.actions_lines`, between the queue and **Next** on every status surface:
+  what is running, what is queued (marked "behind the ledger lock" for a workflow in
+  `links.LEDGER_GROUP_WORKFLOWS`, which a drift test pins to the `group:` lines the workflow files
+  declare, as B437 pins the machine handle), and one grouped line for what was cancelled in the
+  last `CANCELLED_WINDOW_HOURS` (6). That last line is the operator's direct view of a burst
+  (D78). Skipped runs are never listed: `feedback.yml` skips at job level on every unrelated
+  comment, and that is the noise `watchdog.yml` already filters. Five rows, then `…and N more`.
+- **An empty list never stands in for a failure**, and neither does a full page.
+  `__main__._actions_rows` returns `(rows, error, truncated)`: "nothing is running", "I could not
+  look" and "that is all I read" call for three different answers, so a page that comes back full
+  is rendered as a bound - "nothing running or queued in the newest 100 runs" - and never as an
+  idle queue.
+  A `GitHubError`, a `RateCeilingReached`, a shape with no `workflow_runs` key, and a client with
+  no `workflow_runs` attribute at all each cost exactly one line and leave the rest of the answer
+  whole. The attribute test is `getattr(gh, "workflow_runs", None)`, the pattern
+  `keywords.answered_by_ack` already uses for `comment_reactions`, which is why no existing test
+  double needed a new method.
+- `links.fast_status` carries the section too, because `ACK_ANSWERS == {"status"}` means the
+  operator's own `/harness status` comment is answered by `ack` and skipped by the sweep - without
+  it the one surface they asked about would never show it. `ack` reads it through
+  `gh.public_reader()`: unauthenticated, no token, no store, no lock, tier 0 preserved, `ack.yml`
+  still carrying no secret beyond `GITHUB_TOKEN` and still writing no ledger, so B440 and B118 are
+  intact. Any failure there omits the section rather than spending the answer on an error line
+  about a read nobody asked for: 60/hour is shared by every job on the runner's address, so a 403
+  is routine rather than exceptional. `public_reader` bounds each read with
+  `PUBLIC_READ_TIMEOUT_S`, since `urlopen` without one waits for ever and `ack.yml`'s job timeout
+  was the only other limit (B491).
+- `harness doctor` gains a probe beside `_doctor_notifications`: a **warning** only, never a
+  problem, because a problem exits 3 and that exit code gates the spending workflows (D74/B305's
+  rule). It is skipped below tier 2, where there is no token and nothing to check up front.
+
+Why: from a thread, a harness that is thinking and a harness that is off look identical, and D65
+answered that with `ack`. What it could not answer is the third state the operator actually hit:
+queued behind the `harness-ledger` lock, or cancelled by a newer arrival. `/harness status` could
+report the allowance, the queue and the window and still not say why nothing was moving, because
+the reason was in the Actions tab.
+
+Cost: one GET per status answer, on demand - nothing polls. At tier 2 it is metered against a
+5000/hour ceiling and ETag-cached; in `ack` it is one unauthenticated request against the shared
+60/hour, which is why every failure there is silent. The suite reaches no network: the three
+`harness status` tests and the two `ack` helpers neutralise the reader, as the house rule requires
+of any test that would otherwise read the host.
+
+Rejected: paginating the run list, which grows without bound; putting the section behind a tier
+gate, which would silence it exactly where the operator runs it locally; treating an empty list as
+"idle", which is the failure this decision exists to prevent; a new write surface for a
+workflow-dispatch, which nothing here needs.
+
+Allocates B480-B487, and B490-B492 for the page, the omitted section and the defused rows.

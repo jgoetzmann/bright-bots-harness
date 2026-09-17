@@ -11,6 +11,7 @@ both reach this module, and neither may reach the other.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from harness.trust import MAX_LEVEL, Trust
@@ -31,6 +32,9 @@ __all__ = [
     "reply_pointer",
     "nudge",
     "fast_status",
+    "actions_lines",
+    "block_line",
+    "LEDGER_GROUP_WORKFLOWS",
     "queue_lines",
     "queue_block",
     "replace_queue_block",
@@ -53,6 +57,7 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
     ("split", "break this item into sub-issues and queue them separately"),
     ("halt", "stop the harness spending anything until it is resumed"),
     ("resume", "lift a halt"),
+    ("block <n>", "lend it the next n five-hour sessions; the run window stops holding work"),
 )
 
 
@@ -159,6 +164,7 @@ VERB_WAIT: dict[str, tuple[str, str]] = {
     "work": ("under a minute", "opening the work item"),
     "resume": ("seconds", "lifting the halt"),
     "halt": ("seconds", "recording the halt"),
+    "block": ("seconds", "recording the block"),
     "rebase": ("a few minutes", "rebasing onto the product repository and re-running the gates"),
     "split": ("a minute or two", "reading the item and deciding how it divides"),
     "ask": ("a couple of minutes", "cloning the product repository and reading it"),
@@ -207,7 +213,7 @@ def acknowledgement(verbs: "Iterable[str]") -> str:
 
 
 #: What to offer on each surface, most useful first. Three that make sense where the reader is
-#: standing get tried, where a reply listing all twelve is a wall nobody reads.
+#: standing get tried, where a reply listing all thirteen is a wall nobody reads.
 SURFACE_HINTS: dict[str, tuple[str, ...]] = {
     "inbox": ("work <what>", "ask <question>", "status"),
     # An audit issue is surface `issue` too and carries no stage label, so `go` and `split`
@@ -408,7 +414,7 @@ def nudge(config: Any, surface: str = "", mention: str = "") -> str:
     """What to say when somebody names the bot and gives it no verb (B436).
 
     A mention is how a person asks for attention, so the answer is the two or three commands
-    that make sense where they are standing rather than the whole table of twelve.
+    that make sense where they are standing rather than the whole table of thirteen.
     """
     hints = SURFACE_HINTS.get(surface) or ("status", "ask <question>", "work <what>")
     offered = " · ".join(f"`/harness {hint}`" for hint in hints)
@@ -426,6 +432,149 @@ def nudge(config: Any, surface: str = "", mention: str = "") -> str:
     return "\n".join(lines)
 
 
+#: The workflows that share the `harness-ledger` concurrency group (B118), so a queued run of
+#: one of them is waiting on the others rather than on GitHub. Hard-coded because a renderer
+#: cannot read the workflow files, exactly as `feedback.yml`'s handle is; a drift test pins this
+#: to the `group:` lines those files declare.
+LEDGER_GROUP_WORKFLOWS: tuple[str, ...] = ("discover", "implement", "feedback")
+
+#: A run GitHub has accepted and not started. Any of these means "waiting", not "working".
+_PENDING_STATUSES: frozenset[str] = frozenset({"queued", "requested", "waiting", "pending"})
+
+#: How recently a run must have been cancelled to still be worth reporting. A burst of merges
+#: cancels the pending runs, and that is the thing the operator needs to see (D78).
+CANCELLED_WINDOW_HOURS = 6
+
+
+def _moment(value: Any) -> "datetime | None":
+    """`value` as a tz-aware UTC datetime, or None. Accepts a datetime or an ISO-8601 string."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _ago(started: Any, now: Any) -> str:
+    """How long ago `started` was, as `12m`, `3h` or `2d`; `""` when it cannot be told."""
+    when, current = _moment(started), _moment(now)
+    if when is None or current is None:
+        return ""
+    seconds = max(0.0, (current - when).total_seconds())
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def _inline(value: Any) -> str:
+    """`value` as one line. A newline in a workflow name forges rows beneath it in the list."""
+    return " ".join(str(value or "").split())
+
+
+def actions_lines(
+    rows: "Iterable[Mapping[str, Any]] | None",
+    now: Any,
+    *,
+    limit: int = 5,
+    error: str = "",
+    truncated: bool = False,
+) -> list[str]:
+    """What GitHub Actions is doing: running, queued behind the lock, recently cancelled (D79).
+
+    One renderer for `/harness status`, `harness status` and the pinned issue, so the three
+    cannot disagree. `rows` are `gh.workflow_runs` objects, newest first. `error` is the whole
+    answer when the list could not be read — an empty list must never stand in for a failure,
+    because "nothing is running" and "I could not look" call for opposite actions. `truncated`
+    says the page came back full, so every count becomes a claim about the runs that were read
+    and none about the ones that were not. `rows=None` with no error omits the section.
+
+    A skipped run is never listed: `feedback.yml` skips at job level on every unrelated comment,
+    and listing those is the noise `watchdog.yml` already filters.
+    """
+    if error:
+        return [f"**Actions** — {error}"]
+    if rows is None:
+        return []
+    read = [row for row in rows if isinstance(row, Mapping)]
+    running: list[str] = []
+    queued: list[str] = []
+    cancelled: dict[str, int] = {}
+    for row in read:
+        name = _inline(row.get("name")) or "?"
+        status = _inline(row.get("status")).lower()
+        conclusion = _inline(row.get("conclusion")).lower()
+        started = row.get("run_started_at") or row.get("created_at")
+        age = _ago(started, now)
+        when = f" {age}" if age else ""
+        event = _inline(row.get("event"))
+        tail = f" — {event}" if event else ""
+        url = _inline(row.get("html_url"))
+        if url:
+            tail += f" · [run]({url})"
+        if status == "in_progress":
+            running.append(f"- `{name}` **running**{when}{tail}")
+        elif status in _PENDING_STATUSES:
+            lock = ", behind the ledger lock" if name in LEDGER_GROUP_WORKFLOWS else ""
+            queued.append(f"- `{name}` queued{when}{lock}{tail}")
+        elif conclusion == "cancelled":
+            fresh = _moment(started), _moment(now)
+            if fresh[0] is not None and fresh[1] is not None:
+                hours = (fresh[1] - fresh[0]).total_seconds() / 3600.0
+                if 0 <= hours <= CANCELLED_WINDOW_HOURS:
+                    cancelled[name] = cancelled.get(name, 0) + 1
+    # A full page is a bound on what was read, never a statement about what exists.
+    bound = f" in the newest {len(read)} runs" if truncated else ""
+    if not running and not queued:
+        lines = [f"**Actions** — nothing running or queued{bound}."]
+    else:
+        lines = [f"**Actions** — {len(running)} running, {len(queued)} queued{bound}"]
+        rest = running + queued
+        lines.extend(rest[:limit])
+        if len(rest) > limit:
+            lines.append(f"- …and {len(rest) - limit} more")
+    for name, count in sorted(cancelled.items()):
+        lines.append(
+            f"- cancelled in the last {CANCELLED_WINDOW_HOURS}h: `{name}` ×{count}"
+            + (" — queued behind the lock" if name in LEDGER_GROUP_WORKFLOWS else "")
+        )
+    return lines
+
+
+def block_line(ledger: Any, now: Any = None) -> str:
+    """The standing block as one line, or `""` when none stands (D77).
+
+    One renderer for the reply, the pinned issue and the CLI, so no two surfaces can disagree
+    about whether the run window is suspended — the `queue_lines` pattern.
+    """
+    grant = ledger.block_grant() if hasattr(ledger, "block_grant") else None
+    if not grant:
+        return ""
+    sessions = int(grant.get("sessions", 0) or 0)
+    word = "session" if sessions == 1 else "sessions"
+    until = str(grant.get("until") or "unknown")
+    who = str(grant.get("by") or "someone")
+    open_now = True
+    if now is not None and hasattr(ledger, "block_open"):
+        open_now = bool(ledger.block_open(now))
+    if not open_now:
+        return f"> **Block expired** — the {sessions}-{word} block by @{who} ended {until}."
+    why = f" — {grant['reason']}" if grant.get("reason") else ""
+    return (
+        f"> **Run window suspended** by @{who}: {sessions} {word}, until **{until}**{why}. "
+        "The usage stops, both kill switches and the two human gates still apply. "
+        "`/harness block 0` cancels it."
+    )
+
+
 def fast_status(
     config: Any,
     ledger: Any,
@@ -434,6 +583,9 @@ def fast_status(
     window: str = "",
     next_sweep: str = "",
     queue_issue: int | str = 0,
+    actions: "Iterable[Mapping[str, Any]] | None" = None,
+    actions_error: str = "",
+    actions_truncated: bool = False,
 ) -> str:
     """The answer to a `status`-only comment, given in seconds instead of minutes (B440).
 
@@ -451,7 +603,15 @@ def fast_status(
             "Nothing will spend until `/harness resume`."
         )
         lines.append("")
+    standing = block_line(ledger, now)
+    if standing:
+        lines.append(standing)
+        lines.append("")
     lines.extend(usage_headline(ledger, config, now))
+    section = actions_lines(actions, now, error=actions_error, truncated=actions_truncated)
+    if section:
+        lines.append("")
+        lines.extend(section)
     lines.append("")
     lines.append("**Next**")
     if window:

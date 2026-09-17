@@ -128,7 +128,11 @@ def plan(
     # instead of the weekly stop. It may run outside a weekly run window but not a daily one: a
     # daily window is the one subscription session a day, and a carry resuming outside it would
     # run in the operator's own daytime session (B413).
-    window_open = in_run_window(config, now)
+    # A block is the operator lending the harness sessions they do not need, so it opens the
+    # window and nothing else (D77). Everything downstream inherits it: the carry test, the
+    # early return below and the per-candidate skip all read `window_open`. It sits after the
+    # usage stop deliberately, so a block can never outlive one.
+    window_open = in_run_window(config, now) or ledger.block_open(now)
     carry_id = ledger.carry_issue()
     carry_ok = (
         carry_id is not None

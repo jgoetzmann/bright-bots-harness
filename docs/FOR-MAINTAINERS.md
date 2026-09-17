@@ -158,11 +158,12 @@ Reach for `status` when nothing seems to be happening. `fix`, `queue` and `usage
 
 ## 7. What you cannot do
 
-`halt`, `resume`, `reject` and `--force` are level 3 (Jack only). `--force` exempts one item from
-the run window, daily 11:00 to 15:00 UTC; `halt` stops all spending. You can queue as much work as
-you like, but when it runs is the operator's call, because it is the operator's subscription. If you
-use one of these, the reply names the level needed; a `--force` is dropped and the rest of the
-command still runs.
+`block`, `halt`, `resume`, `reject` and `--force` are level 3 (Jack only). `--force` exempts one
+item from the run window, daily 11:00 to 15:00 UTC; `halt` stops all spending; `block` does the
+window's job in reverse, suspending it for a few five-hour sessions so the harness can use time the
+operator is not going to. You can queue as much work as you like, but when it runs is the operator's
+call, because it is the operator's subscription. If you use one of these, the reply names the level
+needed; a `--force` is dropped and the rest of the command still runs.
 
 ## 8. If you comment and *nothing at all* happens
 

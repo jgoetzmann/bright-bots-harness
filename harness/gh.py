@@ -320,6 +320,27 @@ class GitHubReadOnly:
                 names.append(name)
         return names
 
+    def workflow_runs(self, repo: str, *, per_page: int = 100) -> list[dict]:
+        """``/repos/{repo}/actions/runs`` — the newest runs, so a reader can be told what
+        Actions is actually doing (D79).
+
+        A read, on :class:`GitHubReadOnly` so `public_reader` inherits it: one GET through the
+        same ETag-cached, metered path every other read takes, which is why nothing here joins
+        the write surface. One page and no pagination — the endpoint lists newest first, and
+        walking a history that grows with every comment is what `watchdog.yml` already refuses
+        to do — so the default is the largest page it serves, and a caller that gets a full page
+        knows only about the runs in it. The endpoint answers an object, so the list comes out of
+        ``workflow_runs``.
+        """
+        pairs = [("per_page", str(int(per_page)))]
+        data = self.get(f"/repos/{repo}/actions/runs?{_query(pairs)}")
+        if not isinstance(data, dict):
+            raise GitHubError(f"expected an object of workflow runs for {repo}, got a list")
+        rows = data.get("workflow_runs")
+        if not isinstance(rows, list):
+            raise GitHubError(f"no workflow_runs in the run listing for {repo}")
+        return [row for row in rows if isinstance(row, dict)]
+
 
 # ======================================================================================
 # The one authenticated client (I-11)
@@ -889,6 +910,10 @@ def ceiling_for(config: Any) -> int:
 #: GitHub's unauthenticated 60 an hour.
 PUBLIC_CEILING_PER_HOUR = 50
 
+#: Seconds one public read may take. `urlopen` with no timeout waits for ever, and these reads
+#: run inside `harness ack`, where the only other bound is the job timeout.
+PUBLIC_READ_TIMEOUT_S = 10
+
 
 class _Unmetered:
     """The :class:`Store` surface :class:`GitHubReadOnly` caches and meters through, doing
@@ -918,9 +943,17 @@ def public_reader(clock: Clock | None = None) -> GitHubReadOnly:
     """An unauthenticated read-only client that needs no Config, Store, Context or `.env`.
 
     It reads what an anonymous request can read: the token door (I-11) is `build_client`'s
-    alone and is not opened here.
+    alone and is not opened here. Every read it makes is bounded by
+    :data:`PUBLIC_READ_TIMEOUT_S`, because these are courtesies inside commands that answer a
+    person, and one unresponsive connection would otherwise hold the whole job.
     """
-    return GitHubReadOnly("", _Unmetered(), clock or SystemClock(), PUBLIC_CEILING_PER_HOUR)
+    return GitHubReadOnly(
+        "",
+        _Unmetered(),
+        clock or SystemClock(),
+        PUBLIC_CEILING_PER_HOUR,
+        opener=lambda request: urllib.request.urlopen(request, timeout=PUBLIC_READ_TIMEOUT_S),
+    )
 
 
 def build_client(config: Any, store: Store, clock: Clock) -> GitHubClient:

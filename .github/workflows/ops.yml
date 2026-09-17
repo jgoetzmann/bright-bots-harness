@@ -151,7 +151,7 @@ jobs:
               'harness doctor',
               'harness sync-fork',
               'Note a stale fork',
-              'Approve merged proposals (push to proposals/**)',
+              'Approve merged proposals (every proposal on main)',
               'harness dispatch',
             ];
             const preSpend = RETRYABLE_STEPS.includes(failingStep);

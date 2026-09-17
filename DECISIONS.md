@@ -1161,4 +1161,13 @@ for an outage that recurs daily; firing every 20 minutes, which multiplies runs 
 anomaly, which eleven measurements refuse; moving the window later rather than widening it, which
 trades a morning the harness reliably gets for an afternoon it competes for.
 
+The same lock argument applies to this change at a smaller scale, and is accepted rather than
+dismissed. `discover`, `feedback` and `implement` share `harness-ledger`, GitHub keeps one pending
+run per group and cancels the older, so doubling implement's firings widens the span in which a
+queued `feedback.yml` run can be displaced: the slots at risk go from 12:41 and 15:41 to those two
+plus 18:41. That matters because the keyword sweep is what applies a commanded `/harness halt` —
+`ack.yml` only acknowledges, and `cmd_ack` writes nothing. The other two kill switches are
+untouched: `.harness/HALT` is read in implement's first step, before checkout, and `HALT_FILE` is
+local. `watchdog.yml` already counts a cancelled `feedback` run as a missed slot and pages at four.
+
 Allocates B493.

@@ -15,10 +15,15 @@
       },
       "status": "allowed",
       "observed_at": "2026-09-17T05:25:09Z"
+    },
+    "carry": {
+      "issue": 50,
+      "since": "2026-09-17T12:10:52Z",
+      "reason": "work somebody asked for is still outstanding (#66, #67, #68, #69, #70); suggested work runs only when the queue is empty"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-17T05:08:41Z",
+    "notifications_last_seen": "2026-09-17T12:05:50Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -30,11 +35,12 @@
       "IC_kwDOULOSYs8AAAABVBkXug",
       "IC_kwDOULOSYs8AAAABVBirgA",
       "IC_kwDOULOSYs8AAAABVBi7vw",
-      "IC_kwDOULOSYs8AAAABVBkcLg"
+      "IC_kwDOULOSYs8AAAABVBkcLg",
+      "IC_kwDOULOSYs8AAAABVEjkRg"
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 2
+      "github-actions[bot]": 3
     },
     "ask_calls": {
       "date": "2026-09-09",

@@ -166,6 +166,9 @@ def test_B65_init_status_halt_and_resume_parse_and_dispatch(tmp_path, monkeypatc
     write_repo(tmp_path)
 
     assert cli.main(["init"]) == 0
+    # `status` reads what Actions is doing (D79), which is a real request off a real client.
+    # Neutralised here, as every test that would otherwise reach the host must be.
+    forbid_network(monkeypatch)
     assert cli.main(["status"]) == 0
 
     assert cli.main(["halt"]) == 0
@@ -181,6 +184,7 @@ def test_B65_the_global_config_flag_selects_the_env_file(tmp_path, monkeypatch, 
     monkeypatch.chdir(tmp_path)
     write_repo(tmp_path)
     assert cli.main(["init"]) == 0
+    forbid_network(monkeypatch)  # `status` reads the Actions run list (D79)
     capsys.readouterr()
 
     assert cli.main(["--config", str(tmp_path / ".env"), "status"]) == 0
@@ -358,6 +362,7 @@ def test_B68_status_json_emits_valid_json_with_queue_and_usage(tmp_path, monkeyp
     write_repo(tmp_path)
     assert cli.main(["init"]) == 0
     make_item(tmp_path, state="proposed")
+    forbid_network(monkeypatch)  # `status` reads the Actions run list (D79)
     capsys.readouterr()
 
     assert cli.main(["status", "--json"]) == 0
@@ -793,7 +798,10 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     plan = dispatch_plan(capsys)
 
     assert list(plan)[:3] == ["start", "reason", "skipped"]
-    assert list(plan)[3:] == ["queue", "head", "suggested"]
+    # D77 appends `block` after B292's three, for the same reason those were appended: the first
+    # three are what the workflows read by name, and a new key must not disturb them.
+    assert list(plan)[3:] == ["queue", "head", "suggested", "block"]
+    assert plan["block"] == {"open": False, "grant": None}
     assert plan["start"] == [item_id]
     assert [row["item"] for row in plan["queue"]] == [item_id]
     assert plan["head"] == {"item": item_id, "reason": "starting now"}

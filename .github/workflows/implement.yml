@@ -169,31 +169,16 @@ jobs:
         shell: bash
         run: harness sync-fork
 
-        # A merged proposal approves its item, named by proposals/<issue>-<slug>.md.
-      - name: Approve merged proposals (push to proposals/**)
-        if: steps.halt.outputs.halted != 'true' && github.event_name == 'push'
+        # Gate 1, reconciled rather than read off a push diff. GitHub keeps one run in progress
+        # and one pending per concurrency group, so a burst of merges cancels the pending runs —
+        # and a diff exists only inside the event that carried it, so each cancelled run took
+        # the only copy of its own approval with it. The committed proposal file is the durable
+        # record (D46), so this runs on EVERY run and any later one repairs what a cancelled run
+        # never did (D78). Only `proposed -> approved` is ever made, so nothing is resurrected.
+      - name: Approve merged proposals (every proposal on main)
+        if: steps.halt.outputs.halted != 'true'
         shell: bash
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE}" 2>/dev/null; then
-            files="$(git show --name-only --format= --diff-filter=AM "${AFTER}" -- proposals/)"
-          else
-            files="$(git diff --name-only --diff-filter=AM "${BEFORE}" "${AFTER}" -- proposals/)"
-          fi
-          echo "changed proposals:"
-          printf '%s\n' "${files}"
-          for f in ${files}; do
-            n="$(basename "$f" | sed -nE 's/^([0-9]+)-.*\.md$/\1/p')"
-            [ -n "$n" ] || continue
-            if harness approve "$n"; then
-              echo "item ${n}: approved"
-            else
-              echo "::warning::harness approve ${n} exited non-zero (already approved, or not a work item)"
-            fi
-          done
+        run: harness approve --merged
 
         # The dispatcher starts nothing; this job acts on its plan (B122).
       - name: harness dispatch

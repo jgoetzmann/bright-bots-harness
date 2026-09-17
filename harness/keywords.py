@@ -22,8 +22,8 @@ VERBS: tuple[str, ...] = (
     "work", "ask", "status", "audit", "promote",
     # Steering work that exists.
     "revise", "rebase", "stop", "go", "split",
-    # The switch.
-    "halt", "resume",
+    # The switches: stopping the spending, and lending it the calendar.
+    "halt", "resume", "block",
 )
 
 #: Other names, still accepted. The surface says which sense is meant, so one verb serves both:
@@ -37,6 +37,13 @@ VERBS: tuple[str, ...] = (
 #:   usage  -> status   the CLI's name for this report is `status`.
 #:   ledger -> status   the CLI subcommand of that name, typed as a command.
 #:   help   -> status   `status` answers, and every reply points to the rest.
+#:   blocks -> block    the plural is what a person types with a count.
+#:   sessions -> block  the unit a block is counted in.
+#:
+#: There is deliberately no `unblock`: an alias carries the verb and never the args, so it would
+#: resolve to a bare `block` and *report* the standing grant rather than cancel it. A word that
+#: looks like it cancels and does not is worse than no word; `/harness block 0` cancels, and
+#: every reply says so.
 #:
 #: Aliases rather than removals, so comments already written keep working.
 ALIASES: dict[str, str] = {
@@ -46,6 +53,8 @@ ALIASES: dict[str, str] = {
     "usage": "status",
     "ledger": "status",
     "help": "status",
+    "blocks": "block",
+    "sessions": "block",
 }
 
 #: The level each verb needs: 3 the operator, 2 a maintainer, 1 an asker (B270). Level 2 can
@@ -68,6 +77,11 @@ VERB_LEVEL: dict[str, int] = {
     # decision to stop.
     "halt": 3,
     "resume": 3,
+    # `block` lifts the run window for the whole fleet over several sessions, and `--force`
+    # already needs MAX_LEVEL to lift it for one item. A verb that lifts it for everything
+    # cannot sit below the flag that lifts it for one. It is the operator's subscription being
+    # spent, which is the same reason docs/FOR-MAINTAINERS.md §7 gives for `--force`.
+    "block": 3,
     # Not a live verb, an alias with a level of its own: `reject` ends an item for good, the
     # half of `stop` that level 2 does not get (see `_act_on_command`).
     "reject": 3,

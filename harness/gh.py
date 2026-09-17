@@ -320,6 +320,25 @@ class GitHubReadOnly:
                 names.append(name)
         return names
 
+    def workflow_runs(self, repo: str, *, per_page: int = 30) -> list[dict]:
+        """``/repos/{repo}/actions/runs`` — the newest runs, so a reader can be told what
+        Actions is actually doing (D79).
+
+        A read, on :class:`GitHubReadOnly` so `public_reader` inherits it: one GET through the
+        same ETag-cached, metered path every other read takes, which is why nothing here joins
+        the write surface. One page and no pagination — the endpoint lists newest first, and
+        walking a history that grows with every comment is what `watchdog.yml` already refuses
+        to do. The endpoint answers an object, so the list comes out of ``workflow_runs``.
+        """
+        pairs = [("per_page", str(int(per_page)))]
+        data = self.get(f"/repos/{repo}/actions/runs?{_query(pairs)}")
+        if not isinstance(data, dict):
+            raise GitHubError(f"expected an object of workflow runs for {repo}, got a list")
+        rows = data.get("workflow_runs")
+        if not isinstance(rows, list):
+            raise GitHubError(f"no workflow_runs in the run listing for {repo}")
+        return [row for row in rows if isinstance(row, dict)]
+
 
 # ======================================================================================
 # The one authenticated client (I-11)

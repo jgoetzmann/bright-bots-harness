@@ -190,6 +190,14 @@ jobs:
           upstream. Reading routes (sweep, ask, usage) still work; implementing is skipped this \
           run, because a clone of a stale fork would silently base the work on the wrong commit."
 
+        # The same reconciliation implement.yml does, in the same position, so a burst of merges
+        # landing outside the implement window is approved within three hours rather than
+        # waiting for 11:23 UTC. It spends nothing and only moves `proposed -> approved` (D78).
+      - name: Approve merged proposals (every proposal on main)
+        if: steps.halt.outputs.halted != 'true'
+        shell: bash
+        run: harness approve --merged
+
         # Printed for the record; the sweep and the reconciler apply their own rules (B122).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'

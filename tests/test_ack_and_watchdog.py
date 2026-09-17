@@ -124,7 +124,7 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
     """`harness ack` through the CLI the workflow actually calls, as the dict it prints."""
     import json
 
-    from harness.__main__ import main
+    import harness.__main__ as main_mod
 
     body_file = tmp_path / "comment.txt"
     body_file.write_text(body, encoding="utf-8")
@@ -132,7 +132,13 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
         "--config", str(_env(tmp_path, trust=trust)), "ack",
         "--body-file", str(body_file), "--actor", actor, "--association", association,
     ]
-    code = main(argv)
+    # The fast lane reads what Actions is doing through the unauthenticated client (D79). The
+    # suite reaches no network, so the reader is neutralised here rather than in each test: a
+    # client with no `workflow_runs` is "unreadable", which is the path production takes when
+    # GitHub refuses the read.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(main_mod, "PUBLIC_READER", lambda *a, **k: object())
+        code = main_mod.main(argv)
     assert code == 0, "ack must never fail the run it precedes"
     out = capsys.readouterr().out
     # Always exactly one JSON object, on every path. The workflow parses this with a `{}`
@@ -796,7 +802,7 @@ def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str) -> dict:
     """`harness ack` against a ledger on disk, from a cwd with no committed halt in it."""
     import json
 
-    from harness.__main__ import main
+    import harness.__main__ as main_mod
 
     env = _env(tmp_path)
     _write_ledger(tmp_path, ledger)
@@ -805,7 +811,9 @@ def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str) -> dict:
     argv = ["--config", str(env), "ack", "--body-file", str(path),
             "--actor", "jgoetzmann", "--association", "OWNER"]
     monkeypatch.chdir(tmp_path)
-    assert main(argv) == 0
+    # As in `_run_ack`: the Actions read must not reach the host (D79).
+    monkeypatch.setattr(main_mod, "PUBLIC_READER", lambda *a, **k: object())
+    assert main_mod.main(argv) == 0
     return json.loads(capsys.readouterr().out)
 
 

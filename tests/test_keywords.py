@@ -950,8 +950,8 @@ def test_B441_reactions_that_cannot_be_read_answer_the_comment_rather_than_drop_
 # --------------------------------------------------------------------------------------------
 
 def test_B457_a_rocket_on_the_product_repository_suppresses_nothing():
-    """`ack.yml` runs on this repository's comment events alone, so no reaction upstream can be
-    its. `github-actions[bot]` is a per-repository identity: some other bot on the product
+    """B457: `ack.yml` runs on this repository's comment events alone, so no reaction upstream
+    can be its. `github-actions[bot]` is a per-repository identity: some other bot on the product
     repository reacting with the same emoji would otherwise drop a maintainer's command in
     silence and mark it seen for ever. The read is not made there at all."""
     asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=900,
@@ -971,7 +971,7 @@ def test_B457_a_rocket_on_the_product_repository_suppresses_nothing():
 
 
 def test_B458_a_reaction_row_the_api_never_sends_answers_rather_than_raising():
-    """The walk sits inside the guard, not beside it. `sweep` runs under a `finally` that
+    """B458: the walk sits inside the guard, not beside it. `sweep` runs under a `finally` that
     commits the seen marks, so an exception escaping here loses every command the run had
     already collected -- the opposite of the failure the guard exists to prevent."""
     class Malformed(ReactedGh):

@@ -41,11 +41,18 @@ issue by hand: the dispatcher's `depends_on` check waits on that label, so an it
 `stage:needs-review` holds back every item that depends on it.
 
 ```bash
-harness status --json     # the queue as this store sees it
+harness status --json     # the queue as this store sees it, and what Actions is doing
 harness ledger            # subscription usage, calls made, rate-limit state, cursors
 harness dispatch          # what would start now, and why not; starts nothing
 harness doctor            # every config key with its value; exit 3 names any missing one
+harness block             # the standing block, if any; `harness block 0` cancels one
 ```
+
+`harness status`, the pinned issue and `/harness status` each carry an **Actions** section: what is
+running, what is queued behind the `harness-ledger` lock, and what was cancelled in the last six
+hours (D79). It is what tells "queued behind a build" apart from "asleep", and a burst of
+cancelled runs is what a burst of merges looks like from the outside. When the run list cannot be
+read the section says so in one line rather than reporting an empty queue as idle.
 
 `harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
 `reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
@@ -64,7 +71,8 @@ failing step name, up to 20 of the failing job's lines in the harness's error fo
 `::error::`, `rate limited`, `budget exhausted`) and the last 50 log lines, all redacted (B401). It
 closes that issue itself on the workflow's next green run. It re-runs the failed job, up to three
 attempts in all, only when the failing step is one that runs before anything is spent (the HALT
-check, checkout and setup, `harness doctor`, `harness sync-fork`, `harness dispatch`) and the log
+check, checkout and setup, `harness doctor`, `harness sync-fork`, the merged-proposal approval,
+`harness dispatch`) and the log
 matches a transient cause: a network reset, a registry or GitHub 5xx, or runner eviction (B145,
 B146). A failure in a model call, a gate or the ledger commit is left for a human.
 
@@ -377,7 +385,8 @@ prompt edited directly on `main`. The harness stays stopped until one of the two
 | You want to | Do |
 |---|---|
 | Queue an issue | label it `stage:queued`, or comment `/harness go` |
-| Approve a proposal | merge its PR; `implement.yml` listens for the merge, not for a review |
+| Approve a proposal | merge its PR; `implement.yml` listens for the merge, not for a review. Merging several at once is safe (below) |
+| Give it time you are not using | `/harness block <n>`, or `harness block <n>` (§13.3) |
 | Send a proposal back | comment `/harness revise <notes>` on the proposal PR |
 | Reject a proposal | comment `/harness stop <why>`; the PR closes, the issue goes `stage:dropped` |
 | Split a big issue | comment `/harness split`; up to `MAX_SUBISSUES` children, parent goes `stage:blocked` |
@@ -542,6 +551,26 @@ nothing needs moving when the clocks change.
 
 `harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
 usage stops.
+
+**Lending it a session.** `/harness block <n>` (level 3), or `harness block <n>` from a terminal,
+suspends the window for the next `n` five-hour sessions, at most six. The end is measured once,
+when the command is acted on: the remainder of the session in progress plus `n − 1` whole ones, or
+`n × 5 h` from now when no reading exists. A later reading never moves it, it expires by itself,
+and `/harness block 0` cancels it. It lifts the window only — both usage stops, all three kill
+switches, the trust gate and both human gates are untouched, and `MAX_CONCURRENT_ITEMS` is
+unchanged. It creates no workflow runs, so it takes effect on the next run that happens anyway: a
+gate-1 merge (immediately), the three-hourly weekday sweep, or a manual dispatch. `harness dispatch`
+reports it under `block`, and every status surface carries one line while it stands.
+
+### 13.6 A burst of merges
+
+Merging several proposal pull requests at once is safe. Each merge pushes to `proposals/**` and
+starts an `implement` run in the `harness-ledger` group, which never cancels a run in progress but
+does replace the one run GitHub keeps pending — so most of a burst is cancelled before it executes
+a step. The approval does not ride on those runs: every `implement` and `feedback` run reconciles
+the committed proposal files against item state with `harness approve --merged`, so whichever run
+survives approves all of them, and any later run repairs whatever a cancelled run never did (D78).
+An item that was stopped after its proposal merged is not `proposed`, so it is never resurrected.
 
 ### 13.4 The leeway, the handoff, and the continue
 

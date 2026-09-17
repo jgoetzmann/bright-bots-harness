@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -19,14 +19,25 @@ __all__ = [
     "load",
     "save",
     "rebuild",
+    "block_until",
     "HISTORY_CAP",
     "EPOCH",
+    "MAX_BLOCK_SESSIONS",
+    "SESSION_HOURS",
     "USAGE_WINDOWS",
 ]
 
 SCHEMA = 1
 HISTORY_CAP = 500
 EPOCH = "1970-01-01T00:00:00Z"
+
+#: One subscription session, in hours. The API reports a `five_hour` window, and a block is
+#: counted in those sessions because that is the unit the allowance actually refills in (D77).
+SESSION_HOURS = 5
+
+#: The most sessions one `/harness block` may cover: thirty hours. Anything longer is a change
+#: to when the harness works, which is `RUN_WINDOW_*` in a reviewed pull request, not a comment.
+MAX_BLOCK_SESSIONS = 6
 
 # B101 comment shape: ``**harness** `stage` -> `state`\nrun: URL``, optionally followed by the
 # ``cost:`` line older comments carry. The arrow the store writes is U+2192; ``->`` is accepted.
@@ -126,6 +137,30 @@ def window_has_reset(window: object, now: datetime | str) -> bool:
     except ValueError:
         return False
     return current >= boundary
+
+
+def block_until(sessions: int, now: datetime, five_hour_reset: str | None) -> str:
+    """When a block of ``sessions`` five-hour sessions ends (D77). Pure, and always finite.
+
+    With a live ``five_hour.resets_at`` the first session is the remainder of the one already in
+    progress, so the grant ends at that reset plus ``sessions - 1`` whole sessions. With no
+    reading, an unreadable one, or one already past, there is no session clock to measure from,
+    and the honest reading of "the next N sessions" is N sessions starting now.
+
+    There is no branch that returns nothing, so a missing signal can never grant an unbounded
+    block; the caller caps ``sessions`` at :data:`MAX_BLOCK_SESSIONS` besides.
+    """
+    count = max(1, int(sessions))
+    session = timedelta(hours=SESSION_HOURS)
+    current = as_utc(now)
+    if five_hour_reset:
+        try:
+            reset = parse_iso(str(five_hour_reset))
+        except ValueError:
+            reset = None
+        if reset is not None and reset > current:
+            return iso(reset + session * (count - 1))
+    return iso(current + session * count)
 
 
 def _empty_cursors() -> dict:
@@ -281,6 +316,71 @@ class Ledger:
     def clear_halt(self) -> None:
         self.window.pop("halt", None)
 
+    # -- the block ---------------------------------------------------------------------------
+
+    def _observed_five_hour_reset(self) -> str | None:
+        """The ``five_hour.resets_at`` of the observation currently stored, if any."""
+        usage = self.window.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        window = usage.get("five_hour")
+        if not isinstance(window, dict):
+            return None
+        value = window.get("resets_at")
+        return str(value) if value else None
+
+    def request_block(
+        self, actor: str, sessions: int, now: datetime, reason: str = ""
+    ) -> dict:
+        """Suspend the run window for the next ``sessions`` five-hour sessions (D77).
+
+        The opposite of the halt, and the same shape: a scheduling fact the operator states in a
+        comment, stored where every runner fetches it. It lifts the calendar and nothing else —
+        the usage stops, both kill switches, the commanded halt, the trust gate and the two
+        human gates all still apply.
+
+        The end is measured **once**, here, from the session clock as it stands now. Re-measuring
+        against each later observation would walk the block forward for ever as fresh sessions
+        are observed, so ``anchor`` is recorded for the reply and never read again.
+        """
+        anchor = self._observed_five_hour_reset()
+        grant = {
+            "by": str(actor),
+            "at": iso(now),
+            "sessions": int(sessions),
+            "until": block_until(int(sessions), now, anchor),
+            "anchor": str(anchor or ""),
+            "reason": str(reason or "").strip(),
+        }
+        self.window["block"] = grant
+        return dict(grant)
+
+    def block_grant(self) -> dict | None:
+        grant = self.window.get("block")
+        return dict(grant) if isinstance(grant, dict) and grant else None
+
+    def clear_block(self) -> None:
+        self.window.pop("block", None)
+
+    def block_open(self, now: datetime | str) -> bool:
+        """True while a block still stands; it ends by the clock alone, with nothing to run.
+
+        Fails closed: a grant with no ``until``, or one that cannot be read, is shut. A block
+        lifts a restriction, so anything unreadable about it has to mean "not lifted".
+        """
+        grant = self.block_grant()
+        if grant is None:
+            return False
+        raw = grant.get("until")
+        if not raw:
+            return False
+        try:
+            until = parse_iso(str(raw))
+            current = parse_iso(now) if isinstance(now, str) else as_utc(now)
+        except ValueError:
+            return False
+        return current < until
+
     # -- force -------------------------------------------------------------------------------
 
     def force(self, item_id: int) -> None:
@@ -359,6 +459,18 @@ class Ledger:
                 "issue": int(carry.get("issue", 0)),
                 "since": str(carry.get("since", "")),
                 "reason": str(carry.get("reason", "")),
+            }
+        # Written only once a block has been granted, for the same reason as the three above: a
+        # ledger that has never seen one is byte-identical to the file it was.
+        block = self.block_grant()
+        if block is not None:
+            window["block"] = {
+                "by": str(block.get("by", "")),
+                "at": str(block.get("at", "")),
+                "sessions": int(block.get("sessions", 0) or 0),
+                "until": str(block.get("until", "")),
+                "anchor": str(block.get("anchor", "")),
+                "reason": str(block.get("reason", "")),
             }
         cursors = {
             "notifications_last_seen": self.cursors.get("notifications_last_seen"),

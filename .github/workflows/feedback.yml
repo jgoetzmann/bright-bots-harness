@@ -193,8 +193,11 @@ jobs:
         # The same reconciliation implement.yml does, in the same position, so a burst of merges
         # landing outside the implement window is approved within three hours rather than
         # waiting for 11:23 UTC. It spends nothing and only moves `proposed -> approved` (D78).
+        # `continue-on-error`, because the keyword sweep runs after it: one stuck item must never
+        # be what stops `/harness halt` being read.
       - name: Approve merged proposals (every proposal on main)
         if: steps.halt.outputs.halted != 'true'
+        continue-on-error: true
         shell: bash
         run: harness approve --merged
 

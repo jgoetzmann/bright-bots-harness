@@ -16,6 +16,7 @@ record, and every run reconciles against it.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
@@ -200,8 +201,8 @@ def test_B476_one_item_that_cannot_transition_does_not_strand_the_others(
     tmp_path, monkeypatch, capsys
 ):
     """B476: this pass is what recovers a burst, so stopping at the first failure would lose the
-    rest of it — the failure mode the whole decision exists to remove. The run still exits 1, so
-    `ops.yml` files an issue about the one that did not move."""
+    rest of it — the failure mode the whole decision exists to remove. It is warned about rather
+    than raised: the exit code belongs to B489."""
     write_d2_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     assert cli.main(["init"]) == 0
@@ -216,10 +217,15 @@ def test_B476_one_item_that_cannot_transition_does_not_strand_the_others(
         return real(self, item_id, to_state, reason=reason)
 
     monkeypatch.setattr(Store, "transition", sometimes_refuse)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
 
-    code, payload = approve_merged(tmp_path, monkeypatch, capsys)
+    code = cli.main(["--json", "approve", "--merged"])
 
-    assert code == 1, "an unexpected failure is reported, so ops.yml sees it"
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0, "one stuck item must not fail the step the keyword sweep runs after"
+    assert f"::warning::harness approve --merged: item {doomed}" in captured.err
     assert sorted(payload["approved"]) == sorted(n for n in ids if n != doomed)
     assert list(payload["failed"]) == [str(doomed)]
     after = states(tmp_path)
@@ -304,6 +310,28 @@ def test_B478_the_sweep_reconciles_too_and_ops_classifies_both_steps():
     for name in LEDGER_WRITERS:
         labels = re.findall(r"^      - name: (.+)$", _wf(name), re.M)
         assert APPROVE_STEP in labels or name == "discover.yml"
+
+
+def test_B489_one_stuck_item_never_takes_the_keyword_surface_down():
+    """B489: in `feedback.yml` the order is sync-fork → approve → dispatch → **Sweep keywords**,
+    and a step that exits non-zero skips every later step in the job. One locked, transferred or
+    403-ing issue would then stop `/harness halt`, `/harness resume` and `/harness block` being
+    read at all, on every three-hourly run, while `ack.yml` kept acknowledging — and `ops.yml`
+    rescues none of it, because its retry pattern matches neither an `IllegalTransition` nor a
+    403. `fix: a warning must not take the fleet down (#27)` is the same rule.
+    """
+    source = inspect.getsource(cli._approve_merged)
+
+    assert "return EXIT_ERROR" not in source, "the exit code is what the step's success is read off"
+    assert "::warning::" in source, "the failure is still reported, in the form Actions surfaces"
+
+    feedback = _wf("feedback.yml")
+    step = feedback.split(f"- name: {APPROVE_STEP}", 1)[1].split("- name:", 1)[0]
+    assert "continue-on-error: true" in step, "nor may an unexpected failure skip the sweep"
+
+    sweep = feedback.split("- name: Sweep keywords", 1)[1].split("run:", 1)[0]
+    assert "steps.halt.outputs.halted != 'true'" in sweep
+    assert "approve" not in sweep, "the sweep must not be conditioned on the approval"
 
 
 def test_B479_the_ledger_still_has_exactly_one_writer_group():

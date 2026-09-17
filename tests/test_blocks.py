@@ -212,6 +212,51 @@ def test_B463_the_grant_is_measured_once_and_a_later_observation_does_not_move_i
         assert led.block_grant()["until"] == until, f"a reading of {later} moved the block"
 
 
+def test_B488_a_reading_far_in_the_future_cannot_grant_longer_than_the_count():
+    """B488: the cap was on the count and nowhere on the duration. `observe_usage` stores
+    `resets_at` verbatim, and `window_has_reset` keeps a far-future reading for ever, so a
+    seven-day value landing in the five-hour slot anchored a one-session block days out — which
+    the docstring, D77, COMMANDS.md and SAFETY.md all say cannot happen.
+
+    The clamp is what makes those true: never longer than n sessions from now, whatever is read.
+    """
+    week_out = iso(NOW + timedelta(days=7))
+
+    assert block_until(1, NOW, week_out) == iso(NOW + timedelta(hours=SESSION_HOURS))
+    assert block_until(MAX_BLOCK_SESSIONS, NOW, week_out) == iso(
+        NOW + timedelta(hours=MAX_BLOCK_SESSIONS * SESSION_HOURS)
+    ), "the largest grant there is stays thirty hours"
+
+    led = Ledger.empty(PERIOD_START)
+    led.observe_usage(
+        {
+            "five_hour": {"utilization": 0.1, "resets_at": week_out},
+            "seven_day": {"utilization": 0.2, "resets_at": week_out},
+        },
+        NOW_ISO,
+    )
+    grant = led.request_block("jgoetzmann", 1, NOW, "")
+
+    assert grant["anchor"] == week_out, "the reading is still recorded for the reply"
+    assert grant["until"] == iso(NOW + timedelta(hours=SESSION_HOURS))
+    assert led.block_open(iso(NOW + timedelta(hours=SESSION_HOURS, seconds=-1))) is True
+    assert led.block_open(iso(NOW + timedelta(days=5))) is False, "no block outlives its count"
+
+
+def test_B488_a_live_anchor_is_measured_exactly_as_before():
+    """B488: the other half. A live reading is at most one session out, so `anchor + 5(n-1)` is
+    always under `now + 5n` and the clamp never touches it — a fix that quietly shortened an
+    ordinary block would be worse than the defect."""
+    for sessions in range(1, MAX_BLOCK_SESSIONS + 1):
+        capped = block_until(sessions, NOW, FIVE_HOUR_RESET)
+        assert capped == iso(
+            datetime(2026, 9, 2, 16, tzinfo=timezone.utc)
+            + timedelta(hours=SESSION_HOURS * (sessions - 1))
+        ), f"{sessions} sessions no longer measures from the reset"
+
+    assert block_until(3, NOW, FIVE_HOUR_RESET) == "2026-09-03T02:00:00Z"
+
+
 # --------------------------------------------------------------------------------------
 # B464 - the count
 # --------------------------------------------------------------------------------------

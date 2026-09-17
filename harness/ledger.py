@@ -140,27 +140,28 @@ def window_has_reset(window: object, now: datetime | str) -> bool:
 
 
 def block_until(sessions: int, now: datetime, five_hour_reset: str | None) -> str:
-    """When a block of ``sessions`` five-hour sessions ends (D77). Pure, and always finite.
+    """When a block of ``sessions`` five-hour sessions ends (D77). Pure, and always bounded.
 
     With a live ``five_hour.resets_at`` the first session is the remainder of the one already in
     progress, so the grant ends at that reset plus ``sessions - 1`` whole sessions. With no
-    reading, an unreadable one, or one already past, there is no session clock to measure from,
-    and the honest reading of "the next N sessions" is N sessions starting now.
+    reading, an unreadable one, or one already past, it is ``sessions`` sessions from now.
 
-    There is no branch that returns nothing, so a missing signal can never grant an unbounded
-    block; the caller caps ``sessions`` at :data:`MAX_BLOCK_SESSIONS` besides.
+    Never longer than ``sessions`` sessions from now, whatever the reading says: `observe_usage`
+    stores `resets_at` verbatim, so a seven-day value landing in the five-hour slot would
+    otherwise anchor a one-session block days out and the cap would be on the count alone.
     """
     count = max(1, int(sessions))
     session = timedelta(hours=SESSION_HOURS)
     current = as_utc(now)
+    cap = current + session * count
     if five_hour_reset:
         try:
             reset = parse_iso(str(five_hour_reset))
         except ValueError:
             reset = None
         if reset is not None and reset > current:
-            return iso(reset + session * (count - 1))
-    return iso(current + session * count)
+            return iso(min(reset + session * (count - 1), cap))
+    return iso(cap)
 
 
 def _empty_cursors() -> dict:

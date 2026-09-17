@@ -74,10 +74,10 @@ or PR; several may go in one comment, one per line. The verbs are `work`, `ask`,
 accepts.
 
 Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3
-(operator) adds `block`, `halt`, `resume` and `reject`, level 2 (maintainer) `audit`, `go`, `promote`,
-`rebase`, `revise`, `split`, `stop` and `work`, level 1 (asker) `ask` and `status`, level 0
-nothing. A listed commenter whose level is too low gets a reply naming the level the verb needs.
-To add somebody, commit the line that `harness trust line` prints.
+(operator) adds `block`, `halt`, `resume` and `reject`, level 2 (maintainer) `audit`, `go`,
+`promote`, `rebase`, `revise`, `split`, `stop` and `work`, level 1 (asker) `ask` and `status`,
+level 0 nothing. A listed commenter whose level is too low gets a reply naming the level the verb
+needs. To add somebody, commit the line that `harness trust line` prints.
 
 Append `--force` to start something now instead of at the next run window. It is for level 3
 only and lifts only the calendar: halts, usage stops, the turn caps and both gates still apply.
@@ -113,7 +113,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B487 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B492 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

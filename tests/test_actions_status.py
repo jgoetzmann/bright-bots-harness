@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ import harness.__main__ as cli
 from harness import links
 from harness.clock import FrozenClock, iso
 from harness.errors import GitHubError, RateCeilingReached
-from harness.gh import GitHubReadOnly, public_reader
+from harness.gh import PUBLIC_READ_TIMEOUT_S, GitHubReadOnly, public_reader
 from harness.store import Store
 
 from tests.test_gh import API, FakeOpener, FakeResponse, http_error
@@ -100,7 +101,7 @@ def test_B480_workflow_runs_is_one_get_that_reads_the_list_out_of_the_object(tmp
     assert len(opener.requests) == 1, "a `next` link must not be followed"
     assert opener.requests[0].get_method() == "GET"
     assert opener.requests[0].data is None
-    assert opener.urls[0] == f"{API}/repos/{REPO}/actions/runs?per_page=30"
+    assert opener.urls[0] == f"{API}/repos/{REPO}/actions/runs?per_page=100"
     assert opener.requests[0].get_header("Authorization") is None
 
 
@@ -240,9 +241,9 @@ def test_B484_every_way_the_read_can_fail_costs_one_line_and_nothing_else():
         ),
     }
     for label, (client, expected) in cases.items():
-        rows, error = cli._actions_rows(client, REPO)
+        rows, error, truncated = cli._actions_rows(client, REPO)
 
-        assert rows == [], label
+        assert rows == [] and truncated is False, label
         assert error and expected in error, f"{label}: {error!r}"
         assert links.actions_lines(rows, NOW, error=error) == [f"**Actions** — {error}"], label
         assert "nothing running" not in error, f"{label} must not read as idle"
@@ -252,15 +253,15 @@ def test_B484_a_readable_client_reports_no_error_and_an_unknown_repo_is_unreadab
     """The other half: the guard must not swallow a live answer."""
     listing = Listing([run_row("implement", status="in_progress", conclusion=None)])
 
-    rows, error = cli._actions_rows(listing, REPO)
+    rows, error, truncated = cli._actions_rows(listing, REPO)
 
-    assert error == "" and len(rows) == 1
+    assert error == "" and len(rows) == 1 and truncated is False
     assert listing.calls == [(REPO, cli.ACTIONS_PER_PAGE)]
     assert cli._actions_rows(listing, "")[1], "with no repository there is nothing to read"
 
 
 def test_B484_a_row_that_is_not_an_object_is_dropped_rather_than_rendered():
-    rows, error = cli._actions_rows(Listing([run_row("implement"), "junk", None]), REPO)
+    rows, error, _ = cli._actions_rows(Listing([run_row("implement"), "junk", None]), REPO)
 
     assert error == "" and len(rows) == 1
 
@@ -465,3 +466,142 @@ def test_B487_an_actions_warning_never_changes_doctors_exit_code(tmp_path, monke
     assert code == baseline, "an Actions warning must not change doctor's exit code"
     assert "warnings (the harness still runs)" in out
     assert "Actions run list is not readable" in out
+
+
+# --------------------------------------------------------------------------------------
+# B490-B492 - the page, the fast lane's silence, and a row that cannot be forged
+# --------------------------------------------------------------------------------------
+
+
+def test_B490_a_run_below_the_first_thirty_is_still_reported():
+    """B490: `ack.yml` fires on every comment, `feedback.yml` makes a job-skipped run on every
+    comment and `selftest.yml` one per pull-request push, so thirty rows was minutes on a busy
+    morning — exactly the burst an operator would be investigating. The live run fell off the
+    page, and the section then said "nothing running or queued" in the same words it uses when
+    the queue really is empty."""
+    rows = [run_row("feedback", conclusion="skipped", number=n) for n in range(1, 31)]
+    rows.append(run_row("implement", status="in_progress", conclusion=None, number=31))
+    listing = Listing(rows)
+
+    read, error, truncated = cli._actions_rows(listing, REPO)
+
+    assert cli.ACTIONS_PER_PAGE == 100, "still one page, but the largest the endpoint serves"
+    assert listing.calls == [(REPO, 100)]
+    assert error == "" and truncated is False
+    lines = links.actions_lines(read, NOW, truncated=truncated)
+    assert lines[0] == "**Actions** — 1 running, 0 queued"
+    assert any("`implement` **running**" in line for line in lines)
+
+
+def test_B490_a_full_page_is_never_rendered_as_idle():
+    """B490: a page is a bound on what was read and never a statement about what exists, so a
+    full one is reported as a bound. "Nothing running or queued" would be a claim about runs
+    nobody looked at — the failure D79 exists to prevent, one page further out."""
+    full = [
+        run_row("feedback", conclusion="success", number=n)
+        for n in range(1, cli.ACTIONS_PER_PAGE + 1)
+    ]
+
+    read, error, truncated = cli._actions_rows(Listing(full), REPO)
+
+    assert error == "" and truncated is True
+    idle = links.actions_lines(read, NOW, truncated=truncated)
+    assert idle == [f"**Actions** — nothing running or queued in the newest {len(read)} runs."]
+    assert idle[0] != "**Actions** — nothing running or queued.", "the bound is the whole point"
+
+    busy = links.actions_lines(
+        read[1:] + [run_row("implement", status="in_progress", conclusion=None, number=999)],
+        NOW,
+        truncated=True,
+    )
+    assert busy[0] == "**Actions** — 1 running, 0 queued in the newest 100 runs"
+
+    # One row short of a page is not truncated, and carries no bound at all.
+    short, _, cut = cli._actions_rows(Listing(full[:-1]), REPO)
+    assert cut is False
+    assert links.actions_lines(short, NOW, truncated=cut) == [
+        "**Actions** — nothing running or queued."
+    ]
+
+
+def test_B491_a_failed_actions_read_omits_the_section_in_the_fast_answer(
+    tmp_path, capsys, monkeypatch
+):
+    """B491: D79 says a failure there omits the section, and the code rendered an error line
+    instead. That read is unauthenticated against 60/hour shared by every job on the runner's
+    address, so a 403 is routine rather than exceptional, and an error line about a read nobody
+    asked for would become the normal shape of the fast answer."""
+    from harness.ledger import Ledger
+
+    from tests.test_ack_and_watchdog import _env, _write_ledger
+
+    env = _env(tmp_path)
+    _write_ledger(tmp_path, Ledger.empty("2026-08-31T00:00:00Z"))
+    body = tmp_path / "c.txt"
+    body.write_text("/harness status", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    argv = [
+        "--config", str(env), "ack", "--body-file", str(body),
+        "--actor", "jgoetzmann", "--association", "OWNER",
+    ]
+    monkeypatch.setattr(
+        cli, "PUBLIC_READER", lambda *a, **k: Listing(raises=GitHubError("403 rate limit"))
+    )
+    capsys.readouterr()
+
+    assert cli.main(argv) == 0
+
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["answered"] is True
+    assert "**Actions**" not in refused["comment"], "a failure omits the section"
+    assert "could not be read" not in refused["comment"]
+    assert "**Allowance**" in refused["comment"], "and the rest of the answer is whole"
+
+    # The control: a read that works still shows it, so the silence is about the failure and not
+    # about `ack` having stopped rendering the section.
+    monkeypatch.setattr(
+        cli,
+        "PUBLIC_READER",
+        lambda *a, **k: Listing([run_row("implement", status="in_progress", conclusion=None)]),
+    )
+    assert cli.main(argv) == 0
+
+    assert "**Actions** — 1 running" in json.loads(capsys.readouterr().out)["comment"]
+
+
+def test_B491_the_public_read_is_bounded_by_a_timeout(monkeypatch):
+    """B491: the first `gh.py` read on the ack fast path with nothing bounding it but the job
+    timeout. `urlopen` without one waits on the socket default, which is no timeout at all, so a
+    connection that never answers would hold `ack.yml` until GitHub cancels the job."""
+    seen: dict = {}
+
+    def fake_urlopen(request, *args, **kwargs):
+        seen.update(kwargs)
+        seen["url"] = request.full_url
+        return FakeResponse({"workflow_runs": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert public_reader().workflow_runs(REPO) == []
+
+    assert seen["timeout"] == PUBLIC_READ_TIMEOUT_S
+    assert 0 < PUBLIC_READ_TIMEOUT_S <= 30, "a bound nobody would ever reach is not a bound"
+    assert seen["url"].endswith("/actions/runs?per_page=100")
+
+
+def test_B492_a_newline_in_a_workflow_name_cannot_forge_rows():
+    """B492: only a repository writer can name a workflow, and `queue_lines` embeds issue titles
+    the same way — but a name carrying a newline renders as bullets of its own beneath the row,
+    and `_defused` is already next door in this module. One run is one line."""
+    row = run_row(
+        "evil\n- `fake` **running** 5m — push",
+        status="in_progress",
+        conclusion=None,
+        event="push\n- `also-fake` queued 1m",
+    )
+
+    lines = links.actions_lines([row], NOW)
+
+    assert lines[0] == "**Actions** — 1 running, 0 queued"
+    assert len(lines) == 2, f"a name with a newline in it forged rows: {lines}"
+    assert all("\n" not in line and "\r" not in line for line in lines)

@@ -457,8 +457,9 @@ the procedure, and §7 the order of steps when a credential leaks.
 window for a few five-hour sessions so the operator can lend the harness time they are not going to
 use (D77), and it lifts the calendar alone: both usage stops, all three kill switches, the trust
 gate and the two human gates apply exactly as they did, no extra item may run at once, and the
-grant expires by itself without anything having to run. It is capped at six sessions, and a count
-above that is refused rather than quietly reduced.
+grant expires by itself without anything having to run. It is capped at six sessions, a count
+above that is refused rather than quietly reduced, and no grant runs longer than the count
+whatever the session reading says.
 
 ---
 

@@ -475,20 +475,27 @@ def _ago(started: Any, now: Any) -> str:
     return f"{int(seconds // 86400)}d"
 
 
+def _inline(value: Any) -> str:
+    """`value` as one line. A newline in a workflow name forges rows beneath it in the list."""
+    return " ".join(str(value or "").split())
+
+
 def actions_lines(
     rows: "Iterable[Mapping[str, Any]] | None",
     now: Any,
     *,
     limit: int = 5,
     error: str = "",
+    truncated: bool = False,
 ) -> list[str]:
     """What GitHub Actions is doing: running, queued behind the lock, recently cancelled (D79).
 
     One renderer for `/harness status`, `harness status` and the pinned issue, so the three
     cannot disagree. `rows` are `gh.workflow_runs` objects, newest first. `error` is the whole
     answer when the list could not be read — an empty list must never stand in for a failure,
-    because "nothing is running" and "I could not look" call for opposite actions. `rows=None`
-    with no error means there was nothing to say, and the section is omitted entirely.
+    because "nothing is running" and "I could not look" call for opposite actions. `truncated`
+    says the page came back full, so every count becomes a claim about the runs that were read
+    and none about the ones that were not. `rows=None` with no error omits the section.
 
     A skipped run is never listed: `feedback.yml` skips at job level on every unrelated comment,
     and listing those is the noise `watchdog.yml` already filters.
@@ -497,20 +504,20 @@ def actions_lines(
         return [f"**Actions** — {error}"]
     if rows is None:
         return []
+    read = [row for row in rows if isinstance(row, Mapping)]
     running: list[str] = []
     queued: list[str] = []
     cancelled: dict[str, int] = {}
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        name = str(row.get("name") or "").strip() or "?"
-        status = str(row.get("status") or "").strip().lower()
-        conclusion = str(row.get("conclusion") or "").strip().lower()
+    for row in read:
+        name = _inline(row.get("name")) or "?"
+        status = _inline(row.get("status")).lower()
+        conclusion = _inline(row.get("conclusion")).lower()
         started = row.get("run_started_at") or row.get("created_at")
         age = _ago(started, now)
         when = f" {age}" if age else ""
-        tail = f" — {row.get('event')}" if row.get("event") else ""
-        url = str(row.get("html_url") or "").strip()
+        event = _inline(row.get("event"))
+        tail = f" — {event}" if event else ""
+        url = _inline(row.get("html_url"))
         if url:
             tail += f" · [run]({url})"
         if status == "in_progress":
@@ -524,10 +531,12 @@ def actions_lines(
                 hours = (fresh[1] - fresh[0]).total_seconds() / 3600.0
                 if 0 <= hours <= CANCELLED_WINDOW_HOURS:
                     cancelled[name] = cancelled.get(name, 0) + 1
+    # A full page is a bound on what was read, never a statement about what exists.
+    bound = f" in the newest {len(read)} runs" if truncated else ""
     if not running and not queued:
-        lines = ["**Actions** — nothing running or queued."]
+        lines = [f"**Actions** — nothing running or queued{bound}."]
     else:
-        lines = [f"**Actions** — {len(running)} running, {len(queued)} queued"]
+        lines = [f"**Actions** — {len(running)} running, {len(queued)} queued{bound}"]
         rest = running + queued
         lines.extend(rest[:limit])
         if len(rest) > limit:
@@ -576,6 +585,7 @@ def fast_status(
     queue_issue: int | str = 0,
     actions: "Iterable[Mapping[str, Any]] | None" = None,
     actions_error: str = "",
+    actions_truncated: bool = False,
 ) -> str:
     """The answer to a `status`-only comment, given in seconds instead of minutes (B440).
 
@@ -598,7 +608,7 @@ def fast_status(
         lines.append(standing)
         lines.append("")
     lines.extend(usage_headline(ledger, config, now))
-    section = actions_lines(actions, now, error=actions_error)
+    section = actions_lines(actions, now, error=actions_error, truncated=actions_truncated)
     if section:
         lines.append("")
         lines.extend(section)

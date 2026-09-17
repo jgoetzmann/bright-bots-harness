@@ -910,8 +910,10 @@ Decision:
   it is that reset plus `n - 1` whole sessions; with no reading, an unreadable one, or one
   already past, it is `n x SESSION_HOURS` from now. `anchor` is recorded for the reply and never
   read again: re-measuring against each new observation would walk the block forward for ever.
-- A missing signal is never unlimited, twice over. `block_until` has no branch that returns
-  nothing, and `block_open` is False when `until` is absent or unreadable - a block lifts a
+- A missing signal is never unlimited, and a bad one cannot stretch a grant. `block_until` has no
+  branch that returns nothing and clamps to `now + n x SESSION_HOURS`, so a reading the ledger
+  copied verbatim - a seven-day value landing in the five-hour slot - grants n sessions and not
+  days (B488). `block_open` is False when `until` is absent or unreadable - a block lifts a
   restriction, so anything unreadable about it must mean "not lifted". `MAX_BLOCK_SESSIONS` is
   6 (thirty hours), and a larger count is **refused** rather than clamped, because a clamp
   grants something other than what was asked for (the rule `trust.parse_trust` applies to a
@@ -950,7 +952,7 @@ than a cron change; giving the harness an Actions-dispatch write, a new write su
 scheduling convenience; re-measuring the end against each new reading, which never ends; clamping
 an over-large count instead of refusing it.
 
-Allocates B459-B471.
+Allocates B459-B471, and B488 for the clamp.
 
 ## D78 / B472-B479 - an approval survives the run that was cancelled
 
@@ -960,11 +962,19 @@ Decision:
   then `proposed -> approved` with the reason `gate 1: proposals/<name> is on main`, which is the
   B101 comment the thread records. The item id becomes optional; `--merged` with an id is an
   error.
-- **Only `proposed -> approved`.** The state machine is the guard against resurrection: an item
-  stopped after its proposal merged is `blocked` or `abandoned`, so it is not `proposed` and is
-  left alone, for ever. A failure on one item is logged and the rest continue; the command exits
-  1 only if an item failed unexpectedly, so `ops.yml` files an issue for that and never for a run
-  with nothing to approve.
+- **Only `proposed -> approved`.** What prevents a resurrection is the state machine together
+  with the fact that nothing puts an item back into `proposed`: an item stopped after its proposal
+  merged is `blocked` or `abandoned`, so it is left alone. The transition table does not itself
+  forbid re-entry into `proposed`, and a `stage:` label set by hand is the route that reaches it,
+  so a stage that ever moves an item back there makes a merged proposal a standing approval and
+  has to be weighed against this.
+- A failure on one item is logged, warned about, and the rest continue, and the command exits
+  **0** (B489). It runs before `harness dispatch` and, in `feedback.yml`, before `harness sweep`,
+  so a non-zero exit over one locked or transferred issue would stop `/harness halt`,
+  `/harness resume` and `/harness block` being read at all, on every three-hourly run, while
+  `ack.yml` kept acknowledging - and `ops.yml` retries neither an `IllegalTransition` nor a 403.
+  `feedback.yml` carries `continue-on-error: true` on the step besides. The `failed` key stays in
+  the payload, and an item stuck at a stage is what `watchdog.yml` already reports.
 - It runs on **every** `implement.yml` run, not only on a push: the `github.event_name == 'push'`
   condition and the `BEFORE`/`AFTER` shell loop are gone, and the step keeps its place between
   sync-fork and dispatch (B127/B150). The same step is added to `feedback.yml` in the same
@@ -1013,18 +1023,21 @@ at parse time, so a run killed *after starting* consumes commands it never acted
 seen, so the next sweep re-read them - the comment path self-heals from its cursor where the push
 path could not.
 
-Allocates B472-B479.
+Allocates B472-B479, and B489 for the exit code.
 
 ## D79 / B480-B487 - status says what Actions is doing
 
 Decision:
-- `GitHubReadOnly.workflow_runs(repo, per_page=30)` reads
+- `GitHubReadOnly.workflow_runs(repo, per_page=100)` reads
   `GET /repos/{repo}/actions/runs` and takes the list out of the object's `workflow_runs` key. A
   **read**: one GET through the same ETag-cached, metered path every other read takes, so nothing
   joins `GH_WRITE_METHODS` and I-13, which governs writes, does not apply. It is on
   `GitHubReadOnly` rather than `GitHubClient`, so `gh.public_reader()` inherits it. One page and
   no pagination - the endpoint lists newest first, and walking a history that grows with every
-  comment is what `watchdog.yml` already refuses to do.
+  comment is what `watchdog.yml` already refuses to do - so the page asked for is the largest the
+  endpoint serves. Thirty rows was minutes on a busy morning, which put a live run off the page
+  and reported "nothing running or queued" as fact during exactly the burst an operator would be
+  investigating (B490).
 - One renderer, `links.actions_lines`, between the queue and **Next** on every status surface:
   what is running, what is queued (marked "behind the ledger lock" for a workflow in
   `links.LEDGER_GROUP_WORKFLOWS`, which a drift test pins to the `group:` lines the workflow files
@@ -1032,8 +1045,11 @@ Decision:
   last `CANCELLED_WINDOW_HOURS` (6). That last line is the operator's direct view of a burst
   (D78). Skipped runs are never listed: `feedback.yml` skips at job level on every unrelated
   comment, and that is the noise `watchdog.yml` already filters. Five rows, then `…and N more`.
-- **An empty list never stands in for a failure.** `__main__._actions_rows` returns
-  `(rows, error)`, because "nothing is running" and "I could not look" call for opposite actions.
+- **An empty list never stands in for a failure**, and neither does a full page.
+  `__main__._actions_rows` returns `(rows, error, truncated)`: "nothing is running", "I could not
+  look" and "that is all I read" call for three different answers, so a page that comes back full
+  is rendered as a bound - "nothing running or queued in the newest 100 runs" - and never as an
+  idle queue.
   A `GitHubError`, a `RateCeilingReached`, a shape with no `workflow_runs` key, and a client with
   no `workflow_runs` attribute at all each cost exactly one line and leave the rest of the answer
   whole. The attribute test is `getattr(gh, "workflow_runs", None)`, the pattern
@@ -1044,7 +1060,11 @@ Decision:
   it the one surface they asked about would never show it. `ack` reads it through
   `gh.public_reader()`: unauthenticated, no token, no store, no lock, tier 0 preserved, `ack.yml`
   still carrying no secret beyond `GITHUB_TOKEN` and still writing no ledger, so B440 and B118 are
-  intact. Any failure there omits the section.
+  intact. Any failure there omits the section rather than spending the answer on an error line
+  about a read nobody asked for: 60/hour is shared by every job on the runner's address, so a 403
+  is routine rather than exceptional. `public_reader` bounds each read with
+  `PUBLIC_READ_TIMEOUT_S`, since `urlopen` without one waits for ever and `ack.yml`'s job timeout
+  was the only other limit (B491).
 - `harness doctor` gains a probe beside `_doctor_notifications`: a **warning** only, never a
   problem, because a problem exits 3 and that exit code gates the spending workflows (D74/B305's
   rule). It is skipped below tier 2, where there is no token and nothing to check up front.
@@ -1066,4 +1086,4 @@ gate, which would silence it exactly where the operator runs it locally; treatin
 "idle", which is the failure this decision exists to prevent; a new write surface for a
 workflow-dispatch, which nothing here needs.
 
-Allocates B480-B487.
+Allocates B480-B487, and B490-B492 for the page, the omitted section and the defused rows.

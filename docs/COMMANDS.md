@@ -307,9 +307,10 @@ two switches are under [kill switches](#three-kill-switches-and-what-each-one-st
 
 **Level 3**, because it is the operator's subscription being spent — the same reason `--force` is.
 It suspends the run window for the next `n` five-hour subscription sessions, so the dispatcher
-stops holding approved work back until it expires. At most six sessions (thirty hours); more is
-refused and nothing changes, because a longer dedication is a run-window change, which is a
-reviewed edit to `.harness/config.json`.
+stops holding approved work back until it expires. At most six sessions (thirty hours), and never
+longer than the count however the session reading reads; more is refused and nothing changes,
+because a longer dedication is a run-window change, which is a reviewed edit to
+`.harness/config.json`.
 
 The end is measured **once**, when the command is acted on: the remainder of the session in
 progress plus `n − 1` whole ones when a reading exists, otherwise `n × 5 h` from now. A later

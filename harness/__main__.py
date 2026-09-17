@@ -138,8 +138,10 @@ PROPOSE_BRANCH_RE = re.compile(r"harness/propose-(\d+)$")
 #: merged it while a push diff exists only inside that one event (D78).
 PROPOSAL_FILE_RE = re.compile(r"^(\d+)-.*\.md$")
 
-#: How many workflow runs the Actions section asks GitHub for: one page, newest first (D79).
-ACTIONS_PER_PAGE = 30
+#: How many workflow runs the Actions section asks GitHub for: one page, newest first, and the
+#: largest page the endpoint serves. A page that comes back full means older runs went unread,
+#: which `_actions_rows` reports rather than rendering as an idle queue (D79).
+ACTIONS_PER_PAGE = 100
 
 
 # --------------------------------------------------------------------------------------
@@ -934,7 +936,7 @@ def _doctor_actions(config, args, payload) -> str:
         return ""  # tier 0 reads this unauthenticated on demand; nothing to check up front
     try:
         ctx = _context(config, args, run_id="doctor")
-        rows, error = _actions_rows(ctx.gh, str(getattr(config, "self_repo", "") or ""))
+        rows, error, _ = _actions_rows(ctx.gh, str(getattr(config, "self_repo", "") or ""))
     except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
         return ""
     if error:
@@ -1166,14 +1168,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     halt = ctx.ledger.halt_request()
     # What Actions is actually doing, so "nothing is happening" can be told from "it is queued
     # behind the lock" (D79).
-    runs, actions_error = _actions_rows(ctx.gh, config.self_repo)
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
     payload = {
         "queue": queue,
         "usage": usage,
         "in_flight": in_flight,
         "halt": halt,
         "block": ctx.ledger.block_grant(),
-        "actions": {"runs": runs, "error": actions_error or None},
+        "actions": {"runs": runs, "error": actions_error or None, "truncated": actions_cut},
     }
 
     # The halt comes first, so what follows is not read as a running harness.
@@ -1184,7 +1186,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.extend(_usage_lines(ctx.ledger, config, now))
-    lines.extend(links.actions_lines(runs, now, error=actions_error))
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
         lines.append(
@@ -1252,9 +1254,10 @@ def _approve_merged(args: argparse.Namespace) -> int:
     """Approve every `proposed` item whose proposal file is on main (D78).
 
     Bounded by the queue rather than by `proposals/`, which only grows: one label query under
-    the GitHub store, and only `proposed -> approved` is ever made. The state machine is the
-    guard against resurrection — an item stopped after its proposal merged is `blocked` or
-    `abandoned`, so it is not `proposed` and is left alone, for ever.
+    the GitHub store, and only `proposed -> approved` is ever made. What keeps a stopped item
+    from being resurrected is the state machine together with the fact that nothing puts an
+    item back into `proposed`: an item stopped after its proposal merged is `blocked` or
+    `abandoned`, so it is not `proposed` and is left alone.
     """
     config = _load(args)
     ctx = _context(config, args, run_id="approve")
@@ -1285,10 +1288,18 @@ def _approve_merged(args: argparse.Namespace) -> int:
     lines = [head]
     lines.extend(f"  skipped #{key}: {why}" for key, why in sorted(skipped.items()))
     lines.extend(f"  failed #{key}: {why}" for key, why in sorted(failed.items()))
+    for key, why in sorted(failed.items()):
+        # On stderr, so `--json` stdout stays parseable; Actions reads a workflow command from
+        # either stream.
+        print(
+            f"::warning::harness approve --merged: item {key} did not transition: {why}",
+            file=sys.stderr,
+        )
     _emit({"approved": approved, "skipped": skipped, "failed": failed}, "\n".join(lines), args)
-    # Exit 1 only on an unexpected failure, so `ops.yml` files an issue for that and never for a
-    # run that simply had nothing to approve.
-    return EXIT_ERROR if failed else EXIT_OK
+    # Never non-zero. This runs before `harness dispatch` and, in feedback.yml, before
+    # `harness sweep`, so failing it would take the keyword surface down over one stuck item,
+    # and a warning must not take the fleet down (D74/B305). The next run reconciles again.
+    return EXIT_OK
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -1843,28 +1854,29 @@ def _next_scheduled(now) -> str:
     return iso(nxt)
 
 
-def _actions_rows(gh, repo: str) -> tuple[list[dict], str]:
-    """`(rows, error)` for the Actions section — never an empty list standing in for a failure.
+def _actions_rows(gh, repo: str) -> tuple[list[dict], str, bool]:
+    """`(rows, error, truncated)` for the Actions section (D79).
 
-    "Nothing is running" and "I could not look" call for opposite actions, so they are different
-    answers here. A client that cannot list runs at all — a test double, or one built before
-    D79 — is unreadable rather than idle, which is the rule `keywords.answered_by_ack` already
-    applies to `comment_reactions`. Every failure costs one line and leaves the rest whole.
+    "Nothing is running" and "I could not look" call for opposite actions, so an empty list never
+    stands in for a failure; `truncated` is the third answer, because one page is all that is read
+    and a full page says nothing about the runs behind it. A client that cannot list runs at all
+    is unreadable rather than idle, the rule `keywords.answered_by_ack` applies to
+    `comment_reactions`. Every failure costs one line and leaves the rest whole.
     """
     reader = getattr(gh, "workflow_runs", None)
     if not callable(reader) or not repo:
-        return [], "could not be read (this client cannot list workflow runs)"
+        return [], "could not be read (this client cannot list workflow runs)", False
     try:
         rows = reader(repo, per_page=ACTIONS_PER_PAGE)
     except RateCeilingReached:
-        return [], "not read (GitHub request ceiling reached)"
+        return [], "not read (GitHub request ceiling reached)", False
     except HarnessError as exc:
-        return [], f"could not be read ({str(exc)[:120]})"
+        return [], f"could not be read ({str(exc)[:120]})", False
     except Exception:  # pragma: no cover - a status line must never fail the command it is in
-        return [], "could not be read"
+        return [], "could not be read", False
     if not isinstance(rows, list):
-        return [], "could not be read (the run listing had an unexpected shape)"
-    return [row for row in rows if isinstance(row, dict)], ""
+        return [], "could not be read (the run listing had an unexpected shape)", False
+    return [row for row in rows if isinstance(row, dict)], "", len(rows) >= ACTIONS_PER_PAGE
 
 
 def _usage_report(ctx, config, now) -> str:
@@ -1905,8 +1917,8 @@ def _usage_report(ctx, config, now) -> str:
         lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
     lines.append("")
 
-    runs, actions_error = _actions_rows(ctx.gh, config.self_repo)
-    lines.extend(links.actions_lines(runs, now, error=actions_error))
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append("")
 
     blocked = priority.admit("suggested", store=ctx.store, ledger=led, config=config, now=now)
@@ -2430,11 +2442,16 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
         # What Actions is doing, read unauthenticated so `ack` stays tier 0, takes no lock and
         # carries no credential (B440). A failure here omits the section and nothing else.
         try:
-            runs, actions_error = _actions_rows(
+            runs, actions_error, actions_cut = _actions_rows(
                 PUBLIC_READER(), str(getattr(config, "self_repo", "") or "")
             )
         except Exception:  # pragma: no cover - a courtesy inside a courtesy
-            runs, actions_error = None, ""
+            runs, actions_error, actions_cut = None, "", False
+        if actions_error:
+            # A failure here omits the section (D79). This read is unauthenticated against a
+            # ceiling shared by every job on the runner's address, so it is refused routinely,
+            # and an error line about a read nobody asked for is worse than no line.
+            runs, actions_error, actions_cut = None, "", False
         text = links.fast_status(
             config,
             led,
@@ -2444,6 +2461,7 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
             queue_issue=getattr(config, "tracking_issue", 0) or 0,
             actions=runs,
             actions_error=actions_error,
+            actions_truncated=actions_cut,
         )
     except Exception:  # pragma: no cover - a courtesy must never fail the run it precedes
         return ""
@@ -2628,8 +2646,8 @@ def _queue_block_lines(ctx, config, now) -> list[str]:
     else:
         lines.extend(links.queue_lines(rows, limit=QUEUE_ROWS))
     lines.append("")
-    runs, actions_error = _actions_rows(ctx.gh, config.self_repo)
-    lines.extend(links.actions_lines(runs, now, error=actions_error))
+    runs, actions_error, actions_cut = _actions_rows(ctx.gh, config.self_repo)
+    lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append("")
     lines.append("**Next**")
     lines.append(

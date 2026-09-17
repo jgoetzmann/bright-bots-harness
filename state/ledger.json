@@ -2,23 +2,23 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 8,
+    "calls": 10,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.11,
-        "resets_at": "2026-09-17T04:00:00Z"
+        "utilization": 0.23,
+        "resets_at": "2026-09-17T09:30:00Z"
       },
       "seven_day": {
-        "utilization": 0.18,
+        "utilization": 0.23,
         "resets_at": "2026-09-22T20:00:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-16T23:35:11Z"
+      "observed_at": "2026-09-17T05:25:09Z"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-16T23:16:05Z",
+    "notifications_last_seen": "2026-09-17T05:08:41Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -27,16 +27,20 @@
       "IC_kwDOULOSYs8AAAABTkQtnA",
       "IC_kwDOULOSYs8AAAABTuYqhw",
       "IC_kwDOULOSYs8AAAABVBkGEw",
-      "IC_kwDOULOSYs8AAAABVBkXug"
+      "IC_kwDOULOSYs8AAAABVBkXug",
+      "IC_kwDOULOSYs8AAAABVBirgA",
+      "IC_kwDOULOSYs8AAAABVBi7vw",
+      "IC_kwDOULOSYs8AAAABVBkcLg"
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 1
+      "github-actions[bot]": 2
     },
     "ask_calls": {
       "date": "2026-09-09",
       "count": 1
-    }
+    },
+    "pruned_at": "2026-09-17T05:25:20Z"
   },
   "history": [
     {
@@ -125,6 +129,18 @@
     },
     {
       "ts": "2026-09-16T23:35:11Z",
+      "stage": "audit",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T05:18:09Z",
+      "stage": "audit",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-17T05:25:09Z",
       "stage": "audit",
       "issue": 0,
       "run": ""

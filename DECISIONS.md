@@ -974,7 +974,9 @@ Decision:
   `/harness resume` and `/harness block` being read at all, on every three-hourly run, while
   `ack.yml` kept acknowledging - and `ops.yml` retries neither an `IllegalTransition` nor a 403.
   `feedback.yml` carries `continue-on-error: true` on the step besides. The `failed` key stays in
-  the payload, and an item stuck at a stage is what `watchdog.yml` already reports.
+  the payload, and an item that stops moving shows up in the pinned queue `harness tidy` rewrites
+  and in `heartbeat.yml`'s weekly queue depth per `stage:` label. `watchdog.yml` does not report
+  it: that one watches whether `feedback.yml`'s schedule fired at all (B294).
 - It runs on **every** `implement.yml` run, not only on a push: the `github.event_name == 'push'`
   condition and the `BEFORE`/`AFTER` shell loop are gone, and the step keeps its place between
   sync-fork and dispatch (B127/B150). The same step is added to `feedback.yml` in the same

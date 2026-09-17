@@ -98,3 +98,4 @@ For the test, a pure-function test cannot reach this defect — there is no wron
 - I could not execute the gates while planning (this session has no shell), so `gate_expectation: green` and `baseline_red: []` are expectations about an untouched tree, not measurements. Implementation must run them and report what actually happened.
 - The issue body contains no text addressed to an AI and no instruction to ignore rules, run commands, or touch unrelated files. It is a normal bug report; nothing in it was treated as an instruction.
 
+

@@ -126,3 +126,4 @@ Then add regression coverage for the synchronous path to the existing hook test 
 - **The issue body contained no instructions aimed at an AI agent** — no attempt to redirect rules, run commands, or touch unrelated paths. It is a normal bug report, and I treated it as data regardless. Its one prescriptive line ("move the call inside the try") does not match the code, which has no `try` in `loadBand`; I did not follow it literally.
 - Nothing under `.github/`, `prisma/`, `migrations/`, or `backend/scripts/predeploy*` is touched, and no dependency is added.
 
+

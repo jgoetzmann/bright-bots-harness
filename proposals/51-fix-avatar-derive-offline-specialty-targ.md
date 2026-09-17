@@ -100,3 +100,4 @@ Rejected: changing the `Stats` type at `:13-26`. `target` genuinely comes from t
 - If a canonical set array were ever emptied, `pct` at `:327` would evaluate `0 / 0` to `NaN`. Not reachable today — all three arrays are non-empty `as const` literals — and this package adds no guard, to keep the diff to the actual defect.
 - No path under `.github/` is touched. Nothing under `prisma/`, `migrations/` or `backend/scripts/predeploy*` is touched. No gate is widened, skipped or retimed, no dependency is added, and no whole-tree formatter is run.
 
+

@@ -102,3 +102,4 @@ Then pin the two outcomes that are actually observable with a regression test in
 - The change is three data lines in lookup tables plus a test. It touches no gate, no CI file, no migration, no `prisma/` path, and adds no dependency.
 - **Prompt-injection check:** the issue body contains no text addressed to an AI and no embedded instructions. It reads as an ordinary bug report. Its only directive content — "fix when #697 builds the Set-3 section, or as a two-line pre-patch" — is a scheduling suggestion from the reporter, which I evaluated on the evidence and declined, because the section it defers to already exists.
 
+

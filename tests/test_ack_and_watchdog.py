@@ -115,8 +115,12 @@ def test_the_acknowledgement_says_the_answer_is_a_separate_comment():
 # --------------------------------------------------------------------------------------
 
 
+#: What `ack` prints when it has nothing to say: the same three keys on every path.
+SILENT = {"react": False, "comment": "", "answered": False}
+
+
 def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER",
-             trust="3 jgoetzmann\n2 nathan\n", comment_id="") -> dict:
+             trust="3 jgoetzmann\n2 nathan\n") -> dict:
     """`harness ack` through the CLI the workflow actually calls, as the dict it prints."""
     import json
 
@@ -128,8 +132,6 @@ def _run_ack(tmp_path, capsys, body: str, actor="jgoetzmann", association="OWNER
         "--config", str(_env(tmp_path, trust=trust)), "ack",
         "--body-file", str(body_file), "--actor", actor, "--association", association,
     ]
-    if comment_id:
-        argv += ["--comment-id", comment_id]
     code = main(argv)
     assert code == 0, "ack must never fail the run it precedes"
     out = capsys.readouterr().out
@@ -172,13 +174,15 @@ def test_ack_acknowledges_a_trusted_slow_command(tmp_path, capsys):
     assert "Working on it" in out["comment"] and "/harness ask" in out["comment"]
 
 
-def test_ack_reacts_but_says_nothing_for_a_fast_command(tmp_path, capsys):
+def test_ack_reacts_but_says_nothing_for_a_fast_command_it_cannot_answer(tmp_path, capsys):
     """The two decisions are separate on purpose. The sweep IS going to act, so the reaction is
-    earned; the answer arrives about as fast as a comment would, so the comment is not."""
-    out = _run_ack(tmp_path, capsys, "/harness-status")
+    earned; the answer arrives about as fast as a comment would, so the comment is not. `status`
+    is the exception, because `ack` answers that one itself (B440)."""
+    out = _run_ack(tmp_path, capsys, "/harness go")
 
     assert out["react"] is True
     assert out["comment"] == ""
+    assert out["answered"] is False
 
 
 def test_ack_never_reacts_to_the_machine_account(tmp_path, capsys):
@@ -187,7 +191,7 @@ def test_ack_never_reacts_to_the_machine_account(tmp_path, capsys):
     cannot catch it either -- the machine account is an ordinary user, not a `Bot` type."""
     out = _run_ack(tmp_path, capsys, "/harness ask x", actor="jgoetzmann-bot")
 
-    assert out == {"react": False, "comment": ""}
+    assert out == SILENT
 
 
 def test_ack_says_nothing_to_an_untrusted_commenter(tmp_path, capsys):
@@ -195,14 +199,14 @@ def test_ack_says_nothing_to_an_untrusted_commenter(tmp_path, capsys):
     both: it tells somebody they were heard when they were not, and it does so where everybody
     can see it."""
     assert _run_ack(tmp_path, capsys, "/harness ask x", actor="mallory",
-                    association="NONE") == {"react": False, "comment": ""}
+                    association="NONE") == SILENT
 
 
 def test_ack_applies_the_association_half_of_the_gate_too(tmp_path, capsys):
     """B131 is BOTH halves. A handle in the trust file whom GitHub does not vouch for on this
     repository is refused by the sweep, so the acknowledgement must refuse it identically."""
     assert _run_ack(tmp_path, capsys, "/harness ask x",
-                    association="CONTRIBUTOR") == {"react": False, "comment": ""}
+                    association="CONTRIBUTOR") == SILENT
 
 
 def test_ack_uses_the_same_parser_as_the_sweep(tmp_path, capsys):
@@ -210,7 +214,7 @@ def test_ack_uses_the_same_parser_as_the_sweep(tmp_path, capsys):
     ship a paste-me block, and an acknowledgement that read it would announce work the sweep is
     never going to do."""
     body = "look:\n```\n/harness-audit accessibility\n```\n"
-    assert _run_ack(tmp_path, capsys, body) == {"react": False, "comment": ""}
+    assert _run_ack(tmp_path, capsys, body) == SILENT
 
 
 def test_ack_reads_the_hyphenated_form_and_the_aliases(tmp_path, capsys):
@@ -223,9 +227,8 @@ def test_ack_is_silent_rather_than_loud_when_it_cannot_tell(tmp_path, capsys):
     """Every path that cannot confirm what will happen prints nothing and exits 0. An
     acknowledgement that can break the run it precedes is a worse bargain than no
     acknowledgement at all."""
-    silent = {"react": False, "comment": ""}
-    assert _run_ack(tmp_path, capsys, "no commands here at all") == silent
-    assert _run_ack(tmp_path, capsys, "") == silent
+    assert _run_ack(tmp_path, capsys, "no commands here at all") == SILENT
+    assert _run_ack(tmp_path, capsys, "") == SILENT
 
 
 def test_ack_survives_a_body_file_that_is_not_there(tmp_path, capsys):
@@ -241,7 +244,7 @@ def test_ack_survives_a_body_file_that_is_not_there(tmp_path, capsys):
     ])
 
     assert code == 0
-    assert json.loads(capsys.readouterr().out) == {"react": False, "comment": ""}
+    assert json.loads(capsys.readouterr().out) == SILENT
 
 
 # --------------------------------------------------------------------------------------
@@ -642,7 +645,7 @@ def test_a_level_one_actor_with_nothing_allowed_is_answered_by_the_sweep_not_her
     out = _run_ack(tmp_path, capsys, "/harness audit accessibility", actor="asker",
                    association="MEMBER", trust="1 asker\n")
 
-    assert out == {"react": False, "comment": ""}
+    assert out == SILENT
 
 
 @pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
@@ -676,12 +679,12 @@ def test_a_comment_driven_workflow_checks_out_the_default_branch_not_the_pull_re
 
 
 def test_neither_comment_step_can_red_somebody_elses_thread():
-    """Both writes are courtesies. `issues.createComment` 403s on a locked issue, on a fork pull
-    request's read-only token, and on GitHub's secondary content-creation limit — none of which
-    is the commenter's fault, and all of which would put a red cross on their thread."""
+    """Every write here is a courtesy. `issues.createComment` 403s on a locked issue, on a fork
+    pull request's read-only token, and on GitHub's secondary content-creation limit — none of
+    which is the commenter's fault, and all of which would put a red cross on their thread."""
     text = _wf("ack.yml")
 
-    for step in ("React", "Say it"):
+    for step in ("React", "Say it", "Mark it answered"):
         block = text.split(f"- name: {step}\n", 1)[1].split("uses:", 1)[0]
         assert "continue-on-error: true" in block, f"{step} can fail the run"
 
@@ -722,7 +725,7 @@ def test_B436_a_bare_mention_from_an_untrusted_actor_is_still_silent(tmp_path, c
     """A public repository. The trust gate decides before anything is said, exactly as it does
     for `/harness`."""
     assert _run_ack(tmp_path, capsys, f"@{MACHINE} hello", actor="mallory",
-                    association="NONE") == {"react": False, "comment": ""}
+                    association="NONE") == SILENT
 
 
 def test_B436_a_mention_carrying_a_real_verb_is_acknowledged_rather_than_nudged(tmp_path, capsys):
@@ -749,7 +752,7 @@ def test_B436_a_verb_above_the_actors_level_is_left_to_the_sweep_rather_than_nud
     out = _run_ack(tmp_path, capsys, f"@{MACHINE} audit accessibility", actor="asker",
                    association="MEMBER", trust="1 asker\n")
 
-    assert out == {"react": False, "comment": ""}
+    assert out == SILENT
 
 
 @pytest.mark.parametrize("name", ["ack.yml", "feedback.yml"])
@@ -789,7 +792,7 @@ def _write_ledger(tmp_path, ledger) -> None:
     (state / "ledger.json").write_text(ledger.to_json(), encoding="utf-8")
 
 
-def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str, comment_id="") -> dict:
+def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str) -> dict:
     """`harness ack` against a ledger on disk, from a cwd with no committed halt in it."""
     import json
 
@@ -801,8 +804,6 @@ def _ack_with_ledger(tmp_path, capsys, monkeypatch, ledger, body: str, comment_i
     path.write_text(body, encoding="utf-8")
     argv = ["--config", str(env), "ack", "--body-file", str(path),
             "--actor", "jgoetzmann", "--association", "OWNER"]
-    if comment_id:
-        argv += ["--comment-id", comment_id]
     monkeypatch.chdir(tmp_path)
     assert main(argv) == 0
     return json.loads(capsys.readouterr().out)
@@ -860,20 +861,24 @@ def test_B438_an_audit_the_headroom_gate_will_refuse_is_not_promised_twenty_minu
 
 
 def test_B440_a_status_only_comment_is_answered_by_ack_itself(tmp_path, capsys):
-    out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_q1")
+    out = _run_ack(tmp_path, capsys, "/harness status")
 
     assert out["react"] is True
-    assert set(out) == {"react", "comment"}, "one shape on every path; the marker is the signal"
+    assert set(out) == {"react", "comment", "answered"}, "the same shape on every path"
     assert "**Allowance**" in out["comment"], "the answer itself, not an acknowledgement"
-    assert "<!-- answered:IC_q1 -->" in out["comment"], "so the sweep does not answer it again"
+    assert out["answered"] is True, "which is what the workflow writes the reaction from"
+    assert "answered:" not in out["comment"], "and the fact is not text in the reply (B455)"
     assert "<!-- bright-bots-harness -->" in out["comment"]
 
 
-def test_B440_without_a_comment_id_ack_claims_nothing(tmp_path, capsys):
-    """An answer the sweep cannot recognise is an answer given twice."""
-    out = _run_ack(tmp_path, capsys, "/harness status")
+def test_B440_the_answered_flag_is_set_only_beside_an_answer_ack_gave(tmp_path, capsys):
+    """`ack.yml` writes the reaction from this flag alone, so a flag set beside anything else
+    is a comment the sweep skips and nobody ever answered."""
+    for body in ("/harness ask what does the registry do", f"@{MACHINE} hello there"):
+        out = _run_ack(tmp_path, capsys, body)
 
-    assert out == {"react": True, "comment": ""}
+        assert out["answered"] is False, body
+        assert out["comment"], "it still says something; it just did not answer"
 
 
 def test_B440_ack_never_writes_the_ledger_so_it_needs_no_lock(tmp_path, capsys):
@@ -887,9 +892,9 @@ def test_B440_ack_never_writes_the_ledger_so_it_needs_no_lock(tmp_path, capsys):
     path = tmp_path / "state" / "ledger.json"
     before = path.read_text(encoding="utf-8")
 
-    out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_q2")
+    out = _run_ack(tmp_path, capsys, "/harness status")
 
-    assert "<!-- answered:IC_q2 -->" in out["comment"], "it did the work"
+    assert out["answered"] is True and "**Allowance**" in out["comment"], "it did the work"
     assert path.read_text(encoding="utf-8") == before, "and wrote nothing"
     groups = re.findall(r"^  group: (.+)$", _wf("ack.yml"), re.M)
     assert groups and "harness-ledger" not in groups, "ack.yml must stay outside the lock"
@@ -901,10 +906,9 @@ def test_B443_a_comment_mixing_status_with_another_verb_is_left_to_the_sweep(tmp
     """B443: the sweep owns the rest of the comment, including any refusal. Claiming it here
     would consume the whole comment and drop what ack cannot do."""
     out = _run_ack(tmp_path, capsys,
-                   "/harness status\n/harness ask what does the registry do",
-                   comment_id="IC_mixed")
+                   "/harness status\n/harness ask what does the registry do")
 
-    assert "<!-- answered:" not in out["comment"]
+    assert out["answered"] is False, "so nothing marks the comment answered"
     assert "Working on it" in out["comment"]
 
 
@@ -914,9 +918,9 @@ def test_B444_an_unreadable_ledger_falls_back_to_the_acknowledgement(tmp_path, c
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     (tmp_path / "state" / "ledger.json").write_text("{not json at all", encoding="utf-8")
 
-    out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_bad")
+    out = _run_ack(tmp_path, capsys, "/harness status")
 
-    assert out == {"react": True, "comment": ""}
+    assert out == {"react": True, "comment": "", "answered": False}
 
 
 def test_B454_the_heartbeat_comment_carries_the_marker_so_it_does_not_wake_the_workflows():
@@ -935,18 +939,67 @@ def test_B454_the_heartbeat_comment_carries_the_marker_so_it_does_not_wake_the_w
 
 
 def test_B442_the_ack_reply_is_authored_by_the_actions_bot_not_the_machine_account():
-    """The fact `keywords.answered_ids` has to encode, pinned against the workflow that decides
-    it. `ack.yml` posts through `actions/github-script` with no `github-token:` override, so the
-    reply carrying the `answered:` marker is authored by `github-actions[bot]` and never by the
-    machine account. An author test naming only the machine account is therefore never satisfied
-    in production: the marker is never seen, the sweep never skips, and every fast answer is
-    followed by the full answer the marker exists to prevent (D76)."""
+    """The fact `keywords.answered_by_ack` has to encode, pinned against the workflow that
+    decides it. Both `github-script` steps run with no `github-token:` override, so the answer
+    and the reaction marking it are authored by `github-actions[bot]`, never by the machine
+    account. An author test naming only the machine account is never satisfied in production:
+    the reaction is never honoured, and every fast answer is followed by the full one (D76)."""
     from harness.gh import ACTIONS_BOT, machine_logins
 
-    say = _wf("ack.yml").split("- name: Say it", 1)[1]
+    text = _wf("ack.yml")
+    say = text.split("- name: Say it", 1)[1].split("- name:", 1)[0]
+    mark = text.split("- name: Mark it answered", 1)[1]
 
-    assert "actions/github-script" in say
-    assert "github-token:" not in say, "an override would change who the reply comes from"
+    assert "actions/github-script" in say and "actions/github-script" in mark
+    assert "github-token:" not in say and "github-token:" not in mark, (
+        "an override would change who the answer and its mark come from"
+    )
     assert ACTIONS_BOT in machine_logins("jgoetzmann-bot"), (
         "the sweep must count the Actions bot as one of the logins the harness posts under"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# B455/B456 - the answered fact is a reaction, and the workflow that writes it
+# --------------------------------------------------------------------------------------
+
+
+def test_B456_the_answered_reaction_the_workflow_writes_is_the_one_the_sweep_looks_for():
+    """Two spellings of one fact, in two languages. A workflow expression cannot import the
+    constant, so this is what keeps them the same reaction."""
+    from harness.gh import ANSWERED_REACTION
+
+    text = _wf("ack.yml")
+    mark = text.split("- name: Mark it answered", 1)[1]
+    eyes = text.split("- name: React", 1)[1].split("- name:", 1)[0]
+
+    assert f"content: '{ANSWERED_REACTION}'" in mark
+    assert "content: 'eyes'" in eyes
+    assert ANSWERED_REACTION != "eyes", "read and answered must be different reactions"
+
+
+def test_B456_a_comment_is_marked_answered_only_after_the_answer_has_landed():
+    """`issues.createComment` 403s on a locked issue and at the content-creation limit. Marking
+    before it lands leaves the sweep skipping a comment nobody answered, which is silence — the
+    failure this whole surface exists to prevent."""
+    text = _wf("ack.yml")
+    mark = text.split("- name: Mark it answered", 1)[1].split("uses:", 1)[0]
+
+    assert "id: say" in text.split("- name: Say it", 1)[1].split("uses:", 1)[0]
+    assert "steps.ack.outputs.answered == 'true'" in mark
+    assert "steps.say.outcome == 'success'" in mark, (
+        "`outcome` is the step's own result; `conclusion` reads 'success' even when it failed"
+    )
+    assert text.index("- name: Say it") < text.index("- name: Mark it answered")
+
+
+def test_B456_the_fast_lane_answers_exactly_the_verbs_the_sweep_will_skip():
+    """`ack` claims a comment only when every verb in it is one of these, and the sweep skips
+    one only on the same test. Two spellings of that rule could disagree; one constant cannot."""
+    from harness import keywords
+
+    assert keywords.ACK_ANSWERS == frozenset({"status"})
+    assert keywords.ACK_ANSWERS <= set(keywords.VERBS)
+    assert not any(links.is_slow(verb) for verb in keywords.ACK_ANSWERS), (
+        "a verb that calls a model cannot be answered in the workflow that takes no lock"
     )

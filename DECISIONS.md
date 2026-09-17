@@ -747,7 +747,7 @@ nobody sets locally.
 
 Allocates B433-B434.
 
-## D76 / B435-B454 - the inbox answers, and the pinned issues keep themselves
+## D76 / B435-B456 - the inbox answers, and the pinned issues keep themselves
 
 Decision:
 - **Naming the machine account is a command.** `@jgoetzmann-bot <verb> [args]` at the start of a
@@ -801,19 +801,18 @@ call twice - which is the worse failure. Recorded, not fixed.
   `heartbeat.yml` already does with the run's own token - and never calls `ledger.save`. The proof
   obligation is discharged by B440, which asserts that `harness ack` writes no `state/ledger.json`
   and that `ack.yml` carries no commit step, so the ledger still has exactly one writer group.
-- **The `answered:` marker, and its author check.** A fast answer carries
-  `<!-- answered:<comment id> -->`; `sweep.read()` harvests those ids in a first pass and treats
-  the comments they name as seen, so the thread never gets the same answer twice. The marker is
-  honoured **only** on a comment carrying `MACHINE_MARKER` *and* authored by one of the logins in
-  `gh.machine_logins`: the machine account, and `github-actions[bot]`, which is who a
-  `github-script` step posts as. Without the author check it would be a command-suppression hole:
-  anyone could post the marker text and silence a maintainer's command (B442). Naming only the
-  machine account is the same defect from the other side - `ack.yml` replies through
-  `github-script`, so the marker would never have been honoured in production at all, and every
-  fast answer would have been followed by the full one. `ack` also refuses the fast lane without a
-  `--comment-id`, because an answer the sweep cannot recognise is an answer given twice, and it
-  claims a comment only when *every* verb in it resolves to `status` - a mixed comment is left
-  whole to the sweep, which owns the refusals for the rest.
+- **What tells the sweep a comment is answered is a reaction, not text.** `ack.yml` leaves
+  `gh.ANSWERED_REACTION` (`rocket`) on the comment it answered, under whichever login posted the
+  answer, and only once `Say it` has succeeded: marking a comment nobody answered is silence,
+  which is the failure this surface exists to prevent, while a reaction that fails to land costs
+  a repeated answer. `keywords.answered_by_ack` reads that comment's reactions and skips it when
+  one of `gh.machine_logins` left that content. It is asked only of a comment whose commands are
+  all in `keywords.ACK_ANSWERS`, and `commands_from` has already marked the comment seen, so the
+  cost is one read per status comment and never one per sweep. Nobody can react as those logins,
+  and no text the harness republishes can become a reaction (B455). `eyes` means read, not
+  answered, which is why the two contents differ. `ack` claims a comment only when *every* verb
+  in it resolves to `status` - a mixed comment is left whole to the sweep, which owns the
+  refusals for the rest.
 - **The queue is published on the pinned issue.** A new `harness tidy` subcommand, called from one
   new `feedback.yml` step after the sweep and before the ledger commit, rewrites only the span
   between `<!-- queue:start -->` and `<!-- queue:end -->` on `TRACKING_ISSUE` through the existing
@@ -865,12 +864,27 @@ alone identifies neither. `gh.machine_logins` is now the one place that names th
    every sweep, without bound. Both markers are now defused in the rendered rows at that one
    choke point, before wrapping, as the entity form that renders the same and matches neither.
 
-`cmd_ack`'s `"answered"` key went with them: no workflow step ever read it, and the durable signal
-is the `<!-- answered:<id> -->` marker inside the answer, which is what the sweep harvests. The
-command prints the same two keys on every path again.
+**The first cut of this decision put the answered fact in text, and that was the defect.** The
+fast answer carried `<!-- answered:<comment id> -->` and `keywords.answered_ids` harvested the ids
+out of harness-authored comments. Author-checking the harvest was not enough, because the attacker
+never posts the marker - *the harness does*. It repeats untrusted text verbatim: a
+product-repository issue title reaches a `/harness status` reply as a queue row label through
+`priority.queue` and `links.queue_lines`, and a model's answer reaches a thread through any stage
+reply. So an issue titled `fix the cards <!-- answered:IC_boss -->` made the harness publish the
+marker itself, in its own marked comment, and the next sweep read a maintainer's command as
+already answered and marked it seen for ever. A reviewer executed it end to end, with a clean
+title as the control. Defusing the marker wherever it is published would have been a third round
+of the same chase, so the fact left text altogether: `ANSWERED_RE`, `answered_ids`, the marker and
+`ack --comment-id` are gone. `cmd_ack`'s `"answered"` key, dropped in the first cut as a key no
+step read, is back and is now read - it is what `ack.yml` writes the reaction from - so the
+command prints the same three keys on every path.
 
 Rejected: sharding the `harness-ledger` concurrency group, which is B118 and would let two runs
-write `state/ledger.json` at once; `cancel-in-progress: true` on `feedback`, which would discard
+write `state/ledger.json` at once; having `ack` record the answered fact in the ledger, which puts
+it in that group and costs the fast lane the one thing it exists for; having the sweep write it
+there instead, which is where the fact already ends up - the skip marks the comment seen - but
+which answers where to keep it rather than how the sweep learns it, and so still needs a channel
+of its own; `cancel-in-progress: true` on `feedback`, which would discard
 in-flight work rather than queued work; deleting comments by age alone, which would eventually
 reach a person's; a `queue.yml` workflow, which costs an `ADDED_WORKFLOWS` entry, a cron that must
 dodge B124 and `FROZEN_CRONS`, and a second holder of the ledger lock, for a job one step does;
@@ -879,4 +893,4 @@ and is the thing the hygiene half exists to stop; reacting to a bare mention ins
 which tells somebody they were heard when nothing will act on it - the failure
 `test_ack_says_nothing_to_an_untrusted_commenter` exists to prevent.
 
-Allocates B435-B454.
+Allocates B435-B456.

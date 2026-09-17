@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      issues: write                # the acknowledgement comment and the eyes reaction
+      issues: write                # the acknowledgement comment and the two reactions
       pull-requests: write
     steps:
       - name: Checkout
@@ -128,11 +128,8 @@ jobs:
           ACTOR_ID: ${{ github.event.comment.user.id }}
           ASSOCIATION: ${{ github.event.comment.author_association }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-          # The id ack stamps into an answer it gives itself, so the sweep knows not to answer
-          # the same comment again (B441).
-          COMMENT_ID: ${{ github.event.comment.node_id }}
         run: |
-          python -m harness ack --body-file comment.txt --actor "$ACTOR" --actor-id "$ACTOR_ID" --association "$ASSOCIATION" --repo "${{ github.repository }}" --number "$NUMBER" --comment-id "$COMMENT_ID" > ack.json || true
+          python -m harness ack --body-file comment.txt --actor "$ACTOR" --actor-id "$ACTOR_ID" --association "$ASSOCIATION" --repo "${{ github.repository }}" --number "$NUMBER" > ack.json || true
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
           try:
@@ -143,6 +140,8 @@ jobs:
           pathlib.Path("ack.md").write_text(comment, encoding="utf-8")
           print("react=" + ("true" if d.get("react") else "false"))
           print("say=" + ("true" if comment.strip() else "false"))
+          # True only when the comment above IS the answer, which is what the sweep is told.
+          print("answered=" + ("true" if d.get("answered") else "false"))
           PY
 
       # Reacts whenever the harness will act, including fast verbs that get no comment.
@@ -164,6 +163,7 @@ jobs:
       # `continue-on-error` too: `issues.createComment` 403s on a locked issue, on a fork pull
       # request's read-only token and at GitHub's secondary content-creation limit.
       - name: Say it
+        id: say
         if: steps.ack.outputs.say == 'true'
         continue-on-error: true
         uses: actions/github-script@v7
@@ -177,3 +177,23 @@ jobs:
               owner, repo, issue_number: number,
               body: fs.readFileSync('ack.md', 'utf8').trim(),
             });
+
+      # How the sweep knows this comment is answered, so it does not answer it again minutes
+      # later. A reaction under one of the harness's own logins: the harness repeats issue
+      # titles and model answers verbatim, so a marker in the text of a reply is one a stranger
+      # can make it publish (D76). Only after `Say it` succeeded -- `createComment` 403s on a
+      # locked issue, and marking an unanswered comment answered is silence. `continue-on-error`
+      # like the others: a failed reaction costs a repeated answer, never a red X on a thread.
+      - name: Mark it answered
+        if: steps.ack.outputs.answered == 'true' && steps.say.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const id = context.payload.comment.id;
+            const isReview = context.eventName === 'pull_request_review_comment';
+            const fn = isReview
+              ? github.rest.reactions.createForPullRequestReviewComment
+              : github.rest.reactions.createForIssueComment;
+            await fn({ owner, repo, comment_id: id, content: 'rocket' });

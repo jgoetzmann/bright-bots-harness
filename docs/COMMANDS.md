@@ -429,7 +429,11 @@ harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.
 It never spends, never writes, and always exits 0. It answers `/harness status` itself, so that
-one verb does not queue behind a build.
+one verb does not queue behind a build: the answer arrives in seconds, and your comment gets a
+🚀 beside the 👀 once it has landed. That reaction is how the sweep knows not to answer the same
+comment again minutes later. The fact lives in a reaction, which only the bot's own logins can
+leave, rather than in the text of a reply — a reply is built partly from issue titles and model
+output, which anybody can choose.
 
 `tidy` is what `feedback.yml` calls after each sweep. It rewrites the queue between the
 `<!-- queue:start -->` and `<!-- queue:end -->` markers on the pinned tracking issue, touching

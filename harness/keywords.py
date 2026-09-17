@@ -73,6 +73,11 @@ VERB_LEVEL: dict[str, int] = {
     "reject": 3,
 }
 
+#: The verbs `harness ack` answers by itself, in the workflow that takes no lock (B440). One
+#: place, because `ack` claims a comment only when every verb in it is one of these and the
+#: sweep skips one only on the same test; two spellings of that rule could disagree.
+ACK_ANSWERS: frozenset[str] = frozenset({"status"})
+
 #: Appended to a command by the operator to start it outside the run window (B283).
 FORCE_FLAG = "--force"
 
@@ -102,10 +107,6 @@ _MENTION_COMMAND_TEMPLATE = r"^[ \t]*@{handle}[ \t]+(\w+)([^\n]*)"
 
 #: The same mention at the start of a line, with no verb required: what `ack` nudges about.
 _MENTION_LINE_TEMPLATE = r"^[ \t]*@{handle}\b"
-
-#: `ack` stamps the id of the comment it answered into its reply, so the sweep can tell that
-#: the fast lane already answered and say nothing further (B441).
-ANSWERED_RE = re.compile(r"<!--\s*answered:([^\s>]+)\s*-->")
 
 
 @functools.lru_cache(maxsize=8)
@@ -255,31 +256,43 @@ def mentions_without_command(body: str, mention: str) -> bool:
     return not parse_typed(text, mention=mention)
 
 
-def answered_ids(comments: "Any", machine: str = "") -> set[str]:
-    """The comment ids already answered by `ack`, read off the harness's own replies.
+def answered_by_ack(
+    gh: Any,
+    repo: str,
+    comment: Mapping[str, Any],
+    machine: str = "",
+    *,
+    review: bool = False,
+) -> bool:
+    """True when `ack` has already answered this comment, so the sweep says nothing (B441).
 
-    Honoured only on a comment one of the harness's own logins wrote *and* that carries the
-    transport's marker. Without the author check the marker would be a command-suppression
-    hole: anyone could post `<!-- answered:<id> -->` and the sweep would skip a maintainer's
-    command (B442). The machine account alone is not that check either: `ack.yml` replies
-    through `actions/github-script`, so its answers are authored by `github-actions[bot]`, and
-    a test naming only the machine account is never satisfied in production -- the marker would
-    never be seen and every fast answer would be followed by the full one (D76).
+    The fact is a reaction one of `gh.machine_logins` left on the comment, not text in a
+    reply: the harness republishes issue titles and model answers verbatim, so any marker it
+    can publish is one a stranger can choose (B455). Anything unreadable answers False, so a
+    failure here costs a repeated answer rather than a maintainer's command.
     """
     # Function-local: `keywords` is imported by the CLI, and `gh` must not be a hard dependency.
-    from harness.gh import MACHINE_MARKER, machine_logins
+    from harness.gh import ANSWERED_REACTION, machine_logins
 
+    reader = getattr(gh, "comment_reactions", None)
+    if not callable(reader):
+        return False
+    ident = comment.get("id")
+    if not ident:
+        return False
+    try:
+        rows = list(reader(repo, ident, review=review))
+    except GitHubError as exc:
+        log.warning("reactions unavailable for comment %s, answering it: %s", ident, exc)
+        return False
     logins = machine_logins(machine)
-    found: set[str] = set()
-    for comment in comments:
-        author = str(((comment.get("user") or {}).get("login")) or "").lstrip("@").lower()
-        if author not in logins:
+    for row in rows:
+        if str(row.get("content") or "").strip().lower() != ANSWERED_REACTION:
             continue
-        body = str(comment.get("body") or "")
-        if MACHINE_MARKER not in body:
-            continue
-        found.update(match.group(1) for match in ANSWERED_RE.finditer(body))
-    return found
+        author = str(((row.get("user") or {}).get("login")) or "").lstrip("@").lower()
+        if author in logins:
+            return True
+    return False
 
 
 def split_force(args: str) -> tuple[str, bool]:
@@ -484,29 +497,30 @@ def sweep(
         if (repo.lower(), number) in seen_threads:
             return
         seen_threads.add((repo.lower(), number))
-        comments = list(gh.issue_comments(repo, number))
+        # The endpoint a reaction is read from differs between the two kinds, so which list a
+        # comment came from is carried with it.
+        rows = [(row, False) for row in gh.issue_comments(repo, number)]
         if surface in ("proposal_pr", "delivery_pr"):
             # Only a pull request has review comments; asking an issue for them is a 404.
-            comments.extend(gh.pull_review_comments(repo, number))
-        # Harvested in a first pass, because `ack`'s reply sits *after* the comment it answers
-        # and the sweep would otherwise answer it a second time (B441).
-        already = answered_ids(comments, machine)
-        for comment in comments:
-            cid = comment_id(comment)
-            if cid in already:
-                # Marked seen, so the reply carrying the marker need not be re-read for ever.
-                ledger.mark_seen(cid)
-                continue
-            commands.extend(
-                commands_from(
-                    comment,
-                    surface=surface,
-                    number=number,
-                    trusted=trusted,
-                    ledger=ledger,
-                    machine=machine,
-                )
+            rows += [(row, True) for row in gh.pull_review_comments(repo, number)]
+        for comment, review in rows:
+            found = commands_from(
+                comment,
+                surface=surface,
+                number=number,
+                trusted=trusted,
+                ledger=ledger,
+                machine=machine,
             )
+            if not found:
+                continue
+            # Only what `ack` can answer is asked about, which keeps this to one read per
+            # status comment; `commands_from` has marked it seen, so it is asked once (B441).
+            if all(command.verb in ACK_ANSWERS for command in found) and answered_by_ack(
+                gh, repo, comment, machine, review=review
+            ):
+                continue
+            commands.extend(found)
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))

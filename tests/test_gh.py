@@ -412,6 +412,28 @@ def test_delete_issue_comment_sends_no_body_is_tier_gated_and_records_the_id(tmp
     assert unarmed.sent == []
 
 
+def test_comment_reactions_reads_who_reacted_from_either_kind_of_comment(tmp_path):
+    """D76/B441: how the sweep learns `ack` already answered. The author GitHub puts on a
+    reaction is the whole point, so this reads the endpoint that returns one — and it is a
+    read: the harness writes no reaction from Python, so `sent` stays empty (I-13)."""
+    from harness.gh import GitHubClient
+
+    clock = FrozenClock(FROZEN_AT)
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    rows = [{"id": 1, "content": "rocket", "user": {"login": "github-actions[bot]"}}]
+    opener = FakeOpener(FakeResponse(rows), FakeResponse(rows))
+    client = GitHubClient("o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, opener=opener)
+
+    assert client.comment_reactions("me/self", 4242) == rows
+    assert client.comment_reactions("me/self", 4242, review=True) == rows
+
+    assert opener.urls[0].startswith(f"{API}/repos/me/self/issues/comments/4242/reactions")
+    assert opener.urls[1].startswith(f"{API}/repos/me/self/pulls/comments/4242/reactions")
+    assert [request.get_method() for request in opener.requests] == ["GET", "GET"]
+    assert client.sent == [], "a read is not a write"
+
+
 # --------------------------------------------------------------------------------------
 # B229 - the push carries its own hook suppression, and says why it failed (D49)
 # --------------------------------------------------------------------------------------

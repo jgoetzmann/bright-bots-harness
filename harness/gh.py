@@ -82,6 +82,13 @@ def machine_logins(machine: str = "") -> frozenset[str]:
     return frozenset(logins)
 
 
+#: The reaction `ack` leaves on a comment it has answered itself, written under one of the
+#: `machine_logins` (D76). A reaction rather than text in the reply: the harness repeats
+#: untrusted text verbatim, so any marker it can publish is one a stranger can choose, while
+#: nobody outside these logins can react as them.
+ANSWERED_REACTION = "rocket"
+
+
 def _header(headers: Any, name: str) -> str | None:
     """Read one header off any object exposing ``.get`` (or nothing at all)."""
     if headers is None:
@@ -776,6 +783,20 @@ class GitHubClient(GitHubReadOnly):
     def issue_comments(self, repo: str, number: int) -> list[dict]:
         pairs = [("per_page", str(PER_PAGE))]
         return self._paginate(f"/repos/{repo}/issues/{int(number)}/comments?{_query(pairs)}")
+
+    def comment_reactions(
+        self, repo: str, comment_id: int | str, *, review: bool = False
+    ) -> list[dict]:
+        """Who reacted to one comment, and with what: each row carries `user` and `content`.
+
+        A read. The harness adds no reaction from Python -- `ack.yml` does that through
+        `github-script` -- so this stays off the write surface (I-13). `review` picks the
+        pull-request review comment endpoint, a different path over the same id space.
+        """
+        kind = "pulls" if review else "issues"
+        pairs = [("per_page", str(PER_PAGE))]
+        path = f"/repos/{repo}/{kind}/comments/{int(comment_id)}/reactions"
+        return self._paginate(f"{path}?{_query(pairs)}")
 
     def pull(self, repo: str, number: int) -> dict:
         data = self.get(f"/repos/{repo}/pulls/{int(number)}")

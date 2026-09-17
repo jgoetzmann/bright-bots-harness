@@ -235,12 +235,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ack.add_argument("--repo", default="", help="repository the comment is on")
     ack.add_argument("--number", type=int, default=0, help="issue or pull request number")
-    ack.add_argument(
-        "--comment-id",
-        default="",
-        dest="comment_id",
-        help="the comment's node id; without it ack never claims a comment (B441)",
-    )
 
     sub.add_parser(
         "tidy",
@@ -2153,13 +2147,9 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
 
     Read-only on every path, and it never saves: `ack.yml` stays outside the `harness-ledger`
     group, so the ledger keeps exactly one writer group (B118). An unreadable ledger returns
-    "" and the ordinary acknowledgement is posted instead (B444).
+    "" and the ordinary acknowledgement is posted instead (B444). What tells the sweep this
+    was answered is the reaction `ack.yml` leaves on the comment, never anything in the text.
     """
-    # Without the comment's id the sweep cannot tell this was answered, and the thread would
-    # get the same answer twice. No id, no fast lane.
-    cid = str(getattr(args, "comment_id", "") or "").strip()
-    if not cid:
-        return ""
     try:
         led = ledger_mod.load(ledger_path_for(config))
         now = datetime.now(timezone.utc)
@@ -2179,28 +2169,28 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
         return ""
     if not text.strip():
         return ""
-    return mark_machine_written(f"{text}\n\n<!-- answered:{cid} -->")
+    return mark_machine_written(text)
 
 
 def cmd_ack(args: argparse.Namespace) -> int:
     """Decide what to say about one comment before any work starts (B293).
 
     The sweep takes minutes; this says within seconds whether the comment will be acted on.
-    Prints one JSON object: ``{"react": bool, "comment": str}``.
+    Prints one JSON object, the same three keys on every path:
 
     - ``react``: the sweep is going to act on this.
     - ``comment``: the acknowledgement, the answer itself when `ack` gave one, or "" when every
       verb is fast enough that the answer arrives first.
-
-    Two keys on every path. What tells the sweep that a comment was already answered is the
-    `<!-- answered:<id> -->` marker inside the answer, which is durable on the thread; a third
-    key here would only repeat it to a workflow step that never read it (D76).
+    - ``answered``: that comment *is* the answer, so `ack.yml` marks the thread's comment with
+      `gh.ANSWERED_REACTION` once it has landed and the sweep leaves it alone (D76).
 
     Uses the sweep's own parser and trust gate. Never spends, never writes, and exits 0 on
     every path, so it cannot fail the workflow.
     """
-    def _say(react: bool = False, comment: str = "") -> int:
-        print(json.dumps({"react": bool(react), "comment": comment}))
+    def _say(react: bool = False, comment: str = "", answered: bool = False) -> int:
+        print(
+            json.dumps({"react": bool(react), "comment": comment, "answered": bool(answered)})
+        )
         return EXIT_OK
 
     try:
@@ -2277,10 +2267,10 @@ def cmd_ack(args: argparse.Namespace) -> int:
     # for it is answered here rather than queued behind whatever holds `harness-ledger`.
     # Judged on every verb the comment carries rather than only the ones this actor may give:
     # a mixed comment must still reach the sweep, which owns the refusal for the rest.
-    if parsed and {verb for verb, _a, _t in parsed} == {"status"}:
+    if parsed and {verb for verb, _a, _t in parsed} <= keywords.ACK_ANSWERS:
         answer = _ack_fast_status(config, args)
         if answer:
-            return _say(react=True, comment=answer)
+            return _say(react=True, comment=answer, answered=True)
 
     text = links.acknowledgement(verbs)
     # The workflow posts this through `github-script`, which does not mark it the way

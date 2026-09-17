@@ -99,7 +99,7 @@ issues `harness-ok`, the pool triage draws from when nothing anybody asked for i
 makes a good request.
 
 The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 11:00
-to 15:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
+to 19:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
 `harness run --item N` and `--force` start work outside it; neither bypasses the usage stops.
 `discover.yml` is not window-gated.
 

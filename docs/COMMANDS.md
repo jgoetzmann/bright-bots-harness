@@ -332,7 +332,7 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 /harness go --force
 ```
 
-Exempts the item from the run window (daily 11:00 → 15:00 UTC), and says so on the item, in the
+Exempts the item from the run window (daily 11:00 → 19:00 UTC), and says so on the item, in the
 ledger and in the reply. It is honoured by `implement`'s next run outside the window (a gate-1 merge
 or the operator's dispatch), not by the sweep (D68), and proposes nothing sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, both usage stops
@@ -384,7 +384,7 @@ harness ledger      # usage against each stop, calls made, window state
 ```json
 {
   "start": [],
-  "reason": "outside run window (daily 11:00-15:00 UTC)",
+  "reason": "outside run window (daily 11:00-19:00 UTC)",
   "skipped": {},
   "queue": [{ "class": "directed", "rank": 2, "item": 4, "state": "discovered" }],
   "head": { "item": 4, "reason": "waiting to be proposed" },

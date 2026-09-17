@@ -59,7 +59,7 @@ reporting an empty queue as idle; in `ack`'s fast answer it is left out altogeth
 `harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
 `reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
 `weekly usage 91% >= 90%`, `session usage 82% >= 80%`, `carry leeway 10% reached`,
-`outside run window (daily 11:00-15:00 UTC)`, or `k of max n slots` (with
+`outside run window (daily 11:00-19:00 UTC)`, or `k of max n slots` (with
 `; weekly 49%, session 7%` appended when subscription usage is known). The usage stops, the leeway
 and the window are §13.
 
@@ -415,8 +415,8 @@ Actions → pick the workflow → **Run workflow** → branch `main` → fill th
 
 | Workflow | Runs on its own | Inputs |
 |---|---|---|
-| `discover` | `7 11 * * *` | `mode`, `target`, `lens`, `ignore_allowlist` |
-| `implement` | `23 11-14 * * *`, and a push to `proposals/**` on `main` | `issue` |
+| `discover` | `7 11,13 * * *` | `mode`, `target`, `lens`, `ignore_allowlist` |
+| `implement` | `23 11-18 * * *`, and a push to `proposals/**` on `main` | `issue` |
 | `feedback` | `41 */3 * * 1-5`, and any `/harness` comment here | none |
 | `ack` | any `/harness` comment here | none |
 | `heartbeat` | `5 9 * * 1` | none |
@@ -532,25 +532,32 @@ allowance.
 
 ### 13.3 The run window
 
-`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 15:00` (D72).
-Both ends are UTC and take either a lowercase three-letter weekday, for a weekly window that may
-wrap past Sunday (the `.env.example` default is `mon 08:00` to `tue 20:00`), or `daily`, for a
-window that repeats every day and may wrap past midnight. Mixing the two is a startup error.
-Outside the window no new item starts, and the reason is
-`outside run window (daily 11:00-15:00 UTC)`. Both keys empty means always open.
+`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 19:00` (D72,
+widened by D80). Both ends are UTC and take either a lowercase three-letter weekday, for a weekly
+window that may wrap past Sunday (the `.env.example` default is `mon 08:00` to `tue 20:00`), or
+`daily`, for a window that repeats every day and may wrap past midnight. Mixing the two is a
+startup error. Outside the window no new item starts, and the reason is
+`outside run window (daily 11:00-19:00 UTC)`. Both keys empty means always open.
 
-The window is not the schedule. `discover.yml` carries `7 11 * * *` and `implement.yml` carries
-`23 11-14 * * *`: the times GitHub wakes the jobs. The window is what the dispatcher enforces once
+The window is not the schedule. `discover.yml` carries `7 11,13 * * *` and `implement.yml` carries
+`23 11-18 * * *`: the times GitHub wakes the jobs. The window is what the dispatcher enforces once
 they are awake. Move both together; `tests/test_invariants.py` (B412) fails the build when a daily
-window stops containing those crons.
+window stops containing those crons, and B493 fails it when either workflow is down to a single
+firing.
 
-The hours follow the subscription's five-hour session, which is shared with your own use and opens
-with the first model call of the day: discover's triage call at 11:07 when there is something to
-triage, otherwise the first item a build starts. Items start until 15:00, an hour before a session
-opened at 11:07 ends, because an implement run may take its full 120-minute timeout, and
-`SESSION_USAGE_STOP_PCT` (80 in Actions) stops new calls before the session is spent. A carried item
-waits for the window too (B413). GitHub cron is always UTC; 11:00 UTC is 04:00 PDT and 03:00 PST, so
-nothing needs moving when the clocks change.
+The window is eight hours wide because GitHub delivers every scheduled run late and drops some
+entirely: measured lateness over two days ran from 2 to 264 minutes, median 72 for implement and
+264 for discover, and one such run arriving 34 minutes after a four-hour window shut cost a whole
+day's builds (D80). The width is what a late run lands in; the repeated firings are what a dropped
+run is caught by.
+
+The hours still follow the subscription's five-hour session, which is shared with your own use and
+opens with the first model call of the day: discover's triage call at 11:07 when there is something
+to triage, otherwise the first item a build starts. A build starting near the far edge therefore
+runs into a second session and into the operator's own Pacific noon; what bounds it is
+`SESSION_USAGE_STOP_PCT` (80 in Actions), which stops new calls before a session is spent, rather
+than the window's tail. A carried item waits for the window too (B413). GitHub cron is always UTC;
+11:00 UTC is 04:00 PDT and 03:00 PST, so nothing needs moving when the clocks change.
 
 `harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
 usage stops.

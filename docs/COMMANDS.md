@@ -435,8 +435,11 @@ one verb does not queue behind a build.
 `<!-- queue:start -->` and `<!-- queue:end -->` markers on the pinned tracking issue, touching
 nothing else in that body and sending no request when the text has not changed. Once a week it
 also deletes the harness's **own** comments on the inbox and tracking issues, keeping the newest
-twenty and anything under thirty days old. A comment without the harness's marker is never a
-candidate, so no human comment can be reached.
+twenty and anything under thirty days old. A comment is a candidate only when one of the two
+logins the harness posts under — the machine account and `github-actions[bot]` — wrote it **and**
+it carries the harness's marker, so no human comment can be reached. The marker alone would not
+be enough: GitHub's quote-reply copies it into the comment of anybody who answers the harness
+that way, and the author is what tells the two apart.
 
 ## Three kill switches, and what each one stops
 

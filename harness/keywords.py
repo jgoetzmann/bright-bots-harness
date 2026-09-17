@@ -256,21 +256,24 @@ def mentions_without_command(body: str, mention: str) -> bool:
 
 
 def answered_ids(comments: "Any", machine: str = "") -> set[str]:
-    """The comment ids already answered by `ack`, read off the machine account's own replies.
+    """The comment ids already answered by `ack`, read off the harness's own replies.
 
-    Honoured only on a comment the machine account wrote *and* that carries the transport's
-    marker. Without the author check the marker would be a command-suppression hole: anyone
-    could post `<!-- answered:<id> -->` and the sweep would skip a maintainer's command (B442).
+    Honoured only on a comment one of the harness's own logins wrote *and* that carries the
+    transport's marker. Without the author check the marker would be a command-suppression
+    hole: anyone could post `<!-- answered:<id> -->` and the sweep would skip a maintainer's
+    command (B442). The machine account alone is not that check either: `ack.yml` replies
+    through `actions/github-script`, so its answers are authored by `github-actions[bot]`, and
+    a test naming only the machine account is never satisfied in production -- the marker would
+    never be seen and every fast answer would be followed by the full one (D76).
     """
-    from harness.gh import MACHINE_MARKER  # function-local: keywords is imported by the CLI
+    # Function-local: `keywords` is imported by the CLI, and `gh` must not be a hard dependency.
+    from harness.gh import MACHINE_MARKER, machine_logins
 
-    handle = str(machine or "").strip().lstrip("@").lower()
+    logins = machine_logins(machine)
     found: set[str] = set()
-    if not handle:
-        return found
     for comment in comments:
         author = str(((comment.get("user") or {}).get("login")) or "").lstrip("@").lower()
-        if author != handle:
+        if author not in logins:
             continue
         body = str(comment.get("body") or "")
         if MACHINE_MARKER not in body:

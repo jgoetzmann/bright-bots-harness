@@ -75,6 +75,9 @@ def make_ctx(tmp_path, *, gh, tracking: int = TRACKING, inbox: int = INBOX):
     env_path = write_env(
         tmp_path / ".env",
         SELF_REPO=SELF_REPO,
+        # The prune identifies the harness's own comments by author as well as by marker, and
+        # the machine account is the owner of the fork it pushes to (`discover.machine_account`).
+        FORK_REPO="jgoetzmann-bot/brightboost",
         TRACKING_ISSUE=str(tracking),
         INBOX_ISSUE=str(inbox),
     )
@@ -117,6 +120,22 @@ def human_comment(ident: int, *, issue: int, days_old: float) -> dict:
     }
 
 
+def quote_reply(ident: int, *, issue: int, days_old: float) -> dict:
+    """A person answering the harness with GitHub's **Quote reply**.
+
+    That button copies the source comment's raw markdown into the new comment, HTML comments
+    included, so this body carries the machine marker and a person wrote it.
+    """
+    quoted = "\n".join(f"> {line}" for line in mark_machine_written("the queue").splitlines())
+    return {
+        "id": ident,
+        "issue": issue,
+        "created_at": iso(FROZEN_AT - timedelta(days=days_old)),
+        "body": f"{quoted}\n\nthat is not the queue I meant -- what happened to #12?",
+        "user": {"login": "nathan"},
+    }
+
+
 # --------------------------------------------------------------------------------------
 # B445-B448 - publishing the queue
 # --------------------------------------------------------------------------------------
@@ -136,6 +155,29 @@ def test_B445_only_the_span_between_the_markers_is_rewritten(tmp_path):
     assert new_body.endswith("\n\nWritten by a person, below.\n")
     assert "stale" not in new_body, "the old block is gone"
     assert new_body.count(links.QUEUE_START) == 1 and new_body.count(links.QUEUE_END) == 1
+
+
+def test_B445_a_row_that_carries_the_end_marker_cannot_end_the_block_early():
+    """Row labels are issue titles, and on the public product repository anybody can choose one.
+    A title carrying the end marker would otherwise anchor the next splice inside the block,
+    stranding a row below it -- in the half of that body which belongs to a person -- on every
+    sweep, without bound (D76)."""
+    from harness import priority
+
+    rows = [
+        priority.Waiting(cls="directed", label=f"#4 fix {links.QUEUE_END} the cards"),
+        priority.Waiting(cls="suggested", label="#9 delete the orphan"),
+    ]
+    block = links.queue_block(links.queue_lines(rows))
+    assert block.count(links.QUEUE_START) == 1 and block.count(links.QUEUE_END) == 1
+
+    once = links.replace_queue_block(body_with_markers(), block)
+    assert once.count(links.QUEUE_START) == 1 and once.count(links.QUEUE_END) == 1
+    twice = links.replace_queue_block(once, block)
+
+    assert twice == once, "a second pass is a no-op: nothing is stranded and nothing grows"
+    assert twice.endswith("\n\nWritten by a person, below.\n"), "the prose below is untouched"
+    assert "#4 fix" in twice and "#9 delete the orphan" in twice, "and both rows still read"
 
 
 def test_B446_an_unchanged_block_sends_no_patch(tmp_path):
@@ -221,6 +263,26 @@ def test_B449_a_comment_without_the_machine_marker_is_never_deleted(tmp_path):
     deleted, _skipped = main_mod._prune_machine_comments(ctx, config)
 
     assert deleted == [] and gh.deleted == []
+
+
+def test_B449_a_quote_reply_carrying_the_marker_is_still_a_persons_comment(tmp_path):
+    """The marker is not an author test. GitHub's **Quote reply** copies the source comment's
+    raw markdown, HTML comments included, so it marks a person who answered the harness exactly
+    as it marks the harness. Both workflow `if:` filters already carry a `> <!-- ... -->` clause
+    for this; the prune needs the author too, because the prune deletes (D76)."""
+    person = quote_reply(9001, issue=INBOX, days_old=400)
+    ours = [machine_comment(i, issue=INBOX, days_old=399 - i) for i in range(1, 26)]
+    gh = TidyGh(comments=[person] + ours)
+    ctx, config = make_ctx(tmp_path, gh=gh)
+
+    deleted, _skipped = main_mod._prune_machine_comments(ctx, config)
+
+    assert 9001 not in deleted, "a comment a person wrote is not the harness's to delete"
+    assert 9001 not in gh.deleted
+    assert ("delete_issue_comment", SELF_REPO, 9001) not in gh.calls, "no DELETE was issued"
+    # Twenty-five of the harness's own, the newest twenty kept: the author check narrows the
+    # candidates, it does not quietly switch the prune off.
+    assert sorted(deleted) == [1, 2, 3, 4, 5]
 
 
 def test_B450_the_newest_machine_comments_and_anything_recent_survive(tmp_path):

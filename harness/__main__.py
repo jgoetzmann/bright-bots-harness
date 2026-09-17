@@ -36,7 +36,7 @@ from harness.errors import (
     RateLimited,
     RepoHalted,
 )
-from harness.gh import mark_machine_written, public_reader
+from harness.gh import machine_logins, mark_machine_written, public_reader
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness import priority
@@ -2189,19 +2189,18 @@ def cmd_ack(args: argparse.Namespace) -> int:
     Prints one JSON object: ``{"react": bool, "comment": str}``.
 
     - ``react``: the sweep is going to act on this.
-    - ``comment``: the acknowledgement, or "" when every verb is fast enough that the answer
-      arrives first.
+    - ``comment``: the acknowledgement, the answer itself when `ack` gave one, or "" when every
+      verb is fast enough that the answer arrives first.
+
+    Two keys on every path. What tells the sweep that a comment was already answered is the
+    `<!-- answered:<id> -->` marker inside the answer, which is durable on the thread; a third
+    key here would only repeat it to a workflow step that never read it (D76).
 
     Uses the sweep's own parser and trust gate. Never spends, never writes, and exits 0 on
     every path, so it cannot fail the workflow.
     """
-    def _say(react: bool = False, comment: str = "", answered: bool = False) -> int:
-        payload = {"react": bool(react), "comment": comment}
-        if answered:
-            # Only when ack has actually answered, so every other path prints the same two
-            # keys it always has.
-            payload["answered"] = True
-        print(json.dumps(payload))
+    def _say(react: bool = False, comment: str = "") -> int:
+        print(json.dumps({"react": bool(react), "comment": comment}))
         return EXIT_OK
 
     try:
@@ -2281,7 +2280,7 @@ def cmd_ack(args: argparse.Namespace) -> int:
     if parsed and {verb for verb, _a, _t in parsed} == {"status"}:
         answer = _ack_fast_status(config, args)
         if answer:
-            return _say(react=True, comment=answer, answered=True)
+            return _say(react=True, comment=answer)
 
     text = links.acknowledgement(verbs)
     # The workflow posts this through `github-script`, which does not mark it the way
@@ -2394,9 +2393,10 @@ def _publish_queue(ctx, config) -> str:
 def _prune_machine_comments(ctx, config) -> tuple[list[int], str]:
     """Delete the harness's own oldest comments on the two pinned issues (D76).
 
-    Only a comment carrying the machine marker is ever a candidate. That mark is applied at the
-    transport to everything the harness writes, and nothing a person writes carries it, so the
-    marker alone decides and a human comment can never be reached.
+    A comment is a candidate only when one of the logins the harness posts under wrote it *and*
+    it carries the machine marker. The marker alone is not an author test: GitHub's quote-reply
+    copies the source markdown, HTML comments included, so a person who quote-replies the
+    harness carries the marker in a comment they wrote, and the marker alone would delete it.
     """
     now = ctx.clock.now()
     last = ctx.ledger.pruned_at()
@@ -2415,15 +2415,20 @@ def _prune_machine_comments(ctx, config) -> tuple[list[int], str]:
             numbers.append(number)
     if not numbers:
         return [], "no issue to prune"
+    logins = machine_logins(discover_stage.machine_account(config))
     deleted: list[int] = []
     for number in numbers:
-        deleted.extend(_prune_one_issue(ctx, config.self_repo, number, now))
+        deleted.extend(_prune_one_issue(ctx, config.self_repo, number, now, logins))
     ctx.ledger.mark_pruned(iso(now))
     return deleted, ""
 
 
-def _prune_one_issue(ctx, repo: str, number: int, now) -> list[int]:
-    """The machine comments on one issue that are both old enough and not recent context."""
+def _prune_one_issue(ctx, repo: str, number: int, now, logins: frozenset[str]) -> list[int]:
+    """The harness's own comments on one issue that are old enough and not recent context.
+
+    `logins` is `gh.machine_logins`. Both halves are required, because the marker travels into
+    a person's own comment whenever they answer with GitHub's quote-reply (D76).
+    """
     from harness.gh import MACHINE_MARKER
 
     try:
@@ -2431,7 +2436,11 @@ def _prune_one_issue(ctx, repo: str, number: int, now) -> list[int]:
     except HarnessError as exc:
         LOG.warning("tidy: could not read comments on %s#%s: %s", repo, number, exc)
         return []
-    mine = [row for row in comments if MACHINE_MARKER in str(row.get("body") or "")]
+    mine: list[dict] = []
+    for row in comments:
+        author = str(((row.get("user") or {}).get("login")) or "").lstrip("@").lower()
+        if author in logins and MACHINE_MARKER in str(row.get("body") or ""):
+            mine.append(row)
     # Oldest first, so the tail is the recent context that survives whatever its age.
     mine.sort(key=lambda row: str(row.get("created_at") or ""))
     candidates = mine[:-PRUNE_KEEP] if len(mine) > PRUNE_KEEP else []

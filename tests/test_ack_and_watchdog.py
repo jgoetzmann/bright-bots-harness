@@ -863,7 +863,7 @@ def test_B440_a_status_only_comment_is_answered_by_ack_itself(tmp_path, capsys):
     out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_q1")
 
     assert out["react"] is True
-    assert out.get("answered") is True
+    assert set(out) == {"react", "comment"}, "one shape on every path; the marker is the signal"
     assert "**Allowance**" in out["comment"], "the answer itself, not an acknowledgement"
     assert "<!-- answered:IC_q1 -->" in out["comment"], "so the sweep does not answer it again"
     assert "<!-- bright-bots-harness -->" in out["comment"]
@@ -889,7 +889,7 @@ def test_B440_ack_never_writes_the_ledger_so_it_needs_no_lock(tmp_path, capsys):
 
     out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_q2")
 
-    assert out.get("answered") is True, "it did the work"
+    assert "<!-- answered:IC_q2 -->" in out["comment"], "it did the work"
     assert path.read_text(encoding="utf-8") == before, "and wrote nothing"
     groups = re.findall(r"^  group: (.+)$", _wf("ack.yml"), re.M)
     assert groups and "harness-ledger" not in groups, "ack.yml must stay outside the lock"
@@ -904,7 +904,6 @@ def test_B443_a_comment_mixing_status_with_another_verb_is_left_to_the_sweep(tmp
                    "/harness status\n/harness ask what does the registry do",
                    comment_id="IC_mixed")
 
-    assert "answered" not in out
     assert "<!-- answered:" not in out["comment"]
     assert "Working on it" in out["comment"]
 
@@ -917,7 +916,6 @@ def test_B444_an_unreadable_ledger_falls_back_to_the_acknowledgement(tmp_path, c
 
     out = _run_ack(tmp_path, capsys, "/harness status", comment_id="IC_bad")
 
-    assert "answered" not in out
     assert out == {"react": True, "comment": ""}
 
 
@@ -933,4 +931,22 @@ def test_B454_the_heartbeat_comment_carries_the_marker_so_it_does_not_wake_the_w
     marker_at = text.index(f"'{MACHINE_MARKER}'")
     assert marker_at < text.index("issues.createComment"), (
         "the marker must be pushed into the body before the body is posted"
+    )
+
+
+def test_B442_the_ack_reply_is_authored_by_the_actions_bot_not_the_machine_account():
+    """The fact `keywords.answered_ids` has to encode, pinned against the workflow that decides
+    it. `ack.yml` posts through `actions/github-script` with no `github-token:` override, so the
+    reply carrying the `answered:` marker is authored by `github-actions[bot]` and never by the
+    machine account. An author test naming only the machine account is therefore never satisfied
+    in production: the marker is never seen, the sweep never skips, and every fast answer is
+    followed by the full answer the marker exists to prevent (D76)."""
+    from harness.gh import ACTIONS_BOT, machine_logins
+
+    say = _wf("ack.yml").split("- name: Say it", 1)[1]
+
+    assert "actions/github-script" in say
+    assert "github-token:" not in say, "an override would change who the reply comes from"
+    assert ACTIONS_BOT in machine_logins("jgoetzmann-bot"), (
+        "the sweep must count the Actions bot as one of the logins the harness posts under"
     )

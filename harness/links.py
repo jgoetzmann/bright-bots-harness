@@ -497,10 +497,27 @@ def queue_lines(rows: Iterable[Any], *, limit: int = 10) -> list[str]:
     return lines
 
 
+def _defused(body: str) -> str:
+    """`body` with any marker inside it made inert (D76).
+
+    Row labels are issue titles, and on a public product repository anybody can choose one. A
+    title carrying the end marker would otherwise anchor the next splice inside the block,
+    stranding a row below it -- in the part of that body which belongs to a person -- on every
+    sweep, without bound. The entity form renders as the same text and matches neither marker.
+    """
+    for marker in (QUEUE_START, QUEUE_END):
+        body = body.replace(marker, marker.replace("<", "&lt;").replace(">", "&gt;"))
+    return body
+
+
 def queue_block(lines: Iterable[str]) -> str:
-    """`lines` wrapped in the two markers that bound the queue on the pinned issue."""
+    """`lines` wrapped in the two markers that bound the queue on the pinned issue.
+
+    The one choke point: everything published between the markers is rendered here, so
+    defusing here is what keeps the pair unique however the rows were built.
+    """
     body = "\n".join(str(line) for line in lines).strip()
-    return f"{QUEUE_START}\n{body}\n{QUEUE_END}"
+    return f"{QUEUE_START}\n{_defused(body)}\n{QUEUE_END}"
 
 
 def replace_queue_block(body: str, block: str) -> str | None:

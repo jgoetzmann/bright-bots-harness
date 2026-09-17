@@ -60,6 +60,28 @@ def mark_machine_written(body: str) -> str:
     return f"{text}\n\n{MACHINE_MARKER}" if text.strip() else MACHINE_MARKER
 
 
+#: The other login the harness speaks under. `gh.comment` posts as the machine account, but a
+#: comment a workflow posts through `actions/github-script` is authored by this one: those steps
+#: run with the job's own `GITHUB_TOKEN` and set no `github-token:` override.
+ACTIONS_BOT = "github-actions[bot]"
+
+
+def machine_logins(machine: str = "") -> frozenset[str]:
+    """Every login the harness itself posts under, lower-cased (D76).
+
+    The marker is not an author test and never was: GitHub's quote-reply copies the source
+    comment's raw markdown, HTML comments included, so a person who quote-replies the harness
+    carries `MACHINE_MARKER` in a comment they wrote. Nobody else can post as either of these
+    logins, so membership here *plus* the marker is a test a person cannot pass -- which is what
+    deleting a comment, or suppressing somebody's command, has to be sure of.
+    """
+    logins = {ACTIONS_BOT}
+    handle = str(machine or "").strip().lstrip("@").lower()
+    if handle:
+        logins.add(handle)
+    return frozenset(logins)
+
+
 def _header(headers: Any, name: str) -> str | None:
     """Read one header off any object exposing ``.get`` (or nothing at all)."""
     if headers is None:

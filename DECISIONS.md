@@ -804,9 +804,13 @@ call twice - which is the worse failure. Recorded, not fixed.
 - **The `answered:` marker, and its author check.** A fast answer carries
   `<!-- answered:<comment id> -->`; `sweep.read()` harvests those ids in a first pass and treats
   the comments they name as seen, so the thread never gets the same answer twice. The marker is
-  honoured **only** on a comment authored by the machine account *and* carrying `MACHINE_MARKER`.
-  Without the author check it would be a command-suppression hole: anyone could post the marker
-  text and silence a maintainer's command (B442). `ack` also refuses the fast lane without a
+  honoured **only** on a comment carrying `MACHINE_MARKER` *and* authored by one of the logins in
+  `gh.machine_logins`: the machine account, and `github-actions[bot]`, which is who a
+  `github-script` step posts as. Without the author check it would be a command-suppression hole:
+  anyone could post the marker text and silence a maintainer's command (B442). Naming only the
+  machine account is the same defect from the other side - `ack.yml` replies through
+  `github-script`, so the marker would never have been honoured in production at all, and every
+  fast answer would have been followed by the full one. `ack` also refuses the fast lane without a
   `--comment-id`, because an answer the sweep cannot recognise is an answer given twice, and it
   claims a comment only when *every* verb in it resolves to `status` - a mixed comment is left
   whole to the sweep, which owns the refusals for the rest.
@@ -819,10 +823,14 @@ call twice - which is the worse failure. Recorded, not fixed.
   from `links.queue_lines`, which `/harness status` now uses too, so the thread and the pinned
   issue cannot disagree. Cadence is every `feedback` run: the three-hourly cron, every command and
   every mention.
-- **Hygiene, on the same command.** `gh.delete_issue_comment` deletes a comment only when its body
-  contains `MACHINE_MARKER`. That is the sole test, and it is sufficient: the mark is applied at
-  the transport in `gh.comment`, so everything the harness writes carries it and nothing a person
-  writes does. Only `INBOX_ISSUE` and `TRACKING_ISSUE` are swept. A comment is deleted only when it
+- **Hygiene, on the same command.** `gh.delete_issue_comment` deletes a comment only when **both**
+  halves hold: one of the `gh.machine_logins` wrote it, *and* its body carries `MACHINE_MARKER`.
+  This decision first said the marker alone was sufficient, and that was wrong. GitHub's **Quote
+  reply** copies the source comment's raw markdown, HTML comments included, so a person who
+  quote-replies the harness is carrying the marker in a comment they wrote - and the marker alone
+  deleted it. Both comment-driven workflow `if:` filters already carried a `> <!-- ... -->` clause
+  for exactly that reason. Nobody but the harness can post as either login, so author-and-marker
+  is a test a person cannot pass. Only `INBOX_ISSUE` and `TRACKING_ISSUE` are swept. A comment is deleted only when it
   is **both** older than `PRUNE_AFTER_DAYS` (30) **and** outside the newest `PRUNE_KEEP` (20)
   machine comments on that issue, so recent context survives regardless of age and an old thread
   never empties. The prune runs at most every `PRUNE_EVERY_DAYS` (7), from a new ledger cursor
@@ -842,6 +850,24 @@ call twice - which is the worse failure. Recorded, not fixed.
    comment-driven workflows. The marker literal is now appended to the body (B454).
 3. That unmarked heartbeat was also recorded by the sweep as a `keyword_denied` entry for
    `github-actions[bot]`, and was unprunable. Both follow from the fix.
+
+**Three more the adversarial pass found in the first cut of this change, fixed before it merged.**
+All three come back to one missing fact: the harness speaks under *two* logins, and the marker
+alone identifies neither. `gh.machine_logins` is now the one place that names them.
+1. The prune chose its candidates by `MACHINE_MARKER in body` with no author check. A reviewer ran
+   the committed code against a quote-reply and a person's comment was deleted. Both halves are
+   required now, at both sites that ask "did we write this?".
+2. `keywords.answered_ids` required the machine account, which `ack.yml` never posts as, so the
+   `answered:` marker was honoured only under the fake and never in production. Same helper.
+3. `links.queue_block` interpolated row labels - which are issue titles, and on the product
+   repository anybody can choose one - without neutralising the markers. A title carrying
+   `<!-- queue:end -->` anchored the next splice inside the block and stranded a row below it on
+   every sweep, without bound. Both markers are now defused in the rendered rows at that one
+   choke point, before wrapping, as the entity form that renders the same and matches neither.
+
+`cmd_ack`'s `"answered"` key went with them: no workflow step ever read it, and the durable signal
+is the `<!-- answered:<id> -->` marker inside the answer, which is what the sweep harvests. The
+command prints the same two keys on every path again.
 
 Rejected: sharding the `harness-ledger` concurrency group, which is B118 and would let two runs
 write `state/ledger.json` at once; `cancel-in-progress: true` on `feedback`, which would discard

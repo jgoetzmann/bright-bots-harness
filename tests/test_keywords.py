@@ -895,3 +895,17 @@ def test_B442_an_answered_marker_without_the_machine_marker_suppresses_nothing()
 
     assert [x.verb for x in sweep_inbox([asked, answered_by("IC_asked", marked=False)])] == [
         "status"]
+
+
+def test_B442_the_marker_is_honoured_on_the_actions_bots_own_reply():
+    """The harness speaks under two logins, and this is the one that posts the marker. `ack.yml`
+    replies through `actions/github-script`, which authors the comment as `github-actions[bot]`;
+    an author test naming only the machine account is never satisfied in production, so the
+    marker would never be seen and every fast answer would be followed by the full one (D76)."""
+    ledger = fresh_ledger(None)
+    asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=1,
+                    node_id="IC_asked")
+    replied = answered_by("IC_asked", login="github-actions[bot]")
+
+    assert sweep_inbox([asked, replied], ledger) == [], "the sweep stays silent"
+    assert ledger.seen("IC_asked") is True, "and it is not re-read on every sweep for ever"

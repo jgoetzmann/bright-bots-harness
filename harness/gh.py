@@ -791,7 +791,8 @@ class GitHubClient(GitHubReadOnly):
 
         A read. The harness adds no reaction from Python -- `ack.yml` does that through
         `github-script` -- so this stays off the write surface (I-13). `review` picks the
-        pull-request review comment endpoint, a different path over the same id space.
+        pull-request review comment endpoint; issue-comment and review-comment ids number
+        independently, so the caller carries which list a comment came from.
         """
         kind = "pulls" if review else "issues"
         pairs = [("per_page", str(PER_PAGE))]

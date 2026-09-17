@@ -269,7 +269,9 @@ def answered_by_ack(
     The fact is a reaction one of `gh.machine_logins` left on the comment, not text in a
     reply: the harness republishes issue titles and model answers verbatim, so any marker it
     can publish is one a stranger can choose (B455). Anything unreadable answers False, so a
-    failure here costs a repeated answer rather than a maintainer's command.
+    failure here costs a repeated answer rather than a maintainer's command: the caller has
+    already marked this run's commands seen and its `finally` commits that, so an exception
+    escaping here would lose them for good (B458).
     """
     # Function-local: `keywords` is imported by the CLI, and `gh` must not be a hard dependency.
     from harness.gh import ANSWERED_REACTION, machine_logins
@@ -280,18 +282,20 @@ def answered_by_ack(
     ident = comment.get("id")
     if not ident:
         return False
-    try:
-        rows = list(reader(repo, ident, review=review))
-    except GitHubError as exc:
-        log.warning("reactions unavailable for comment %s, answering it: %s", ident, exc)
-        return False
     logins = machine_logins(machine)
-    for row in rows:
-        if str(row.get("content") or "").strip().lower() != ANSWERED_REACTION:
-            continue
-        author = str(((row.get("user") or {}).get("login")) or "").lstrip("@").lower()
-        if author in logins:
-            return True
+    try:
+        for row in reader(repo, ident, review=review):
+            if str(row.get("content") or "").strip().lower() != ANSWERED_REACTION:
+                continue
+            author = str(((row.get("user") or {}).get("login")) or "").lstrip("@").lower()
+            if author in logins:
+                return True
+    except (GitHubError, ValueError, TypeError, AttributeError) as exc:
+        # Shapes the live API does not send -- a non-numeric id, a string where `user` should
+        # be an object -- must not escape. The walk is inside the guard for that reason: see
+        # the docstring on what an escaping exception costs (B458).
+        log.warning("reactions unreadable for comment %s, answering it: %s", ident, exc)
+        return False
     return False
 
 
@@ -516,8 +520,13 @@ def sweep(
                 continue
             # Only what `ack` can answer is asked about, which keeps this to one read per
             # status comment; `commands_from` has marked it seen, so it is asked once (B441).
-            if all(command.verb in ACK_ANSWERS for command in found) and answered_by_ack(
-                gh, repo, comment, machine, review=review
+            # Only on this repository: `ack.yml` fires on its own `issue_comment` events, and
+            # `github-actions[bot]` is a per-repository identity, so a rocket upstream is some
+            # other bot's and would drop a maintainer's command in silence (B457).
+            if (
+                repo.lower() == self_repo.lower()
+                and all(command.verb in ACK_ANSWERS for command in found)
+                and answered_by_ack(gh, repo, comment, machine, review=review)
             ):
                 continue
             commands.extend(found)

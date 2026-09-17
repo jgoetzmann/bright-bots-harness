@@ -949,6 +949,43 @@ def test_B441_reactions_that_cannot_be_read_answer_the_comment_rather_than_drop_
 # B455 - text the harness republishes can never suppress a command
 # --------------------------------------------------------------------------------------------
 
+def test_B457_a_rocket_on_the_product_repository_suppresses_nothing():
+    """`ack.yml` runs on this repository's comment events alone, so no reaction upstream can be
+    its. `github-actions[bot]` is a per-repository identity: some other bot on the product
+    repository reacting with the same emoji would otherwise drop a maintainer's command in
+    silence and mark it seen for ever. The read is not made there at all."""
+    asked = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=900,
+                    node_id="IC_upstream")
+    gh = ReactedGh(threads=[thread(UPSTREAM, 900, "Issue", "t3")],
+                   comments={(UPSTREAM, 900): [asked]},
+                   reactions={900: [reaction()]})
+
+    found = sweep(gh, ledger=fresh_ledger(None), trusted=TRUSTED, now_iso=NOW_ISO,
+                  self_repo=SELF_REPO, upstream_repo=UPSTREAM, inbox_issue=0,
+                  machine="bb-machine")
+
+    assert [(c.verb, c.surface) for c in found] == [("status", "product_issue")]
+    assert [name for name, _a, _k in gh.calls if name == "comment_reactions"] == [], (
+        "and no wasted read where the answer could never have come from"
+    )
+
+
+def test_B458_a_reaction_row_the_api_never_sends_answers_rather_than_raising():
+    """The walk sits inside the guard, not beside it. `sweep` runs under a `finally` that
+    commits the seen marks, so an exception escaping here loses every command the run had
+    already collected -- the opposite of the failure the guard exists to prevent."""
+    class Malformed(ReactedGh):
+        def comment_reactions(self, repo, comment_id, *, review=False):
+            return [{"id": 77, "content": "rocket", "user": "github-actions[bot]"}]
+
+    gh = Malformed(comments={(SELF_REPO, 19): [ASKED]})
+    found = sweep(gh, ledger=fresh_ledger(None), trusted=TRUSTED, now_iso=NOW_ISO,
+                  self_repo=SELF_REPO, upstream_repo=UPSTREAM, inbox_issue=19,
+                  machine="bb-machine")
+
+    assert [x.verb for x in found] == ["status"], "answered, not dropped"
+
+
 #: The marker the first cut of D76 used. Kept verbatim: it is the exact text a stranger would
 #: choose, and a scheme that ever reads the fact out of a body again fails these two tests.
 POISON = "<!-- answered:IC_boss -->"

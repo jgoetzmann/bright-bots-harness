@@ -5,9 +5,11 @@ name: discover
 
 on:
   schedule:
-    # 11:07 UTC every day (04:07 PDT, 03:07 PST). Its triage call opens the five-hour
-    # subscription session the run window sits in (D72).
-    - cron: "7 11 * * *"
+    # 11:07 and 13:07 UTC every day (04:07 and 06:07 PDT, 03:07 and 05:07 PST). The first
+    # triage call opens the five-hour subscription session the run window sits in (D72). The
+    # second is a second attempt: GitHub drops scheduled runs outright, and with one firing a
+    # dropped 11:07 cost the whole day's triage (D80).
+    - cron: "7 11,13 * * *"
   workflow_dispatch:
     # Steering from the Actions tab: `triage` ranks what is queued here, then the product repo's
     # allowlisted issues; `directed` aims the harness at one named product issue (B228).

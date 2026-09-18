@@ -281,7 +281,7 @@ def test_B477_implement_approves_on_every_run_and_reads_no_push_diff():
 
 
 def test_B478_the_sweep_reconciles_too_and_ops_classifies_both_steps():
-    """B478: `implement.yml` only wakes inside the daily window, so a burst merged at 16:00 UTC
+    """B478: `implement.yml` only wakes inside the daily window, so a burst merged at 20:00 UTC
     would wait until 11:23 the next day. `feedback.yml` runs three-hourly on weekdays and now
     carries the same step, in the same position.
 

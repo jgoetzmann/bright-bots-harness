@@ -1089,3 +1089,85 @@ gate, which would silence it exactly where the operator runs it locally; treatin
 workflow-dispatch, which nothing here needs.
 
 Allocates B480-B487, and B490-B492 for the page, the omitted section and the defused rows.
+
+## D80 / B493 - the window absorbs GitHub's lateness, the crons absorb its drops
+
+Decision:
+- `.harness/config.json` sets `RUN_WINDOW_END` to `daily 19:00`. `RUN_WINDOW_START` stays
+  `daily 11:00`, so the window is eight hours wide rather than four.
+- `implement.yml` fires at `23 11-18 * * *`: eight hourly passes, 11:23 to 18:23 UTC, was four.
+- `discover.yml` fires at `7 11,13 * * *`: a second attempt, so a dropped 11:07 does not cost the
+  day's triage.
+- Unchanged: `feedback.yml` (`41 */3 * * 1-5`), `heartbeat.yml` (`5 9 * * 1`), `watchdog.yml`
+  (`17 */4 * * *`) and event-driven `ack.yml`. Both usage stops, all three kill switches, the
+  trust gate, both human gates and `MAX_CONCURRENT_ITEMS` are untouched.
+- B412 is unchanged in its logic and still enforces the relationship: every discover and implement
+  firing sits inside the configured window. Only the frozen values move. B493 is new - each
+  spending workflow schedules at least two distinct firings.
+- No reason literal moves. `dispatcher._window_reason` builds the string from the config through
+  `config.run_window_label`, so it reads `outside run window (daily 11:00-19:00 UTC)` by itself.
+
+Why, measured rather than assumed. GitHub delivers scheduled runs late, and drops some entirely.
+Eleven scheduled runs over two days, each timed against the cron that should have produced it:
+
+| Workflow | Arrived (UTC) | Cron due | Late |
+|---|---|---|---|
+| feedback | 09-16 17:16 | 15:41 | 96 min |
+| watchdog | 09-16 19:35 | 16:17 | 198 min |
+| feedback | 09-16 21:42 | 21:41 | 2 min |
+| watchdog | 09-16 23:00 | 20:17 | 163 min |
+| watchdog | 09-17 04:59 | 04:17 | 42 min |
+| feedback | 09-17 05:23 | 03:41 | 102 min |
+| feedback | 09-17 12:05 | 09:41 | 144 min |
+| watchdog | 09-17 13:34 | 12:17 | 77 min |
+| discover | 09-17 15:31 | 11:07 | 264 min |
+| implement | 09-17 15:34 | 14:23 | 72 min |
+| feedback | 09-17 17:15 | 15:41 | 95 min |
+
+Medians: feedback 96, watchdog 163, discover 264, implement 72. Nothing arrived on time. Drops as
+well: four implement firings produced one run on 09-17, and feedback fired twice in eight weekday
+slots.
+
+What that cost: on 09-17 the only implement run arrived at 15:34, 34 minutes after a window that
+shut at 15:00. The dispatcher refused it with `outside run window (daily 11:00-15:00 UTC)` -
+correctly, by D72's rule - and five approved items built nothing all day. D72's four-hour window
+was narrower than the delivery lateness it had to survive, which nothing in D72 had measured.
+
+Both halves are one decision because neither works alone. A wider window still needs a firing to
+survive, and a day whose firings are all dropped builds nothing however wide it is. More firings
+do not help by themselves either: lateness is correlated, since a run is late because GitHub's
+scheduler is behind, so extra firings arrive late together and pile up past a boundary that has
+not moved. Width absorbs the lateness; the repeated firings absorb the drops.
+
+Cost, stated plainly: a build starting at the far edge of the window runs into a second five-hour
+session and into the operator's Pacific noon - 19:00 UTC is 12:00 PDT, 11:00 PST - rather than
+finishing before they are awake, which is part of what D72 bought. What bounds it is
+`SESSION_USAGE_STOP_PCT` at 80, which stops new calls before a session is spent, and
+`MAX_CONCURRENT_ITEMS` at 1. An operator who wants the quiet afternoon back moves `RUN_WINDOW_END`
+and the implement cron together, as D72 and this decision both did.
+
+This supersedes the schedule half of D72: its window (`daily 11:00` to `daily 15:00`) and its
+crons (`7 11 * * *`, `23 11-14 * * *`) are history. The rest of D72 stands - the `daily` form, the
+mixed-pair startup error, the wrap rule, the reason wording and B413's carry behaviour.
+
+It also reverses one line of D77, which rejected "widening `implement.yml`'s cron, which B412
+makes a window change rather than a cron change". That reasoning is why this is a window change
+*and* a cron change, moved together in one commit, with B412 unchanged and still enforcing the
+relationship between them. What D77 lacked was the table above.
+
+Rejected: leaving the window at four hours and relying on `/harness block`, a manual instrument
+for an outage that recurs daily; firing every 20 minutes, which multiplies runs queued against the
+`harness-ledger` lock without making any one of them earlier; treating the 15:34 run as an
+anomaly, which eleven measurements refuse; moving the window later rather than widening it, which
+trades a morning the harness reliably gets for an afternoon it competes for.
+
+The same lock argument applies to this change at a smaller scale, and is accepted rather than
+dismissed. `discover`, `feedback` and `implement` share `harness-ledger`, GitHub keeps one pending
+run per group and cancels the older, so doubling implement's firings widens the span in which a
+queued `feedback.yml` run can be displaced: the slots at risk go from 12:41 and 15:41 to those two
+plus 18:41. That matters because the keyword sweep is what applies a commanded `/harness halt` —
+`ack.yml` only acknowledges, and `cmd_ack` writes nothing. The other two kill switches are
+untouched: `.harness/HALT` is read in implement's first step, before checkout, and `HALT_FILE` is
+local. `watchdog.yml` already counts a cancelled `feedback` run as a missed slot and pages at four.
+
+Allocates B493.

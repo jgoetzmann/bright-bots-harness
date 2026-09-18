@@ -462,10 +462,10 @@ ADDED_WORKFLOWS = {
 }
 ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # The full expected cron list per scheduled workflow; the others carry none. discover and
-# implement fire inside the daily 11:00 -> 15:00 UTC run window (D72).
+# implement fire inside the daily 11:00 -> 19:00 UTC run window (D72, widened by D80).
 FROZEN_CRONS = {
-    "discover.yml": ["7 11 * * *"],
-    "implement.yml": ["23 11-14 * * *"],
+    "discover.yml": ["7 11,13 * * *"],
+    "implement.yml": ["23 11-18 * * *"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
     # Offset from feedback's in both fields, so the watchdog never fires with what it watches
@@ -1722,6 +1722,22 @@ def test_b412_the_spending_crons_fire_inside_the_daily_run_window(name):
             )
 
 
+@pytest.mark.parametrize("name", ["discover.yml", "implement.yml"])
+def test_b493_each_spending_workflow_schedules_more_than_one_firing(name):
+    """B493 (D80): a dropped firing must not cost the day. GitHub delivers scheduled runs late
+    and drops some entirely - on 2026-09-17 four implement firings produced one run, and the
+    day's single discover firing arrived 264 minutes late - so one firing inside the window is
+    one drop away from a day that builds nothing. Each spending workflow schedules at least two
+    distinct firings, which is the half of D80 the window's width cannot supply."""
+    firings = [
+        hour * 60 + int(cron.split()[0])
+        for cron in _cron_values(_d2_workflow(name))
+        for hour in _cron_hours(cron.split()[1])
+    ]
+    assert len(firings) >= 2, f"{name} schedules only {firings}; one drop costs the day"
+    assert len(set(firings)) == len(firings), f"{name} schedules a firing twice: {firings}"
+
+
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b125_every_job_sets_a_timeout_of_at_most_120_minutes(name):
     """B125: `timeout-minutes` on every `jobs.<id>`, <= 120."""
@@ -2067,9 +2083,10 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 # The implement schedule and the knob set.
 # ======================================================================================
 
-# implement.yml runs hourly inside the daily 11:00 → 15:00 UTC window, and discover opens the
-# session at 11:07 (D72). feedback and heartbeat keep their own schedules.
-D72_IMPLEMENT_CRONS = ["23 11-14 * * *"]
+# implement.yml runs hourly inside the daily 11:00 → 19:00 UTC window, and discover opens the
+# session at 11:07 with a second attempt at 13:07 (D72, widened by D80). feedback and heartbeat
+# keep their own schedules.
+D72_IMPLEMENT_CRONS = ["23 11-18 * * *"]
 D72_UNCHANGED_CRONS = {
     "feedback.yml": "41 */3 * * 1-5",
     "heartbeat.yml": "5 9 * * 1",
@@ -2077,8 +2094,8 @@ D72_UNCHANGED_CRONS = {
 
 
 def test_b215_implement_yml_carries_exactly_the_d72_crons():
-    """B215: implement.yml is scheduled as four hourly passes, 11:23 to 14:23 UTC every day, and
-    nothing else; B209's run window and carry loop run on that schedule (D72)."""
+    """B215: implement.yml is scheduled as eight hourly passes, 11:23 to 18:23 UTC every day,
+    and nothing else; B209's run window and carry loop run on that schedule (D72, D80)."""
     crons = _cron_values(_d2_workflow("implement.yml"))
     assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 

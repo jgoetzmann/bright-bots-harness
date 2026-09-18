@@ -159,7 +159,7 @@ Reach for `status` when nothing seems to be happening. `fix`, `queue` and `usage
 ## 7. What you cannot do
 
 `block`, `halt`, `resume`, `reject` and `--force` are level 3 (Jack only). `--force` exempts one
-item from the run window, daily 11:00 to 15:00 UTC; `halt` stops all spending; `block` does the
+item from the run window, daily 11:00 to 19:00 UTC; `halt` stops all spending; `block` does the
 window's job in reverse, suspending it for a few five-hour sessions so the harness can use time the
 operator is not going to. You can queue as much work as you like, but when it runs is the operator's
 call, because it is the operator's subscription. If you use one of these, the reply names the level
@@ -201,14 +201,14 @@ notifications on the way.
 | 1. `/harness work` is heard | minutes on the inbox, up to three hours on brightboost; it opens a `stage:queued` item |
 | 2. The plan | the next `discover` run, **11:07 UTC every day**, unless Jack runs one sooner |
 | 3. Gate 1 | whenever Jack merges the proposal |
-| 4. The code | inside the run window, **daily 11:00 to 15:00 UTC** (3–4 a.m. to 7–8 a.m. Pacific); a merge outside it waits for the next 11:23 UTC run unless Jack starts it |
+| 4. The code | inside the run window, **daily 11:00 to 19:00 UTC** (3–4 a.m. to 11 a.m.–noon Pacific); a merge outside it waits for the next 11:23 UTC run unless Jack starts it |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
 Each scheduled build run starts one item, and on weekdays the 12:41 UTC sweep also builds what is
 approved. A busy morning is limited by the subscription session, which the harness stops using at
 80%. Worst case, with nothing halted or ahead of it, a request queued just after 11:07 UTC and
 merged after the window closes reaches a delivery pull request in about two days; a merge before
-15:00 UTC saves a day.
+19:00 UTC saves a day.
 
 ## 10. If something looks wrong
 

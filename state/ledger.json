@@ -2,19 +2,19 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 15,
+    "calls": 17,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.03,
-        "resets_at": "2026-09-17T20:30:00Z"
+        "utilization": 0.27,
+        "resets_at": "2026-09-18T16:30:00Z"
       },
       "seven_day": {
-        "utilization": 0.27,
+        "utilization": 0.87,
         "resets_at": "2026-09-22T20:00:00Z"
       },
-      "status": "allowed",
-      "observed_at": "2026-09-17T15:59:11Z"
+      "status": "allowed_warning",
+      "observed_at": "2026-09-18T15:05:09Z"
     },
     "carry": {
       "issue": 50,
@@ -180,6 +180,18 @@
       "ts": "2026-09-17T15:59:11Z",
       "stage": "propose",
       "issue": 67,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-18T14:57:28Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-18T15:05:09Z",
+      "stage": "propose",
+      "issue": 70,
       "run": ""
     }
   ]

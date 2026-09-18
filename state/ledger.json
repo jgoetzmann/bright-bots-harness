@@ -18,12 +18,12 @@
     },
     "carry": {
       "issue": 50,
-      "since": "2026-09-17T12:10:52Z",
-      "reason": "work somebody asked for is still outstanding (#66, #67, #68, #69, #70); suggested work runs only when the queue is empty"
+      "since": "2026-09-18T11:50:34Z",
+      "reason": "carry leeway 10% reached"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-18T05:12:51Z",
+    "notifications_last_seen": "2026-09-18T11:49:39Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -41,7 +41,7 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 12
+      "github-actions[bot]": 14
     },
     "ask_calls": {
       "date": "2026-09-09",

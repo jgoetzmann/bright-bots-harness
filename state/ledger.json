@@ -18,7 +18,7 @@
     },
     "carry": {
       "issue": 50,
-      "since": "2026-09-20T14:46:14Z",
+      "since": "2026-09-20T18:15:12Z",
       "reason": "carry leeway 10% reached"
     }
   },

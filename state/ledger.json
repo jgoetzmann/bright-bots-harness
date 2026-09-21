@@ -18,12 +18,12 @@
     },
     "carry": {
       "issue": 50,
-      "since": "2026-09-20T18:15:12Z",
+      "since": "2026-09-21T13:22:49Z",
       "reason": "carry leeway 10% reached"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-21T05:30:00Z",
+    "notifications_last_seen": "2026-09-21T13:21:51Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -41,7 +41,7 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 24
+      "github-actions[bot]": 26
     },
     "ask_calls": {
       "date": "2026-09-09",

@@ -1986,6 +1986,23 @@ def test_B499_the_commit_message_ends_with_the_co_author_trailer():
     assert "Co-authored-by" not in plain
 
 
+def test_B499_the_fallback_commit_message_credits_the_co_author_too(tmp_path, monkeypatch):
+    """B499: an approach holding an unbroken token over 100 characters fails the house rules,
+    and the minimal message that replaces it keeps the trailer."""
+    messages: list[str] = []
+    monkeypatch.setattr(implement_mod, "PRETTIER", lambda path, paths: (True, ""))
+    monkeypatch.setattr(implement_mod, "COMMIT", lambda clone, message: messages.append(message))
+    ctx = SimpleNamespace(config=SimpleNamespace(co_author=CO_AUTHOR), record_decision=print)
+    lease = SimpleNamespace(path=tmp_path, branch="harness/fix-866")
+    (tmp_path / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    pkg = SimpleNamespace(title=CREDIT_PKG.title, approach="See " + "x" * 120, diagnosis="")
+
+    implement_mod._format_and_commit(ctx, pkg, CREDIT_ITEM, lease, ["a.ts"], first=True)
+
+    assert messages[0].startswith("chore(harness): apply approved change for issue:866")
+    assert messages[0].splitlines()[-1] == f"Co-authored-by: {CO_AUTHOR}"
+
+
 def test_B499_the_commit_takes_the_co_author_from_the_config(tmp_path, monkeypatch):
     """B499: `_format_and_commit` reads CO_AUTHOR from the config, for the first commit and
     for every follow-up."""

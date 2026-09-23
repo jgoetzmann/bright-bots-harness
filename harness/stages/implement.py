@@ -708,7 +708,7 @@ def _commit_message(
     subject: str | None = None,
     co_author: str = "",
 ) -> str:
-    """The commit message. ``subject`` replaces a follow-up commit's subject (D70), and
+    """The commit message. ``subject`` replaces a follow-up commit's subject, and
     ``co_author`` adds its `Co-authored-by` trailer after the issue reference (D82)."""
     given = subject
     type_, scope, subject = _split_title(pkg.title)

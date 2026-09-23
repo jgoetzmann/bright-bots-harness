@@ -376,16 +376,21 @@ def read_config_json(path: Path) -> dict[str, str]:
 
 
 #: `Name <email>`, the shape git and GitHub read in a `Co-authored-by` trailer (D82).
-CO_AUTHOR_SHAPE: re.Pattern[str] = re.compile(r"^[^<>\x00-\x1f]+ <[^<>@\s]+@[^<>@\s]+>$")
+CO_AUTHOR_SHAPE: re.Pattern[str] = re.compile(r"[^<>]+ <[^<>@\s]+@[^<>@\s]+>")
 
 #: The longest `Co-authored-by: <value>` line, so a commit never wraps the trailer.
 CO_AUTHOR_MAX = 100
 
 
 def co_author_ok(value: str) -> bool:
-    """True when ``value`` is one ``Name <email>`` whose trailer fits on one line."""
+    """True when ``value`` is one printable ``Name <email>`` whose trailer fits on one line.
+
+    ``isprintable`` refuses every control, separator and invisible format character, which
+    are the ones a reader of the commit cannot see or a tool may split a line on.
+    """
     return (
-        bool(CO_AUTHOR_SHAPE.match(value))
+        value.isprintable()
+        and bool(CO_AUTHOR_SHAPE.fullmatch(value))
         and len(f"Co-authored-by: {value}") <= CO_AUTHOR_MAX
     )
 

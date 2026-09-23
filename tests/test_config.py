@@ -1971,7 +1971,7 @@ def test_B498_a_well_formed_co_author_is_kept_as_written(tmp_path, write_d2_env)
     ids=["no-address", "no-name", "no-at", "trailing-text", "too-long"],
 )
 def test_B498_a_malformed_co_author_stops_the_load(tmp_path, write_d2_env, value):
-    with pytest.raises(ConfigError, match="CO_AUTHOR"):
+    with pytest.raises(ConfigError, match="CO_AUTHOR must be"):
         load_config(env_path=write_d2_env(tmp_path / ".env", CO_AUTHOR=value), environ={})
 
 
@@ -1981,5 +1981,20 @@ def test_B498_a_co_author_cannot_add_a_line_to_a_commit_message(tmp_path, write_
     path = write_d2_env(tmp_path / ".env")
     write_config_json(tmp_path, {"CO_AUTHOR": "a <a@b.example>\nCo-authored-by: b <b@c.example>"})
 
-    with pytest.raises(ConfigError, match="CO_AUTHOR"):
+    with pytest.raises(ConfigError, match="CO_AUTHOR must be"):
         load_config(env_path=path, environ={})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["a\x7fb", "a\u0085b", "a\u2028b", "a\u200bb", "a\tb"],
+    ids=["del", "nel", "line-separator", "zero-width-space", "tab"],
+)
+def test_B498_a_co_author_holds_no_character_a_reader_cannot_see(name):
+    """B498: the check refuses every control, separator and invisible format character, since
+    a tool may split a line on one and a reviewer cannot see it."""
+    from harness.config import co_author_ok
+
+    assert co_author_ok("jgoetzmann <a@b.example>")
+    assert not co_author_ok(f"{name} <a@b.example>")
+    assert not co_author_ok("jgoetzmann <a@b.example>\n")

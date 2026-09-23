@@ -293,6 +293,12 @@ class GitHubReadOnly:
         # GitHub serves pull requests from the issues endpoint; they are not issues.
         return [row for row in rows if "pull_request" not in row]
 
+    def issues_created_by(self, login: str) -> list[dict]:
+        """Every product-repository issue `login` opened, open or closed (D83)."""
+        pairs = [("creator", str(login)), ("state", "all"), ("per_page", str(PER_PAGE))]
+        rows = self._paginate(f"/repos/{self.repo}/issues?{_query(pairs)}")
+        return [row for row in rows if "pull_request" not in row]
+
     def issues_assigned_to(self, login: str, *, state: str = "open") -> list[dict]:
         """Open product-repository issues assigned to `login` (B233).
 
@@ -534,6 +540,25 @@ class GitHubClient(GitHubReadOnly):
                 "title": payload["title"],
                 "body": payload["body"],
                 "labels": [{"name": name} for name in payload["labels"]],
+                "state": "open",
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def create_product_issue(self, title: str, body: str) -> dict:
+        """Always in ``self.repo``, the product repository; there is no repo parameter. Only a
+        delivery calls it, for an item the product repository has no issue for (I-14)."""
+        self._require_write("create_product_issue")
+        payload = redact.redact_json({"title": str(title), "body": str(body)})
+        data = self._write(
+            "POST",
+            f"/repos/{self.repo}/issues",
+            payload,
+            {
+                "number": 0,
+                "html_url": f"https://github.com/{self.repo}/issues/0",
+                "title": payload["title"],
+                "body": payload["body"],
                 "state": "open",
             },
         )

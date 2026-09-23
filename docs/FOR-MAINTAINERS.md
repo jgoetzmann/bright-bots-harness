@@ -68,7 +68,9 @@ how a reviewer will know it worked. No code has been written.
 - On a proposal nobody asked for (`via:suggested`), answer as §5 says.
 
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the diff and
-the gate results in the body. Review it like any other contributor's PR.
+the gate results in the body. Review it like any other contributor's PR. When the work came
+without a brightboost issue, such as an audit finding, the harness files one as it delivers,
+names it on the harness issue, and the pull request closes it when merged.
 
 - `/harness revise <what to change>`: one more implementation pass, then the complete gate sequence.
 - `/harness rebase`: the same, after a conflict.

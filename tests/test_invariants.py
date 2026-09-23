@@ -1066,6 +1066,39 @@ def test_i14_create_issue_repo_is_always_self_repo():
     assert call_site_violations == [], "I-14 violated: " + "; ".join(call_site_violations)
 
 
+def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_files_it():
+    """I-14 (D83): the single exception, `create_product_issue`, takes no repo parameter,
+    targets the client's own product repository, and is called from `deliver.py` alone."""
+    client = _class_def(_parse(HARNESS_DIR / "gh.py"), "GitHubClient")
+    method = next(
+        node
+        for node in client.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create_product_issue"
+    )
+    params = [a.arg for a in method.args.posonlyargs + method.args.args + method.args.kwonlyargs]
+    assert params == ["self", "title", "body"], params
+    assert method.args.vararg is None and method.args.kwarg is None
+    targets = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Attribute)
+        and node.attr in ("repo", "self_repo")
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ]
+    assert {node.attr for node in targets} == {"repo"}, "it must target self.repo only"
+
+    callers = sorted(
+        {
+            _rel(path)
+            for path in _harness_sources()
+            for node in ast.walk(_parse(path))
+            if isinstance(node, ast.Call) and _call_name(node) == "create_product_issue"
+        }
+    )
+    assert callers == ["harness/stages/deliver.py"], callers
+
+
 # --------------------------------------------------------------------------------------
 # I-15 — B64's forbidden-diff check stays single-sourced in implement.py
 # --------------------------------------------------------------------------------------

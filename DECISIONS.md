@@ -1369,3 +1369,25 @@ already bounds; bounding the inbox too, which B439 keeps whole so a command whos
 cancelled is still found.
 
 Allocates B507.
+
+## D86 / B508 - a merged delivery marks its item done
+
+Decision:
+- `deliver.mark_merged` looks up each shipped item's delivery pull request by the branch the
+  machine account pushed (`GitHubClient.pulls_for_head`, one read per item). Once one has merged,
+  the item moves to `merged` (`stage:done`) and its harness issue is closed as completed through
+  `GitHubClient.close_issue`, which takes no repository and closes only in `SELF_REPO`.
+- `harness tidy` calls it first, so every feedback run marks what merged before it publishes the
+  queue. No workflow changes.
+- A delivery pull request closed without merging leaves the item at `stage:needs-review`, where
+  `/harness stop` stands it down. The harness issue is closed, not deleted: GitHub lets only an
+  admin delete an issue, and the issue is the item's record.
+
+Why. Nothing set `stage:done`; the operator relabelled each issue by hand. Until they did, an
+item stayed outstanding, so `depends_on` waited on it and suggested work stayed behind it.
+
+Rejected: deleting the harness issue once done, which needs admin rights the machine account does
+not hold and removes the record `depends_on`, the store and the ledger read; a `to:delete` label,
+which the operator dropped in favour of `stage:done` alone.
+
+Allocates B508.

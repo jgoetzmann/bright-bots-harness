@@ -538,6 +538,18 @@ class FakeGh:
             issue["title"] = title
         return copy.deepcopy(issue)
 
+    def pulls_for_head(self, head) -> list[dict]:
+        self._record("pulls_for_head", head=head)
+        return [copy.deepcopy(pr) for pr in self.prs.get(self.repo, {}).values()
+                if pr["head"]["label"] == head]
+
+    def close_issue(self, number) -> dict:
+        self._record("close_issue", number=number)
+        self._write("PATCH", f"/repos/{self.self_repo}/issues/{number}", {"state": "closed"})
+        issue = self._issue(self.self_repo, int(number))
+        issue["state"] = "closed"
+        return copy.deepcopy(issue)
+
     def create_pull(self, repo, *, head, base, title, body) -> dict:
         self._record("create_pull", repo=repo, head=head, base=base, title=title, body=body)
         self._write("POST", f"/repos/{repo}/pulls",
@@ -1999,3 +2011,56 @@ def test_B502_a_pull_request_that_fails_after_filing_reuses_the_issue_next_time(
     assert len(s.gh.calls_named("create_product_issue")) == 1
     (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"].endswith(TITLE)]
     assert f"Closes #{number}" in s.gh.calls_named("create_pull")[0]["body"]
+
+
+
+# --------------------------------------------------------------------------------------
+# B508 (D86) - a merged delivery moves its item to stage:done and closes the harness issue
+# --------------------------------------------------------------------------------------
+
+
+def _shipped_with(tmp_path, *, merged_at=None, state="open"):
+    s = setup_deliver(tmp_path, state="shipped")
+    s.gh.add_pull(1500, head_ref=BRANCH, head_sha="a" * 40, base_sha=s.base)
+    s.gh.prs[UPSTREAM][1500].update({"merged_at": merged_at, "state": state})
+    return s
+
+
+def test_B508_a_merged_delivery_moves_the_item_to_done_and_closes_its_issue(tmp_path):
+    """B508: found by the branch the machine account pushed, the merged pull request takes the
+    item to its terminal state, and the harness issue is closed as completed."""
+    from harness.stages.deliver import mark_merged
+
+    s = _shipped_with(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+
+    assert mark_merged(s.ctx) == [ITEM]
+
+    assert s.gh.calls_named("pulls_for_head")[0]["head"] == f"{BOT}:{BRANCH}"
+    assert s.store.get_work_item(ITEM).state == "merged"
+    assert s.gh.state_labels(ITEM) == ["stage:done"]
+    assert s.gh.repos[SELF_REPO][ITEM]["state"] == "closed"
+
+
+@pytest.mark.parametrize("state", ["open", "closed"], ids=["still-open", "closed-unmerged"])
+def test_B508_a_delivery_that_has_not_merged_leaves_the_item_shipped(tmp_path, state):
+    from harness.stages.deliver import mark_merged
+
+    s = _shipped_with(tmp_path, state=state)
+
+    assert mark_merged(s.ctx) == []
+    assert s.store.get_work_item(ITEM).state == "shipped"
+    assert s.gh.calls_named("close_issue") == []
+
+
+def test_B508_a_delivery_that_cannot_be_read_is_left_for_the_next_run(tmp_path):
+    from harness.stages.deliver import mark_merged
+
+    s = _shipped_with(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+
+    def unreadable(head):
+        raise GitHubError("502 from the pulls endpoint")
+
+    s.gh.pulls_for_head = unreadable
+
+    assert mark_merged(s.ctx) == []
+    assert s.store.get_work_item(ITEM).state == "shipped"

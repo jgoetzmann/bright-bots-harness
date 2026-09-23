@@ -31,14 +31,15 @@ workflow run URL and the new state (B101).
 | `stage:packaged` | package built, delivery pending | the same job |
 | `stage:needs-review` | upstream PR open (gate 2) | a maintainer, by merging upstream |
 | `stage:revising` | a revise cycle is in flight | the job |
-| `stage:done` | upstream PR merged; terminal | you, by relabelling (below) |
+| `stage:done` | upstream PR merged; terminal | the harness, on its next sweep (below) |
 | `stage:blocked` | gates red and not fixable | you, relabelling `stage:queued` or `stage:ready` |
 | `stage:needs-human` | revise cap reached | a trusted `/harness revise` |
 | `stage:dropped` | terminal | — |
 
-Nothing sets `stage:done` automatically. After a delivery PR merges upstream, relabel its harness
-issue by hand: the dispatcher's `depends_on` check waits on that label, so an item left at
-`stage:needs-review` holds back every item that depends on it.
+`harness tidy`, which every feedback run calls, moves a shipped item to `stage:done` once its
+delivery PR has merged upstream, and closes the harness issue as completed (D86). The dispatcher's
+`depends_on` check waits on that label. A delivery PR closed without merging leaves the item at
+`stage:needs-review`; `/harness stop` on it stands the item down.
 
 ```bash
 harness status --json     # the queue as this store sees it, and what Actions is doing

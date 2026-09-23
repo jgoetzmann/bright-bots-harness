@@ -316,6 +316,11 @@ class GitHubReadOnly:
         pairs = [("state", state), ("per_page", str(PER_PAGE))]
         return self._paginate(f"/repos/{self.repo}/pulls?{_query(pairs)}")
 
+    def pulls_for_head(self, head: str) -> list[dict]:
+        """Every product-repository pull request from ``head`` (``owner:branch``), any state."""
+        pairs = [("head", str(head)), ("state", "all"), ("per_page", str(PER_PAGE))]
+        return self._paginate(f"/repos/{self.repo}/pulls?{_query(pairs)}")
+
     def branches(self) -> list[str]:
         pairs = [("per_page", str(PER_PAGE))]
         rows = self._paginate(f"/repos/{self.repo}/branches?{_query(pairs)}")
@@ -619,6 +624,21 @@ class GitHubClient(GitHubReadOnly):
                 "html_url": f"https://github.com/{repo}/pull/{n}",
                 "requested_reviewers": [{"login": handle} for handle in payload["reviewers"]],
             },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def close_issue(self, number: int) -> dict:
+        """Close an issue in ``self.self_repo`` as completed; there is no repo parameter (D86)."""
+        self._require_write("close_issue")
+        if not self.self_repo:
+            raise GitHubError("close_issue: SELF_REPO is not configured; refusing to guess")
+        n = int(number)
+        payload = redact.redact_json({"state": "closed", "state_reason": "completed"})
+        data = self._write(
+            "PATCH",
+            f"/repos/{self.self_repo}/issues/{n}",
+            payload,
+            {"number": n, "state": "closed"},
         )
         return data if isinstance(data, dict) else {}
 

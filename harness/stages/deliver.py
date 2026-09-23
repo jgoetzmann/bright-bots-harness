@@ -793,6 +793,47 @@ def _name_pull_on_product_issue(
         ctx.record_decision(f"could not name #{pull} on product issue #{number}: {exc}")
 
 
+def mark_merged(ctx: Context) -> list[int]:
+    """Move each shipped item whose delivery pull request merged upstream to ``merged``
+    (``stage:done``) and close its harness issue as completed; returns the ids moved (D86).
+
+    One read per shipped item, found by the branch the machine account pushed. Never fatal: an
+    item that cannot be read is left shipped for the next run.
+    """
+    machine = str(ctx.config.fork_repo or "").split("/")[0]
+    if not machine:
+        return []
+    moved: list[int] = []
+    for item in ctx.store.list_work_items(state="shipped"):
+        branch = str(getattr(item, "branch_name", "") or "")
+        if not branch:
+            continue
+        try:
+            merged = [
+                pull
+                for pull in ctx.gh.pulls_for_head(f"{machine}:{branch}")
+                if pull.get("merged_at")
+            ]
+        except (GitHubError, HarnessError) as exc:
+            ctx.record_decision(f"could not read the delivery of item {item.id}: {exc}")
+            continue
+        if not merged:
+            continue
+        pull = merged[0]
+        ctx.store.transition(
+            item.id,
+            "merged",
+            reason=f"delivery pull request #{pull.get('number')} merged upstream",
+        )
+        moved.append(int(item.id))
+        if ctx.config.store_backend == "github" and ctx.gh.can_write:
+            try:
+                ctx.gh.close_issue(item.id)
+            except GitHubError as exc:
+                ctx.record_decision(f"marked item {item.id} done but could not close it: {exc}")
+    return moved
+
+
 def _github_origin(lease: Lease) -> bool:
     """True when the clone's ``origin`` is on github.com. A test clone's origin is a local
     path, and nothing here may reach the network on its behalf."""

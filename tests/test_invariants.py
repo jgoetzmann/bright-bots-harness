@@ -489,6 +489,8 @@ GH_WRITE_METHODS = (
     "create_pull",
     "request_reviewers",
     "close_pull",
+    # D86: a done item's harness issue, in this repository only.
+    "close_issue",
     "create_branch_file",
 )
 

@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## What this is
 
 A standard-library-only Python 3.13 harness that takes work on the product repository
@@ -12,7 +14,9 @@ gate 2. The harness never merges anything.
 
 Flow: `discover` → `propose` (PR adding a proposal file) → gate 1 → `implement` (branch on the fork,
 product gates run before and after) → `package` → `deliver` (upstream PR) → gate 2. `revise`
-handles review/CI/conflict feedback and resuming a carried item. Humans steer via `/harness <verb>`
+handles review/CI/conflict feedback and resuming a carried item. `decompose` splits an issue into
+sub-items. `STAGES` also holds entries that aren't stages an item passes through: `request` and
+`promote` create items, and `ask` and `audit` create none (B247). Humans steer via `/harness <verb>`
 comments (`harness/keywords.py`).
 
 Operator docs live in `README.md` and `docs/`; why anything is the way it is lives in
@@ -45,6 +49,10 @@ through interop). The system `python3` is 3.12, which is too old.
   and pin mismatches after each edit. The hook runs `.venv/Scripts/python`, which only resolves
   on Windows. From WSL it fails silently, so run `verify_pin --check` yourself after editing a
   pinned file.
+- `gh` isn't on the WSL PATH; call `"/mnt/c/Program Files/GitHub CLI/gh.exe"`. The fleet's live
+  state is the ledger on the `harness-state` branch, one commit per workflow run
+  (`git show origin/harness-state:state/ledger.json`). Each implement run's `harness dispatch`
+  step logs its plan and reason.
 
 ## Architecture
 
@@ -86,8 +94,11 @@ through interop). The system `python3` is 3.12, which is too old.
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
     starts nothing.
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
-    (D28).
-  - `priority.py`: five call classes.
+    (D28). It holds the last usage reading and the carry slot: an item `deliver.handoff` hands
+    off resumes before anything else, gated by `OVERRUN_PCT` instead of the weekly stop.
+  - `priority.py`: five call classes, highest first `answer` > `unblock` > `directed` > `audit` >
+    `suggested`. A `via:suggested` item is refused while any asked-for item is outstanding
+    (`proposed` counts) or weekly usage is past `SUGGEST_MIN_HEADROOM_PCT`.
 - GitHub: `gh.py` is the only authenticated client and the only module that writes. It stamps
   `MACHINE_MARKER` on every comment so workflows ignore the harness's own replies. `trust.py`
   is the one gate: a level in `.harness/trust.txt` plus either an OWNER/MEMBER/COLLABORATOR

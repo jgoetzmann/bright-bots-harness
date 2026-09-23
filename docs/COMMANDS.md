@@ -515,14 +515,15 @@ that way, and the author is what tells the two apart.
 | `stage:packaged` | review package built | the same job |
 | **`stage:needs-review`** | **upstream PR open — gate 2** | **a human, by merging it** |
 | `stage:revising` | a revision cycle is in flight | the job |
-| `stage:done` | merged upstream — terminal | a person, by relabelling |
+| `stage:done` | merged upstream — terminal | the harness, when the delivery pull request merges |
 | `stage:blocked` | stopped; needs a decision | `/harness go`, or relabelling |
 | `stage:needs-human` | revise cycles spent | a trusted `/harness revise` |
 | `stage:dropped` | closed without shipping — terminal | — |
 
-Nothing sets `stage:done` automatically. After a delivery pull request merges upstream, relabel its
-harness issue by hand: `depends_on` waits on that label, so an item left at `stage:needs-review`
-holds back its dependants.
+The harness sets `stage:done` itself: every sweep's `harness tidy` looks up each shipped item's
+delivery pull request and, once it has merged, moves the item to `stage:done` and closes its
+harness issue as completed (D86). `depends_on` waits on that label. A delivery pull request closed
+without merging leaves the item at `stage:needs-review`; `/harness stop` on it stands it down.
 
 **`kind:`** — `product` (work) · `audit` (a findings report) · `ops` (a failed run). There is no
 `kind:harness`, because the harness never works on its own repository.

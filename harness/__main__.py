@@ -2835,11 +2835,12 @@ def _prune_one_issue(ctx, repo: str, number: int, now, logins: frozenset[str]) -
 
 
 def cmd_tidy(args: argparse.Namespace) -> int:
-    """Publish the queue on the pinned issue, and prune the harness's own old comments (D76).
+    """Mark merged deliveries done, publish the queue on the pinned issue, and prune the
+    harness's own old comments (D76, D86).
 
-    Spends nothing: no model call and no clone. The queue half runs on every sweep, so the
-    pinned issue is fresh within minutes of anything changing; the prune half is behind a
-    weekly cursor in the ledger.
+    Spends nothing: no model call and no clone. The first two run on every sweep, so the pinned
+    issue is fresh within minutes of anything changing; the prune is behind a weekly cursor in
+    the ledger.
     """
     check_repo_halt(_repo_root(args))
     config = _load(args)
@@ -2848,13 +2849,15 @@ def cmd_tidy(args: argparse.Namespace) -> int:
     queue = ""
     pruned: list[int] = []
     skipped = ""
+    done: list[int] = []
     try:
+        done = deliver_stage.mark_merged(ctx)
         queue = _publish_queue(ctx, config)
         pruned, skipped = _prune_machine_comments(ctx, config)
     finally:
         _save_ledger(ctx)
-    payload = {"queue": queue, "pruned": pruned, "skipped": skipped}
-    lines = [f"queue: {queue}"]
+    payload = {"done": done, "queue": queue, "pruned": pruned, "skipped": skipped}
+    lines = [f"done: {', '.join(f'#{n}' for n in done) or 'none'}", f"queue: {queue}"]
     lines.append(f"pruned: {len(pruned)} comment(s)" + (f" ({skipped})" if skipped else ""))
     _emit(payload, "\n".join(lines), args)
     return EXIT_OK

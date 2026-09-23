@@ -1339,3 +1339,33 @@ re-reads it all; waiting before the sweep, which slows every command to cover a 
 does not bound.
 
 Allocates B505-B506.
+
+## D85 / B507 - the sweep reads threads already marked read, inside its window
+
+Decision:
+- `keywords.sweep` asks the notifications feed for read threads as well as unread ones
+  (`all=true`), inside the window D84 set: 30 minutes before the cursor, or the first sweep's
+  3-hour lookback. `GitHubClient.notifications` takes `include_read` for this.
+- A thread the feed names is read inside that window only: a comment updated before it is
+  skipped. The inbox and the thread a comment event names are still read whole, as before.
+- `doctor` probes the feed with `since` set to now, so it asks one page, not every unread thread.
+
+Why. GitHub marks a thread's notification read when the account itself acts on that thread, as
+the harness does when it replies. A command posted on such a thread just before was hidden from
+every later sweep, which asked for unread threads only. The #64 promote on 09-23 was lost this
+way: D84's re-read reached back to it, but its thread was already marked read. D84's direct read
+covers a harness thread only when the run its comment starts is the one that sweeps, and the
+`harness-ledger` group can replace a queued run; brightboost threads are read by the scheduled
+sweep alone. Reading read threads covers both.
+
+Reading them removes what the unread flag used to hide: threads the harness has already
+answered. Seen comment ids answer each comment once, but a lost ledger forgets them all, and the
+next sweep would then replay every old command on those threads. Bounding feed threads to the
+window keeps a replay inside it.
+
+Rejected: trusting the unread flag, which the account's own activity changes; reading every
+thread the harness knows on each sweep, which multiplies requests to cover what the window
+already bounds; bounding the inbox too, which B439 keeps whole so a command whose run was
+cancelled is still found.
+
+Allocates B507.

@@ -440,7 +440,7 @@ class FakeGh:
         self._record("rate_budget_remaining")
         return 1000
 
-    def notifications(self, since_iso) -> list[dict]:
+    def notifications(self, since_iso, *, include_read=False) -> list[dict]:
         self._record("notifications", since_iso=since_iso)
         return []
 

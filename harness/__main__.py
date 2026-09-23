@@ -929,7 +929,9 @@ def _doctor_notifications(config, args, payload) -> str:
         return ""  # tier 0 has no token; "I could not check" is not a finding
     try:
         ctx = _context(config, args, run_id="doctor")
-        ctx.gh.notifications(None)
+        # Bounded to now: whether the feed answers is the question, and an unbounded read
+        # would page through every unread thread the account has.
+        ctx.gh.notifications(iso(ctx.clock.now()))
     except GitHubError as exc:
         payload["notifications"] = {"readable": False, "error": str(exc)[:200]}
         return (

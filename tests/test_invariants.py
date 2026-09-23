@@ -616,8 +616,15 @@ D3_NEW_CONFIG_JSON_KEYS = (
 # `INBOX_ISSUE` is repository state every runner must agree on, so it is committed; the caps
 # added beside it are per-environment and stay in `.env`.
 D4_NEW_CONFIG_JSON_KEYS = ("INBOX_ISSUE",)
+# Who the harness credits on its commits is repository state, like the inbox (D82).
+D82_NEW_CONFIG_JSON_KEYS = ("CO_AUTHOR",)
 # The knob keys the shipped .harness/config.json carries.
-CONFIG_JSON_KEYS = D2_CONFIG_JSON_KEYS + D3_NEW_CONFIG_JSON_KEYS + D4_NEW_CONFIG_JSON_KEYS
+CONFIG_JSON_KEYS = (
+    D2_CONFIG_JSON_KEYS
+    + D3_NEW_CONFIG_JSON_KEYS
+    + D4_NEW_CONFIG_JSON_KEYS
+    + D82_NEW_CONFIG_JSON_KEYS
+)
 
 # The .env keys and values the build_context test writes, kept inline.
 D2_ENV_KEYS: dict[str, str] = {
@@ -1622,7 +1629,7 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_thirteen_knob_keys():
+def test_b112_harness_config_json_carries_exactly_the_fourteen_knob_keys():
     """B112: .harness/config.json's keys are exactly the operational knobs in `CONFIG_JSON_KEYS`
     above, and nothing that alters what the harness concludes."""
     path = REPO_ROOT / ".harness" / "config.json"
@@ -2145,11 +2152,14 @@ def test_b215_implement_yml_documents_the_dst_drift():
     assert "utc" in lowered
 
 
-# The first seven knobs plus the five usage-governance ones and INBOX_ISSUE. Built as a union,
-# so the set still demands the newer keys if the shipped file drops them.
+# The first seven knobs plus the five usage-governance ones, INBOX_ISSUE and CO_AUTHOR. Built as
+# a union, so the set still demands the newer keys if the shipped file drops them.
 D3_CONFIG_JSON_KEYS = tuple(
     sorted(
-        set(D2_CONFIG_JSON_KEYS) | set(D3_NEW_CONFIG_JSON_KEYS) | set(D4_NEW_CONFIG_JSON_KEYS)
+        set(D2_CONFIG_JSON_KEYS)
+        | set(D3_NEW_CONFIG_JSON_KEYS)
+        | set(D4_NEW_CONFIG_JSON_KEYS)
+        | set(D82_NEW_CONFIG_JSON_KEYS)
     )
 )
 
@@ -2778,8 +2788,8 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
 
     assert "ANTHROPIC_API_KEY=" not in env_example
     keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
-    assert len(keys) == 41, f".env.example carries {len(keys)} keys: {keys}"
-    assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
+    assert len(keys) == 42, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(shipped) == 14, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS
 

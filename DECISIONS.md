@@ -1232,3 +1232,30 @@ which loses the `continue` path for work already on the fork; handing off withou
 priority refusal, which still clones and comments on every run.
 
 Allocates B494-B497.
+
+## D82 / B498-B500 - every harness commit credits the operator as co-author
+
+Decision:
+- A new optional key, `CO_AUTHOR`, holds one `Name <email>`. When it is set, every commit the
+  harness makes ends with `Co-authored-by: <CO_AUTHOR>`: the implementation commit, each gate-fix
+  and self-audit-fix commit, the fallback message, and a handoff's wip commit. Empty or absent
+  adds nothing, so an existing `.env` keeps loading.
+- The value must match `Name <email>`, hold no control character, and give a trailer of at most
+  100 characters, so `commitmsg.build` never wraps it and no value can add a line to a commit.
+- `CO_AUTHOR` joins `CONFIG_JSON_KEYS`, which now holds twenty keys, and `.harness/config.json`
+  sets it to `jgoetzmann <95732896+jgoetzmann@users.noreply.github.com>`. Like `INBOX_ISSUE`,
+  who the repository credits is state every runner agrees on, so it is committed.
+- The commit author stays `Bright Bots Harness`. The push guard recognises the harness's own
+  commits by author email (B139, B297), so the credit goes in a trailer.
+
+Why. Brightboost squash-merges with the commit messages as the squash body, so a trailer on the
+fork's commits reaches the commit on `main`, where GitHub credits the named account as
+co-author. The one delivery merged so far, #868, is authored by `harness@localhost`, an address
+no account owns, so it credits nobody. The noreply address is the one GitHub ties to the
+account without publishing a mailbox.
+
+Rejected: making the operator the commit author, which breaks the push guard's walk and claims
+work the operator did not type; deriving the name and address from `.harness/trust.txt` and the
+GitHub API, which adds a network read to every commit for a value that changes about never.
+
+Allocates B498-B500.

@@ -1961,3 +1961,42 @@ def test_b233_no_fork_configured_says_so_rather_than_queueing_nothing(tmp_path):
         discover(rig.ctx, mode="assigned", target=None, lens=None)
 
     assert "FORK_REPO" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------
+# B499 (D82) - every implement commit credits CO_AUTHOR
+# --------------------------------------------------------------------------------------
+CO_AUTHOR = "jgoetzmann <95732896+jgoetzmann@users.noreply.github.com>"
+CREDIT_PKG = SimpleNamespace(title="fix(hooks): guard loadBand", approach="Guard it.", diagnosis="")
+CREDIT_ITEM = SimpleNamespace(external_ref="issue:866", issue_number=866)
+
+
+def test_B499_the_commit_message_ends_with_the_co_author_trailer():
+    """B499: the trailer follows the issue reference, and the message still passes the house
+    commit rules. Without a co-author the message has no trailer."""
+    from harness import commitmsg
+
+    credited = implement_mod._commit_message(
+        CREDIT_PKG, CREDIT_ITEM, first=True, co_author=CO_AUTHOR
+    )
+
+    assert credited.splitlines()[-2:] == ["Refs: #866", f"Co-authored-by: {CO_AUTHOR}"]
+    assert commitmsg.validate(credited) == []
+    plain = implement_mod._commit_message(CREDIT_PKG, CREDIT_ITEM, first=True)
+    assert "Co-authored-by" not in plain
+
+
+def test_B499_the_commit_takes_the_co_author_from_the_config(tmp_path, monkeypatch):
+    """B499: `_format_and_commit` reads CO_AUTHOR from the config, for the first commit and
+    for every follow-up."""
+    messages: list[str] = []
+    monkeypatch.setattr(implement_mod, "PRETTIER", lambda path, paths: (True, ""))
+    monkeypatch.setattr(implement_mod, "COMMIT", lambda clone, message: messages.append(message))
+    ctx = SimpleNamespace(config=SimpleNamespace(co_author=CO_AUTHOR), record_decision=print)
+    lease = SimpleNamespace(path=tmp_path, branch="harness/fix-866")
+    (tmp_path / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+
+    for first in (True, False):
+        implement_mod._format_and_commit(ctx, CREDIT_PKG, CREDIT_ITEM, lease, ["a.ts"], first=first)
+
+    assert [m.splitlines()[-1] for m in messages] == [f"Co-authored-by: {CO_AUTHOR}"] * 2

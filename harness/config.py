@@ -36,6 +36,7 @@ __all__ = [
     "is_daily_window",
     "run_window_label",
     "EFFORT_LEVELS",
+    "co_author_ok",
 ]
 
 #: The reasoning-effort levels `claude --effort` accepts, in order (B225).
@@ -98,10 +99,12 @@ FIELD_KEYS: tuple[str, ...] = (
     "AUDIT_MIN_HEADROOM_PCT",
     # D70: the adversarial self-audit before delivery.
     "MAX_SELF_AUDIT_CYCLES",
+    # D82: the person credited on every commit the harness makes.
+    "CO_AUTHOR",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
-OPTIONAL_KEYS: tuple[str, ...] = ("FORK_REPO", "TRACKING_ISSUE")
+OPTIONAL_KEYS: tuple[str, ...] = ("FORK_REPO", "TRACKING_ISSUE", "CO_AUTHOR")
 
 KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS + PASSTHROUGH_KEYS
 
@@ -126,6 +129,7 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "SUGGEST_MIN_HEADROOM_PCT",
     "AUDIT_MIN_HEADROOM_PCT",
     "MAX_SELF_AUDIT_CYCLES",
+    "CO_AUTHOR",
 )
 
 #: Keys D74 removed. Accepted wherever a key is accepted and ignored, so an existing `.env` or
@@ -235,6 +239,8 @@ class Config:
     audit_min_headroom_pct: float
     #: D70: audit/fix cycles after the gates go green; 0 turns the self-audit off entirely.
     max_self_audit_cycles: int
+    #: D82: ``Name <email>`` for the `Co-authored-by` trailer on every harness commit; "" is none.
+    co_author: str
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -367,6 +373,21 @@ def read_config_json(path: Path) -> dict[str, str]:
             raise ConfigError(f"unknown key in .harness/config.json: {key}")
         out[key] = _json_scalar(key, value)
     return out
+
+
+#: `Name <email>`, the shape git and GitHub read in a `Co-authored-by` trailer (D82).
+CO_AUTHOR_SHAPE: re.Pattern[str] = re.compile(r"^[^<>\x00-\x1f]+ <[^<>@\s]+@[^<>@\s]+>$")
+
+#: The longest `Co-authored-by: <value>` line, so a commit never wraps the trailer.
+CO_AUTHOR_MAX = 100
+
+
+def co_author_ok(value: str) -> bool:
+    """True when ``value`` is one ``Name <email>`` whose trailer fits on one line."""
+    return (
+        bool(CO_AUTHOR_SHAPE.match(value))
+        and len(f"Co-authored-by: {value}") <= CO_AUTHOR_MAX
+    )
 
 
 def token_shape_ok(token: str) -> bool:
@@ -618,6 +639,13 @@ def load_config(
             f"MAX_SELF_AUDIT_CYCLES must be 0 or more; got {max_self_audit_cycles}"
         )
 
+    co_author = values.get("CO_AUTHOR", "").strip()
+    if co_author and not co_author_ok(co_author):
+        raise ConfigError(
+            "CO_AUTHOR must be one line, 'Name <email>', short enough for its trailer to fit "
+            f"{CO_AUTHOR_MAX} characters; got {co_author!r}"
+        )
+
     # I-18 (D61): the harness never works on its own repository. A system that can rewrite the
     # rules it is governed by has no rules -- a change to gh.py or prompts/implement.md could
     # propose its way out of the kill switch, the credential door and the pin, and the
@@ -671,6 +699,7 @@ def load_config(
         suggest_min_headroom_pct=suggest_min_headroom_pct,
         audit_min_headroom_pct=audit_min_headroom_pct,
         max_self_audit_cycles=max_self_audit_cycles,
+        co_author=co_author,
     )
     _LAST_CONFIG = config
     return config

@@ -2,28 +2,19 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 17,
+    "calls": 28,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.27,
-        "resets_at": "2026-09-18T16:30:00Z"
+        "utilization": 0.19,
+        "resets_at": "2026-09-23T17:10:00Z"
       },
-      "seven_day": {
-        "utilization": 0.87,
-        "resets_at": "2026-09-22T20:00:00Z"
-      },
-      "status": "allowed_warning",
-      "observed_at": "2026-09-18T15:05:09Z"
-    },
-    "carry": {
-      "issue": 50,
-      "since": "2026-09-22T17:19:05Z",
-      "reason": "carry leeway 10% reached"
+      "status": "allowed",
+      "observed_at": "2026-09-23T13:57:00Z"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-23T05:11:22Z",
+    "notifications_last_seen": "2026-09-23T12:11:14Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -42,7 +33,7 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 46
+      "github-actions[bot]": 48
     },
     "ask_calls": {
       "date": "2026-09-09",
@@ -192,6 +183,72 @@
     {
       "ts": "2026-09-18T15:05:09Z",
       "stage": "propose",
+      "issue": 70,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T12:18:43Z",
+      "stage": "revise",
+      "issue": 50,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T12:35:13Z",
+      "stage": "implement",
+      "issue": 66,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T12:40:12Z",
+      "stage": "selfaudit",
+      "issue": 66,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:02:03Z",
+      "stage": "implement",
+      "issue": 67,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:08:19Z",
+      "stage": "selfaudit",
+      "issue": 67,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:17:52Z",
+      "stage": "implement",
+      "issue": 68,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:21:59Z",
+      "stage": "selfaudit",
+      "issue": 68,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:35:20Z",
+      "stage": "implement",
+      "issue": 69,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:40:54Z",
+      "stage": "selfaudit",
+      "issue": 69,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:51:56Z",
+      "stage": "implement",
+      "issue": 70,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T13:57:00Z",
+      "stage": "selfaudit",
       "issue": 70,
       "run": ""
     }

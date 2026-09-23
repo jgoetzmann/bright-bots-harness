@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from harness import links
 from harness.keywords import VERBS
 
@@ -279,3 +281,39 @@ def test_an_unknown_surface_still_gets_a_usable_pointer():
     text = links.reply_pointer(CONFIG, "a_surface_added_later")
 
     assert "status" in text and "ask" in text
+
+
+# --------------------------------------------------------------------------------------
+# B504 (D83) - a filed product issue names its work item, for the machine account only
+# --------------------------------------------------------------------------------------
+SELF = "jgoetzmann/bright-bots-harness"
+
+
+def _filed(body: str, login: str = "jgoetzmann-bot") -> dict:
+    return {"number": 900, "body": body, "user": {"login": login}}
+
+
+def test_B504_the_marker_names_the_work_item_it_was_filed_for():
+    body = "Diagnosis.\n\n" + links.product_issue_marker(SELF, 66) + "\n"
+
+    assert links.item_of_product_issue(_filed(body), self_repo=SELF, machine="jgoetzmann-bot") == 66
+
+
+def test_B504_the_marker_is_matched_without_case():
+    body = links.product_issue_marker(SELF.upper(), 66).upper()
+
+    assert links.item_of_product_issue(_filed(body), self_repo=SELF, machine="JGOETZMANN-BOT") == 66
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        _filed(links.product_issue_marker(SELF, 66), login="someone"),
+        _filed(links.product_issue_marker("other/harness", 66)),
+        _filed("no marker here"),
+        {"number": 900, "body": links.product_issue_marker(SELF, 66)},
+    ],
+    ids=["copied-by-someone-else", "another-harness", "no-marker", "no-author"],
+)
+def test_B504_anything_else_names_no_work_item(issue):
+    assert links.item_of_product_issue(issue, self_repo=SELF, machine="jgoetzmann-bot") is None

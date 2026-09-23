@@ -1275,12 +1275,21 @@ Decision:
 - A later delivery of the same item looks among the issues the machine account opened for that
   marker and reuses the issue it finds, so a revise cycle or another runner files nothing more.
   Nothing new is stored: the marker on GitHub is the record.
-- An item that came from a product issue is listed there already and files nothing.
-  `COMMENT_UPSTREAM=false` turns this off with the harness's other writes on product threads.
-  A failure to file is recorded, and the pull request opens without the `Closes` line.
+- An item that came from a product issue is listed there already and files nothing, and so is
+  a decomposed part whose parent came from one. `COMMENT_UPSTREAM=false` turns this off with the
+  harness's other writes on product threads. A failure to file, or a dry run's issue 0, is
+  recorded, and the pull request opens without the `Closes` line.
+- A filed issue is never new work. `links.item_of_product_issue` reads its marker, for an issue
+  the machine account opened, and assigned and directed discovery, triage, and a `/harness`
+  command on that thread all resolve it to the item it was filed for.
+- The issue body names the harness issue and says the pull request comes from the machine
+  account. It promises no closing, since a pull request can fail to open or be stopped.
 - I-14 gains this one exception. `GitHubClient.create_product_issue` takes no repository
-  argument, targets the product repository the client reads, and has one caller, `deliver.py`;
-  a test pins all three.
+  argument, writes only to `/repos/{self.repo}/issues`, and is named by no module but
+  `deliver.py`; a test pins all three and that no other gh.py write reaches an `/issues`
+  collection. It joins I-13's write set, with `update_issue_body`, which that set had missed.
+- `prompts/system.md` says the harness files this one issue itself, so `.harness/PIN` is
+  regenerated.
 
 Why. Work the harness found on its own reached brightboost as a pull request with nothing to
 close, so it appeared in the product repository's issue list nowhere, and a maintainer triaging
@@ -1294,4 +1303,8 @@ number on the work item, which needs a store column and a layout bump for a fact
 already keeps on GitHub; a separate config switch, when `COMMENT_UPSTREAM` already governs the
 harness's writes on product threads.
 
-Allocates B501-B503.
+Review findings kept as they stand: an issue filed for an item whose pull request never opens,
+or is stopped, stays open, naming the harness issue. It describes a problem a person approved at
+gate 1, which is worth listing whether or not this fix lands.
+
+Allocates B501-B504.

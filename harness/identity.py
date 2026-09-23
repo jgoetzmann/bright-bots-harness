@@ -67,7 +67,7 @@ PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
         (
             "Issues",
             "Read and write",
-            "Issues and comments in this repository only — never on the product repository (I-14)",
+            "Issues here, and on the product repository one per delivered item with none (I-14)",
         ),
         (
             "Pull requests",

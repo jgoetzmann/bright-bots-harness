@@ -2941,3 +2941,26 @@ def test_b305_a_scope_warning_never_changes_doctors_exit_code(tmp_path, monkeypa
 
     assert code == baseline, "a scope warning must not change doctor's exit code"
     assert "warnings (the harness still runs)" in out and "`workflow`" in out
+
+
+
+def test_B504_a_command_on_a_filed_product_issue_steers_its_work_item():
+    """B504 (D83): the product thread of an issue a delivery filed maps to the item named by
+    its marker, since no `issue:<n>` item exists for it."""
+    from types import SimpleNamespace
+
+    from harness import links
+
+    marker = links.product_issue_marker("jgoetzmann/bright-bots-harness", 66)
+    issue = {"number": 901, "body": marker, "user": {"login": "bot"}}
+    config = SimpleNamespace(
+        self_repo="jgoetzmann/bright-bots-harness", fork_repo="bot/brightboost"
+    )
+    ctx = SimpleNamespace(
+        config=config,
+        store=SimpleNamespace(find_by_ref=lambda ref: None),
+        gh=SimpleNamespace(issue=lambda number: issue),
+    )
+    cmd = SimpleNamespace(surface="product_issue", number=901)
+
+    assert cli._item_for_command(ctx, config, cmd) == 66

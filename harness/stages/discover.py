@@ -83,6 +83,13 @@ def _directed(ctx: Context, target: str | None, *, via: str = "requested") -> li
     issue = ctx.gh.issue(number)
     if issue.get("pull_request") is not None:
         raise HarnessError(f"#{number} is a pull request, not an issue")
+    owner = filed_for(ctx, issue)
+    if owner is not None:
+        ctx.record_decision(
+            f"directed discover of {ref}: the harness filed it for work item {owner}, "
+            "which is returned rather than duplicated"
+        )
+        return [owner]
 
     title = str(issue.get("title") or f"issue {number}").strip() or f"issue {number}"
     item_id = ctx.store.create_work_item(
@@ -115,6 +122,13 @@ def _parse_target(target: str | None) -> int:
 # --------------------------------------------------------------------------------------------
 # triage: the queue in this repository first
 # --------------------------------------------------------------------------------------------
+
+
+def filed_for(ctx: Context, issue: dict) -> int | None:
+    """The work item a product issue was filed for by a delivery, or ``None`` (D83)."""
+    return links.item_of_product_issue(
+        issue, self_repo=str(ctx.config.self_repo), machine=machine_account(ctx.config)
+    )
 
 
 def machine_account(config: Any) -> str:
@@ -152,7 +166,7 @@ def _assigned(ctx: Context) -> list[int]:
         if number is None:
             continue
         ref = f"issue:{number}"
-        if ctx.store.find_by_ref(ref) is not None:
+        if filed_for(ctx, issue) is not None or ctx.store.find_by_ref(ref) is not None:
             skipped.append(number)
             continue
         title = str(issue.get("title") or f"issue {number}").strip() or f"issue {number}"
@@ -279,7 +293,7 @@ def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool)
         number = _issue_number(issue)
         if number is None:
             continue
-        if f"issue:{number}" in known:
+        if f"issue:{number}" in known or filed_for(ctx, issue) is not None:
             ctx.store.append_event(None, "debug", f"triage excluded #{number}: already a work item")
             continue
         reason = _rejection_reason(

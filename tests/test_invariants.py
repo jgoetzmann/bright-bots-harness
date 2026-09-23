@@ -482,6 +482,9 @@ GH_WRITE_METHODS = (
     "delete_issue_comment",
     "set_labels",
     "create_issue",
+    # D83: the one issue a delivery files on the product repository.
+    "create_product_issue",
+    "update_issue_body",
     "create_pull",
     "request_reviewers",
     "close_pull",
@@ -1067,36 +1070,47 @@ def test_i14_create_issue_repo_is_always_self_repo():
 
 
 def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_files_it():
-    """I-14 (D83): the single exception, `create_product_issue`, takes no repo parameter,
-    targets the client's own product repository, and is called from `deliver.py` alone."""
+    """I-14 (D83): the single exception, `create_product_issue`, takes no repo parameter and
+    writes to `/repos/{self.repo}/issues` alone. No module but `deliver.py` names it, by call,
+    attribute or string, and no other gh.py write reaches an `/issues` collection."""
     client = _class_def(_parse(HARNESS_DIR / "gh.py"), "GitHubClient")
-    method = next(
-        node
-        for node in client.body
-        if isinstance(node, ast.FunctionDef) and node.name == "create_product_issue"
-    )
+    methods = {n.name: n for n in client.body if isinstance(n, ast.FunctionDef)}
+    method = methods["create_product_issue"]
     params = [a.arg for a in method.args.posonlyargs + method.args.args + method.args.kwonlyargs]
     assert params == ["self", "title", "body"], params
     assert method.args.vararg is None and method.args.kwarg is None
-    targets = [
-        node
-        for node in ast.walk(method)
-        if isinstance(node, ast.Attribute)
-        and node.attr in ("repo", "self_repo")
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-    ]
-    assert {node.attr for node in targets} == {"repo"}, "it must target self.repo only"
 
-    callers = sorted(
+    def write_paths(node: ast.FunctionDef) -> list[str]:
+        """The path argument of every `self._write(...)` call, as source text."""
+        return [
+            ast.unparse(call.args[1])
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_write"
+            and len(call.args) > 1
+        ]
+
+    assert write_paths(method) == ["f'/repos/{self.repo}/issues'"], write_paths(method)
+    issue_writers = sorted(
+        name
+        for name, node in methods.items()
+        if any(path.rstrip("'\"").endswith("/issues") for path in write_paths(node))
+    )
+    assert issue_writers == ["create_issue", "create_product_issue"], issue_writers
+
+    naming = sorted(
         {
             _rel(path)
             for path in _harness_sources()
+            if path.name != "gh.py"
             for node in ast.walk(_parse(path))
-            if isinstance(node, ast.Call) and _call_name(node) == "create_product_issue"
+            if (isinstance(node, ast.Attribute) and node.attr == "create_product_issue")
+            or (isinstance(node, ast.Name) and node.id == "create_product_issue")
+            or (isinstance(node, ast.Constant) and node.value == "create_product_issue")
         }
     )
-    assert callers == ["harness/stages/deliver.py"], callers
+    assert naming == ["harness/stages/deliver.py"], naming
 
 
 # --------------------------------------------------------------------------------------

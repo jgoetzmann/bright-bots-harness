@@ -926,3 +926,53 @@ def test_b305_no_scopes_header_means_cannot_tell(tmp_path):
     opener = FakeOpener(FakeResponse({"login": "bot"}))
 
     assert _guard_client(tmp_path, opener=opener).token_scopes() is None
+
+
+
+def test_B501_create_product_issue_targets_the_client_repo_redacted_and_tier_gated(tmp_path):
+    """B501 (D83): the product issue goes to the repository the client reads, never to one a
+    caller names, through redaction, and only with a token."""
+    from harness.clock import FrozenClock
+    from harness.errors import TierViolation
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    token = "ghp_" + "FAKE0" * 8
+    client = GitHubClient("o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True)
+
+    filed = client.create_product_issue("Signup swallows an insert", "See " + token)
+
+    (call,) = client.sent
+    assert call["method"] == "POST" and call["url"].endswith("/repos/o/r/issues")
+    assert token not in call["payload"]["body"]
+    assert filed["number"] == 0
+    unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
+    with pytest.raises(TierViolation):
+        unarmed.create_product_issue("t", "b")
+
+
+def test_B502_issues_created_by_asks_for_every_state_and_drops_pull_requests(tmp_path):
+    """B502 (D83): the reuse lookup reads open and closed issues the login opened, and a pull
+    request served by the issues endpoint is not one of them."""
+    from harness.clock import FrozenClock
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    rows = [{"number": 1, "body": "issue"}, {"number": 2, "body": "pr", "pull_request": {}}]
+    opener = FakeOpener(FakeResponse(rows))
+    client = GitHubClient("o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, opener=opener)
+
+    found = client.issues_created_by("jgoetzmann-bot")
+
+    assert [row["number"] for row in found] == [1]
+    (url,) = opener.urls
+    assert "/repos/o/r/issues?" in url
+    assert "creator=jgoetzmann-bot" in url and "state=all" in url

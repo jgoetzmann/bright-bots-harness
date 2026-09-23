@@ -647,12 +647,31 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-#: Ends the body of a product issue a delivery filed, naming the work item, so a later delivery
-#: of the same item finds that issue instead of filing another (D83).
-PRODUCT_ISSUE_MARKER = "<!-- bright-bots-harness work item: {ref} -->"
-
 #: How much of the diagnosis a filed product issue quotes; the proposal holds all of it.
 PRODUCT_ISSUE_DIAGNOSIS_CHARS = 6000
+
+
+def _quoted_diagnosis(pkg: Any) -> str:
+    """The diagnosis, cut at a paragraph boundary under the cap, with any code fence the cut
+    left open closed again, so the footer after it renders as prose."""
+    text = (getattr(pkg, "diagnosis", "") or "").strip()
+    if len(text) > PRODUCT_ISSUE_DIAGNOSIS_CHARS:
+        cut = text[:PRODUCT_ISSUE_DIAGNOSIS_CHARS]
+        boundary = cut.rfind("\n\n")
+        text = (cut[:boundary] if boundary > 0 else cut).rstrip() + "\n\n(cut short)"
+        if text.count("```") % 2:
+            text += "\n```"
+    return text or "The approved proposal on the harness issue describes the problem."
+
+
+def _parent_product_issue(ctx: Context, item: Any) -> str:
+    """The ``issue:<n>`` reference of a decomposed part's parent, or "" (D83)."""
+    parts = str(item.external_ref).split(":")
+    if len(parts) < 2 or parts[0] != "sub" or not parts[1].isdigit():
+        return ""
+    parent = ctx.store.get_work_item(int(parts[1]))
+    ref = str(getattr(parent, "external_ref", "") or "") if parent is not None else ""
+    return ref if ref.startswith("issue:") else ""
 
 
 def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> int | None:
@@ -672,26 +691,35 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> i
             f"targets {upstream}, and the machine account is {machine or 'unknown'}"
         )
         return None
+    parent = _parent_product_issue(ctx, item)
+    if parent:
+        ctx.record_decision(f"no product issue filed: the parent item is listed as {parent}")
+        return None
     ref = links.issue_ref(self_repo, item.id)
-    marker = PRODUCT_ISSUE_MARKER.format(ref=ref)
     try:
         for issue in ctx.gh.issues_created_by(machine):
-            if marker in str(issue.get("body") or ""):
+            found = links.item_of_product_issue(issue, self_repo=self_repo, machine=machine)
+            if found == int(item.id):
                 number = int(issue.get("number") or 0)
                 ctx.record_decision(f"product issue {upstream}#{number} already lists {ref}")
                 return number or None
-        diagnosis = (pkg.diagnosis or "").strip()[:PRODUCT_ISSUE_DIAGNOSIS_CHARS]
         body = (
-            (diagnosis or "The approved proposal on the harness issue describes the problem.")
+            _quoted_diagnosis(pkg)
             + f"\n\nFound by the Bright Bots Harness and tracked as "
-            f"[{ref}]({links.issue_url(self_repo, item.id)}). The pull request that fixes it "
-            f"closes this issue when merged.\n\n{marker}\n"
+            f"[{ref}]({links.issue_url(self_repo, item.id)}), where its proposal was approved. "
+            f"Its pull request comes from `{machine}` and names this issue.\n\n"
+            + links.product_issue_marker(self_repo, item.id)
+            + "\n"
         )
         filed = ctx.gh.create_product_issue(item.title or pkg.title, body)
     except (GitHubError, HarnessError) as exc:
         ctx.record_decision(f"could not file a product issue for {ref}: {exc}")
         return None
     number = int(filed.get("number") or 0)
+    if not number:
+        # A dry run answers with issue 0, which names nothing.
+        ctx.record_decision(f"product issue for {ref}: the client returned no issue number")
+        return None
     url = str(filed.get("html_url") or "")
     ctx.record_decision(f"filed product issue {upstream}#{number} for {ref}")
     try:
@@ -703,7 +731,7 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> i
         )
     except GitHubError as exc:
         ctx.record_decision(f"could not name {upstream}#{number} on {ref}: {exc}")
-    return number or None
+    return number
 
 
 def _github_origin(lease: Lease) -> bool:

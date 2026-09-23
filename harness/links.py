@@ -11,6 +11,7 @@ both reach this module, and neither may reach the other.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
@@ -256,6 +257,35 @@ def issue_url(repo: str, number: int | str) -> str:
 def issue_ref(repo: str, number: int | str) -> str:
     """A cross-repository reference GitHub renders as a link and resolves in either direction."""
     return f"{str(repo).strip().strip('/')}#{number}"
+
+
+#: Ends the body of a product issue a delivery filed, naming its work item (D83).
+PRODUCT_ISSUE_MARKER = "<!-- bright-bots-harness work item: {ref} -->"
+
+_PRODUCT_ISSUE_MARKER_RE = re.compile(
+    r"<!-- bright-bots-harness work item: (?P<repo>[^\s#]+)#(?P<item>[0-9]+) -->", re.IGNORECASE
+)
+
+
+def product_issue_marker(self_repo: str, item_id: int | str) -> str:
+    """The marker a filed product issue carries for work item ``item_id``."""
+    return PRODUCT_ISSUE_MARKER.format(ref=issue_ref(self_repo, item_id))
+
+
+def item_of_product_issue(issue: Mapping[str, Any], *, self_repo: str, machine: str) -> int | None:
+    """The work item a product issue was filed for, or ``None`` (D83).
+
+    Only an issue the machine account opened counts, so a copied marker names nothing, and only
+    a marker naming this harness repository, compared without case.
+    """
+    user = issue.get("user") if isinstance(issue, Mapping) else None
+    login = str((user or {}).get("login") or "") if isinstance(user, Mapping) else ""
+    if not machine or login.lower() != str(machine).lower():
+        return None
+    match = _PRODUCT_ISSUE_MARKER_RE.search(str(issue.get("body") or ""))
+    if match is None or match.group("repo").lower() != str(self_repo).strip("/").lower():
+        return None
+    return int(match.group("item"))
 
 
 def closes(repo: str, number: int | str | None, *, same_repo: bool = False) -> str:

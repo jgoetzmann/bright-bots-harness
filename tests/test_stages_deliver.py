@@ -1878,6 +1878,7 @@ def test_B502_a_product_issue_already_filed_for_the_item_is_reused(tmp_path):
 
     assert s.gh.calls_named("create_product_issue") == []
     assert "Closes #1500" in s.gh.calls_named("create_pull")[0]["body"]
+    assert not any("#1500" in c["body"] for c in s.gh.comments_of(ITEM)), "named twice"
 
 
 @pytest.mark.parametrize(
@@ -1911,3 +1912,70 @@ def test_B503_a_failure_to_file_the_product_issue_does_not_stop_the_delivery(tmp
     pull = s.gh.calls_named("create_pull")[0]
     assert "Closes #" not in pull["body"]
     assert s.store.get_work_item(ITEM).state == "shipped"
+
+
+
+def test_B503_a_part_of_an_item_from_a_product_issue_files_nothing(tmp_path):
+    """B503: a decomposed part whose parent came from `issue:<n>` is that issue's work."""
+    s = setup_deliver(tmp_path, ref="sub:700:1")
+    s.gh.add_issue(700, "the parent", body="issue:640", labels=[LABELS["approved"]])
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+
+
+def test_B503_a_dry_run_names_no_issue(tmp_path):
+    """B503: a dry-run client answers with issue 0, which is neither closed nor announced."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    s.gh.create_product_issue = lambda title, body: {"number": 0, "html_url": ""}
+
+    deliver(s.ctx, ITEM)
+
+    assert "Closes #" not in s.gh.calls_named("create_pull")[0]["body"]
+    assert not any("Filed [" in c["body"] for c in s.gh.comments_of(ITEM))
+
+
+def test_B503_a_failed_lookup_files_nothing_and_delivers(tmp_path):
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    def unreadable(login):
+        raise GitHubError("502 from the issues endpoint")
+
+    s.gh.issues_created_by = unreadable
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+    assert len(s.gh.calls_named("create_pull")) == 1
+
+
+def test_B503_a_client_reading_another_repository_files_nothing(tmp_path):
+    """B503: the issue goes where the client reads, so it is filed only when that is the
+    repository the pull request targets and would close it in."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF, REPO="someone/else")
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+
+
+def test_B502_a_pull_request_that_fails_after_filing_reuses_the_issue_next_time(tmp_path):
+    """B502: the issue is filed before the pull request, so a delivery that fails there leaves
+    an issue the retry finds by its marker rather than filing a second."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    real_create_pull = s.gh.create_pull
+
+    def refuse(*args, **kwargs):
+        raise GitHubError("422 Validation Failed")
+
+    s.gh.create_pull = refuse
+    with pytest.raises(GitHubError):
+        deliver(s.ctx, ITEM)
+    s.gh.create_pull = real_create_pull
+
+    deliver(s.ctx, ITEM)
+
+    assert len(s.gh.calls_named("create_product_issue")) == 1
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == TITLE]
+    assert f"Closes #{number}" in s.gh.calls_named("create_pull")[0]["body"]

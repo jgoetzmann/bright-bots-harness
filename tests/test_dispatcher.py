@@ -585,6 +585,122 @@ def test_B209_no_carry_means_no_exemption(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# B494 (D81) — the plan and admission agree on the carried item
+# ---------------------------------------------------------------------------
+
+def test_B494_inside_the_window_a_carry_past_its_leeway_still_goes_first(tmp_path):
+    """B494: at 30 % weekly the leeway is spent, but inside the window the carried item is held
+    to the ordinary stops, so it keeps its place at the front of the queue."""
+    config = d3_config(tmp_path)
+    ledger = usage_ledger(weekly=0.30, session=0.05, carry=816)
+
+    result = run_plan(config, ledger, cands(810, 816), now=MON_INSIDE)
+
+    assert result.start == (816,)
+    assert result.skipped == {"810": "slots full"}
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["queued", "forced"])
+@pytest.mark.parametrize("now", [WED, MON_INSIDE], ids=["outside", "inside"])
+@pytest.mark.parametrize("weekly", [0.05, 0.30, 0.95])
+def test_B494_the_plan_starts_the_carry_only_when_the_governor_admits_it(
+    tmp_path, now, weekly, forced
+):
+    """B494: the plan and the governor read one rule for the carried item, so the plan starts
+    it exactly when its first call would be admitted, forced to the front or not (D81)."""
+    from harness.errors import BudgetExhausted
+    from harness.governor import Governor
+
+    config = d3_config(tmp_path)
+    ledger = usage_ledger(weekly=weekly, session=0.05, carry=816)
+    candidates = [
+        Candidate(issue=816, created_at="2026-09-01T10:00:00Z", forced=forced),
+        Candidate(issue=823, created_at="2026-09-01T10:01:00Z"),
+    ]
+
+    started = 816 in run_plan(config, ledger, candidates, now=now).start
+    try:
+        Governor(config, FrozenClock(now), ledger).authorize(816, "revise")
+        admitted = True
+    except BudgetExhausted:
+        admitted = False
+
+    assert started == admitted
+
+
+# ---------------------------------------------------------------------------
+# B495 (D81) — the plan never starts what the priority gate refuses
+# ---------------------------------------------------------------------------
+
+SUGGESTED_REFUSAL = (
+    "work somebody asked for is still outstanding (#66); suggested work runs only when the "
+    "queue is empty"
+)
+
+
+def suggested_plan(tmp_path, candidates, refused):
+    return plan(now=MON_INSIDE, ledger=usage_ledger(weekly=0.05), config=d3_config(tmp_path),
+                candidates=tuple(candidates), merged=frozenset(), halted=False,
+                suggested_refused=refused)
+
+
+def test_B494_a_forced_carry_past_its_leeway_waits_with_the_leeway_as_its_reason(tmp_path):
+    """B494: outside a weekly window a forced carry is still judged as the carry, so once its
+    leeway is spent the plan skips it and names the leeway."""
+    config = d3_config(tmp_path)
+    ledger = usage_ledger(weekly=0.30, session=0.05, carry=816)
+    candidates = [Candidate(issue=816, created_at="2026-09-01T10:00:00Z", forced=True)]
+
+    result = run_plan(config, ledger, candidates, now=WED)
+
+    assert result.start == ()
+    assert result.skipped == {"816": "carry leeway 10% reached"}
+
+
+def test_B495_a_suggested_candidate_waits_with_the_refusal_as_its_reason(tmp_path):
+    """B495: `harness dispatch` asks `priority.admit` and hands the answer to the plan, which
+    skips the suggested item with that sentence and starts the asked-for one."""
+    candidates = [
+        Candidate(issue=50, created_at="2026-09-01T10:00:00Z", cls="suggested"),
+        Candidate(issue=66, created_at="2026-09-01T11:00:00Z", cls="directed"),
+    ]
+
+    result = suggested_plan(tmp_path, candidates, SUGGESTED_REFUSAL)
+
+    assert result.start == (66,)
+    assert result.skipped == {"50": SUGGESTED_REFUSAL}
+
+
+def test_B495_a_queue_of_only_refused_suggested_work_starts_nothing(tmp_path):
+    candidates = [Candidate(issue=n, created_at=f"2026-09-01T10:0{k}:00Z", cls="suggested")
+                  for k, n in enumerate((50, 51))]
+
+    result = suggested_plan(tmp_path, candidates, SUGGESTED_REFUSAL)
+
+    assert result.start == ()
+    assert result.skipped == {"50": SUGGESTED_REFUSAL, "51": SUGGESTED_REFUSAL}
+
+
+def test_B495_a_carried_suggested_item_still_goes_first(tmp_path):
+    """B495: the carry resumes as `unblock` work, which the priority gate admits, so a refusal
+    for suggested work leaves a carried suggested item at the front of the queue."""
+    candidates = [Candidate(issue=50, created_at="2026-09-01T10:00:00Z", cls="suggested")]
+
+    result = plan(now=MON_INSIDE, ledger=usage_ledger(weekly=0.30, carry=50),
+                  config=d3_config(tmp_path), candidates=tuple(candidates),
+                  merged=frozenset(), halted=False, suggested_refused=SUGGESTED_REFUSAL)
+
+    assert result.start == (50,)
+
+
+def test_B495_suggested_work_the_gate_admits_starts_as_before(tmp_path):
+    """B495: the other half, so a build that never starts suggested work cannot pass."""
+    candidates = [Candidate(issue=50, created_at="2026-09-01T10:00:00Z", cls="suggested")]
+
+    assert suggested_plan(tmp_path, candidates, None).start == (50,)
+
+
+# ---------------------------------------------------------------------------
 # B210 — outside the run window nothing else starts, with the exact reason
 # ---------------------------------------------------------------------------
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -268,6 +268,20 @@ def usage_governor(d3_config, frozen_clock, d3_ledger):
     return Governor(d3_config, frozen_clock, d3_ledger)
 
 
+#: A weekly run window the frozen clock (a Tuesday noon) sits outside of. The carry leeway
+#: applies only there, where the carried item runs on its exemption from the window (D81).
+OUTSIDE_WEEKLY_WINDOW: dict[str, str] = {
+    "RUN_WINDOW_START": "wed 08:00",
+    "RUN_WINDOW_END": "thu 20:00",
+}
+
+
+@pytest.fixture
+def carry_governor(make_d3_config, frozen_clock, d3_ledger):
+    """The governor for a carried item running outside a weekly window, on the leeway."""
+    return Governor(make_d3_config(**OUTSIDE_WEEKLY_WINDOW), frozen_clock, d3_ledger)
+
+
 def observe(ledger, **kwargs) -> None:
     ledger.observe_usage(d3_usage(**kwargs), FROZEN_NOW_ISO)
 
@@ -353,46 +367,46 @@ def test_b206_the_percentages_are_rounded_to_integers(usage_governor, d3_ledger)
 
 
 def test_b206_carry_uses_the_overrun_leeway_instead_of_the_weekly_stop(
-    usage_governor, d3_ledger
+    carry_governor, d3_ledger
 ):
     """B206: with carry=True the weekly rule uses OVERRUN_PCT — at 12 % weekly the carried item
     is out of leeway while an ordinary item is nowhere near the 90 % stop."""
     observe(d3_ledger, weekly=0.12, session=0.10)
 
-    assert usage_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
-    assert usage_governor.usage_stop_reason(carry=False) is None
+    assert carry_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
+    assert carry_governor.usage_stop_reason(carry=False) is None
 
 
-def test_b206_carry_under_the_leeway_may_continue(usage_governor, d3_ledger):
+def test_b206_carry_under_the_leeway_may_continue(carry_governor, d3_ledger):
     """B206: just after the weekly reset the carried item still has leeway — 5 % is under 10 %."""
     observe(d3_ledger, weekly=0.05, session=0.05)
 
-    assert usage_governor.usage_stop_reason(carry=True) is None
+    assert carry_governor.usage_stop_reason(carry=True) is None
 
 
-def test_b206_the_carry_leeway_boundary_is_inclusive(usage_governor, d3_ledger):
+def test_b206_the_carry_leeway_boundary_is_inclusive(carry_governor, d3_ledger):
     """B206: "until weekly usage reaches this" — at exactly 10 % the leeway is spent."""
     observe(d3_ledger, weekly=0.10, session=0.05)
 
-    assert usage_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
+    assert carry_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
 
 
 def test_b206_the_carry_leeway_reason_names_the_configured_overrun(make_d3_config, frozen_clock,
                                                                    d3_ledger):
     """B206: the leeway percentage in the reason is OVERRUN_PCT, rounded to an integer."""
-    config = make_d3_config(OVERRUN_PCT="25")
+    config = make_d3_config(OVERRUN_PCT="25", **OUTSIDE_WEEKLY_WINDOW)
     governor = Governor(config, frozen_clock, d3_ledger)
     observe(d3_ledger, weekly=0.30, session=0.05)
 
     assert governor.usage_stop_reason(carry=True) == "carry leeway 25% reached"
 
 
-def test_b206_a_carried_item_still_obeys_the_session_stop(usage_governor, d3_ledger):
-    """B206: only the weekly rule changes for a carried item — the five-hour stop still applies,
-    so a carry cannot burn through the session window."""
+def test_b206_a_carried_item_still_obeys_the_session_stop(carry_governor, d3_ledger):
+    """B206: only the weekly rule changes for a carried item — the five-hour stop still applies
+    on the leeway, so a carry cannot burn through the session window."""
     observe(d3_ledger, weekly=0.05, session=0.72)
 
-    assert usage_governor.usage_stop_reason(carry=True) == "session usage 72% >= 70%"
+    assert carry_governor.usage_stop_reason(carry=True) == "session usage 72% >= 70%"
 
 
 # --------------------------------------------------------------------------
@@ -521,34 +535,34 @@ def test_b208_usage_under_the_thresholds_still_authorizes(usage_governor, d3_led
     assert auth.max_turns == 80
 
 
-def test_b208_the_carried_item_is_judged_by_the_leeway(usage_governor, d3_ledger, store,
+def test_b208_the_carried_item_is_judged_by_the_leeway(carry_governor, d3_ledger, store,
                                                        item_id):
     """B208: authorize uses carry=<work_item_id == ledger.carry_issue()> — at 12 % weekly an
     ordinary item is funded while the carried one is out of leeway."""
     observe(d3_ledger, weekly=0.12, session=0.10)
     other_id = store.create_work_item(kind="issue", external_ref="issue:823", title="other")
 
-    assert isinstance(usage_governor.authorize(item_id, "implement"), Authorization)
+    assert isinstance(carry_governor.authorize(item_id, "implement"), Authorization)
 
     d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
 
     with pytest.raises(BudgetExhausted) as excinfo:
-        usage_governor.authorize(item_id, "implement")
+        carry_governor.authorize(item_id, "implement")
     assert str(excinfo.value) == "carry leeway 10% reached"
-    assert isinstance(usage_governor.authorize(other_id, "implement"), Authorization)
+    assert isinstance(carry_governor.authorize(other_id, "implement"), Authorization)
 
 
-def test_b208_a_carried_item_inside_the_leeway_is_authorized(usage_governor, d3_ledger,
+def test_b208_a_carried_item_inside_the_leeway_is_authorized(carry_governor, d3_ledger,
                                                              item_id):
     """B208: the point of the leeway — after the weekly reset the carried item continues."""
     observe(d3_ledger, weekly=0.03, session=0.05)
     d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
 
-    assert isinstance(usage_governor.authorize(item_id, "implement"), Authorization)
+    assert isinstance(carry_governor.authorize(item_id, "implement"), Authorization)
 
 
 def test_b208_a_carried_item_at_the_weekly_stop_is_refused_by_the_leeway(
-    usage_governor, d3_ledger, item_id
+    carry_governor, d3_ledger, item_id
 ):
     """B208: the leeway is stricter than the weekly stop, never looser — at 91 % the carried
     item is refused for leeway, and nothing is written."""
@@ -556,9 +570,78 @@ def test_b208_a_carried_item_at_the_weekly_stop_is_refused_by_the_leeway(
     d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
 
     with pytest.raises(BudgetExhausted) as excinfo:
-        usage_governor.authorize(item_id, "implement")
+        carry_governor.authorize(item_id, "implement")
 
     assert str(excinfo.value) == "carry leeway 10% reached"
+
+
+# --------------------------------------------------------------------------
+# B494 (D81) - the leeway bounds the carry's exemption from the window, nothing else
+# --------------------------------------------------------------------------
+
+
+def test_b494_inside_the_window_the_carried_item_is_held_to_the_ordinary_stops(
+    usage_governor, d3_ledger, item_id
+):
+    """B494: the frozen clock is inside `mon 08:00-tue 20:00`. At 12 % weekly an ordinary item
+    is funded, and so is the carried one, which the plan starts there first (D81)."""
+    observe(d3_ledger, weekly=0.12, session=0.10)
+    d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "carry leeway 10% reached")
+
+    assert usage_governor.usage_stop_reason(carry=True) is None
+    assert isinstance(usage_governor.authorize(item_id, "revise"), Authorization)
+
+
+def test_b494_inside_the_window_the_weekly_stop_still_binds_the_carried_item(
+    usage_governor, d3_ledger, item_id
+):
+    """B494: held to the ordinary stops means the weekly one too, with its own reason."""
+    observe(d3_ledger, weekly=0.91, session=0.10)
+    d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "weekly usage 91% >= 90%")
+
+    with pytest.raises(BudgetExhausted) as excinfo:
+        usage_governor.authorize(item_id, "revise")
+    assert str(excinfo.value) == "weekly usage 91% >= 90%"
+
+
+def test_b494_a_daily_window_gives_the_carry_no_leeway_even_outside_it(
+    make_d3_config, frozen_clock, d3_ledger
+):
+    """B494: under a daily window a carry never starts outside it (B413), so there is no
+    exemption for the leeway to bound. 12:00 UTC is outside `daily 13:00-15:00`."""
+    config = make_d3_config(RUN_WINDOW_START="daily 13:00", RUN_WINDOW_END="daily 15:00")
+    governor = Governor(config, frozen_clock, d3_ledger)
+    observe(d3_ledger, weekly=0.12, session=0.10)
+
+    assert governor.usage_stop_reason(carry=True) is None
+
+
+@pytest.mark.parametrize(
+    "minute, reason",
+    [(59, None), (61, "carry leeway 10% reached")],
+    ids=["before-the-end", "after-the-end"],
+)
+def test_b494_a_carry_meets_the_leeway_when_the_weekly_window_closes(
+    d3_config, d3_ledger, minute, reason
+):
+    """B494: the window ends Tuesday 20:00. A minute before, the carried item obeys the ordinary
+    stops; a minute after, it runs on its exemption and the leeway bounds it (D81)."""
+    at = datetime(2026, 9, 1, 19, 0, tzinfo=timezone.utc) + timedelta(minutes=minute)
+    governor = Governor(d3_config, FrozenClock(at), d3_ledger)
+    observe(d3_ledger, weekly=0.12, session=0.10)
+
+    assert governor.usage_stop_reason(carry=True) == reason
+
+
+def test_b494_a_block_opens_the_window_for_the_carry_as_well(carry_governor, d3_ledger):
+    """B494: a block opens the window (D77), so outside the weekly window the carried item is
+    an ordinary one while it stands."""
+    observe(d3_ledger, weekly=0.12, session=0.10)
+    assert carry_governor.usage_stop_reason(carry=True) == "carry leeway 10% reached"
+
+    d3_ledger.request_block("jgoetzmann", 1, datetime(2026, 9, 1, 12, tzinfo=timezone.utc))
+
+    assert carry_governor.usage_stop_reason(carry=True) is None
 
 
 # --------------------------------------------------------------------------

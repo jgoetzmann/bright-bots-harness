@@ -454,6 +454,18 @@ def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
     return record
 
 
+def _priority_refusal(ctx, config, item) -> str | None:
+    """Why the priority gate would refuse implementing this item now, or ``None`` (D81).
+
+    The question ``run_model`` asks at the item's first call. `implement` has no class of its
+    own, so the item's `via:` decides it.
+    """
+    cls = priority.class_of("implement", via=priority.via_of(item))
+    return priority.admit(
+        cls, store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+    )
+
+
 def _lease_for(ctx, item) -> Lease:
     run_id = f"item-{item.id}"
     return Lease(
@@ -965,6 +977,11 @@ EXPECTED_TOKEN_SCOPES: dict[str, str] = {
 }
 
 
+#: A classic scope that GitHub grants as part of a broader one. The broader scope satisfies the
+#: expectation and is still reported as unexpected (D81).
+_SCOPE_PARENT: dict[str, str] = {"public_repo": "repo"}
+
+
 def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False) -> list[str]:
     """The machine PAT's scopes, read off `X-OAuth-Scopes`; returns the warnings to file (B305).
 
@@ -994,7 +1011,11 @@ def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False
             + ", ".join(f"`{s}`" for s in expected)
             + " and nothing more (D67 expects a classic token)"
         ]
-    missing = [scope for scope in expected if scope not in scopes]
+    missing = [
+        scope
+        for scope in expected
+        if scope not in scopes and _SCOPE_PARENT.get(scope) not in scopes
+    ]
     extra = sorted(set(scopes) - set(expected))
     payload["token_scopes"] = {
         "checked": True,
@@ -1385,6 +1406,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                         "stopped_at_deadline": False,
                         "rate_limited_until": None,
                         "handed_off": None,
+                        "waiting": {},
                     },
                     f"outside run window ({window}); nothing started",
                     args,
@@ -1403,6 +1425,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "stopped_at_deadline": False,
                 "rate_limited_until": None,
                 "handed_off": None,
+                "waiting": {},
             },
             "nothing approved to run",
             args,
@@ -1416,6 +1439,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     stopped_at_deadline = False
     rate_limited_until: str | None = None
     handed_off: dict | None = None
+    waiting: dict[str, str] = {}
     ctx = None
 
     try:
@@ -1428,7 +1452,19 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if _past_until(until, ctx):
                     stopped_at_deadline = True
                     break
-                resumed = _is_carried(config, _require_item(ctx, item_id), carry)
+                item = _require_item(ctx, item_id)
+                resumed = _is_carried(config, item, carry)
+                # Asked before the clone, as the first model call would ask: work refused there
+                # has nothing to hand off, and a handoff takes the carry slot (D81). A priority
+                # refusal is this item's alone; a usage stop or rate limit refuses every item.
+                gate = None if resumed else _priority_refusal(ctx, config, item)
+                stop = ctx.governor.refusal(item_id) if gate is None else None
+                if gate is not None or stop is not None:
+                    LOG.info("run: item %s waits: %s", item_id, gate or stop)
+                    waiting[str(item_id)] = str(gate or stop)
+                    if stop is not None:
+                        break
+                    continue
                 if resumed:
                     LOG.debug("run: continue item %s", item_id)
                     lease = STAGES["revise"](ctx, item_id, source="continue")
@@ -1487,11 +1523,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         "stopped_at_deadline": stopped_at_deadline,
         "rate_limited_until": rate_limited_until,
         "handed_off": handed_off,
+        "waiting": waiting,
     }
     lines = [f"ran {len(ran)} item(s)"]
     lines.extend(f"  {p}" for p in packages)
     lines.extend(f"  delivered {url}" for url in delivered)
     lines.extend(f"  resumed item {i} from a handoff" for i in resumed_ids)
+    lines.extend(f"  item {i} waits: {why}" for i, why in waiting.items())
     if stopped_at_deadline:
         lines.append(f"stopped: --until {args.until} reached; no new stage started")
     if handed_off is not None:
@@ -1640,7 +1678,13 @@ def _depends_on(config, item) -> tuple[int, ...]:
     return ()
 
 
-def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
+#: `_build_plan`'s default: ask the priority gate only when a suggested candidate exists.
+_ASK = object()
+
+
+def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -> Plan:
+    """The dispatcher's plan for the approved items; ``suggested_refused`` is passed in when the
+    caller has already asked ``priority.admit("suggested", ...)``."""
     items = ctx.store.list_work_items(state="approved")
     forced = set(ctx.ledger.forced())
     candidates = [
@@ -1653,13 +1697,21 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         )
         for item in items
     ]
+    now = ctx.clock.now()
+    if suggested_refused is _ASK:
+        suggested_refused = (
+            priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now)
+            if any(c.cls == "suggested" for c in candidates)
+            else None
+        )
     return plan_dispatch(
-        now=ctx.clock.now(),
+        now=now,
         ledger=ctx.ledger,
         config=config,
         candidates=candidates,
         merged=ctx.store.merged_issues(),
         halted=repo_halted(_repo_root(args, config)) or halted(config.halt_file),
+        suggested_refused=suggested_refused,
     )
 
 
@@ -1699,7 +1751,11 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
-    plan = _build_plan(ctx, config, args)
+    # Asked once: the plan skips suggested work with it and the payload reports it.
+    blocked = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+    )
+    plan = _build_plan(ctx, config, args, suggested_refused=blocked)
     # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
     # the plan's JSON document, because workflows parse this stdout as a single document.
     payload = json.loads(plan.to_json())
@@ -1719,9 +1775,6 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     # `approved` candidates, and the head is often in `discovered` or `proposing`.
     payload["head"] = _head_reason(plan, rows, config)
     # Spelled out with `admitted`, since a bare `null` reason would read as "no suggestion".
-    blocked = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
-    )
     payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
     # The block is reported here rather than in `Plan.reason`: a new reason literal would have to
     # be classified as stopping or proceeding and would change `discover.yml`'s `case` contract,

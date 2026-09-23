@@ -46,16 +46,16 @@ def usage_stop(
 ) -> str | None:
     """The usage stop for this ledger, or ``None`` when nothing observed stops work (B206).
 
-    Pure, and the single implementation of the rule: ``Governor.usage_stop_reason`` delegates
-    here, so the admission check and the plan cannot disagree. With no observation at all the
-    answer is ``None``.
-
-    ``carry=True`` is the item carried across a weekly reset: it may keep going until weekly
-    usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``. ``now`` expires an
-    observation whose window has reset since, so both callers pass their clock.
+    The one rule: ``Governor.usage_stop_reason`` delegates here, so admission and the plan
+    cannot disagree. ``carry=True`` replaces the weekly stop with ``OVERRUN_PCT`` only while a
+    weekly window is closed and no block stands; otherwise the carry obeys the ordinary stops
+    (D81). ``now`` expires a reading whose window has reset; without it the leeway applies.
     """
     weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
+    if carry and now is not None:
+        window_open = in_run_window(config, now) or ledger.block_open(now)
+        carry = not window_open and not is_daily_window(config)
     if weekly is not None:
         if carry:
             leeway = float(config.overrun_pct)
@@ -105,10 +105,13 @@ def plan(
     candidates: Sequence[Candidate],
     merged: Collection[int],
     halted: bool,
+    suggested_refused: str | None = None,
 ) -> Plan:
     """Select in order: rate limit, halted, commanded halt, carry, usage stop, run window,
     then candidates.
 
+    ``suggested_refused`` is why ``priority.admit`` would refuse suggested work now, and each
+    suggested candidate is skipped with it, so the plan never starts what admission refuses.
     Pure: the same inputs give a byte-identical plan.
     """
     now_iso = iso(now)
@@ -124,8 +127,8 @@ def plan(
         why = f": {commanded['reason']}" if commanded.get("reason") else ""
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
-    # An item carried across a weekly reset resumes before anything else, on the overrun leeway
-    # instead of the weekly stop. It may run outside a weekly run window but not a daily one: a
+    # An item carried across a weekly reset resumes before anything else. It may run outside a
+    # weekly run window, on the overrun leeway instead of the weekly stop, but not a daily one: a
     # daily window is the one subscription session a day, and a carry resuming outside it would
     # run in the operator's own daytime session (B413).
     # A block is the operator lending the harness sessions they do not need, so it opens the
@@ -134,10 +137,11 @@ def plan(
     # usage stop deliberately, so a block can never outlive one.
     window_open = in_run_window(config, now) or ledger.block_open(now)
     carry_id = ledger.carry_issue()
+    carry_stop = usage_stop(ledger, config, carry=True, now=now) if carry_id is not None else None
     carry_ok = (
         carry_id is not None
         and (window_open or not is_daily_window(config))
-        and usage_stop(ledger, config, carry=True, now=now) is None
+        and carry_stop is None
     )
 
     stopped = usage_stop(ledger, config, now=now)
@@ -167,10 +171,18 @@ def plan(
         start.append(int(carry_id))
     for candidate in ordered:
         key = str(candidate.issue)
-        if carry_ok and int(candidate.issue) == carry_id:
-            continue
+        if carry_id is not None and int(candidate.issue) == carry_id:
+            if carry_ok:
+                continue
+            if carry_stop is not None:
+                # Forced or not, the governor judges this item as the carry (B494).
+                skipped[key] = carry_stop
+                continue
         if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
+            continue
+        if suggested_refused and candidate.cls == "suggested":
+            skipped[key] = suggested_refused
             continue
         unmet = [int(dep) for dep in candidate.depends_on if int(dep) not in merged_ids]
         if unmet:

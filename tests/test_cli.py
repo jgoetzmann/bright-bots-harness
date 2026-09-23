@@ -1997,8 +1997,7 @@ def test_B496_run_leaves_refused_suggested_work_unstarted_and_uncarried(
     tmp_path, monkeypatch, capsys
 ):
     """B496 (D81): `run --item` on suggested work the priority gate refuses starts no stage and
-    hands nothing off, so the item stays approved and the carry slot stays empty. A handoff
-    here took the carry slot, and the carry then wedged the queue."""
+    hands nothing off, so the item stays approved and the carry slot stays empty."""
     item_id = suggested_behind_asked_for_work(tmp_path, monkeypatch)
     ran: list = []
     record_stages(monkeypatch, ran)
@@ -2035,6 +2034,102 @@ def test_B496_run_implements_suggested_work_once_the_queue_is_clear(
     captured = capsys.readouterr()
     assert rc == 0, captured
     assert [entry[1] for entry in ran if entry[0] == "implement"] == [item_id], captured
+
+
+def add_approved_item(tmp_path: Path, ref: str, *, via: str = "requested") -> int:
+    """A second approved item beside the one `windowed_repo` makes."""
+    store = open_store(tmp_path)
+    item_id = store.create_work_item(kind="issue", external_ref=ref, title=ref, via=via)
+    for step in ("proposed", "approved"):
+        store.transition(item_id, step, reason="test setup")
+    store.close()
+    return item_id
+
+
+def observe_weekly(tmp_path: Path, weekly: float, at: datetime) -> None:
+    """Record one subscription reading in the ledger file, taken at `at`."""
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    path = tmp_path / "state" / "ledger.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["usage"] = {
+        "five_hour": {"utilization": 0.05, "resets_at": (at + timedelta(hours=4)).strftime(stamp)},
+        "seven_day": {"utilization": weekly, "resets_at": (at + timedelta(days=5)).strftime(stamp)},
+        "status": "allowed",
+        "observed_at": at.strftime(stamp),
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def test_B496_run_skips_refused_suggested_work_and_implements_the_next_item(
+    tmp_path, monkeypatch, capsys
+):
+    """B496: a priority refusal belongs to one item, so `harness run` records it and goes on to
+    the next approved item, which is the asked-for work the refusal was waiting on."""
+    suggested = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW, via="suggested")
+    asked_for = add_approved_item(tmp_path, "issue:817")
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert [entry[1] for entry in ran if entry[0] == "implement"] == [asked_for], ran
+    assert f"item {suggested} waits: work somebody asked for" in captured.out, captured.out
+
+
+def test_B496_run_at_a_usage_stop_starts_nothing_and_carries_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """B496: past the weekly stop the first item is refused before its clone, with nothing to
+    hand off, and a usage stop refuses every item, so the loop ends there."""
+    first = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
+    add_approved_item(tmp_path, "issue:817")
+    observe_weekly(tmp_path, 0.95, INSIDE_THE_WINDOW)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    handoffs: list = []
+    record_handoff(monkeypatch, handoffs)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["--json", "run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert ran == [] and handoffs == [], (ran, handoffs)
+    result = json.loads(captured.out)
+    assert result["waiting"] == {str(first): "weekly usage 95% >= 90%"}
+    assert result["handed_off"] is None
+
+
+def test_B496_run_outside_a_weekly_window_leaves_a_carry_past_its_leeway_waiting(
+    tmp_path, monkeypatch, capsys
+):
+    """B496: outside a weekly window only the carried item may start, on the leeway. With the
+    leeway spent it waits, still carried, instead of being cloned and handed back (D81)."""
+    item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
+    set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH)
+    write_carry_ledger(tmp_path, carry_issue=item_id)
+    align_ledger_window(tmp_path, OUTSIDE_THE_WINDOW)
+    observe_weekly(tmp_path, 0.30, OUTSIDE_THE_WINDOW)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    handoffs: list = []
+    record_handoff(monkeypatch, handoffs)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert ran == [] and handoffs == [], (ran, handoffs)
+    assert f"item {item_id} waits: carry leeway 10% reached" in captured.out, captured.out
+    ledger = json.loads((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger["window"]["carry"]["issue"] == item_id
 
 
 def test_B210_run_item_bypasses_the_run_window_but_still_reaches_the_stage(
@@ -2766,8 +2861,8 @@ def test_b305_the_feed_probe_and_the_scope_check_do_not_both_report_notification
 
 def test_b497_repo_covers_public_repo_and_is_still_named_as_broader(monkeypatch):
     """B497 (D81): GitHub grants `public_repo` as part of `repo`, so a token holding `repo`
-    can push and open pull requests. Doctor said it could not on every run, which hid the
-    one warning that was true: `repo` is broader than the harness needs."""
+    can push and open pull requests. The one warning left says `repo` is broader than the
+    harness needs."""
     _scopes_context(monkeypatch, ("notifications", "repo", "workflow"))
 
     (warning,), payload = _probe_scopes()

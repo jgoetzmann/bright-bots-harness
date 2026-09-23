@@ -46,15 +46,10 @@ def usage_stop(
 ) -> str | None:
     """The usage stop for this ledger, or ``None`` when nothing observed stops work (B206).
 
-    Pure, and the single implementation of the rule: ``Governor.usage_stop_reason`` delegates
-    here, so the admission check and the plan cannot disagree. With no observation at all the
-    answer is ``None``.
-
-    ``carry=True`` is the item carried across a weekly reset. Outside a weekly run window it
-    runs on the leeway, so it stops once weekly usage reaches ``OVERRUN_PCT``; inside the
-    window, or under a daily one, it is held to the ordinary stops like any other item (D81).
-    ``now`` expires an observation whose window has reset since, so both callers pass their
-    clock; without it the window is unknown and the leeway applies.
+    The one rule: ``Governor.usage_stop_reason`` delegates here, so admission and the plan
+    cannot disagree. ``carry=True`` replaces the weekly stop with ``OVERRUN_PCT`` only while a
+    weekly window is closed and no block stands; otherwise the carry obeys the ordinary stops
+    (D81). ``now`` expires a reading whose window has reset; without it the leeway applies.
     """
     weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
@@ -142,10 +137,11 @@ def plan(
     # usage stop deliberately, so a block can never outlive one.
     window_open = in_run_window(config, now) or ledger.block_open(now)
     carry_id = ledger.carry_issue()
+    carry_stop = usage_stop(ledger, config, carry=True, now=now) if carry_id is not None else None
     carry_ok = (
         carry_id is not None
         and (window_open or not is_daily_window(config))
-        and usage_stop(ledger, config, carry=True, now=now) is None
+        and carry_stop is None
     )
 
     stopped = usage_stop(ledger, config, now=now)
@@ -175,8 +171,13 @@ def plan(
         start.append(int(carry_id))
     for candidate in ordered:
         key = str(candidate.issue)
-        if carry_ok and int(candidate.issue) == carry_id:
-            continue
+        if carry_id is not None and int(candidate.issue) == carry_id:
+            if carry_ok:
+                continue
+            if carry_stop is not None:
+                # Forced or not, the governor judges this item as the carry (B494).
+                skipped[key] = carry_stop
+                continue
         if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
             continue

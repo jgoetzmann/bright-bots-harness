@@ -454,14 +454,13 @@ def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
     return record
 
 
-def _priority_refusal(ctx, config, item_id: int) -> str | None:
+def _priority_refusal(ctx, config, item) -> str | None:
     """Why the priority gate would refuse implementing this item now, or ``None`` (D81).
 
-    The same question ``run_model`` asks at the item's first call, asked before anything is
-    cloned: `implement` has no class of its own, so the item's `via:` decides it.
+    The question ``run_model`` asks at the item's first call. `implement` has no class of its
+    own, so the item's `via:` decides it.
     """
-    item = ctx.store.get_work_item(int(item_id))
-    cls = priority.class_of("implement", via=priority.via_of(item) if item else "")
+    cls = priority.class_of("implement", via=priority.via_of(item))
     return priority.admit(
         cls, store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
     )
@@ -1407,6 +1406,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                         "stopped_at_deadline": False,
                         "rate_limited_until": None,
                         "handed_off": None,
+                        "waiting": {},
                     },
                     f"outside run window ({window}); nothing started",
                     args,
@@ -1425,6 +1425,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "stopped_at_deadline": False,
                 "rate_limited_until": None,
                 "handed_off": None,
+                "waiting": {},
             },
             "nothing approved to run",
             args,
@@ -1451,7 +1452,19 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if _past_until(until, ctx):
                     stopped_at_deadline = True
                     break
-                resumed = _is_carried(config, _require_item(ctx, item_id), carry)
+                item = _require_item(ctx, item_id)
+                resumed = _is_carried(config, item, carry)
+                # Asked before the clone, as the first model call would ask: work refused there
+                # has nothing to hand off, and a handoff takes the carry slot (D81). A priority
+                # refusal is this item's alone; a usage stop or rate limit refuses every item.
+                gate = None if resumed else _priority_refusal(ctx, config, item)
+                stop = ctx.governor.refusal(item_id) if gate is None else None
+                if gate is not None or stop is not None:
+                    LOG.info("run: item %s waits: %s", item_id, gate or stop)
+                    waiting[str(item_id)] = str(gate or stop)
+                    if stop is not None:
+                        break
+                    continue
                 if resumed:
                     LOG.debug("run: continue item %s", item_id)
                     lease = STAGES["revise"](ctx, item_id, source="continue")
@@ -1462,13 +1475,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                         continue
                     resumed_ids.append(item_id)
                 else:
-                    # Asked before the clone, so work the priority gate refuses is neither
-                    # started nor handed off into the carry slot (D81).
-                    refused = _priority_refusal(ctx, config, item_id)
-                    if refused is not None:
-                        LOG.info("run: item %s waits: %s", item_id, refused)
-                        waiting[str(item_id)] = refused
-                        continue
                     LOG.debug("run: implement item %s", item_id)
                     lease = STAGES["implement"](ctx, item_id)
 
@@ -1672,7 +1678,13 @@ def _depends_on(config, item) -> tuple[int, ...]:
     return ()
 
 
-def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
+#: `_build_plan`'s default: ask the priority gate only when a suggested candidate exists.
+_ASK = object()
+
+
+def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -> Plan:
+    """The dispatcher's plan for the approved items; ``suggested_refused`` is passed in when the
+    caller has already asked ``priority.admit("suggested", ...)``."""
     items = ctx.store.list_work_items(state="approved")
     forced = set(ctx.ledger.forced())
     candidates = [
@@ -1686,6 +1698,12 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         for item in items
     ]
     now = ctx.clock.now()
+    if suggested_refused is _ASK:
+        suggested_refused = (
+            priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now)
+            if any(c.cls == "suggested" for c in candidates)
+            else None
+        )
     return plan_dispatch(
         now=now,
         ledger=ctx.ledger,
@@ -1693,9 +1711,7 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         candidates=candidates,
         merged=ctx.store.merged_issues(),
         halted=repo_halted(_repo_root(args, config)) or halted(config.halt_file),
-        suggested_refused=priority.admit(
-            "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now
-        ),
+        suggested_refused=suggested_refused,
     )
 
 
@@ -1735,7 +1751,11 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
-    plan = _build_plan(ctx, config, args)
+    # Asked once: the plan skips suggested work with it and the payload reports it.
+    blocked = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+    )
+    plan = _build_plan(ctx, config, args, suggested_refused=blocked)
     # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
     # the plan's JSON document, because workflows parse this stdout as a single document.
     payload = json.loads(plan.to_json())
@@ -1755,9 +1775,6 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     # `approved` candidates, and the head is often in `discovered` or `proposing`.
     payload["head"] = _head_reason(plan, rows, config)
     # Spelled out with `admitted`, since a bare `null` reason would read as "no suggestion".
-    blocked = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
-    )
     payload["suggested"] = {"admitted": blocked is None, "reason": blocked}
     # The block is reported here rather than in `Plan.reason`: a new reason literal would have to
     # be classified as stopping or proceeding and would change `discover.yml`'s `case` contract,

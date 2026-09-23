@@ -73,7 +73,7 @@ behaviors B200–B215). Numbering continues from D30. Every earlier decision, D1
 |---|---|---|
 | D31 | The subscription **does** expose its remaining allowance, and the harness now reads it: `claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call carrying `five_hour` and `seven_day` utilization as fractions 0..1 (shape quoted in full below). It comes from the inference response headers, so the long-lived `setup-token` receives it in Actions mode too. `seven_day.resetsAt` is the subscription's weekly reset. This supersedes DELIVERY-2-HANDOFF §1.3's "no signal exists" and D19's closing sentence. **B114 is kept, restated as a must-not-depend rule**: no decision may DEPEND on the signal being present. With `usage=None` — fake backend, older CLI, a call that never reached inference — the USD path (`WEEKLY_CAP_USD`, `RESERVE_PCT`, `PER_CALL_CAP_USD`) governs exactly as in Delivery 2, and `Governor.usage_stop_reason` returns `None` rather than guessing (B207). D74 removed that USD path; the amended B114 in D74 says what bounds a call when no reading is in force. | Verified 2026-09-03 on the CLI. A signal that is present on every real call and absent on every fake one cannot be made a precondition without making the fake backend a different program; keeping B114 as "must not depend" is what lets the same code path serve both, and it is the difference between reading a number and trusting it. Recorded as an amendment with its evidence rather than a silent reversal, per R12.3 — the same treatment D13 gave I-1. `WEEKLY_CAP_USD`'s default rises 25.00 → 400.00 for the same reason: a dollar cap sized for Delivery 2 would bind first and the usage stop would never be reached, which would make the new signal decorative. |
 | D32 | The run window for this account is `RUN_WINDOW_START=mon 08:00` to `RUN_WINDOW_END=tue 20:00` UTC, and `implement.yml` runs three crons inside it: `17 8,14,20 * * 1`, `17 2,8,14 * * 2`, `23 20 * * 2`. The window is enforced by the dispatcher; the crons only decide when GitHub wakes the job. The DST drift is documented in the workflow and in OPERATIONS §13.3 and deliberately **not** corrected in code. | The subscription's weekly allowance resets Tuesday 20:00 UTC (13:00 PT). Spreading work across the whole week meant hitting the seven-day ceiling on a random Thursday with a branch half-written; concentrating it at the head of the window means a fresh allowance and a known reset to plan against, and the Tuesday 20:23 row is the wrap-up that spends what is left before it evaporates. Round-the-clock `23 */6 * * *` also competed with interactive use every single day. On DST: GitHub cron is UTC and never shifts while the reset is quoted in Pacific time, so for the PST months the wrap-up fires 37 minutes early, sees the old window, and spends nothing extra; the following Monday picks the new one up. A skipped wrap-up per winter is cheaper than a timezone table in a cron file, and an operator who cares moves that row and `RUN_WINDOW_END` together. |
-| D33 | A usage stop or rate limit inside `implement`/`continue`/`package`/`deliver` is a **handoff**, not a failure: uncommitted work is committed as `wip: handoff (<reason>)`, the branch is pushed to the fork only (never upstream, never forced — B212), `runs/item-N/HANDOFF.md` is written and posted as a comment, the item returns to `approved`, the ledger records one `carry`, and the command exits 0. The carried item is the first thing the next run starts — even outside the run window — via `harness revise <id> --source continue`, spending against `OVERRUN_PCT` rather than `WEEKLY_USAGE_STOP_PCT` until it is green. | Delivery 2's answer to running out mid-item was to leave the item where it stood; with a weekly reset that lands in the middle of an implementation, that is a branch abandoned halfway every week. Carrying it costs one ledger field and one file, and `HANDOFF.md` is the same evidence a human would need anyway. Continuing outside the window is the one exception the window has, because the alternative is holding a half-finished branch for six days. The leeway is bounded (`OVERRUN_PCT`, default 10 %) so a carry cannot quietly consume the new week, and only one item is ever carried. Exit 0 because B120 already settled that a limit is a normal outcome: a red exit code here would page someone for the scheduler working as designed. |
+| D33 | A usage stop or rate limit inside `implement`/`continue`/`package`/`deliver` is a **handoff**, not a failure: uncommitted work is committed as `wip: handoff (<reason>)`, the branch is pushed to the fork only (never upstream, never forced — B212), `runs/item-N/HANDOFF.md` is written and posted as a comment, the item returns to `approved`, the ledger records one `carry`, and the command exits 0. The carried item is the first thing the next run starts — even outside the run window — via `harness revise <id> --source continue`, spending against `OVERRUN_PCT` rather than `WEEKLY_USAGE_STOP_PCT` until it is green. D81 narrows this: the leeway applies only while the carry runs outside a weekly window, and a stop met before an item's first call is no handoff. | Delivery 2's answer to running out mid-item was to leave the item where it stood; with a weekly reset that lands in the middle of an implementation, that is a branch abandoned halfway every week. Carrying it costs one ledger field and one file, and `HANDOFF.md` is the same evidence a human would need anyway. Continuing outside the window is the one exception the window has, because the alternative is holding a half-finished branch for six days. The leeway is bounded (`OVERRUN_PCT`, default 10 %) so a carry cannot quietly consume the new week, and only one item is ever carried. Exit 0 because B120 already settled that a limit is a normal outcome: a red exit code here would page someone for the scheduler working as designed. |
 
 **D31, in full — the `rate_limit_event` shape, verbatim as observed:**
 
@@ -1176,16 +1176,26 @@ Allocates B493.
 
 Decision:
 - `dispatcher.usage_stop(carry=True, now=...)` applies `OVERRUN_PCT` only while the carried item
-  runs on its exemption from the run window: the window is closed, no block stands, and the
-  window is weekly. Inside the window, and under a daily window at any hour, the carried item is
-  held to `WEEKLY_USAGE_STOP_PCT` and `SESSION_USAGE_STOP_PCT` like any other item. The plan and
-  the governor both pass their clock, so they read one rule. Without a clock the leeway applies.
-- `dispatcher.plan` takes `suggested_refused`, which `_build_plan` fills from
-  `priority.admit("suggested", ...)`. Each suggested candidate is skipped with that sentence.
-- `harness run` asks the same question before it implements an item that is not resumed. A
-  refused item prints `item N waits: <reason>`, and nothing is cloned or handed off.
+  runs on its exemption from the run window: the window is weekly and closed, and no block
+  stands. Otherwise the carried item is held to `WEEKLY_USAGE_STOP_PCT` and
+  `SESSION_USAGE_STOP_PCT` like any other item, so under a daily or unset window `OVERRUN_PCT`
+  has no effect. The plan and the governor both pass their clock and read this one rule; without
+  a clock the leeway applies.
+- `dispatcher.plan` skips the carried item with its stop reason when that rule refuses it,
+  forced or not, because the governor judges it as the carry either way.
+- `dispatcher.plan` takes `suggested_refused`, the answer of `priority.admit("suggested", ...)`,
+  and skips each suggested candidate with it. `harness dispatch` asks once and reports the same
+  answer; the local loop asks only when a suggested candidate exists.
+- `harness run` asks, before each clone, what the item's first model call would ask: the
+  priority gate for an item that is not resumed, then `Governor.refusal`, which is `authorize`'s
+  own check. A refused item prints `item N waits: <reason>`. A priority refusal belongs to one
+  item and the loop goes on; a usage stop or rate limit refuses every item and the loop ends.
 - `doctor` counts `repo` as holding `public_repo`, because GitHub grants it as part of `repo`.
   `repo` is still reported as broader than the harness needs.
+
+This narrows D33 in two places. The leeway bounds the carry only outside a weekly window, and a
+stop met before an item's first call is no handoff, because nothing has been done to hand off.
+A stop inside work that has started is still a handoff and still carries.
 
 Why. On 09-17 at 12:10Z item 50 (`via:suggested`) was planned, cloned, and refused at its first
 model call by the priority gate, because #66-#70 were outstanding. The refusal is a
@@ -1197,29 +1207,28 @@ refused it on the leeway, and the run handed it off again. Eleven runs from 09-1
 this way, and #51-#54 waited behind it with `slots full`.
 
 The two halves disagreed about what the leeway is. B209 says a carry past its leeway "waits like
-everything else"; B206 and B208 held the carried item to the leeway at every hour. D33 is where
-the leeway comes from, and it describes an exemption: the carried item resumes "even outside the
-run window", and the leeway stops it "quietly consuming the new week" there. Inside the window
-nothing is exempted, so there is nothing for the leeway to bound, and applying it made the carry
-the one item stricter than all the others. The B206 and B208 leeway tests now run outside a weekly
-window, where the rule and its reason are unchanged.
+everything else"; B206 and B208 held the carried item to the leeway at every hour. D33 grants the
+carried item a resume "even outside the run window", and bounds that grant so it cannot quietly
+consume the new week. Inside the window there is no grant to bound, and applying the leeway there
+made the carry the one item held tighter than all the others. The B206 and B208 leeway tests now
+run outside a weekly window, where the rule and its reason are unchanged.
 
 One gap is accepted. A carry that starts inside a weekly window and is still running when the
 window closes meets the leeway from that moment, and may be handed off; it goes first when the
 window reopens. A daily window never switches, because under one the carry has no exemption.
 
-The plan started work that admission refused, which cost a clone and `npm ci` on every run, and
-the handoff that followed took the carry slot. The carry resumes through `continue`, which is
-class `unblock`, so a carried suggested item would also have stepped around the gate that refused
-it. Nothing had been done, so there is nothing to hand off, and starting nothing is right. A
-refusal inside work that has started still hands off and carries, which D63 counts as unblocking.
+Starting work that admission refuses cost a clone and `npm ci` on every run, and the handoff that
+followed took the carry slot. The carry resumes through `continue`, which is class `unblock`, so a
+carried suggested item also steps around the gate that refused it. Asking first starts nothing
+and carries nothing. Because a priority refusal no longer ends `harness run`, one run can reach
+several approved items after it, as a run with no refusal already could.
 
 Item 50 stays in the ledger's carry slot. Its proposal was approved at gate 1, and the carry is
 how it resumes its fork branch, so it goes first in the next window.
 
-Rejected: skipping a carry the plan cannot admit, which holds that item until the next weekly reset
-while everything else runs; clearing the carry once its leeway is spent, which loses the
-`continue` path for work already on the fork; handing off without a carry on a priority refusal,
-which still clones and comments on every run.
+Rejected: skipping a carry the plan cannot admit inside the window, which holds that item until
+the next weekly reset while everything else runs; clearing the carry once its leeway is spent,
+which loses the `continue` path for work already on the fork; handing off without a carry on a
+priority refusal, which still clones and comments on every run.
 
 Allocates B494-B497.

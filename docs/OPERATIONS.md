@@ -586,13 +586,15 @@ The carried item is the first thing the next run starts. A weekly run window doe
 a daily one does, until it opens (D72). Outside a weekly window it may spend `OVERRUN_PCT` (`10`)
 of the fresh week; when that leeway is used up the reason is `carry leeway 10% reached`, the item
 is handed off again on the same branch, and it waits for the window. Inside the window, and under a
-daily window, it is held to `WEEKLY_USAGE_STOP_PCT` like any other item (D81). Green gates then
+daily window, it is held to `WEEKLY_USAGE_STOP_PCT` like any other item, and a block counts as
+the window being open (D81). Green gates then
 move it to `stage:packaged`, clear the carry, and run the ordinary package and deliver steps; red
 gates block it with nothing pushed (B136).
 
-A handoff follows a stop inside work that has started. Suggested work that the priority gate
-refuses is not started at all: `harness dispatch` skips it with the refusal as its reason, and
-`harness run --item` prints `item N waits: <reason>` without cloning (D81).
+A handoff follows a stop inside work that has started. Work refused before it starts is not
+started at all: `harness dispatch` skips suggested work the priority gate refuses, with the
+refusal as its reason, and `harness run` asks the priority gate and the usage stops before each
+clone and prints `item N waits: <reason>` for an item they refuse (D81).
 
 Only one item is carried at a time. To look at it, or to resume it by hand:
 

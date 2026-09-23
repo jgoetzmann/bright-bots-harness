@@ -51,9 +51,9 @@ class Governor:
         """Why the subscription signal says to stop, or ``None`` (B206).
 
         ``None`` while nothing has been observed: unknown admits. ``carry=True`` is the item
-        carried across a weekly reset, which runs on ``OVERRUN_PCT`` instead of
-        ``WEEKLY_USAGE_STOP_PCT``. The rule itself lives in
-        :func:`harness.dispatcher.usage_stop`, so admission and the plan cannot drift apart.
+        carried across a weekly reset, which runs on ``OVERRUN_PCT`` only outside a weekly run
+        window (D81). The rule itself lives in :func:`harness.dispatcher.usage_stop`, so
+        admission and the plan cannot drift apart.
         """
         # Through the clock, so a reading whose window has reset no longer refuses (B399).
         return usage_stop(self.ledger, self.config, carry=carry, now=self.clock.now())
@@ -73,19 +73,25 @@ class Governor:
             return int(turns[fallback])
         return int(turns[stage])
 
-    def authorize(self, work_item_id: int, stage: str) -> Authorization:
-        """Admit one call, or raise :class:`BudgetExhausted` naming what refused it.
+    def refusal(self, work_item_id: int) -> str | None:
+        """Why :meth:`authorize` would refuse a call for this item now, or ``None``.
 
         The usage stop is checked before the rate limit, so an operator past the weekly stop
         hears about the allowance rather than about a reset time (B208).
         """
         stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
         if stop is not None:
-            raise BudgetExhausted(stop)
+            return stop
+        if self.ledger.rate_limited(iso(self.clock.now())):
+            return f"rate limited until {self.ledger.window.get('rate_limited_until')}"
+        return None
+
+    def authorize(self, work_item_id: int, stage: str) -> Authorization:
+        """Admit one call, or raise :class:`BudgetExhausted` naming what refused it."""
+        refused = self.refusal(work_item_id)
+        if refused is not None:
+            raise BudgetExhausted(refused)
         now_iso = iso(self.clock.now())
-        if self.ledger.rate_limited(now_iso):
-            until = self.ledger.window.get("rate_limited_until")
-            raise BudgetExhausted(f"rate limited until {until}")
         auth = Authorization(
             id=f"{work_item_id}:{stage}:{now_iso}",
             work_item_id=work_item_id,

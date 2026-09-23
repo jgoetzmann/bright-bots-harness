@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -401,12 +401,12 @@ def test_b206_the_carry_leeway_reason_names_the_configured_overrun(make_d3_confi
     assert governor.usage_stop_reason(carry=True) == "carry leeway 25% reached"
 
 
-def test_b206_a_carried_item_still_obeys_the_session_stop(usage_governor, d3_ledger):
-    """B206: only the weekly rule changes for a carried item — the five-hour stop still applies,
-    so a carry cannot burn through the session window."""
+def test_b206_a_carried_item_still_obeys_the_session_stop(carry_governor, d3_ledger):
+    """B206: only the weekly rule changes for a carried item — the five-hour stop still applies
+    on the leeway, so a carry cannot burn through the session window."""
     observe(d3_ledger, weekly=0.05, session=0.72)
 
-    assert usage_governor.usage_stop_reason(carry=True) == "session usage 72% >= 70%"
+    assert carry_governor.usage_stop_reason(carry=True) == "session usage 72% >= 70%"
 
 
 # --------------------------------------------------------------------------
@@ -584,8 +584,7 @@ def test_b494_inside_the_window_the_carried_item_is_held_to_the_ordinary_stops(
     usage_governor, d3_ledger, item_id
 ):
     """B494: the frozen clock is inside `mon 08:00-tue 20:00`. At 12 % weekly an ordinary item
-    is funded and so is the carried one, which the plan starts there first; refusing it on the
-    leeway handed it straight back on every run (D81)."""
+    is funded, and so is the carried one, which the plan starts there first (D81)."""
     observe(d3_ledger, weekly=0.12, session=0.10)
     d3_ledger.set_carry(item_id, FROZEN_NOW_ISO, "carry leeway 10% reached")
 
@@ -615,6 +614,23 @@ def test_b494_a_daily_window_gives_the_carry_no_leeway_even_outside_it(
     observe(d3_ledger, weekly=0.12, session=0.10)
 
     assert governor.usage_stop_reason(carry=True) is None
+
+
+@pytest.mark.parametrize(
+    "minute, reason",
+    [(59, None), (61, "carry leeway 10% reached")],
+    ids=["before-the-end", "after-the-end"],
+)
+def test_b494_a_carry_meets_the_leeway_when_the_weekly_window_closes(
+    d3_config, d3_ledger, minute, reason
+):
+    """B494: the window ends Tuesday 20:00. A minute before, the carried item obeys the ordinary
+    stops; a minute after, it runs on its exemption and the leeway bounds it (D81)."""
+    at = datetime(2026, 9, 1, 19, 0, tzinfo=timezone.utc) + timedelta(minutes=minute)
+    governor = Governor(d3_config, FrozenClock(at), d3_ledger)
+    observe(d3_ledger, weekly=0.12, session=0.10)
+
+    assert governor.usage_stop_reason(carry=True) == reason
 
 
 def test_b494_a_block_opens_the_window_for_the_carry_as_well(carry_governor, d3_ledger):

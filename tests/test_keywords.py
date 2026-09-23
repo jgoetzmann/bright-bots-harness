@@ -720,7 +720,7 @@ def test_a_refused_notifications_feed_still_delivers_the_inbox():
                 node_id="IC_inbox99")
 
     class Refusing(FakeGh):
-        def notifications(self, since):
+        def notifications(self, since, *, include_read=False):
             raise GitHubError("github returned 403 ...: Missing the 'notifications' scope.")
 
     gh = Refusing(comments={(SELF_REPO, 19): [c]})
@@ -738,7 +738,7 @@ def test_the_cursor_does_not_advance_over_a_feed_that_never_arrived():
     ledger = fresh_ledger(CURSOR)
 
     class Refusing(FakeGh):
-        def notifications(self, since):
+        def notifications(self, since, *, include_read=False):
             raise GitHubError("403")
 
     sweep(Refusing(), ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
@@ -1068,6 +1068,52 @@ def _command_on(number: int, *, pull: bool = False) -> list:
     gh.get = lambda path: {"number": number} | ({"pull_request": {}} if pull else {})
     return sweep(gh, ledger=fresh_ledger(CURSOR), trusted=TRUSTED, now_iso=NOW_ISO,
                  self_repo=SELF_REPO, upstream_repo=UPSTREAM, thread=number)
+
+
+def test_B507_the_sweep_reads_threads_already_marked_read():
+    """B507 (D85): the harness's own activity on a thread marks its notification read, so the
+    sweep asks for read threads too, inside its window; seen ids still answer each comment once."""
+    gh, _ = sweep_fixture()
+
+    run_sweep(gh, fresh_ledger(CURSOR))
+
+    calls = [kwargs for name, _args, kwargs in gh.calls if name == "notifications"]
+    assert calls == [{"include_read": True}]
+
+
+class ReadOnlyWhenAskedGh(FakeGh):
+    """A feed whose one thread is already marked read: it is served only to `include_read`."""
+
+    def notifications(self, *args, include_read=False, **kwargs):
+        self.calls.append(("notifications", args, {"include_read": include_read}))
+        return list(self._threads) if include_read else []
+
+
+def test_B507_a_command_on_a_thread_marked_read_is_found():
+    """B507: the account's own reply marked the thread read before the sweep saw the command."""
+    promote = comment(login="jgoetzmann", association="OWNER", body="/harness promote all",
+                      id=64, node_id="IC_read")
+    gh = ReadOnlyWhenAskedGh(threads=[thread(SELF_REPO, 64, "Issue", "t64")],
+                             comments={(SELF_REPO, 64): [promote]})
+
+    cmds = run_sweep(gh, fresh_ledger(CURSOR))
+
+    assert [(c.verb, c.surface, c.number) for c in cmds] == [("promote", "issue", 64)]
+
+
+def test_B507_a_lost_ledger_replays_nothing_older_than_the_window():
+    """B507: with no cursor and no seen ids, a thread the feed names is read only inside the
+    first sweep's window, so a command it answered long ago is not run again."""
+    old = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=1,
+                  node_id="IC_old", created_at="2026-08-20T00:00:00Z")
+    new = comment(login="jgoetzmann", association="OWNER", body="/harness stop", id=2,
+                  node_id="IC_new")
+    gh = FakeGh(threads=[thread(SELF_REPO, 12, "Issue", "t12")],
+                comments={(SELF_REPO, 12): [old, new]})
+
+    cmds = run_sweep(gh, fresh_ledger(None))
+
+    assert [(c.verb, c.comment_id) for c in cmds] == [("stop", "IC_new")]
 
 
 def test_B506_the_thread_a_comment_event_names_is_read_without_its_notification():

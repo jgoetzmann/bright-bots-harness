@@ -836,11 +836,13 @@ class GitHubClient(GitHubReadOnly):
 
     # ------------------------------------------------------------------- reads
 
-    def notifications(self, since_iso: str | None) -> list[dict]:
+    def notifications(self, since_iso: str | None, *, include_read: bool = False) -> list[dict]:
+        """Notification threads updated since ``since_iso``. ``include_read`` adds threads
+        already marked read, which the account's own activity on a thread does (D85)."""
         pairs: list[tuple[str, str]] = []
         if since_iso:
             pairs.append(("since", str(since_iso)))
-        pairs.append(("all", "false"))
+        pairs.append(("all", "true" if include_read else "false"))
         pairs.append(("per_page", str(PER_PAGE)))
         return self._paginate(f"/notifications?{_query(pairs)}")
 

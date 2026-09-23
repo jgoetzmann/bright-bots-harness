@@ -527,7 +527,7 @@ def sweep(
     commands: list[Command] = []
     seen_threads: set[tuple[str, int]] = set()
 
-    def read(repo: str, surface: str, number: int) -> None:
+    def read(repo: str, surface: str, number: int, *, bound: str = "") -> None:
         if (repo.lower(), number) in seen_threads:
             return
         seen_threads.add((repo.lower(), number))
@@ -537,6 +537,14 @@ def sweep(
         if surface in ("proposal_pr", "delivery_pr"):
             # Only a pull request has review comments; asking an issue for them is a 404.
             rows += [(row, True) for row in gh.pull_review_comments(repo, number)]
+        if bound:
+            # A thread the feed names is read inside the sweep's window only, so a lost ledger,
+            # which forgets every seen id, cannot replay its old commands (D85).
+            rows = [
+                (row, review)
+                for row, review in rows
+                if str(row.get("updated_at") or row.get("created_at") or "") >= bound
+            ]
         for comment, review in rows:
             found = commands_from(
                 comment,
@@ -573,7 +581,9 @@ def sweep(
             surface = "proposal_pr" if data.get("pull_request") is not None else "issue"
             read(self_repo, surface, int(thread))
     try:
-        notifications = list(gh.notifications(since))
+        # Read threads too: the harness's own reply or pruning on a thread marks it read, which
+        # would hide a command posted there just before (D85).
+        notifications = list(gh.notifications(since, include_read=True))
     except GitHubError as exc:
         # The notifications endpoint needs the `notifications` scope, and a token rotated
         # without it is refused here; doctor names the gap (B305). Losing the feed costs cold
@@ -590,7 +600,7 @@ def sweep(
         )
         if target is None:
             continue
-        read(*(target[0], target[1], target[2]))
+        read(target[0], target[1], target[2], bound=since)
     # Advanced only on a feed that came back. Advancing after a failure would skip the window
     # the failed call covered, and those mentions would never be read.
     ledger.cursors["notifications_last_seen"] = now_iso

@@ -383,7 +383,7 @@ class SweepGh:
         self.review_comments = dict(review_comments)
         self.calls: list[str] = []
 
-    def notifications(self, since):
+    def notifications(self, since, *, include_read=False):
         self.calls.append("notifications")
         return list(self.threads)
 
@@ -471,7 +471,7 @@ class UsersGh:
             return {"login": login, "id": self.users[login.lower()], "type": "User"}
         raise GitHubError(f'github returned 403 for {url}: {{"message":"Must have push access"}}')
 
-    def notifications(self, since):  # pragma: no cover - tier 0 never asks
+    def notifications(self, since, *, include_read=False):  # pragma: no cover - tier 0 never asks
         raise GitHubError("notifications need a token")
 
 

@@ -982,3 +982,24 @@ def test_B502_issues_created_by_asks_for_every_state_and_drops_pull_requests(tmp
     (url,) = opener.urls
     assert "/repos/o/r/issues?" in url
     assert "creator=jgoetzmann-bot" in url and "state=all" in url
+
+
+def test_B507_notifications_include_read_threads_only_when_asked(tmp_path):
+    """B507 (D85): the sweep asks for read threads too; doctor's cheap probe does not."""
+    from harness.clock import FrozenClock
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    opener = FakeOpener(FakeResponse([]), FakeResponse([]))
+    client = GitHubClient("o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, opener=opener)
+
+    client.notifications("2026-09-02T11:30:00Z", include_read=True)
+    client.notifications(None)
+
+    swept, probed = opener.urls
+    assert "all=true" in swept and "since=2026-09-02T11%3A30%3A00Z" in swept
+    assert "all=false" in probed

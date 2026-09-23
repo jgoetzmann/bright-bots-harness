@@ -1171,3 +1171,55 @@ untouched: `.harness/HALT` is read in implement's first step, before checkout, a
 local. `watchdog.yml` already counts a cancelled `feedback` run as a missed slot and pages at four.
 
 Allocates B493.
+
+## D81 / B494-B497 - the carry leeway bounds the carry's exemption, and refused work never starts
+
+Decision:
+- `dispatcher.usage_stop(carry=True, now=...)` applies `OVERRUN_PCT` only while the carried item
+  runs on its exemption from the run window: the window is closed, no block stands, and the
+  window is weekly. Inside the window, and under a daily window at any hour, the carried item is
+  held to `WEEKLY_USAGE_STOP_PCT` and `SESSION_USAGE_STOP_PCT` like any other item. The plan and
+  the governor both pass their clock, so they read one rule. Without a clock the leeway applies.
+- `dispatcher.plan` takes `suggested_refused`, which `_build_plan` fills from
+  `priority.admit("suggested", ...)`. Each suggested candidate is skipped with that sentence.
+- `harness run` asks the same question before it implements an item that is not resumed. A
+  refused item prints `item N waits: <reason>`, and nothing is cloned or handed off.
+- `doctor` counts `repo` as holding `public_repo`, because GitHub grants it as part of `repo`.
+  `repo` is still reported as broader than the harness needs.
+
+Why. On 09-17 at 12:10Z item 50 (`via:suggested`) was planned, cloned, and refused at its first
+model call by the priority gate, because #66-#70 were outstanding. The refusal is a
+`BudgetExhausted`, so the run handed the item off, and the handoff put it in the carry slot. From
+then on every in-window run did the same thing. The plan found the leeway spent (weekly usage at
+27%, then 87%, against 10%), so the carry got no priority, but usage was under the 90% stop, so it
+planned item 50 again as the oldest ordinary candidate. The governor judged it as the carry,
+refused it on the leeway, and the run handed it off again. Eleven runs from 09-18 to 09-22 ended
+this way, and #51-#54 waited behind it with `slots full`.
+
+The two halves disagreed about what the leeway is. B209 says a carry past its leeway "waits like
+everything else"; B206 and B208 held the carried item to the leeway at every hour. D33 is where
+the leeway comes from, and it describes an exemption: the carried item resumes "even outside the
+run window", and the leeway stops it "quietly consuming the new week" there. Inside the window
+nothing is exempted, so there is nothing for the leeway to bound, and applying it made the carry
+the one item stricter than all the others. The B206 and B208 leeway tests now run outside a weekly
+window, where the rule and its reason are unchanged.
+
+One gap is accepted. A carry that starts inside a weekly window and is still running when the
+window closes meets the leeway from that moment, and may be handed off; it goes first when the
+window reopens. A daily window never switches, because under one the carry has no exemption.
+
+The plan started work that admission refused, which cost a clone and `npm ci` on every run, and
+the handoff that followed took the carry slot. The carry resumes through `continue`, which is
+class `unblock`, so a carried suggested item would also have stepped around the gate that refused
+it. Nothing had been done, so there is nothing to hand off, and starting nothing is right. A
+refusal inside work that has started still hands off and carries, which D63 counts as unblocking.
+
+Item 50 stays in the ledger's carry slot. Its proposal was approved at gate 1, and the carry is
+how it resumes its fork branch, so it goes first in the next window.
+
+Rejected: skipping a carry the plan cannot admit, which holds that item until the next weekly reset
+while everything else runs; clearing the carry once its leeway is spent, which loses the
+`continue` path for work already on the fork; handing off without a carry on a priority refusal,
+which still clones and comments on every run.
+
+Allocates B494-B497.

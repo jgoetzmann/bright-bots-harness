@@ -454,6 +454,19 @@ def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
     return record
 
 
+def _priority_refusal(ctx, config, item_id: int) -> str | None:
+    """Why the priority gate would refuse implementing this item now, or ``None`` (D81).
+
+    The same question ``run_model`` asks at the item's first call, asked before anything is
+    cloned: `implement` has no class of its own, so the item's `via:` decides it.
+    """
+    item = ctx.store.get_work_item(int(item_id))
+    cls = priority.class_of("implement", via=priority.via_of(item) if item else "")
+    return priority.admit(
+        cls, store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+    )
+
+
 def _lease_for(ctx, item) -> Lease:
     run_id = f"item-{item.id}"
     return Lease(
@@ -965,6 +978,11 @@ EXPECTED_TOKEN_SCOPES: dict[str, str] = {
 }
 
 
+#: A classic scope that GitHub grants as part of a broader one. The broader scope satisfies the
+#: expectation and is still reported as unexpected (D81).
+_SCOPE_PARENT: dict[str, str] = {"public_repo": "repo"}
+
+
 def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False) -> list[str]:
     """The machine PAT's scopes, read off `X-OAuth-Scopes`; returns the warnings to file (B305).
 
@@ -994,7 +1012,11 @@ def _doctor_token_scopes(config, args, payload, *, feed_unreadable: bool = False
             + ", ".join(f"`{s}`" for s in expected)
             + " and nothing more (D67 expects a classic token)"
         ]
-    missing = [scope for scope in expected if scope not in scopes]
+    missing = [
+        scope
+        for scope in expected
+        if scope not in scopes and _SCOPE_PARENT.get(scope) not in scopes
+    ]
     extra = sorted(set(scopes) - set(expected))
     payload["token_scopes"] = {
         "checked": True,
@@ -1416,6 +1438,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     stopped_at_deadline = False
     rate_limited_until: str | None = None
     handed_off: dict | None = None
+    waiting: dict[str, str] = {}
     ctx = None
 
     try:
@@ -1439,6 +1462,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                         continue
                     resumed_ids.append(item_id)
                 else:
+                    # Asked before the clone, so work the priority gate refuses is neither
+                    # started nor handed off into the carry slot (D81).
+                    refused = _priority_refusal(ctx, config, item_id)
+                    if refused is not None:
+                        LOG.info("run: item %s waits: %s", item_id, refused)
+                        waiting[str(item_id)] = refused
+                        continue
                     LOG.debug("run: implement item %s", item_id)
                     lease = STAGES["implement"](ctx, item_id)
 
@@ -1487,11 +1517,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         "stopped_at_deadline": stopped_at_deadline,
         "rate_limited_until": rate_limited_until,
         "handed_off": handed_off,
+        "waiting": waiting,
     }
     lines = [f"ran {len(ran)} item(s)"]
     lines.extend(f"  {p}" for p in packages)
     lines.extend(f"  delivered {url}" for url in delivered)
     lines.extend(f"  resumed item {i} from a handoff" for i in resumed_ids)
+    lines.extend(f"  item {i} waits: {why}" for i, why in waiting.items())
     if stopped_at_deadline:
         lines.append(f"stopped: --until {args.until} reached; no new stage started")
     if handed_off is not None:
@@ -1653,13 +1685,17 @@ def _build_plan(ctx, config, args: argparse.Namespace) -> Plan:
         )
         for item in items
     ]
+    now = ctx.clock.now()
     return plan_dispatch(
-        now=ctx.clock.now(),
+        now=now,
         ledger=ctx.ledger,
         config=config,
         candidates=candidates,
         merged=ctx.store.merged_issues(),
         halted=repo_halted(_repo_root(args, config)) or halted(config.halt_file),
+        suggested_refused=priority.admit(
+            "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now
+        ),
     )
 
 

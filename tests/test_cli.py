@@ -84,12 +84,12 @@ def open_store(tmp_path: Path) -> Store:
     return Store(tmp_path / "harness.db")
 
 
-def make_item(tmp_path: Path, *, state: str) -> int:
+def make_item(tmp_path: Path, *, state: str, via: str = "requested") -> int:
     """Create one work item and walk it to `state` through legal transitions."""
     store = open_store(tmp_path)
     store.migrate()
     item_id = store.create_work_item(
-        kind="issue", external_ref="issue:816", title="bundle size check misreports esm"
+        kind="issue", external_ref="issue:816", title="bundle size check misreports esm", via=via
     )
     for step in {"discovered": [], "proposed": ["proposed"], "approved": ["proposed", "approved"]}[
         state
@@ -1877,12 +1877,12 @@ def align_ledger_window(tmp_path: Path, at: datetime) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
-def windowed_repo(tmp_path: Path, monkeypatch, at: datetime) -> int:
+def windowed_repo(tmp_path: Path, monkeypatch, at: datetime, via: str = "requested") -> int:
     """A repo whose .env carries D3_ENV_LINES' window, one approved item, clock frozen at `at`."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, **D3_WINDOW)
     assert cli.main(["init"]) == 0
-    item_id = make_item(tmp_path, state="approved")
+    item_id = make_item(tmp_path, state="approved", via=via)
     write_spec(tmp_path, item_id)
     write_carry_ledger(tmp_path)  # carry is None: nothing is being carried in these tests
     align_ledger_window(tmp_path, at)
@@ -1966,6 +1966,75 @@ def test_B209_run_inside_the_run_window_starts_the_approved_item(
     assert "outside run window" not in captured.out + captured.err, captured.out
     assert "implement" in stage_names(ran), f"an open window must start the item: {ran} {captured}"
     assert [entry[1] for entry in ran if entry[0] == "implement"] == [item_id]
+
+
+def suggested_behind_asked_for_work(tmp_path: Path, monkeypatch) -> int:
+    """An approved `via:suggested` item, inside the window, with an asked-for item outstanding."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW, via="suggested")
+    store = open_store(tmp_path)
+    store.create_work_item(kind="issue", external_ref="issue:900", title="asked for")
+    store.close()
+    return item_id
+
+
+def test_B495_dispatch_skips_suggested_work_the_priority_gate_refuses(
+    tmp_path, monkeypatch, capsys
+):
+    """B495 (D81): the plan quotes the refusal for the suggested item instead of starting it,
+    so `implement.yml` never clones work that the first model call would refuse."""
+    item_id = suggested_behind_asked_for_work(tmp_path, monkeypatch)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["dispatch"]) == 0
+
+    plan_doc = json.loads(capsys.readouterr().out)
+    assert plan_doc["start"] == []
+    assert "still outstanding" in plan_doc["skipped"][str(item_id)]
+
+
+def test_B496_run_leaves_refused_suggested_work_unstarted_and_uncarried(
+    tmp_path, monkeypatch, capsys
+):
+    """B496 (D81): `run --item` on suggested work the priority gate refuses starts no stage and
+    hands nothing off, so the item stays approved and the carry slot stays empty. A handoff
+    here took the carry slot, and the carry then wedged the queue."""
+    item_id = suggested_behind_asked_for_work(tmp_path, monkeypatch)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_everything(monkeypatch)  # a clone or a request here would be the bug
+    capsys.readouterr()
+
+    rc = cli.main(["run", "--item", str(item_id)])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert ran == [], f"refused work may not start a stage: {ran}"
+    assert f"item {item_id} waits: work somebody asked for is still outstanding" in captured.out
+    assert item_state(tmp_path, item_id) == "approved"
+    ledger = json.loads((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
+    assert not ledger["window"].get("carry")
+
+
+def test_B496_run_implements_suggested_work_once_the_queue_is_clear(
+    tmp_path, monkeypatch, capsys
+):
+    """B496: the other half. With nothing asked for outstanding the same item is implemented,
+    so a build that refuses all suggested work cannot pass the test above."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW, via="suggested")
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    clone_dir = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run", "--item", str(item_id)])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert [entry[1] for entry in ran if entry[0] == "implement"] == [item_id], captured
 
 
 def test_B210_run_item_bypasses_the_run_window_but_still_reaches_the_stage(
@@ -2693,6 +2762,20 @@ def test_b305_the_feed_probe_and_the_scope_check_do_not_both_report_notification
     warnings, _payload = _probe_scopes(feed_unreadable=True)
 
     assert warnings == []
+
+
+def test_b497_repo_covers_public_repo_and_is_still_named_as_broader(monkeypatch):
+    """B497 (D81): GitHub grants `public_repo` as part of `repo`, so a token holding `repo`
+    can push and open pull requests. Doctor said it could not on every run, which hid the
+    one warning that was true: `repo` is broader than the harness needs."""
+    _scopes_context(monkeypatch, ("notifications", "repo", "workflow"))
+
+    (warning,), payload = _probe_scopes()
+
+    assert "lacks" not in warning
+    assert "`repo`" in warning
+    assert payload["token_scopes"]["missing"] == []
+    assert payload["token_scopes"]["unexpected"] == ["repo"]
 
 
 def test_b305_a_scope_beyond_the_expected_set_is_a_warning(monkeypatch):

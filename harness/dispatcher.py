@@ -50,12 +50,17 @@ def usage_stop(
     here, so the admission check and the plan cannot disagree. With no observation at all the
     answer is ``None``.
 
-    ``carry=True`` is the item carried across a weekly reset: it may keep going until weekly
-    usage reaches ``OVERRUN_PCT`` instead of ``WEEKLY_USAGE_STOP_PCT``. ``now`` expires an
-    observation whose window has reset since, so both callers pass their clock.
+    ``carry=True`` is the item carried across a weekly reset. Outside a weekly run window it
+    runs on the leeway, so it stops once weekly usage reaches ``OVERRUN_PCT``; inside the
+    window, or under a daily one, it is held to the ordinary stops like any other item (D81).
+    ``now`` expires an observation whose window has reset since, so both callers pass their
+    clock; without it the window is unknown and the leeway applies.
     """
     weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
+    if carry and now is not None:
+        window_open = in_run_window(config, now) or ledger.block_open(now)
+        carry = not window_open and not is_daily_window(config)
     if weekly is not None:
         if carry:
             leeway = float(config.overrun_pct)
@@ -105,10 +110,13 @@ def plan(
     candidates: Sequence[Candidate],
     merged: Collection[int],
     halted: bool,
+    suggested_refused: str | None = None,
 ) -> Plan:
     """Select in order: rate limit, halted, commanded halt, carry, usage stop, run window,
     then candidates.
 
+    ``suggested_refused`` is why ``priority.admit`` would refuse suggested work now, and each
+    suggested candidate is skipped with it, so the plan never starts what admission refuses.
     Pure: the same inputs give a byte-identical plan.
     """
     now_iso = iso(now)
@@ -124,8 +132,8 @@ def plan(
         why = f": {commanded['reason']}" if commanded.get("reason") else ""
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
-    # An item carried across a weekly reset resumes before anything else, on the overrun leeway
-    # instead of the weekly stop. It may run outside a weekly run window but not a daily one: a
+    # An item carried across a weekly reset resumes before anything else. It may run outside a
+    # weekly run window, on the overrun leeway instead of the weekly stop, but not a daily one: a
     # daily window is the one subscription session a day, and a carry resuming outside it would
     # run in the operator's own daytime session (B413).
     # A block is the operator lending the harness sessions they do not need, so it opens the
@@ -171,6 +179,9 @@ def plan(
             continue
         if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
+            continue
+        if suggested_refused and candidate.cls == "suggested":
+            skipped[key] = suggested_refused
             continue
         unmet = [int(dep) for dep in candidate.depends_on if int(dep) not in merged_ids]
         if unmet:

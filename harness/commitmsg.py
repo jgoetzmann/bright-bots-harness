@@ -75,6 +75,16 @@ def _wrap_block(text: str) -> list[str]:
     return lines
 
 
+def co_authored_by(co_author: str) -> list[str]:
+    """The `Co-authored-by` trailer for ``co_author`` (``Name <email>``), or none when empty.
+
+    GitHub credits the named account on the commit and on a squash merge that keeps the commit
+    messages (D82).
+    """
+    value = (co_author or "").strip()
+    return [f"Co-authored-by: {value}"] if value else []
+
+
 def build(type_: str, scope: str | None, subject: str, body: str, footers: Sequence[str]) -> str:
     """Assemble a commit message that satisfies every rule ``validate()`` checks."""
     kind = (type_ or "").strip().lower()

@@ -122,6 +122,8 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
     # How many audit/fix cycles run before delivery; 0 is off (D70).
     ("MAX_SELF_AUDIT_CYCLES", "max_self_audit_cycles"),
+    # Who every harness commit credits as co-author (D82).
+    ("CO_AUTHOR", "co_author"),
 )
 
 # An item left in a running state longer than this with no live run is reset (B147).

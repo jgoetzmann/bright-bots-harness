@@ -1209,6 +1209,25 @@ def test_B212_handoff_commits_a_dirty_tree_through_implement_commit_before_pushi
     assert order == ["commit", "push"], order
 
 
+def test_B500_the_handoff_commit_credits_the_co_author(tmp_path, monkeypatch):
+    """B500 (D82): the wip commit a handoff makes carries the same trailer as every other
+    harness commit, after a blank line."""
+    import dataclasses
+
+    from harness.stages import implement as implement_mod
+
+    s = setup_handoff(tmp_path)
+    co_author = "jgoetzmann <95732896+jgoetzmann@users.noreply.github.com>"
+    s.ctx.config = dataclasses.replace(s.ctx.config, co_author=co_author)
+    _w(s.repo / "src" / "pages" / "Dashboard.test.tsx", "// half-written test\n")
+    messages: list[str] = []
+    monkeypatch.setattr(implement_mod, "COMMIT", lambda clone, message: messages.append(message))
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+
+    assert messages == [f"wip: handoff ({HANDOFF_REASON})\n\nCo-authored-by: {co_author}"]
+
+
 def test_B212_handoff_on_a_clean_tree_commits_nothing(tmp_path, monkeypatch):
     """B212 / D3 step 2: `git status --porcelain` empty -> COMMIT is never called."""
     from harness.stages import implement as implement_mod

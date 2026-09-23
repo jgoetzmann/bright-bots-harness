@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from harness import clone as clone_mod
-from harness import gates, links, redact
+from harness import commitmsg, gates, links, redact
 from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
@@ -1013,8 +1013,10 @@ def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:
         return False
     from harness.stages import implement as implement_mod  # lazy: implement imports stages
 
+    trailers = commitmsg.co_authored_by(str(getattr(ctx.config, "co_author", "") or ""))
+    message = "\n\n".join(["wip: handoff (" + reason + ")", *trailers])
     try:
-        implement_mod.COMMIT(clone, "wip: handoff (" + reason + ")")
+        implement_mod.COMMIT(clone, message)
     except HarnessError as exc:
         ctx.record_decision(f"handoff could not commit the working tree in {clone}: {exc}")
         return False

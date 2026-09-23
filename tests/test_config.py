@@ -823,6 +823,7 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
     "OVERRUN_PCT": "overrun_pct",
     "RUN_WINDOW_START": "run_window_start",
     "RUN_WINDOW_END": "run_window_end",
+    "CO_AUTHOR": "co_author",
 }
 
 
@@ -854,6 +855,8 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "AUDIT_MIN_HEADROOM_PCT": 65,
     # D70.
     "MAX_SELF_AUDIT_CYCLES": 1,
+    # D82.
+    "CO_AUTHOR": "octo <1+octo@users.noreply.github.com>",
 }
 
 
@@ -891,6 +894,7 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
     # D70: the value check above predates this knob; without this line its override is
     # exercised by the key-set assertion and asserted by nothing.
     assert config.max_self_audit_cycles == 1
+    assert config.co_author == "octo <1+octo@users.noreply.github.com>"
 
 
 def test_b112_the_config_json_overrides_all_differ_from_the_env_values(tmp_path, write_d2_env):
@@ -1788,7 +1792,7 @@ def test_B416_a_retired_key_in_the_environment_changes_nothing(env_file):
     names = [f.name for f in dataclasses.fields(config)]
     banned = ("usd", "budget", "reserve", "clones")
     assert [n for n in names if any(word in n for word in banned)] == []
-    assert len(config_module.CONFIG_JSON_KEYS) == 19
+    assert len(config_module.CONFIG_JSON_KEYS) == 20
 
 
 def test_B5_B22_the_allowance_and_clone_range_checks_are_retired_with_their_keys(
@@ -1933,3 +1937,64 @@ def test_b433_a_config_key_in_the_host_environment_reaches_no_config(
     config = load_config(env_path=env_file)
 
     assert config.min_free_disk_gb == pytest.approx(5.0)
+
+
+# --------------------------------------------------------------------------------------
+# B498 (D82) - CO_AUTHOR: optional, and one `Name <email>` whose trailer fits on one line
+# --------------------------------------------------------------------------------------
+CO_AUTHOR = "jgoetzmann <95732896+jgoetzmann@users.noreply.github.com>"
+
+
+def test_B498_co_author_is_optional_and_empty_credits_nobody(tmp_path, write_d2_env):
+    """B498: an existing `.env` without the key keeps loading, and so does an empty value."""
+    absent = load_config(env_path=write_d2_env(tmp_path / "a" / ".env"), environ={})
+    empty = load_config(env_path=write_d2_env(tmp_path / "b" / ".env", CO_AUTHOR=""), environ={})
+
+    assert absent.co_author == empty.co_author == ""
+
+
+def test_B498_a_well_formed_co_author_is_kept_as_written(tmp_path, write_d2_env):
+    config = load_config(env_path=write_d2_env(tmp_path / ".env", CO_AUTHOR=CO_AUTHOR), environ={})
+
+    assert config.co_author == CO_AUTHOR
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "jgoetzmann",
+        "<95732896+jgoetzmann@users.noreply.github.com>",
+        "jgoetzmann <not-an-address>",
+        "jgoetzmann <a@b.example> and more",
+        "x" * 80 + " <a@b.example>",
+    ],
+    ids=["no-address", "no-name", "no-at", "trailing-text", "too-long"],
+)
+def test_B498_a_malformed_co_author_stops_the_load(tmp_path, write_d2_env, value):
+    with pytest.raises(ConfigError, match="CO_AUTHOR must be"):
+        load_config(env_path=write_d2_env(tmp_path / ".env", CO_AUTHOR=value), environ={})
+
+
+def test_B498_a_co_author_cannot_add_a_line_to_a_commit_message(tmp_path, write_d2_env):
+    """B498: `.harness/config.json` can carry a newline where `.env` cannot, and a newline in
+    the value would forge a second trailer."""
+    path = write_d2_env(tmp_path / ".env")
+    write_config_json(tmp_path, {"CO_AUTHOR": "a <a@b.example>\nCo-authored-by: b <b@c.example>"})
+
+    with pytest.raises(ConfigError, match="CO_AUTHOR must be"):
+        load_config(env_path=path, environ={})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["a\x7fb", "a\u0085b", "a\u2028b", "a\u200bb", "a\tb"],
+    ids=["del", "nel", "line-separator", "zero-width-space", "tab"],
+)
+def test_B498_a_co_author_holds_no_character_a_reader_cannot_see(name):
+    """B498: the check refuses every control, separator and invisible format character, since
+    a tool may split a line on one and a reviewer cannot see it."""
+    from harness.config import co_author_ok
+
+    assert co_author_ok("jgoetzmann <a@b.example>")
+    assert not co_author_ok(f"{name} <a@b.example>")
+    assert not co_author_ok("jgoetzmann <a@b.example>\n")

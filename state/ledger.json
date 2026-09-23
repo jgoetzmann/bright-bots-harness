@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 28,
+    "calls": 29,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.19,
-        "resets_at": "2026-09-23T17:10:00Z"
+        "utilization": 0.04,
+        "resets_at": "2026-09-23T22:10:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-23T13:57:00Z"
+      "observed_at": "2026-09-23T17:34:14Z"
     }
   },
   "cursors": {
@@ -258,6 +258,12 @@
       "ts": "2026-09-23T13:57:00Z",
       "stage": "selfaudit",
       "issue": 70,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-23T17:34:14Z",
+      "stage": "implement",
+      "issue": 54,
       "run": ""
     }
   ]

@@ -944,15 +944,21 @@ def test_B501_create_product_issue_targets_the_client_repo_redacted_and_tier_gat
     token = "ghp_" + "FAKE0" * 8
     client = GitHubClient("o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True)
 
-    filed = client.create_product_issue("Signup swallows an insert", "See " + token)
+    filed = client.create_product_issue("Signup", "See " + token, ["harness-tracking"])
+    client.edit_product_issue(931, body="Now " + token, title="harness-tracking(#66): Signup")
 
-    (call,) = client.sent
-    assert call["method"] == "POST" and call["url"].endswith("/repos/o/r/issues")
-    assert token not in call["payload"]["body"]
+    created, edited = client.sent
+    assert created["method"] == "POST" and created["url"].endswith("/repos/o/r/issues")
+    assert created["payload"]["labels"] == ["harness-tracking"]
+    assert edited["method"] == "PATCH" and edited["url"].endswith("/repos/o/r/issues/931")
+    assert edited["payload"]["title"] == "harness-tracking(#66): Signup"
+    assert token not in created["payload"]["body"] and token not in edited["payload"]["body"]
     assert filed["number"] == 0
     unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
     with pytest.raises(TierViolation):
-        unarmed.create_product_issue("t", "b")
+        unarmed.create_product_issue("t", "b", [])
+    with pytest.raises(TierViolation):
+        unarmed.edit_product_issue(1, body="b")
 
 
 def test_B502_issues_created_by_asks_for_every_state_and_drops_pull_requests(tmp_path):

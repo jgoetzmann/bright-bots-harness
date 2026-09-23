@@ -482,8 +482,9 @@ GH_WRITE_METHODS = (
     "delete_issue_comment",
     "set_labels",
     "create_issue",
-    # D83: the one issue a delivery files on the product repository.
+    # D83: the one issue a delivery files on the product repository, and its later edit.
     "create_product_issue",
+    "edit_product_issue",
     "update_issue_body",
     "create_pull",
     "request_reviewers",
@@ -1077,7 +1078,7 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
     methods = {n.name: n for n in client.body if isinstance(n, ast.FunctionDef)}
     method = methods["create_product_issue"]
     params = [a.arg for a in method.args.posonlyargs + method.args.args + method.args.kwonlyargs]
-    assert params == ["self", "title", "body"], params
+    assert params == ["self", "title", "body", "labels"], params
     assert method.args.vararg is None and method.args.kwarg is None
 
     def write_paths(node: ast.FunctionDef) -> list[str]:
@@ -1099,18 +1100,22 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
     )
     assert issue_writers == ["create_issue", "create_product_issue"], issue_writers
 
-    naming = sorted(
-        {
-            _rel(path)
-            for path in _harness_sources()
-            if path.name != "gh.py"
-            for node in ast.walk(_parse(path))
-            if (isinstance(node, ast.Attribute) and node.attr == "create_product_issue")
-            or (isinstance(node, ast.Name) and node.id == "create_product_issue")
-            or (isinstance(node, ast.Constant) and node.value == "create_product_issue")
-        }
-    )
-    assert naming == ["harness/stages/deliver.py"], naming
+    edit = methods["edit_product_issue"]
+    assert write_paths(edit) == ["f'/repos/{self.repo}/issues/{n}'"], write_paths(edit)
+
+    for name in ("create_product_issue", "edit_product_issue"):
+        naming = sorted(
+            {
+                _rel(path)
+                for path in _harness_sources()
+                if path.name != "gh.py"
+                for node in ast.walk(_parse(path))
+                if (isinstance(node, ast.Attribute) and node.attr == name)
+                or (isinstance(node, ast.Name) and node.id == name)
+                or (isinstance(node, ast.Constant) and node.value == name)
+            }
+        )
+        assert naming == ["harness/stages/deliver.py"], (name, naming)
 
 
 # --------------------------------------------------------------------------------------

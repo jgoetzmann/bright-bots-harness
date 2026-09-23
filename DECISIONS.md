@@ -1282,12 +1282,20 @@ Decision:
 - A filed issue is never new work. `links.item_of_product_issue` reads its marker, for an issue
   the machine account opened, and assigned and directed discovery, triage, and a `/harness`
   command on that thread all resolve it to the item it was filed for.
-- The issue body names the harness issue and says the pull request comes from the machine
-  account. It promises no closing, since a pull request can fail to open or be stopped.
-- I-14 gains this one exception. `GitHubClient.create_product_issue` takes no repository
-  argument, writes only to `/repos/{self.repo}/issues`, and is named by no module but
-  `deliver.py`; a test pins all three and that no other gh.py write reaches an `/issues`
-  collection. It joins I-13's write set, with `update_issue_body`, which that set had missed.
+- The issue is titled `harness-tracking(#<item>): <title>` and requests the label
+  `harness-tracking`. It opens with a note saying it is a harness tracking issue, linking the
+  approved plan and, once the pull request opens, the pull request, and asking for comments there
+  rather than on the issue. After the pull request opens, `deliver` rewrites that note through
+  `edit_product_issue`, the second method the exception allows. The body promises no closing,
+  since a pull request can fail to open or be stopped.
+- The label and a locked conversation both need triage or write access on the product
+  repository, which the machine account does not hold. GitHub drops the label in silence without
+  it, and nothing locks the issue, so the note does that job until a maintainer grants access.
+- I-14 gains this one exception. `GitHubClient.create_product_issue` and `edit_product_issue`
+  take no repository argument, write only to `/repos/{self.repo}/issues` and to one issue under
+  it, and are named by no module but `deliver.py`; a test pins all three and that no other gh.py
+  write reaches an `/issues` collection. Both join I-13's write set, with `update_issue_body`,
+  which that set had missed.
 - `prompts/system.md` says the harness files this one issue itself, so `.harness/PIN` is
   regenerated.
 
@@ -1308,3 +1316,26 @@ or is stopped, stays open, naming the harness issue. It describes a problem a pe
 gate 1, which is worth listing whether or not this fix lands.
 
 Allocates B501-B504.
+
+## D84 / B505-B506 - a comment is never lost to a notification that arrives late
+
+Decision:
+- `keywords.sweep` asks the notifications feed from `SWEEP_OVERLAP_MINUTES` (30) before its
+  cursor, not from the cursor itself. The cursor still moves to the run's start. Seen comment
+  ids, which are never pruned, keep the overlap from answering a comment twice.
+- `harness sweep --thread N` also reads issue or pull request N in this repository directly, as
+  a proposal when it is a pull request. `feedback.yml` passes the number of the issue or pull
+  request its comment event names, so a command is answered by the run it starts.
+
+Why. The run a comment starts reaches the sweep about a minute later, and GitHub can deliver the
+comment's notification later than that. The sweep then saw no thread, moved the cursor past the
+comment, and no later sweep asked the feed for anything that old. Two `/harness promote`
+commands were lost this way, on #60 on 09-17 and on #61 on 09-23, each with no reply. The
+overlap lets a later sweep find a comment the first one missed; the direct read answers it in
+the same run.
+
+Rejected: holding the cursor at the newest comment seen, which cannot move on a quiet feed and
+re-reads it all; waiting before the sweep, which slows every command to cover a delay GitHub
+does not bound.
+
+Allocates B505-B506.

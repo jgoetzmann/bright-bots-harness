@@ -612,10 +612,11 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 
     # 4. an item the product repository has no issue for gets one, so the work is listed on
     #    both repositories and the pull request closes it (D83).
+    product: dict | None = None
     if not item.external_ref.startswith("issue:"):
-        filed = _file_product_issue(ctx, item, pkg, machine=fork_owner)
-        if filed is not None:
-            title, body = pr_text(filed)
+        product = _file_product_issue(ctx, item, pkg, machine=fork_owner)
+        if product is not None:
+            title, body = pr_text(int(product["number"]))
             record["title"], record["body_chars"] = title, len(body)
 
     # 5. the pull request, fork -> upstream default branch.
@@ -625,6 +626,8 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     url = str(pr.get("html_url") or "")
     record["pr_number"] = number or None
     record["pr_url"] = url
+    if product is not None and number:
+        _name_pull_on_product_issue(ctx, item, product, number, url, machine=fork_owner)
 
     # 6. reviewers = every trusted handle. A refusal (not a collaborator yet) is recorded.
     if reviewers and number:
@@ -674,9 +677,36 @@ def _parent_product_issue(ctx: Context, item: Any) -> str:
     return ref if ref.startswith("issue:") else ""
 
 
-def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> int | None:
-    """The product issue for an item that came with none: found by its marker among the issues
-    ``machine`` opened, else filed, with a comment on the harness issue naming it (D83).
+#: Leads the title of every product issue a delivery files, so a maintainer can tell a tracking
+#: issue from a report and filter for them (D83).
+TRACKING_TITLE = "harness-tracking(#{item}): {title}"
+
+#: Requested on every filed issue; GitHub keeps it only for an account with triage access.
+TRACKING_LABEL = "harness-tracking"
+
+
+def _tracking_header(ctx: Context, item: Any, *, machine: str, pull: int = 0, url: str = "") -> str:
+    """The note a filed issue opens with: what it is, where the plan and the fix are, and that
+    discussion belongs on the pull request (D83)."""
+    self_repo = str(ctx.config.self_repo)
+    ref = links.issue_ref(self_repo, item.id)
+    fix = (
+        f"the fix is [#{pull}]({url})"
+        if pull
+        else f"the fix is a pull request from `{machine}`, linked here once it opens"
+    )
+    return (
+        "> [!NOTE]\n"
+        "> **Harness tracking issue.** The Bright Bots Harness filed this to list work it is "
+        f"delivering. The approved plan is [{ref}]({links.issue_url(self_repo, item.id)}), and "
+        f"{fix}. Please comment on the pull request rather than here."
+    )
+
+
+def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> dict | None:
+    """The product issue for an item that came with none, as ``{number, title, body}``: found
+    by its marker among the issues ``machine`` opened, else filed, with a comment on the harness
+    issue naming it (D83).
 
     Never fatal: without one the pull request is opened as before, and the reason is recorded.
     """
@@ -702,16 +732,23 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> i
             if found == int(item.id):
                 number = int(issue.get("number") or 0)
                 ctx.record_decision(f"product issue {upstream}#{number} already lists {ref}")
-                return number or None
+                if not number:
+                    return None
+                return {
+                    "number": number,
+                    "title": str(issue.get("title") or ""),
+                    "body": str(issue.get("body") or ""),
+                }
+        title = TRACKING_TITLE.format(item=item.id, title=item.title or pkg.title)
         body = (
-            _quoted_diagnosis(pkg)
-            + f"\n\nFound by the Bright Bots Harness and tracked as "
-            f"[{ref}]({links.issue_url(self_repo, item.id)}), where its proposal was approved. "
-            f"Its pull request comes from `{machine}` and names this issue.\n\n"
+            _tracking_header(ctx, item, machine=machine)
+            + "\n\n"
+            + _quoted_diagnosis(pkg)
+            + "\n\n"
             + links.product_issue_marker(self_repo, item.id)
             + "\n"
         )
-        filed = ctx.gh.create_product_issue(item.title or pkg.title, body)
+        filed = ctx.gh.create_product_issue(title, body, [TRACKING_LABEL])
     except (GitHubError, HarnessError) as exc:
         ctx.record_decision(f"could not file a product issue for {ref}: {exc}")
         return None
@@ -731,7 +768,29 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> i
         )
     except GitHubError as exc:
         ctx.record_decision(f"could not name {upstream}#{number} on {ref}: {exc}")
-    return number
+    return {"number": number, "title": title, "body": body}
+
+
+def _name_pull_on_product_issue(
+    ctx: Context, item: Any, product: dict, pull: int, url: str, *, machine: str
+) -> None:
+    """Rewrite the filed issue's opening note to link the pull request, now it exists (D83).
+
+    The note is the body up to its first blank line. Never fatal.
+    """
+    body = str(product.get("body") or "")
+    header = _tracking_header(ctx, item, machine=machine, pull=pull, url=url)
+    old, sep, rest = body.partition("\n\n")
+    if not old.startswith("> [!NOTE]"):
+        old, sep, rest = "", "", body
+    if old == header:
+        return
+    number = int(product["number"])
+    try:
+        ctx.gh.edit_product_issue(number, body=header + "\n\n" + (rest if sep else body))
+        ctx.record_decision(f"named #{pull} on product issue #{number}")
+    except (GitHubError, HarnessError) as exc:
+        ctx.record_decision(f"could not name #{pull} on product issue #{number}: {exc}")
 
 
 def _github_origin(lease: Lease) -> bool:

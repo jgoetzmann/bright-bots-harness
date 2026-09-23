@@ -436,6 +436,21 @@ def _one(
     )
 
 
+#: How far each sweep re-reads before its cursor. A run that a comment started can reach the
+#: sweep before GitHub delivers that comment's notification, and would move the cursor past it;
+#: seen comment ids keep the overlap from answering anything twice (D84).
+SWEEP_OVERLAP_MINUTES = 30
+
+
+def _overlap_since(cursor: str) -> str:
+    """``SWEEP_OVERLAP_MINUTES`` before ``cursor``, or ``cursor`` if it cannot be parsed."""
+    try:
+        at = datetime.strptime(str(cursor), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return cursor
+    return (at - timedelta(minutes=SWEEP_OVERLAP_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _first_sweep_since(now_iso: str) -> str:
     """`FIRST_SWEEP_LOOKBACK_HOURS` before `now_iso`, or the epoch if that cannot be parsed."""
     try:
@@ -498,16 +513,17 @@ def sweep(
     upstream_repo: str,
     inbox_issue: int = 0,
     machine: str = "",
+    thread: int = 0,
 ) -> list[Command]:
     """Notifications since the cursor -> comments of each thread -> commands (B140, B141).
 
     The inbox issue is read whether or not it notified. A notification arrives only on a thread
     the account is subscribed to, and it is not subscribed to an issue it has never touched, so
-    on the feed alone a first request there would vanish (B240).
+    on the feed alone a first request there would vanish (B240). ``thread`` is the issue or pull
+    request in this repository a comment event names, read first for the same reason (D84).
     """
-    since = ledger.cursors.get("notifications_last_seen")
-    if not since:
-        since = _first_sweep_since(now_iso)
+    cursor = ledger.cursors.get("notifications_last_seen")
+    since = _overlap_since(cursor) if cursor else _first_sweep_since(now_iso)
     commands: list[Command] = []
     seen_threads: set[tuple[str, int]] = set()
 
@@ -547,6 +563,15 @@ def sweep(
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))
+    if thread and int(thread) != int(inbox_issue or 0):
+        try:
+            data = gh.get(f"/repos/{self_repo}/issues/{int(thread)}")
+        except GitHubError as exc:
+            log.warning("thread %s unreadable, left to the feed: %s", thread, exc)
+            data = None
+        if isinstance(data, Mapping):
+            surface = "proposal_pr" if data.get("pull_request") is not None else "issue"
+            read(self_repo, surface, int(thread))
     try:
         notifications = list(gh.notifications(since))
     except GitHubError as exc:

@@ -70,7 +70,8 @@ how a reviewer will know it worked. No code has been written.
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the diff and
 the gate results in the body. Review it like any other contributor's PR. When the work came
 without a brightboost issue, such as an audit finding, the harness files one as it delivers,
-names it on the harness issue, and the pull request closes it when merged.
+titled `harness-tracking(#<item>): …`, names it on the harness issue, and the pull request closes
+it when merged. Comment on the pull request, not on that tracking issue.
 
 - `/harness revise <what to change>`: one more implementation pass, then the complete gate sequence.
 - `/harness rebase`: the same, after a conflict.

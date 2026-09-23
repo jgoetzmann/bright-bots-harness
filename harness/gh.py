@@ -316,11 +316,6 @@ class GitHubReadOnly:
         pairs = [("state", state), ("per_page", str(PER_PAGE))]
         return self._paginate(f"/repos/{self.repo}/pulls?{_query(pairs)}")
 
-    def pulls_for_head(self, head: str) -> list[dict]:
-        """Every product-repository pull request from ``head`` (``owner:branch``), any state."""
-        pairs = [("head", str(head)), ("state", "all"), ("per_page", str(PER_PAGE))]
-        return self._paginate(f"/repos/{self.repo}/pulls?{_query(pairs)}")
-
     def branches(self) -> list[str]:
         pairs = [("per_page", str(PER_PAGE))]
         rows = self._paginate(f"/repos/{self.repo}/branches?{_query(pairs)}")

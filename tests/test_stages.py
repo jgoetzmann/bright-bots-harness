@@ -1254,6 +1254,35 @@ def test_B64_a_diff_raising_a_timeout_blocks_the_item(tmp_path, monkeypatch):
     assert "commit" not in rig.log
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "  await new Promise((r) => setTimeout(r, 0));",
+        "  const t = window.setTimeout(showHint, 1500);",
+        "  clearTimeout(t);",
+    ],
+    ids=["set-timeout", "window-set-timeout", "clear-timeout"],
+)
+def test_B509_a_timer_call_is_not_a_timeout(tmp_path, monkeypatch, line):
+    """B509: a timer call schedules work after a delay and bounds nothing, so it is neither a
+    raised nor a new timeout. #54 was blocked on the first of these."""
+    rig, item_id = _implement_with_diff(tmp_path, monkeypatch, added=[line], removed=[])
+    assert rig.store.get_work_item(item_id).state == "implementing"
+    assert "commit" in rig.log
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["  jest.setTimeout(20000);", "  { timeout: 0 },", "  testTimeout: 30000,"],
+    ids=["jest-set-timeout", "zero-means-none", "test-timeout"],
+)
+def test_B509_a_timeout_a_test_runner_reads_is_still_blocked(tmp_path, monkeypatch, line):
+    """B509: `jest.setTimeout` sets the test timeout, and some runners read 0 as no limit."""
+    rig, item_id = _implement_with_diff(tmp_path, monkeypatch, added=[line], removed=[])
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "commit" not in rig.log
+
+
 def test_B64_a_diff_lowering_a_timeout_is_not_blocked(tmp_path, monkeypatch):
     rig, item_id = _implement_with_diff(
         tmp_path, monkeypatch, added=["  timeout: 5000,"], removed=["  timeout: 10000,"]

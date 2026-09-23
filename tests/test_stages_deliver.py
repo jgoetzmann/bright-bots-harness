@@ -538,11 +538,6 @@ class FakeGh:
             issue["title"] = title
         return copy.deepcopy(issue)
 
-    def pulls_for_head(self, head) -> list[dict]:
-        self._record("pulls_for_head", head=head)
-        return [copy.deepcopy(pr) for pr in self.prs.get(self.repo, {}).values()
-                if pr["head"]["label"] == head]
-
     def close_issue(self, number) -> dict:
         self._record("close_issue", number=number)
         self._write("PATCH", f"/repos/{self.self_repo}/issues/{number}", {"state": "closed"})
@@ -2013,54 +2008,103 @@ def test_B502_a_pull_request_that_fails_after_filing_reuses_the_issue_next_time(
     assert f"Closes #{number}" in s.gh.calls_named("create_pull")[0]["body"]
 
 
-
 # --------------------------------------------------------------------------------------
 # B508 (D86) - a merged delivery moves its item to stage:done and closes the harness issue
 # --------------------------------------------------------------------------------------
-
-
-def _shipped_with(tmp_path, *, merged_at=None, state="open"):
-    s = setup_deliver(tmp_path, state="shipped")
+def _awaiting_merge(tmp_path, *, merged_at=None, state="open", item_state="shipped"):
+    s = setup_deliver(tmp_path, state=item_state)
     s.gh.add_pull(1500, head_ref=BRANCH, head_sha="a" * 40, base_sha=s.base)
     s.gh.prs[UPSTREAM][1500].update({"merged_at": merged_at, "state": state})
     return s
 
 
-def test_B508_a_merged_delivery_moves_the_item_to_done_and_closes_its_issue(tmp_path):
-    """B508: found by the branch the machine account pushed, the merged pull request takes the
-    item to its terminal state, and the harness issue is closed as completed."""
+def test_B508_a_merged_delivery_closes_the_issue_then_moves_the_item_to_done(tmp_path):
+    """B508: the issue is closed before the label moves, so a failure between the two leaves an
+    item the next run still lists and finishes."""
     from harness.stages.deliver import mark_merged
 
-    s = _shipped_with(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+    s = _awaiting_merge(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
 
     assert mark_merged(s.ctx) == [ITEM]
 
-    assert s.gh.calls_named("pulls_for_head")[0]["head"] == f"{BOT}:{BRANCH}"
     assert s.store.get_work_item(ITEM).state == "merged"
     assert s.gh.state_labels(ITEM) == ["stage:done"]
     assert s.gh.repos[SELF_REPO][ITEM]["state"] == "closed"
+    names = [call["name"] for call in s.gh.calls]
+    assert names.index("close_issue") < names.index("set_labels")
+    (query,) = [c["path"] for c in s.gh.calls_named("get") if "/pulls?" in c["path"]]
+    assert query.startswith(f"/repos/{UPSTREAM}/pulls?") and "state=all" in query
 
 
 @pytest.mark.parametrize("state", ["open", "closed"], ids=["still-open", "closed-unmerged"])
-def test_B508_a_delivery_that_has_not_merged_leaves_the_item_shipped(tmp_path, state):
+def test_B508_a_delivery_that_has_not_merged_leaves_the_item_where_it_is(tmp_path, state):
     from harness.stages.deliver import mark_merged
 
-    s = _shipped_with(tmp_path, state=state)
+    s = _awaiting_merge(tmp_path, state=state)
 
     assert mark_merged(s.ctx) == []
     assert s.store.get_work_item(ITEM).state == "shipped"
     assert s.gh.calls_named("close_issue") == []
 
 
-def test_B508_a_delivery_that_cannot_be_read_is_left_for_the_next_run(tmp_path):
+def test_B508_only_the_newest_pull_request_from_the_branch_counts(tmp_path):
+    """B508: an older pull request that merged does not finish an item whose newer one is open,
+    and a row from another head, which a loose filter could return, is ignored."""
     from harness.stages.deliver import mark_merged
 
-    s = _shipped_with(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+    s = _awaiting_merge(tmp_path, merged_at="2026-09-01T09:00:00Z", state="closed")
+    s.gh.add_pull(1501, head_ref=BRANCH, head_sha="b" * 40, base_sha=s.base)
+    s.gh.add_pull(1502, head_ref="harness/someone-else", head_sha="c" * 40, base_sha=s.base)
+    s.gh.prs[UPSTREAM][1502].update({"merged_at": "2026-09-02T09:00:00Z", "state": "closed"})
 
-    def unreadable(head):
-        raise GitHubError("502 from the pulls endpoint")
+    assert mark_merged(s.ctx) == []
+    assert s.store.get_work_item(ITEM).state == "shipped"
 
-    s.gh.pulls_for_head = unreadable
+
+def test_B508_an_item_at_needs_human_whose_pull_request_merged_is_done_too(tmp_path):
+    """B508: a maintainer may finish and merge the pull request once revise cycles are spent."""
+    from harness.stages.deliver import mark_merged
+
+    s = _awaiting_merge(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed",
+                        item_state="needs-human")
+
+    assert mark_merged(s.ctx) == [ITEM]
+    assert s.store.get_work_item(ITEM).state == "merged"
+
+
+def test_B508_a_failed_move_is_recorded_and_finished_by_the_next_run(tmp_path, monkeypatch):
+    """B508: never fatal, and nothing is lost: the issue is already closed, the item still lists
+    as shipped, and the next run moves it."""
+    from harness.stages.deliver import mark_merged
+
+    s = _awaiting_merge(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+    real_transition = s.store.transition
+
+    def refuse(*args, **kwargs):
+        raise GitHubError("502 from set_labels")
+
+    monkeypatch.setattr(s.store, "transition", refuse)
+    assert mark_merged(s.ctx) == []
+    assert s.store.get_work_item(ITEM).state == "shipped"
+    assert s.gh.repos[SELF_REPO][ITEM]["state"] == "closed"
+
+    monkeypatch.setattr(s.store, "transition", real_transition)
+    assert mark_merged(s.ctx) == [ITEM]
+    assert s.store.get_work_item(ITEM).state == "merged"
+
+
+def test_B508_a_delivery_that_cannot_be_read_is_left_for_the_next_run(tmp_path, monkeypatch):
+    from harness.stages.deliver import mark_merged
+
+    s = _awaiting_merge(tmp_path, merged_at="2026-09-02T11:00:00Z", state="closed")
+    real_get = s.gh.get
+
+    def flaky(path):
+        if "/pulls?" in path:
+            raise GitHubError("502 from the pulls endpoint")
+        return real_get(path)
+
+    monkeypatch.setattr(s.gh, "get", flaky)
 
     assert mark_merged(s.ctx) == []
     assert s.store.get_work_item(ITEM).state == "shipped"

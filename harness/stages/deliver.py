@@ -793,44 +793,69 @@ def _name_pull_on_product_issue(
         ctx.record_decision(f"could not name #{pull} on product issue #{number}: {exc}")
 
 
-def mark_merged(ctx: Context) -> list[int]:
-    """Move each shipped item whose delivery pull request merged upstream to ``merged``
-    (``stage:done``) and close its harness issue as completed; returns the ids moved (D86).
+#: The states an item waits in while its delivery pull request is open. `needs-human` is one:
+#: a maintainer may finish and merge the pull request once the revise cycles are spent.
+AWAITING_MERGE: tuple[str, ...] = ("shipped", "needs-human")
 
-    One read per shipped item, found by the branch the machine account pushed. Never fatal: an
-    item that cannot be read is left shipped for the next run.
+
+def _delivery_merged(ctx: Context, machine: str, branch: str) -> dict | None:
+    """The newest delivery pull request from ``machine:branch`` on the upstream repository, when
+    it has merged; ``None`` otherwise. Rows are matched here too, not only by GitHub's filter."""
+    upstream = str(ctx.config.upstream_repo)
+    query = urllib.parse.urlencode(
+        [("head", f"{machine}:{branch}"), ("state", "all"), ("per_page", "100")],
+        quote_via=urllib.parse.quote,
+    )
+    data = ctx.gh.get(f"/repos/{upstream}/pulls?{query}")
+    rows = [
+        row
+        for row in (data if isinstance(data, list) else [])
+        if isinstance(row, dict)
+        and str((row.get("head") or {}).get("ref") or "") == branch
+        and str((row.get("head") or {}).get("label") or "").lower()
+        == f"{machine}:{branch}".lower()
+    ]
+    if not rows:
+        return None
+    newest = max(rows, key=lambda row: int(row.get("number") or 0))
+    return newest if newest.get("merged_at") else None
+
+
+def mark_merged(ctx: Context) -> list[int]:
+    """Move each item whose delivery pull request merged upstream to ``merged`` (``stage:done``)
+    and close its harness issue as completed; returns the ids moved (D86).
+
+    The issue is closed first, since that is idempotent and a closed issue still lists, so an
+    item a failure left behind is finished by the next run. Never fatal.
     """
     machine = str(ctx.config.fork_repo or "").split("/")[0]
     if not machine:
         return []
     moved: list[int] = []
-    for item in ctx.store.list_work_items(state="shipped"):
-        branch = str(getattr(item, "branch_name", "") or "")
-        if not branch:
-            continue
+    for state in AWAITING_MERGE:
         try:
-            merged = [
-                pull
-                for pull in ctx.gh.pulls_for_head(f"{machine}:{branch}")
-                if pull.get("merged_at")
-            ]
-        except (GitHubError, HarnessError) as exc:
-            ctx.record_decision(f"could not read the delivery of item {item.id}: {exc}")
+            items = list(ctx.store.list_work_items(state=state))
+        except HarnessError as exc:
+            ctx.record_decision(f"could not list {state} items for merged deliveries: {exc}")
             continue
-        if not merged:
-            continue
-        pull = merged[0]
-        ctx.store.transition(
-            item.id,
-            "merged",
-            reason=f"delivery pull request #{pull.get('number')} merged upstream",
-        )
-        moved.append(int(item.id))
-        if ctx.config.store_backend == "github" and ctx.gh.can_write:
+        for item in items:
+            branch = str(getattr(item, "branch_name", "") or "")
+            if not branch:
+                continue
             try:
-                ctx.gh.close_issue(item.id)
-            except GitHubError as exc:
-                ctx.record_decision(f"marked item {item.id} done but could not close it: {exc}")
+                pull = _delivery_merged(ctx, machine, branch)
+                if pull is None:
+                    continue
+                if ctx.config.store_backend == "github" and ctx.gh.can_write:
+                    ctx.gh.close_issue(item.id)
+                reason = f"delivery pull request #{pull.get('number')} merged upstream"
+                if state == "needs-human":
+                    ctx.store.transition(item.id, "shipped", reason=reason)
+                ctx.store.transition(item.id, "merged", reason=reason)
+            except HarnessError as exc:
+                ctx.record_decision(f"could not mark item {item.id} done yet: {exc}")
+                continue
+            moved.append(int(item.id))
     return moved
 
 

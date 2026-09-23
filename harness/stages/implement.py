@@ -114,6 +114,9 @@ FORBIDDEN_ADDITIONS = (
 )
 
 _TIMEOUT_NUMBER = re.compile(r"(?i)timeout[^0-9\n]{0,24}(\d+)")
+#: A timer call schedules work after a delay and bounds nothing, so its delay is not a timeout.
+#: `jest.setTimeout(n)` sets the test timeout, and the dot before it keeps it counted.
+_TIMER_CALL = re.compile(r"(?<![\w.])(?:window\.|globalThis\.)?(?:set|clear)Timeout\s*\(")
 _TITLE_HEADER = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?!?:\s*(?P<subject>.+)$")
 
 
@@ -648,7 +651,7 @@ DIFF_LINES = _diff_lines
 def _timeout_numbers(lines: Sequence[str]) -> list[int]:
     found: list[int] = []
     for line in lines:
-        for match in _TIMEOUT_NUMBER.findall(line):
+        for match in _TIMEOUT_NUMBER.findall(_TIMER_CALL.sub("(", line)):
             try:
                 found.append(int(match))
             except ValueError:

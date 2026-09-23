@@ -516,6 +516,18 @@ class FakeGh:
         issue = self._new_issue(self.self_repo, number, title, body, list(labels), BOT)
         return copy.deepcopy(issue)
 
+    def issues_created_by(self, login) -> list[dict]:
+        self._record("issues_created_by", login=login)
+        return [copy.deepcopy(issue) for issue in self.repos.get(self.repo, {}).values()
+                if issue["user"]["login"] == login]
+
+    def create_product_issue(self, title, body) -> dict:
+        self._record("create_product_issue", title=title, body=body)
+        self._write("POST", f"/repos/{self.repo}/issues", {"title": title, "body": body})
+        number = self._next_number.get(self.repo, 1000)
+        self._next_number[self.repo] = number + 1
+        return copy.deepcopy(self._new_issue(self.repo, number, title, body, [], BOT))
+
     def create_pull(self, repo, *, head, base, title, body) -> dict:
         self._record("create_pull", repo=repo, head=head, base=base, title=title, body=body)
         self._write("POST", f"/repos/{repo}/pulls",
@@ -755,15 +767,16 @@ Low.
 
 
 def setup_deliver(tmp_path: Path, *, state="packaged", can_write=True,
-                  trusted=frozenset({"jgoetzmann"}), with_package=True):
-    config = make_config(tmp_path, trusted=sorted(trusted))
+                  trusted=frozenset({"jgoetzmann"}), with_package=True, ref="issue:816",
+                  **config_overrides):
+    config = make_config(tmp_path, trusted=sorted(trusted), **config_overrides)
     clock = FrozenClock(T0)
     gh = FakeGh(clock=clock, can_write=can_write)
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
     store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL)
     repo, base, tip = make_work_repo(tmp_path, config.runs_dir, ITEM, tip_email=HARNESS_EMAIL)
-    gh.add_issue(ITEM, TITLE, body="issue:816", labels=[LABELS[state]])
+    gh.add_issue(ITEM, TITLE, body=ref, labels=[LABELS[state]])
     run_dir = config.runs_dir / f"item-{ITEM}"
     spec = _w(run_dir / "spec" / f"{ITEM}.md", SPEC_TEXT)
     fields = {"base_sha": base, "branch_name": BRANCH, "spec_path": str(spec)}
@@ -1825,3 +1838,144 @@ def test_b314_a_moved_origin_main_ref_does_not_hide_a_withheld_change(tmp_path):
     handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
 
     assert_withheld(s, CI_WORKFLOW)
+
+
+# --------------------------------------------------------------------------------------
+# B501-B503 (D83) - an item the product repository has no issue for is listed there too
+# --------------------------------------------------------------------------------------
+AUDIT_REF = "audit:61:5"
+ITEM_MARKER = f"<!-- bright-bots-harness work item: {SELF_REPO}#{ITEM} -->"
+
+
+def test_B501_a_delivery_files_a_product_issue_for_an_item_with_none(tmp_path):
+    """B501: the product issue carries the diagnosis, a link to the harness issue and the
+    item's marker; the harness issue names it, and the pull request closes it."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    deliver(s.ctx, ITEM)
+
+    (filed,) = s.gh.calls_named("create_product_issue")
+    assert filed["title"] == TITLE
+    assert "dereferences `user.name`" in filed["body"]
+    assert f"{SELF_REPO}/issues/{ITEM}" in filed["body"]
+    assert filed["body"].rstrip().endswith(ITEM_MARKER)
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == TITLE]
+    pull = s.gh.calls_named("create_pull")[0]
+    assert pull["title"].endswith(f"(#{number})")
+    assert f"Closes #{number}" in pull["body"]
+    named = [c["body"] for c in s.gh.comments_of(ITEM) if f"{UPSTREAM}#{number}" in c["body"]]
+    assert len(named) == 1, s.gh.comments_of(ITEM)
+
+
+def test_B502_a_product_issue_already_filed_for_the_item_is_reused(tmp_path):
+    """B502: a later delivery of the same item, on this runner or another, finds the issue the
+    machine account filed by its marker and files nothing more."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    s.gh.add_issue(1500, TITLE, body=f"Earlier.\n\n{ITEM_MARKER}\n", repo=UPSTREAM, user=BOT)
+    s.gh.add_issue(1501, TITLE, body=f"Copied.\n\n{ITEM_MARKER}\n", repo=UPSTREAM, user="someone")
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+    assert "Closes #1500" in s.gh.calls_named("create_pull")[0]["body"]
+    assert not any("#1500" in c["body"] for c in s.gh.comments_of(ITEM)), "named twice"
+
+
+@pytest.mark.parametrize(
+    "ref, overrides",
+    [("issue:816", {}), (AUDIT_REF, {"COMMENT_UPSTREAM": "false"})],
+    ids=["has-a-product-issue", "comment-upstream-off"],
+)
+def test_B503_no_product_issue_is_filed_where_one_exists_or_writes_upstream_are_off(
+    tmp_path, ref, overrides
+):
+    """B503: an item that came from a product issue is listed there already, and
+    COMMENT_UPSTREAM=false keeps every write off the product repository's threads."""
+    s = setup_deliver(tmp_path, ref=ref, **overrides)
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+    assert len(s.gh.calls_named("create_pull")) == 1
+
+
+def test_B503_a_failure_to_file_the_product_issue_does_not_stop_the_delivery(tmp_path):
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    def refuse(title, body):
+        raise GitHubError("403 issues are disabled on this repository")
+
+    s.gh.create_product_issue = refuse
+
+    deliver(s.ctx, ITEM)
+
+    pull = s.gh.calls_named("create_pull")[0]
+    assert "Closes #" not in pull["body"]
+    assert s.store.get_work_item(ITEM).state == "shipped"
+
+
+
+def test_B503_a_part_of_an_item_from_a_product_issue_files_nothing(tmp_path):
+    """B503: a decomposed part whose parent came from `issue:<n>` is that issue's work."""
+    s = setup_deliver(tmp_path, ref="sub:700:1")
+    s.gh.add_issue(700, "the parent", body="issue:640", labels=[LABELS["approved"]])
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+
+
+def test_B503_a_dry_run_names_no_issue(tmp_path):
+    """B503: a dry-run client answers with issue 0, which is neither closed nor announced."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    s.gh.create_product_issue = lambda title, body: {"number": 0, "html_url": ""}
+
+    deliver(s.ctx, ITEM)
+
+    assert "Closes #" not in s.gh.calls_named("create_pull")[0]["body"]
+    assert not any("Filed [" in c["body"] for c in s.gh.comments_of(ITEM))
+
+
+def test_B503_a_failed_lookup_files_nothing_and_delivers(tmp_path):
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    def unreadable(login):
+        raise GitHubError("502 from the issues endpoint")
+
+    s.gh.issues_created_by = unreadable
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+    assert len(s.gh.calls_named("create_pull")) == 1
+
+
+def test_B503_a_client_reading_another_repository_files_nothing(tmp_path):
+    """B503: the issue goes where the client reads, so it is filed only when that is the
+    repository the pull request targets and would close it in."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF, REPO="someone/else")
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("create_product_issue") == []
+
+
+def test_B502_a_pull_request_that_fails_after_filing_reuses_the_issue_next_time(tmp_path):
+    """B502: the issue is filed before the pull request, so a delivery that fails there leaves
+    an issue the retry finds by its marker rather than filing a second."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    real_create_pull = s.gh.create_pull
+
+    def refuse(*args, **kwargs):
+        raise GitHubError("422 Validation Failed")
+
+    s.gh.create_pull = refuse
+    with pytest.raises(GitHubError):
+        deliver(s.ctx, ITEM)
+    s.gh.create_pull = real_create_pull
+
+    deliver(s.ctx, ITEM)
+
+    assert len(s.gh.calls_named("create_product_issue")) == 1
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == TITLE]
+    assert f"Closes #{number}" in s.gh.calls_named("create_pull")[0]["body"]

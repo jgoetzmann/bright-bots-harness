@@ -1876,7 +1876,14 @@ def _item_for_command(ctx, config, cmd) -> int | None:
         return None
     if cmd.surface == "product_issue":
         item = ctx.store.find_by_ref(f"issue:{int(cmd.number)}")
-        return int(item.id) if item is not None else None
+        if item is not None:
+            return int(item.id)
+        # An issue a delivery filed names its work item in a marker (D83).
+        try:
+            issue = ctx.gh.issue(int(cmd.number))
+        except (GitHubError, RateCeilingReached):
+            return None
+        return discover_stage.filed_for(ctx, issue)
     if cmd.surface == "issue":
         return int(cmd.number)
     repo = config.self_repo if cmd.surface == "proposal_pr" else config.upstream_repo

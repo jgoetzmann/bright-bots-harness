@@ -32,14 +32,16 @@ startup.
 
 At tier 2 you may see a branch under `harness/` on `<machine-account>/brightboost`; a pull request
 on `Bright-Bots-Initiative/brightboost` opened by `jgoetzmann-bot`, with a review requested from
-every handle in `.harness/trust.txt`; a comment from that account on such a PR or on an issue here;
-an issue in this repository (a `decompose` sub-issue, or an `ops:` failure report); a commit to
-`state/ledger.json` on this repository's `harness-state` branch with `[skip ci]`; and a proposal PR
-into `proposals/` here that you merge or close.
+every handle in `.harness/trust.txt`; an issue on the product repository from that account, filed
+when it delivers an item the product repository had no issue for (I-14); a comment from that
+account on such a PR or on an issue here; an issue in this repository (a `decompose` sub-issue,
+or an `ops:` failure report); a commit to `state/ledger.json` on this repository's
+`harness-state` branch with `[skip ci]`; and a proposal PR into `proposals/` here that you merge
+or close.
 
-Nothing else: no merge, no review approval or dismissal, no branch or issue on the product
-repository, no change under `.github/` published anywhere, and no change to the fork's default
-branch other than a fast-forward from upstream.
+Nothing else: no merge, no review approval or dismissal, no branch on the product repository and
+no other issue there, no change under `.github/` published anywhere, and no change to the fork's
+default branch other than a fast-forward from upstream.
 
 ---
 
@@ -192,13 +194,18 @@ before encoding it.
 **Verify:** `pytest tests/test_invariants.py -k redact -q` passes; the test walks every `gh.py`
 write method's body.
 
-### I-14 — No issue is created outside this repository
+### I-14 — No issue is created outside this repository, except one per delivered item
 
-`decompose` and `ops.yml` can file issues here, where the queue lives, and nowhere else. The
-issue-create method takes no repository argument; it always targets `SELF_REPO`.
+`decompose` and `ops.yml` can file issues here, where the queue lives. The issue-create method
+takes no repository argument; it always targets `SELF_REPO`. The one exception is a delivery of an
+item the product repository has no issue for: `deliver` files one issue there, found again by its
+marker on a later delivery, so the pull request has an issue to close (D83).
+`create_product_issue` also takes no repository argument, always targets the product repository
+the client reads, and has no other caller. `COMMENT_UPSTREAM=false` turns it off.
 
-**Verify:** `pytest tests/test_invariants.py -k issue_repo -q` passes. By hand,
-`grep -n "def create_issue" harness/gh.py` shows a signature with no `repo` parameter.
+**Verify:** `pytest tests/test_invariants.py -k i14 -q` passes. By hand,
+`grep -n "def create_issue\|def create_product_issue" harness/gh.py` shows two signatures with
+no `repo` parameter.
 
 ### I-15 — No push may modify `.github/**`
 
@@ -314,7 +321,7 @@ shows exactly one token with those three scopes.
 | Open a PR fork → product repo | yes | `deliver.py` |
 | Comment on a PR it opened | yes | `deliver.py`, `revise.py` |
 | Create issues in **this** repository | yes | `decompose.py`, `ops.yml` |
-| Create issues in the product repository | **no** | I-14 |
+| Create issues in the product repository | one per delivery, for an item with none | I-14 |
 | Merge, approve, or dismiss any review | **no** | I-12 |
 | Push to `.github/**` anywhere | **no** | I-15, the harness's check before every push |
 | Push to the product repository directly | **no** | not a collaborator |

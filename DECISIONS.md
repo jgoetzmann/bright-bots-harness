@@ -1263,3 +1263,48 @@ work the operator did not type; deriving the name and address from `.harness/tru
 GitHub API, which adds a network read to every commit for a value that changes about never.
 
 Allocates B498-B500.
+
+## D83 / B501-B503 - a delivery lists its work on the product repository too
+
+Decision:
+- When `deliver` opens the pull request for an item the product repository has no issue for (its
+  reference is not `issue:<n>`: an audit finding, a request made in words, a decomposed part), it
+  first files one issue there. The issue carries the proposal's diagnosis, a link to the harness
+  issue, and a marker naming the work item. The harness issue gets a comment naming it, and the
+  pull request's title and `Closes` line name it, so merging closes it.
+- A later delivery of the same item looks among the issues the machine account opened for that
+  marker and reuses the issue it finds, so a revise cycle or another runner files nothing more.
+  Nothing new is stored: the marker on GitHub is the record.
+- An item that came from a product issue is listed there already and files nothing, and so is
+  a decomposed part whose parent came from one. `COMMENT_UPSTREAM=false` turns this off with the
+  harness's other writes on product threads. A failure to file, or a dry run's issue 0, is
+  recorded, and the pull request opens without the `Closes` line.
+- A filed issue is never new work. `links.item_of_product_issue` reads its marker, for an issue
+  the machine account opened, and assigned and directed discovery, triage, and a `/harness`
+  command on that thread all resolve it to the item it was filed for.
+- The issue body names the harness issue and says the pull request comes from the machine
+  account. It promises no closing, since a pull request can fail to open or be stopped.
+- I-14 gains this one exception. `GitHubClient.create_product_issue` takes no repository
+  argument, writes only to `/repos/{self.repo}/issues`, and is named by no module but
+  `deliver.py`; a test pins all three and that no other gh.py write reaches an `/issues`
+  collection. It joins I-13's write set, with `update_issue_body`, which that set had missed.
+- `prompts/system.md` says the harness files this one issue itself, so `.harness/PIN` is
+  regenerated.
+
+Why. Work the harness found on its own reached brightboost as a pull request with nothing to
+close, so it appeared in the product repository's issue list nowhere, and a maintainer triaging
+issues never saw it. The operator asked for each item to be listed on both repositories. Filing
+at delivery, rather than at discovery or proposal, lists only work a person approved at gate 1
+and the harness has finished, so the product repository never collects issues for work nobody
+has agreed to.
+
+Rejected: filing at proposal time, which lists work that gate 1 may refuse; storing the filed
+number on the work item, which needs a store column and a layout bump for a fact the marker
+already keeps on GitHub; a separate config switch, when `COMMENT_UPSTREAM` already governs the
+harness's writes on product threads.
+
+Review findings kept as they stand: an issue filed for an item whose pull request never opens,
+or is stopped, stays open, naming the harness issue. It describes a problem a person approved at
+gate 1, which is worth listing whether or not this fix lands.
+
+Allocates B501-B504.

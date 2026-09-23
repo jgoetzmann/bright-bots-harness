@@ -520,24 +520,28 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     spec_text = _spec_text(ctx, item)
     pkg = parse_work_package(spec_text)
     upstream_issue = item.issue_number if item.external_ref.startswith("issue:") else None
-    title = build_pr_title(pkg.title, item.title, upstream_issue)
     # Read before the rebase below, so the tip compared is the one the audit saw.
     self_audit = None
     if int(getattr(ctx.config, "max_self_audit_cycles", 0) or 0) > 0:
         self_audit = self_audit_block(load_self_audit(ctx.run_dir), _tip_sha(the_lease))
-    body = build_pr_body(
-        package_dir,
-        upstream_repo=upstream,
-        fork_repo=fork,
-        branch=the_lease.branch,
-        base_sha=the_lease.base_sha,
-        self_repo=self_repo,
-        item_id=item_id,
-        upstream_issue=upstream_issue,
-        config=ctx.config,
-        trusted=ctx.trusted,
-        self_audit=self_audit,
-    )
+
+    def pr_text(issue: int | None) -> tuple[str, str]:
+        body = build_pr_body(
+            package_dir,
+            upstream_repo=upstream,
+            fork_repo=fork,
+            branch=the_lease.branch,
+            base_sha=the_lease.base_sha,
+            self_repo=self_repo,
+            item_id=item_id,
+            upstream_issue=issue,
+            config=ctx.config,
+            trusted=ctx.trusted,
+            self_audit=self_audit,
+        )
+        return build_pr_title(pkg.title, item.title, issue), body
+
+    title, body = pr_text(upstream_issue)
     head = f"{fork_owner}:{the_lease.branch}"
     record: dict[str, Any] = {
         "schema": 1,
@@ -606,7 +610,15 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         ctx.record_decision(f"pushed {the_lease.branch} to {fork}")
     record["pushed"] = True
 
-    # 4. the pull request, fork -> upstream default branch.
+    # 4. an item the product repository has no issue for gets one, so the work is listed on
+    #    both repositories and the pull request closes it (D83).
+    if not item.external_ref.startswith("issue:"):
+        filed = _file_product_issue(ctx, item, pkg, machine=fork_owner)
+        if filed is not None:
+            title, body = pr_text(filed)
+            record["title"], record["body_chars"] = title, len(body)
+
+    # 5. the pull request, fork -> upstream default branch.
     pr = ctx.gh.create_pull(upstream, head=head, base=default_branch, title=title, body=body)
     ctx.record_decision(f"opened pull request #{pr.get('number')} on {upstream} from {head}")
     number = int(pr.get("number") or 0)
@@ -614,7 +626,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     record["pr_number"] = number or None
     record["pr_url"] = url
 
-    # 5. reviewers = every trusted handle. A refusal (not a collaborator yet) is recorded.
+    # 6. reviewers = every trusted handle. A refusal (not a collaborator yet) is recorded.
     if reviewers and number:
         try:
             ctx.gh.request_reviewers(upstream, number, reviewers)
@@ -622,7 +634,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
         except GitHubError as exc:
             ctx.record_decision(f"could not request reviewers {reviewers}: {exc}")
 
-    # 6. the harness issue: comment with the URL (the store's transition comment) and ship.
+    # 7. the harness issue: comment with the URL (the store's transition comment) and ship.
     _write_record(ctx, record)
     ctx.store.append_event(item_id, "info", f"delivery PR {url or number}")
     ctx.store.transition(item_id, "shipped", reason=f"delivery PR opened: {url}")
@@ -633,6 +645,93 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
 # --------------------------------------------------------------------------------------------
 # git and GitHub helpers
 # --------------------------------------------------------------------------------------------
+
+
+#: How much of the diagnosis a filed product issue quotes; the proposal holds all of it.
+PRODUCT_ISSUE_DIAGNOSIS_CHARS = 6000
+
+
+def _quoted_diagnosis(pkg: Any) -> str:
+    """The diagnosis, cut at a paragraph boundary under the cap, with any code fence the cut
+    left open closed again, so the footer after it renders as prose."""
+    text = (getattr(pkg, "diagnosis", "") or "").strip()
+    if len(text) > PRODUCT_ISSUE_DIAGNOSIS_CHARS:
+        cut = text[:PRODUCT_ISSUE_DIAGNOSIS_CHARS]
+        boundary = cut.rfind("\n\n")
+        text = (cut[:boundary] if boundary > 0 else cut).rstrip() + "\n\n(cut short)"
+        if text.count("```") % 2:
+            text += "\n```"
+    return text or "The approved proposal on the harness issue describes the problem."
+
+
+def _parent_product_issue(ctx: Context, item: Any) -> str:
+    """The ``issue:<n>`` reference of a decomposed part's parent, or "" (D83)."""
+    parts = str(item.external_ref).split(":")
+    if len(parts) < 2 or parts[0] != "sub" or not parts[1].isdigit():
+        return ""
+    parent = ctx.store.get_work_item(int(parts[1]))
+    ref = str(getattr(parent, "external_ref", "") or "") if parent is not None else ""
+    return ref if ref.startswith("issue:") else ""
+
+
+def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> int | None:
+    """The product issue for an item that came with none: found by its marker among the issues
+    ``machine`` opened, else filed, with a comment on the harness issue naming it (D83).
+
+    Never fatal: without one the pull request is opened as before, and the reason is recorded.
+    """
+    upstream = str(ctx.config.upstream_repo)
+    self_repo = str(ctx.config.self_repo)
+    if not getattr(ctx.config, "comment_upstream", True):
+        ctx.record_decision("no product issue filed: COMMENT_UPSTREAM is false")
+        return None
+    if str(ctx.config.repo).lower() != upstream.lower() or not machine:
+        ctx.record_decision(
+            f"no product issue filed: the client reads {ctx.config.repo}, the pull request "
+            f"targets {upstream}, and the machine account is {machine or 'unknown'}"
+        )
+        return None
+    parent = _parent_product_issue(ctx, item)
+    if parent:
+        ctx.record_decision(f"no product issue filed: the parent item is listed as {parent}")
+        return None
+    ref = links.issue_ref(self_repo, item.id)
+    try:
+        for issue in ctx.gh.issues_created_by(machine):
+            found = links.item_of_product_issue(issue, self_repo=self_repo, machine=machine)
+            if found == int(item.id):
+                number = int(issue.get("number") or 0)
+                ctx.record_decision(f"product issue {upstream}#{number} already lists {ref}")
+                return number or None
+        body = (
+            _quoted_diagnosis(pkg)
+            + f"\n\nFound by the Bright Bots Harness and tracked as "
+            f"[{ref}]({links.issue_url(self_repo, item.id)}), where its proposal was approved. "
+            f"Its pull request comes from `{machine}` and names this issue.\n\n"
+            + links.product_issue_marker(self_repo, item.id)
+            + "\n"
+        )
+        filed = ctx.gh.create_product_issue(item.title or pkg.title, body)
+    except (GitHubError, HarnessError) as exc:
+        ctx.record_decision(f"could not file a product issue for {ref}: {exc}")
+        return None
+    number = int(filed.get("number") or 0)
+    if not number:
+        # A dry run answers with issue 0, which names nothing.
+        ctx.record_decision(f"product issue for {ref}: the client returned no issue number")
+        return None
+    url = str(filed.get("html_url") or "")
+    ctx.record_decision(f"filed product issue {upstream}#{number} for {ref}")
+    try:
+        ctx.gh.comment(
+            self_repo,
+            item.id,
+            f"Filed [{upstream}#{number}]({url}) so this change is listed on the product "
+            "repository too. The delivery pull request closes it when merged.",
+        )
+    except GitHubError as exc:
+        ctx.record_decision(f"could not name {upstream}#{number} on {ref}: {exc}")
+    return number
 
 
 def _github_origin(lease: Lease) -> bool:

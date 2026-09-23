@@ -2017,3 +2017,36 @@ def test_B499_the_commit_takes_the_co_author_from_the_config(tmp_path, monkeypat
         implement_mod._format_and_commit(ctx, CREDIT_PKG, CREDIT_ITEM, lease, ["a.ts"], first=first)
 
     assert [m.splitlines()[-1] for m in messages] == [f"Co-authored-by: {CO_AUTHOR}"] * 2
+
+
+
+# --------------------------------------------------------------------------------------
+# B504 (D83) - a product issue the harness filed is never discovered as new work
+# --------------------------------------------------------------------------------------
+
+
+def _filed_product_issue(number: int, item_id: int) -> dict:
+    from harness import links
+
+    marker = links.product_issue_marker("jgoetzmann/bright-bots-harness", item_id)
+    return gh_issue(number) | {"body": f"Diagnosis.\n\n{marker}\n", "user": {"login": "bot"}}
+
+
+def _as_machine(rig: Rig) -> None:
+    import dataclasses
+
+    rig.ctx.config = dataclasses.replace(
+        rig.ctx.config, fork_repo="bot/brightboost", self_repo="jgoetzmann/bright-bots-harness"
+    )
+
+
+def test_B504_directed_discover_of_a_filed_issue_returns_its_work_item(tmp_path):
+    """B504: `/harness work` on an issue a delivery filed names the item already doing that
+    work, so no second item and no second proposal is made."""
+    rig = make_rig(tmp_path, run_id="discover", gh=FakeGh(issues=(_filed_product_issue(901, 66),)))
+    _as_machine(rig)
+
+    ids = discover(rig.ctx, mode="directed", target="901", lens=None)
+
+    assert ids == [66]
+    assert rig.store.list_work_items() == []

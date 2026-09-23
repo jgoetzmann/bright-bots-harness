@@ -2970,3 +2970,29 @@ def test_B506_sweep_takes_the_thread_of_the_comment_event():
     """B506 (D84): `harness sweep --thread N` names the issue or pull request to read directly."""
     assert cli.build_parser().parse_args(["sweep", "--thread", "61"]).thread == 61
     assert cli.build_parser().parse_args(["sweep"]).thread == 0
+
+
+def test_B508_tidy_publishes_the_queue_when_marking_merged_deliveries_fails(monkeypatch, capsys):
+    """B508 (D86): marking is a courtesy to the queue, which publishes whatever it raises."""
+    from types import SimpleNamespace
+
+    from harness.errors import HarnessError
+    from harness.stages import deliver as deliver_mod
+
+    published: list[bool] = []
+
+    def refuse(ctx):
+        raise HarnessError("503 from the store")
+
+    monkeypatch.setattr(cli, "check_repo_halt", lambda root: None)
+    monkeypatch.setattr(cli, "check_halt", lambda path: None)
+    monkeypatch.setattr(cli, "_load", lambda args: SimpleNamespace(halt_file="HALT"))
+    monkeypatch.setattr(cli, "_context", lambda config, args, *, run_id: SimpleNamespace())
+    monkeypatch.setattr(cli, "_save_ledger", lambda ctx: None)
+    monkeypatch.setattr(deliver_mod, "mark_merged", refuse)
+    monkeypatch.setattr(cli, "_publish_queue", lambda ctx, config: published.append(True) or "ok")
+    monkeypatch.setattr(cli, "_prune_machine_comments", lambda ctx, config: ([], ""))
+
+    assert cli.main(["tidy"]) == 0
+    assert published == [True]
+    assert "done: none" in capsys.readouterr().out

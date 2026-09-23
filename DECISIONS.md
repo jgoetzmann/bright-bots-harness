@@ -1373,21 +1373,44 @@ Allocates B507.
 ## D86 / B508 - a merged delivery marks its item done
 
 Decision:
-- `deliver.mark_merged` looks up each shipped item's delivery pull request by the branch the
-  machine account pushed (`GitHubClient.pulls_for_head`, one read per item). Once one has merged,
-  the item moves to `merged` (`stage:done`) and its harness issue is closed as completed through
-  `GitHubClient.close_issue`, which takes no repository and closes only in `SELF_REPO`.
-- `harness tidy` calls it first, so every feedback run marks what merged before it publishes the
-  queue. No workflow changes.
-- A delivery pull request closed without merging leaves the item at `stage:needs-review`, where
-  `/harness stop` stands it down. The harness issue is closed, not deleted: GitHub lets only an
-  admin delete an issue, and the issue is the item's record.
+- `deliver.mark_merged` looks up the delivery pull requests of each item at `shipped` or
+  `needs-human`, on the upstream repository, from the branch the machine account pushed. It keeps
+  only rows whose head ref and owner match, whatever GitHub's filter returned, and judges the
+  newest. Once that one has merged, the harness issue is closed as completed through
+  `GitHubClient.close_issue`, which takes no repository and closes only in `SELF_REPO`, and then
+  the item moves to `merged` (`stage:done`), by way of `shipped` from `needs-human`.
+- The close comes first: it is idempotent and a closed issue still lists, so an item a failure
+  leaves behind is finished by the next run. Every failure is recorded and never fatal.
+- `harness tidy` calls it first and on its own, so the queue publishes whatever it raises. One
+  read per item beyond the listing. No workflow changes.
+- A delivery pull request closed without merging leaves the item where it is; `/harness stop`
+  parks it at `stage:blocked`. The harness issue is closed, not deleted: GitHub lets only an admin
+  delete an issue, and the issue is the item's record.
 
 Why. Nothing set `stage:done`; the operator relabelled each issue by hand. Until they did, an
-item stayed outstanding, so `depends_on` waited on it and suggested work stayed behind it.
+item stayed outstanding, so `depends_on` waited on it and suggested work stayed behind it. An
+item at `needs-human` whose pull request a maintainer finished and merged had the same problem.
 
 Rejected: deleting the harness issue once done, which needs admin rights the machine account does
 not hold and removes the record `depends_on`, the store and the ledger read; a `to:delete` label,
-which the operator dropped in favour of `stage:done` alone.
+which the operator dropped in favour of `stage:done` alone; trusting GitHub's head filter and any
+merged row, which lets an older merged pull request finish an item whose newer one is open.
 
 Allocates B508.
+
+## D87 / B509 - a timer call is not a timeout
+
+Decision:
+- B64's timeout arm no longer reads a timer call (`setTimeout(…)`, `window.setTimeout(…)`,
+  `clearTimeout(…)`) as a timeout. `jest.setTimeout(n)`, `timeout: n` and `testTimeout: n` are
+  still caught, `0` included, since some runners read `0` as no limit.
+
+Why. The arm matched `timeout` followed by a number anywhere on an added line, so
+`setTimeout(resolve, 0)` in #54's regression test blocked a change whose four gates had passed,
+as "introduces a timeout (added 0, previous none)". A timer call schedules work after a delay and
+bounds nothing; the arm exists to stop a change from buying time from a test runner or a job.
+
+Rejected: ignoring a zero, which some runners read as "never time out"; limiting the arm to test
+files, which would miss a raised limit in a runner's config.
+
+Allocates B509.

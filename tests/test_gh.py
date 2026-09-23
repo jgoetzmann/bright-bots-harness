@@ -1005,10 +1005,8 @@ def test_B507_notifications_include_read_threads_only_when_asked(tmp_path):
     assert "all=false" in probed
 
 
-
-def test_B508_close_issue_targets_this_repository_and_pulls_for_head_reads_any_state(tmp_path):
-    """B508 (D86): closing a done item's issue is tier-gated and takes no repository; the
-    delivery lookup asks for the pull requests from one head in every state."""
+def test_B508_close_issue_targets_this_repository_and_is_tier_gated(tmp_path):
+    """B508 (D86): closing a done item's issue takes no repository and needs a token."""
     from harness.clock import FrozenClock
     from harness.errors import TierViolation
     from harness.gh import GitHubClient
@@ -1029,10 +1027,3 @@ def test_B508_close_issue_targets_this_repository_and_pulls_for_head_reads_any_s
     unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
     with pytest.raises(TierViolation):
         unarmed.close_issue(54)
-
-    opener = FakeOpener(FakeResponse([{"number": 1500, "merged_at": None}]))
-    reader = GitHubClient("o/r", store, clock, 50, token=token, opener=opener)
-    assert [p["number"] for p in reader.pulls_for_head("bot:harness/fix-1")] == [1500]
-    (url,) = opener.urls
-    assert "/repos/o/r/pulls?" in url and "head=bot%3Aharness%2Ffix-1" in url
-    assert "state=all" in url

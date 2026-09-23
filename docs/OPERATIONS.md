@@ -36,10 +36,11 @@ workflow run URL and the new state (B101).
 | `stage:needs-human` | revise cap reached | a trusted `/harness revise` |
 | `stage:dropped` | terminal | — |
 
-`harness tidy`, which every feedback run calls, moves a shipped item to `stage:done` once its
-delivery PR has merged upstream, and closes the harness issue as completed (D86). The dispatcher's
-`depends_on` check waits on that label. A delivery PR closed without merging leaves the item at
-`stage:needs-review`; `/harness stop` on it stands the item down.
+`harness tidy`, which every feedback run calls, closes the harness issue as completed and moves the
+item to `stage:done` once the newest delivery PR of an item at `stage:needs-review` or
+`stage:needs-human` has merged upstream (D86). The dispatcher's `depends_on` check waits on that
+label. A delivery PR closed without merging leaves the item where it is; `/harness stop` parks it
+at `stage:blocked`.
 
 ```bash
 harness status --json     # the queue as this store sees it, and what Actions is doing

@@ -267,7 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser(
         "tidy",
-        help="rewrite the queue on the pinned issue; prune the harness's own old comments",
+        help="mark merged deliveries done; rewrite the pinned queue; prune old bot comments",
     )
 
     trust_cmd = sub.add_parser(
@@ -2851,7 +2851,11 @@ def cmd_tidy(args: argparse.Namespace) -> int:
     skipped = ""
     done: list[int] = []
     try:
-        done = deliver_stage.mark_merged(ctx)
+        try:
+            done = deliver_stage.mark_merged(ctx)
+        except HarnessError as exc:
+            # Marking is a courtesy to the queue below, which must publish regardless.
+            LOG.warning("tidy: marking merged deliveries failed: %s", exc)
         queue = _publish_queue(ctx, config)
         pruned, skipped = _prune_machine_comments(ctx, config)
     finally:

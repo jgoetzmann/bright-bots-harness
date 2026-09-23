@@ -453,7 +453,7 @@ harness resume               # remove it
 harness resume --commanded   # also lift a halt set by `/harness halt`
 harness block 3              # suspend the run window for three five-hour sessions; 0 cancels
 harness sweep                # poll notifications, parse /harness commands, act on them
-harness tidy                 # rewrite the queue on the pinned issue; prune old bot comments
+harness tidy                 # mark merged deliveries done; rewrite the pinned queue; prune
 harness relabel              # migrate open issues from harness:* to stage:/kind:/via:
 harness sync-fork            # fast-forward the fork from upstream; loud on divergence
 harness init --labels        # create the nineteen labels
@@ -472,7 +472,8 @@ comment again minutes later. The fact lives in a reaction, which only the bot's 
 leave, rather than in the text of a reply — a reply is built partly from issue titles and model
 output, which anybody can choose.
 
-`tidy` is what `feedback.yml` calls after each sweep. It rewrites the queue between the
+`tidy` is what `feedback.yml` calls after each sweep. It first marks merged deliveries done (see
+`stage:done` below). It rewrites the queue between the
 `<!-- queue:start -->` and `<!-- queue:end -->` markers on the pinned tracking issue, touching
 nothing else in that body and sending no request when the text has not changed. Once a week it
 also deletes the harness's **own** comments on the inbox and tracking issues, keeping the newest
@@ -520,10 +521,11 @@ that way, and the author is what tells the two apart.
 | `stage:needs-human` | revise cycles spent | a trusted `/harness revise` |
 | `stage:dropped` | closed without shipping — terminal | — |
 
-The harness sets `stage:done` itself: every sweep's `harness tidy` looks up each shipped item's
-delivery pull request and, once it has merged, moves the item to `stage:done` and closes its
-harness issue as completed (D86). `depends_on` waits on that label. A delivery pull request closed
-without merging leaves the item at `stage:needs-review`; `/harness stop` on it stands it down.
+The harness sets `stage:done` itself: every sweep's `harness tidy` looks up the delivery pull
+request of each item at `stage:needs-review` or `stage:needs-human` and, once the newest one has
+merged, closes its harness issue as completed and moves the item to `stage:done` (D86).
+`depends_on` waits on that label. A delivery pull request closed without merging leaves the item
+where it is; `/harness stop` parks it at `stage:blocked`.
 
 **`kind:`** — `product` (work) · `audit` (a findings report) · `ops` (a failed run). There is no
 `kind:harness`, because the harness never works on its own repository.

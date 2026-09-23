@@ -245,7 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
     decompose = sub.add_parser("decompose", help="split one issue into sub-issues")
     decompose.add_argument("issue", type=int, metavar="issue")
 
-    sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
+    sweep = sub.add_parser("sweep", help="poll notifications, parse keywords, act on them")
+    sweep.add_argument(
+        "--thread",
+        type=int,
+        default=0,
+        help="also read this issue or pull request here directly (the comment event's)",
+    )
 
     ack = sub.add_parser(
         "ack", help="say 'working on it' for one comment, before the work starts"
@@ -2657,6 +2663,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             upstream_repo=config.upstream_repo,
             inbox_issue=config.inbox_issue,
             machine=discover_stage.machine_account(config),
+            thread=int(getattr(args, "thread", 0) or 0),
         )
         for group in _by_comment(commands):
             records, keep_going = run_comment(ctx, config, group)

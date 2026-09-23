@@ -521,12 +521,22 @@ class FakeGh:
         return [copy.deepcopy(issue) for issue in self.repos.get(self.repo, {}).values()
                 if issue["user"]["login"] == login]
 
-    def create_product_issue(self, title, body) -> dict:
-        self._record("create_product_issue", title=title, body=body)
-        self._write("POST", f"/repos/{self.repo}/issues", {"title": title, "body": body})
+    def create_product_issue(self, title, body, labels) -> dict:
+        self._record("create_product_issue", title=title, body=body, labels=list(labels))
+        self._write("POST", f"/repos/{self.repo}/issues",
+                    {"title": title, "body": body, "labels": list(labels)})
         number = self._next_number.get(self.repo, 1000)
         self._next_number[self.repo] = number + 1
         return copy.deepcopy(self._new_issue(self.repo, number, title, body, [], BOT))
+
+    def edit_product_issue(self, number, *, body, title="") -> dict:
+        self._record("edit_product_issue", number=number, body=body, title=title)
+        self._write("PATCH", f"/repos/{self.repo}/issues/{number}", {"body": body})
+        issue = self._issue(self.repo, int(number))
+        issue["body"] = body
+        if title:
+            issue["title"] = title
+        return copy.deepcopy(issue)
 
     def create_pull(self, repo, *, head, base, title, body) -> dict:
         self._record("create_pull", repo=repo, head=head, base=base, title=title, body=body)
@@ -1855,16 +1865,26 @@ def test_B501_a_delivery_files_a_product_issue_for_an_item_with_none(tmp_path):
     deliver(s.ctx, ITEM)
 
     (filed,) = s.gh.calls_named("create_product_issue")
-    assert filed["title"] == TITLE
+    assert filed["title"] == f"harness-tracking(#{ITEM}): {TITLE}"
+    assert filed["labels"] == ["harness-tracking"]
+    assert filed["body"].startswith("> [!NOTE]\n> **Harness tracking issue.**")
+    assert "Please comment on the pull request rather than here." in filed["body"]
     assert "dereferences `user.name`" in filed["body"]
     assert f"{SELF_REPO}/issues/{ITEM}" in filed["body"]
     assert filed["body"].rstrip().endswith(ITEM_MARKER)
-    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == TITLE]
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == filed["title"]]
     pull = s.gh.calls_named("create_pull")[0]
     assert pull["title"].endswith(f"(#{number})")
     assert f"Closes #{number}" in pull["body"]
     named = [c["body"] for c in s.gh.comments_of(ITEM) if f"{UPSTREAM}#{number}" in c["body"]]
     assert len(named) == 1, s.gh.comments_of(ITEM)
+    # Once the pull request exists, the note links it, and the rest of the body is kept.
+    (edited,) = s.gh.calls_named("edit_product_issue")
+    pr_number = max(s.gh.prs[UPSTREAM])
+    assert edited["number"] == number
+    assert f"the fix is [#{pr_number}](" in edited["body"].split("\n\n")[0]
+    assert edited["body"].rstrip().endswith(ITEM_MARKER)
+    assert "dereferences `user.name`" in edited["body"]
 
 
 def test_B502_a_product_issue_already_filed_for_the_item_is_reused(tmp_path):
@@ -1902,7 +1922,7 @@ def test_B503_no_product_issue_is_filed_where_one_exists_or_writes_upstream_are_
 def test_B503_a_failure_to_file_the_product_issue_does_not_stop_the_delivery(tmp_path):
     s = setup_deliver(tmp_path, ref=AUDIT_REF)
 
-    def refuse(title, body):
+    def refuse(title, body, labels):
         raise GitHubError("403 issues are disabled on this repository")
 
     s.gh.create_product_issue = refuse
@@ -1928,7 +1948,7 @@ def test_B503_a_part_of_an_item_from_a_product_issue_files_nothing(tmp_path):
 def test_B503_a_dry_run_names_no_issue(tmp_path):
     """B503: a dry-run client answers with issue 0, which is neither closed nor announced."""
     s = setup_deliver(tmp_path, ref=AUDIT_REF)
-    s.gh.create_product_issue = lambda title, body: {"number": 0, "html_url": ""}
+    s.gh.create_product_issue = lambda title, body, labels: {"number": 0, "html_url": ""}
 
     deliver(s.ctx, ITEM)
 
@@ -1977,5 +1997,5 @@ def test_B502_a_pull_request_that_fails_after_filing_reuses_the_issue_next_time(
     deliver(s.ctx, ITEM)
 
     assert len(s.gh.calls_named("create_product_issue")) == 1
-    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"] == TITLE]
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"].endswith(TITLE)]
     assert f"Closes #{number}" in s.gh.calls_named("create_pull")[0]["body"]

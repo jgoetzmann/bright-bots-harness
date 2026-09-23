@@ -215,10 +215,14 @@ jobs:
       - name: Sweep keywords (harness sweep; may run revise/propose)
         if: steps.halt.outputs.halted != 'true'
         shell: bash
+        env:
+          # The thread this run's comment is on, read directly: its notification can arrive after
+          # the run reaches this step, and the cursor would then pass it (D84).
+          THREAD: ${{ github.event.issue.number || github.event.pull_request.number || '' }}
         run: |
           set -euo pipefail
           mkdir -p runs
-          harness sweep | tee runs/sweep.jsonl
+          harness sweep ${THREAD:+--thread "$THREAD"} | tee runs/sweep.jsonl
 
         # A maintainer hands the harness a ticket by assigning the machine account to a product
         # issue. No events arrive from that repository, so this polls: one request, no model

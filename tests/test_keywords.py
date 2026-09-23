@@ -18,6 +18,8 @@ from harness.ledger import Ledger
 NOW = FrozenClock(datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)).now()
 NOW_ISO = iso(NOW)
 CURSOR = "2026-09-01T00:00:00Z"
+#: What the sweep asks the feed for: SWEEP_OVERLAP_MINUTES before the cursor (D84).
+OVERLAP_SINCE = "2026-08-31T23:30:00Z"
 SELF_REPO = "jgoetzmann/bright-bots-harness"
 UPSTREAM = "Bright-Bots-Initiative/brightboost"
 # B269/D60: the trust file carries levels now, and jgoetzmann is the operator. A bare set
@@ -532,7 +534,7 @@ def test_B140_sweep_reads_notifications_since_the_cursor_and_returns_commands_in
     assert cmds[0].comment_id == "IC_self12" and cmds[0].actor == "jgoetzmann"
     assert cmds[1].comment_id == "PRRC_up77" and cmds[1].actor == "jgoetzmann"
     assert cmds[2].comment_id == "IC_up900" and cmds[2].actor == "jgoetzmann"
-    assert gh.since_args() == [CURSOR]
+    assert gh.since_args() == [OVERLAP_SINCE]
 
 
 def test_B140_sweep_advances_the_cursor_to_now():
@@ -841,7 +843,7 @@ def test_B439_a_run_that_was_cancelled_before_it_started_loses_nothing():
                  upstream_repo=UPSTREAM, inbox_issue=19)
 
     assert [(x.verb, x.surface) for x in cmds] == [("status", "inbox")]
-    assert gh.since_args() == [CURSOR], "the cursor bounds the feed and nothing else"
+    assert gh.since_args() == [OVERLAP_SINCE], "the cursor bounds the feed and nothing else"
 
 
 # --------------------------------------------------------------------------------------------
@@ -1028,3 +1030,67 @@ def test_B455_a_model_answer_the_harness_republishes_suppresses_nothing():
     answer = f"The registry maps activity ids to components.\n\n{POISON}\n\nHope that helps."
 
     assert _boss_command_survives(answer) == (["work"], True)
+
+
+# --------------------------------------------------------------------------------------------
+# B505/B506 (D84) - a comment is never lost to a notification that arrives after the run
+# --------------------------------------------------------------------------------------------
+
+
+def test_B505_the_sweep_asks_the_feed_from_before_its_cursor():
+    """B505: the run a comment starts can move the cursor past that comment before GitHub
+    delivers its notification, so every sweep re-reads SWEEP_OVERLAP_MINUTES before it."""
+    from harness.keywords import SWEEP_OVERLAP_MINUTES
+
+    gh, _ = sweep_fixture()
+    run_sweep(gh, fresh_ledger(CURSOR))
+
+    assert SWEEP_OVERLAP_MINUTES == 30
+    assert gh.since_args() == [OVERLAP_SINCE]
+
+
+def test_B505_a_comment_read_again_in_the_overlap_is_answered_once():
+    """B505: the seen comment ids, which are never pruned, make the overlap free of repeats."""
+    ledger = fresh_ledger(CURSOR)
+    gh, _ = sweep_fixture()
+
+    first = run_sweep(gh, ledger)
+    second = run_sweep(gh, ledger)
+
+    assert len(first) == 3
+    assert second == []
+
+
+def _command_on(number: int, *, pull: bool = False) -> list:
+    body = "/harness go" if pull else "/harness promote all"
+    posted = comment(login="jgoetzmann", association="OWNER", body=body, id=77, node_id="IC_evt")
+    gh = FakeGh(threads=[], comments={(SELF_REPO, number): [posted]})
+    gh.get = lambda path: {"number": number} | ({"pull_request": {}} if pull else {})
+    return sweep(gh, ledger=fresh_ledger(CURSOR), trusted=TRUSTED, now_iso=NOW_ISO,
+                 self_repo=SELF_REPO, upstream_repo=UPSTREAM, thread=number)
+
+
+def test_B506_the_thread_a_comment_event_names_is_read_without_its_notification():
+    """B506: the feed has not caught up (no threads), and the command is still found."""
+    cmds = _command_on(61)
+
+    assert [(c.verb, c.surface, c.number) for c in cmds] == [("promote", "issue", 61)]
+
+
+def test_B506_a_thread_that_is_a_pull_request_is_read_as_a_proposal():
+    cmds = _command_on(88, pull=True)
+
+    assert [(c.verb, c.surface, c.number) for c in cmds] == [("go", "proposal_pr", 88)]
+
+
+def test_B506_feedback_hands_the_comment_event_thread_to_the_sweep():
+    """B506: the workflow passes the issue or pull request number of the comment it runs for."""
+    from pathlib import Path
+
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "feedback.yml"
+    text = workflow.read_text(encoding="utf-8")
+    step = text[text.index("- name: Sweep keywords"):]
+    step = step[: step.index("- name:", 10)]
+
+    assert "github.event.issue.number || github.event.pull_request.number" in step
+    assert 'harness sweep ${THREAD:+--thread "$THREAD"}' in step

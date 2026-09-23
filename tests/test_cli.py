@@ -2964,3 +2964,9 @@ def test_B504_a_command_on_a_filed_product_issue_steers_its_work_item():
     cmd = SimpleNamespace(surface="product_issue", number=901)
 
     assert cli._item_for_command(ctx, config, cmd) == 66
+
+
+def test_B506_sweep_takes_the_thread_of_the_comment_event():
+    """B506 (D84): `harness sweep --thread N` names the issue or pull request to read directly."""
+    assert cli.build_parser().parse_args(["sweep", "--thread", "61"]).thread == 61
+    assert cli.build_parser().parse_args(["sweep"]).thread == 0

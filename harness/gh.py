@@ -545,11 +545,14 @@ class GitHubClient(GitHubReadOnly):
         )
         return data if isinstance(data, dict) else {}
 
-    def create_product_issue(self, title: str, body: str) -> dict:
+    def create_product_issue(self, title: str, body: str, labels: Sequence[str]) -> dict:
         """Always in ``self.repo``, the product repository; there is no repo parameter. Only a
-        delivery calls it, for an item the product repository has no issue for (I-14)."""
+        delivery calls it, for an item the product repository has no issue for (I-14). GitHub
+        drops the labels in silence for an account that lacks triage access there."""
         self._require_write("create_product_issue")
-        payload = redact.redact_json({"title": str(title), "body": str(body)})
+        payload = redact.redact_json(
+            {"title": str(title), "body": str(body), "labels": [str(label) for label in labels]}
+        )
         data = self._write(
             "POST",
             f"/repos/{self.repo}/issues",
@@ -561,6 +564,21 @@ class GitHubClient(GitHubReadOnly):
                 "body": payload["body"],
                 "state": "open",
             },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def edit_product_issue(self, number: int, *, body: str, title: str = "") -> dict:
+        """Rewrite the body, and the title when one is given, of an issue in ``self.repo``; only
+        a delivery calls it, on the issue it filed there (I-14)."""
+        self._require_write("edit_product_issue")
+        n = int(number)
+        fields = {"body": str(body)} | ({"title": str(title)} if title else {})
+        payload = redact.redact_json(fields)
+        data = self._write(
+            "PATCH",
+            f"/repos/{self.repo}/issues/{n}",
+            payload,
+            {"number": n, "html_url": f"https://github.com/{self.repo}/issues/{n}", **payload},
         )
         return data if isinstance(data, dict) else {}
 

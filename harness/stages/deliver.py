@@ -39,6 +39,7 @@ __all__ = [
     "build_pr_body",
     "build_pr_title",
     "deliver",
+    "delivery_cap_line",
     "delivery_cap_refusals",
     "handoff",
     "lease_from_store",
@@ -631,7 +632,7 @@ def deliver(ctx: Context, item_id: int, *, lease: Lease | None = None) -> str:
     record["pr_url"] = url
     if product is not None and number:
         _name_pull_on_product_issue(ctx, item, product, number, url, machine=fork_owner)
-        _label_and_lock(ctx, product)
+        _label_tracking(ctx, product)
 
     # 6. reviewers = every trusted handle but the machine account, one request each, since
     #    GitHub refuses the whole request for one handle that cannot review there (D88).
@@ -697,37 +698,63 @@ def _request_reviews(
         try:
             ctx.gh.request_reviewers(upstream, number, [handle])
             ctx.record_decision(f"requested review from {handle}")
-        except GitHubError as exc:
+        except HarnessError as exc:
             ctx.record_decision(f"could not request review from {handle}: {exc}")
 
 
-def _label_and_lock(ctx: Context, issue: dict) -> None:
-    """Give an open issue the machine account filed the tracking label and a locked
-    conversation, where it lacks either (D88). Never fatal; each refusal is recorded."""
-    number = int(issue.get("number") or 0)
-    if not number or str(issue.get("state") or "open") != "open":
-        return
-    names = {
-        str(label.get("name") if isinstance(label, dict) else label)
+def _label_names(issue: dict) -> set[str]:
+    """The casefolded names of an issue's labels, whichever shape GitHub sent them in."""
+    return {
+        str(label.get("name") if isinstance(label, dict) else label).casefold()
         for label in issue.get("labels") or ()
     }
-    if TRACKING_LABEL not in names:
-        try:
-            ctx.gh.label_product_issue(number, [TRACKING_LABEL])
-            ctx.record_decision(f"labelled product issue #{number} {TRACKING_LABEL}")
-        except (GitHubError, HarnessError) as exc:
-            ctx.record_decision(f"could not label product issue #{number}: {exc}")
-    if not issue.get("locked"):
-        try:
-            ctx.gh.lock_product_issue(number)
-            ctx.record_decision(f"locked product issue #{number}")
-        except (GitHubError, HarnessError) as exc:
-            ctx.record_decision(f"could not lock product issue #{number}: {exc}")
+
+
+def _tracking_label_exists(ctx: Context) -> bool:
+    """True when the product repository has the tracking label. Triage may apply a label but
+    not create one, so the harness asks before it adds one (D88)."""
+    upstream = str(ctx.config.upstream_repo)
+    try:
+        ctx.gh.get(f"/repos/{upstream}/labels/{TRACKING_LABEL}")
+    except HarnessError as exc:
+        ctx.record_decision(
+            f"no {TRACKING_LABEL} label added: {upstream} has no such label that could be read "
+            f"({exc}); a maintainer creates it"
+        )
+        return False
+    return True
+
+
+def _label_tracking(ctx: Context, issue: dict, *, exists: bool | None = None) -> bool:
+    """Give an open issue the machine account filed the tracking label when it lacks it; True
+    only when GitHub's answer shows the label on it (D88). Never fatal; a refusal is recorded.
+
+    ``exists`` is the caller's answer to `_tracking_label_exists`, asked here when absent.
+    """
+    number = int(issue.get("number") or 0)
+    if not number or str(issue.get("state") or "open") != "open":
+        return False
+    if TRACKING_LABEL.casefold() in _label_names(issue):
+        return False
+    if exists is None:
+        exists = _tracking_label_exists(ctx)
+    if not exists:
+        return False
+    try:
+        applied = ctx.gh.label_product_issue(number, [TRACKING_LABEL])
+    except HarnessError as exc:
+        ctx.record_decision(f"could not label product issue #{number}: {exc}")
+        return False
+    if TRACKING_LABEL.casefold() not in _label_names({"labels": applied}):
+        ctx.record_decision(f"GitHub did not keep {TRACKING_LABEL} on product issue #{number}")
+        return False
+    ctx.record_decision(f"labelled product issue #{number} {TRACKING_LABEL}")
+    return True
 
 
 def mark_tracking(ctx: Context) -> list[int]:
-    """Label and lock every open tracking issue the machine account filed on the product
-    repository; returns the numbers it wrote to (D88).
+    """Label every open tracking issue the machine account filed on the product repository
+    that lacks the tracking label; returns the numbers GitHub now shows it on (D88).
 
     An issue counts only when that account opened it and it carries a work item's marker, so no
     other thread is ever read as one. Never fatal.
@@ -744,24 +771,26 @@ def mark_tracking(ctx: Context) -> list[int]:
         ctx.record_decision(f"could not list the product issues {machine} filed: {exc}")
         return []
     self_repo = str(ctx.config.self_repo)
-    touched: list[int] = []
-    for issue in issues:
-        if str(issue.get("state") or "") != "open":
-            continue
-        if links.item_of_product_issue(issue, self_repo=self_repo, machine=machine) is None:
-            continue
-        names = {str((label or {}).get("name") or "") for label in issue.get("labels") or ()}
-        if TRACKING_LABEL in names and issue.get("locked"):
-            continue
-        _label_and_lock(ctx, issue)
-        touched.append(int(issue.get("number") or 0))
-    return touched
+    unlabelled = [
+        issue
+        for issue in issues
+        if str(issue.get("state") or "") == "open"
+        and links.item_of_product_issue(issue, self_repo=self_repo, machine=machine) is not None
+        and TRACKING_LABEL.casefold() not in _label_names(issue)
+    ]
+    if not unlabelled or not _tracking_label_exists(ctx):
+        return []
+    return [
+        int(issue.get("number") or 0)
+        for issue in unlabelled
+        if _label_tracking(ctx, issue, exists=True)
+    ]
 
 
 def open_deliveries(ctx: Context) -> list[dict]:
-    """The open pull requests on the upstream repository whose head is on the fork (D88)."""
-    fork = str(ctx.config.fork_repo or "").lower()
-    if not fork:
+    """The open pull requests on the upstream repository the machine account opened (D88)."""
+    machine = str(ctx.config.fork_repo or "").split("/")[0].lower()
+    if not machine:
         return []
     query = urllib.parse.urlencode(
         [("state", "open"), ("per_page", "100")], quote_via=urllib.parse.quote
@@ -771,36 +800,60 @@ def open_deliveries(ctx: Context) -> list[dict]:
         row
         for row in rows
         if isinstance(row, dict)
-        and str(((row.get("head") or {}).get("repo") or {}).get("full_name") or "").lower()
-        == fork
+        and str((row.get("user") or {}).get("login") or "").lower() == machine
     ]
 
 
-def delivery_cap_refusals(ctx: Context, items: Iterable[Any]) -> dict[int, str]:
+def _cap(ctx: Context) -> int:
+    """``MAX_OPEN_DELIVERIES`` where the client opens pull requests itself, else 0 (D88)."""
+    cap = int(getattr(ctx.config, "max_open_deliveries", 0) or 0)
+    return cap if cap > 0 and ctx.gh.can_write else 0
+
+
+def delivery_cap_refusals(
+    ctx: Context, items: Iterable[Any], *, opened: Iterable[str] = ()
+) -> dict[int, str]:
     """Why each of ``items`` may not start while ``MAX_OPEN_DELIVERIES`` delivery pull requests
     are open upstream; an item missing from the answer may start (D88).
 
-    Only work that would open a new one waits: an item whose branch already has an open pull
-    request goes on. The count is read once per call, and a count that cannot be read refuses.
+    ``opened`` names branches this process delivered, counted even before GitHub lists them.
+    An item whose branch already has an open pull request goes on, and an unread count refuses.
     """
-    cap = int(getattr(ctx.config, "max_open_deliveries", 0) or 0)
+    cap = _cap(ctx)
     items = list(items)
-    if cap <= 0 or not ctx.gh.can_write or not items:
+    if not cap or not items:
         return {}
     try:
         rows = open_deliveries(ctx)
     except HarnessError as exc:
         reason = f"the open delivery pull requests could not be counted: {exc}"
         return {int(item.id): reason for item in items}
-    if len(rows) < cap:
-        return {}
     heads = {str((row.get("head") or {}).get("ref") or "") for row in rows}
-    reason = f"{len(rows)} delivery pull requests are open upstream; MAX_OPEN_DELIVERIES is {cap}"
+    count = len(rows) + len({branch for branch in opened if branch and branch not in heads})
+    heads.update(opened)
+    if count < cap:
+        return {}
+    reason = f"{count} delivery pull requests are open upstream; MAX_OPEN_DELIVERIES is {cap}"
     return {
         int(item.id): reason
         for item in items
         if not (getattr(item, "branch_name", "") and item.branch_name in heads)
     }
+
+
+def delivery_cap_line(ctx: Context) -> str:
+    """One status line on the open-delivery cap, or "" when no cap applies (D88)."""
+    cap = _cap(ctx)
+    if not cap:
+        return ""
+    try:
+        count = len(open_deliveries(ctx))
+    except HarnessError as exc:
+        return f"- open delivery pull requests upstream could not be counted: {exc}"
+    line = f"- open delivery pull requests upstream: {count} of {cap}"
+    if count >= cap:
+        line += f"; no new item starts implementing until fewer than {cap} are open"
+    return line
 
 
 def _tracking_header(ctx: Context, item: Any, *, machine: str, pull: int = 0, url: str = "") -> str:
@@ -858,7 +911,6 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> d
                     "body": str(issue.get("body") or ""),
                     "state": str(issue.get("state") or "open"),
                     "labels": list(issue.get("labels") or ()),
-                    "locked": bool(issue.get("locked")),
                 }
         title = TRACKING_TITLE.format(item=item.id, title=item.title or pkg.title)
         body = (
@@ -894,7 +946,6 @@ def _file_product_issue(ctx: Context, item: Any, pkg: Any, *, machine: str) -> d
         "title": title,
         "body": body,
         "labels": list(filed.get("labels") or ()),
-        "locked": bool(filed.get("locked")),
     }
 
 

@@ -142,10 +142,12 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
 - `os.environ` is read only in `config.py`. SQL lives only in `store/sqlite.py`. Non-GET HTTP, the
   `Authorization` header and the token getter `config.github_token()` are used only in `gh.py`. The
   `gh` CLI is never invoked. No merge, approve or dismiss endpoint may exist. Issues are created
-  only in `SELF_REPO`, except a delivery's one tracking issue upstream (D83). A write that closes,
-  labels, locks, edits or requests review calls `_require_own_thread` first, since the machine
-  account's Triage role upstream would allow it on anybody's thread (D88). Every GitHub write
-  passes through `redact`.
+  only in `SELF_REPO`, except a delivery's one tracking issue upstream (D83). The writes that can
+  close, label, edit or request review on a product thread (`close_pull`, `request_reviewers`,
+  `edit_product_issue`, `label_product_issue`) call `_require_own_thread` first, since Triage
+  upstream would allow them on anybody's thread; `set_labels`, `update_issue_body` and
+  `create_label` name `SELF_REPO` at every call site (D88). Every GitHub write passes through
+  `redact`.
 - Files are written only via `redact.guarded_write` / `write_redacted`, inside the roots set
   in `build_context`: `runs/`, `packages/`, the db dir, `state/`, `proposals/`, `HUMAN.md`, `.env`
   and `HALT_FILE`. `.harness/` is not a write root, so the harness can't change its own pin,

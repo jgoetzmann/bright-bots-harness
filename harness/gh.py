@@ -453,11 +453,9 @@ class GitHubClient(GitHubReadOnly):
 
     def _require_own_thread(self, repo: str, number: int, action: str) -> None:
         """Raise unless the account this token belongs to opened issue or pull request
-        ``number`` in ``repo``: on a thread somebody else opened the harness labels, locks,
-        closes, edits and requests review of nothing (D88). A dry run sends nothing, so it
-        reads nothing either."""
-        if self.dry_run:
-            return
+        ``number`` in ``repo``: on a thread somebody else opened the harness labels, closes,
+        edits and requests review of nothing (D88). A dry run reads as a live run does, so it
+        never records a write the live run would refuse."""
         if not self._login:
             self._login = str(self.user().get("login") or "")
         thread = self.get(f"/repos/{repo}/issues/{int(number)}")
@@ -620,16 +618,6 @@ class GitHubClient(GitHubReadOnly):
         if not isinstance(data, list):
             return []
         return [row for row in data if isinstance(row, dict)]
-
-    def lock_product_issue(self, number: int) -> dict:
-        """Lock the conversation on an issue in ``self.repo`` this account opened, so discussion
-        goes to the pull request; only a delivery calls it, on the issue it filed there (D88)."""
-        self._require_write("lock_product_issue")
-        n = int(number)
-        self._require_own_thread(self.repo, n, "lock_product_issue")
-        payload = redact.redact_json({})
-        self._write("PUT", f"/repos/{self.repo}/issues/{n}/lock", payload, {})
-        return {"number": n, "locked": True}
 
     def create_pull(self, repo: str, *, head: str, base: str, title: str, body: str) -> dict:
         self._require_write("create_pull")

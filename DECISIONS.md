@@ -1419,58 +1419,70 @@ Allocates B509.
 
 Decision:
 - The product maintainer granted the machine account the Triage role on the product repository
-  with two conditions: it acts only on its own tracking issues and pull requests (labels, locks,
-  review requests), never closing, relabelling or locking anybody else's issue, and it keeps
-  about two of its pull requests open at a time.
+  with two conditions: it acts only on its own tracking issues and pull requests, never
+  closing, relabelling or locking anybody else's issue, and it keeps about two of its pull
+  requests open at a time.
 - `GitHubClient._require_own_thread(repo, number, action)` reads who opened the issue or pull
   request and raises `GitHubError` unless it is the account the token belongs to, read once from
-  `GET /user`. `close_pull`, `request_reviewers`, `edit_product_issue` and two new writes call it
-  before sending: `label_product_issue` (`POST .../issues/{n}/labels`, which adds rather than
-  replaces) and `lock_product_issue` (`PUT .../issues/{n}/lock`). Both new writes take no
-  repository argument, target the client's repository and are named by `deliver.py` alone, as
-  `create_product_issue` is. A dry run sends nothing, so it reads nothing for the check.
+  `GET /user`. `close_pull`, `request_reviewers`, `edit_product_issue` and the new
+  `label_product_issue` (`POST .../issues/{n}/labels`, which adds rather than replaces) call it
+  before sending, in a dry run too, so a dry run never records a write a live run would refuse.
+  `label_product_issue` takes no repository argument, targets the client's repository and is
+  named by `deliver.py` alone, as `create_product_issue` is.
 - The queue's own `set_labels`, `update_issue_body` and `create_label` name `SELF_REPO` at every
   call site; B518 pins that and the check above.
-- A `delivery_pr` command resolves to an item only when the pull request's head is on
-  `FORK_REPO`. Before, the head ref alone decided, so a person's pull request whose branch shared
-  an item's name resolved to that item, and `/harness stop` would have closed it once Triage
-  made that possible.
-- `deliver` labels the tracking issue it files or reuses and locks it after the note names the
-  pull request, so the note is final when it locks. `harness tidy` calls `deliver.mark_tracking`,
-  which does the same for every open issue the machine account filed with a work item's marker;
-  that backfills the issues filed before Triage (#931-#935). Every refusal is recorded and never
-  fatal.
+- A `delivery_pr` command resolves to an item only when the machine account opened the pull
+  request. Before, the head ref alone decided, so a person's pull request whose branch shared an
+  item's name resolved to that item, and `/harness stop` would have closed it once Triage made
+  that possible. The author is the test rather than the head repository, because anybody can
+  open a pull request from a branch on the machine account's public fork.
+- `deliver` gives the tracking issue it files or reuses the `harness-tracking` label once the
+  pull request is open, and `harness tidy` calls `deliver.mark_tracking`, which does the same for
+  every open issue the machine account filed with a work item's marker, so the issues filed
+  before Triage (#931-#935) are labelled too. Both first read whether the label exists on the
+  product repository and send nothing while it does not. A label counts as applied only when
+  GitHub's answer shows it. Every refusal is recorded and never fatal.
 - Review is requested one handle at a time, skipping the machine account, because GitHub refuses
   the whole request for one handle that cannot review there.
 - A new optional key, `MAX_OPEN_DELIVERIES`, joins `CONFIG_JSON_KEYS`, which now holds twenty-one
   keys; `.harness/config.json` sets it to 2, and empty or 0 is no cap. While that many open pull
-  requests upstream have their head on the fork, `deliver.delivery_cap_refusals` refuses every
-  item whose branch has none open. `dispatcher.plan` skips each such item, the carry included,
-  with the reason; `harness run` asks the same before each clone, so `--item` and a
-  workflow-dispatched run are held too. A count that cannot be read refuses. Revising or rebasing
-  an open pull request opens no new one and is not held. The cap applies only where the client
-  can write, since elsewhere the harness opens no pull request.
+  requests upstream were opened by the machine account, `deliver.delivery_cap_refusals` refuses
+  every item whose branch has none open. `dispatcher.plan` skips each such item, the carry
+  included, with the reason, and `harness run` asks the same before each clone, counting the
+  branches it delivered earlier in the same process in case GitHub's list lags. So `--item`, a
+  workflow-dispatched run and `feedback.yml`'s `harness run` are held too. A count that cannot be
+  read refuses. Revising or rebasing an open pull request opens no new one and is not held. The
+  cap applies only where the client can write, since elsewhere the harness opens no pull
+  request, and the pinned queue and `/harness status` report the count.
 
-Why. Triage makes writes succeed that GitHub used to refuse the account: labelling and locking
-any issue, closing any pull request, requesting review. The harness never meant to make most of
-them, but one path could: `/harness stop` on an upstream pull request closes it, and that pull
-request was found by branch name alone. Checking the thread's author in `gh.py` makes the
-maintainer's condition a property of the one module that writes, rather than of each caller.
+Why. Triage makes writes succeed that GitHub used to refuse the account: applying labels to any
+issue, closing any pull request, requesting review. The harness never meant to make most of them,
+but one path could: `/harness stop` on an upstream pull request closes it, and that pull request
+was found by branch name alone. Checking the thread's author in `gh.py` makes the maintainer's
+condition a property of the one module that writes, rather than of each caller.
 
 Seven delivery pull requests arrived in one day, more than one person reviews well. The cap sits
 before implementation, not at delivery: `runs/` does not survive between Actions runs, so an item
 held at `packaged` would have lost its package. A cap on starting work means a finished item
 never waits.
 
-Rejected: holding a finished item at `packaged` until a slot frees, which strands its package;
-passing the machine login from each caller into the check, which trusts the caller the check
-exists to guard; creating the `harness-tracking` label from the harness, a repository-wide write
-outside the maintainer's conditions (the label is created by a person, and adding it to an issue
-fails and is recorded until then); counting proposal pull requests here, which are gate 1 in this
-repository and cost the maintainer nothing.
+Triage cannot lock a conversation or create a label; both need write access, which the
+maintainer's conditions rule out. So the tracking issue stays unlocked, its note already asks
+for comments on the pull request, and a maintainer creates the `harness-tracking` label once.
 
-Open: the notifications sweep reads every thread GitHub subscribes the account to, and a new
-collaborator may be subscribed to the whole repository. `OPERATIONS.md` §9 says to set the
-account's watch back to *Participating and @mentions*.
+Rejected: locking the tracking issue, which Triage cannot do and which would fail on every sweep;
+creating the label from the harness, a repository-wide write outside the maintainer's conditions;
+holding a finished item at `packaged` until a slot frees, which strands its package; passing the
+machine login from each caller into the check, which trusts the caller the check exists to guard;
+counting proposal pull requests, which are gate 1 in this repository and cost the maintainer
+nothing; holding `harness deliver <id>`, which a person types for one packaged item on purpose.
+
+Review findings kept as they stand: a pull request somebody else reopens, or one a person
+delivers by hand, can take the count past the cap, and nothing then starts until it is back
+under. A deleted fork leaves the machine account's pull requests counted, which is the point.
+
+Open: the notifications sweep reads every thread GitHub subscribes the account to, so
+`OPERATIONS.md` §9 asks for its watch on the product repository to be checked once the role is
+granted.
 
 Allocates B510-B519.

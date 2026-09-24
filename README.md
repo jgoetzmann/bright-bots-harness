@@ -20,8 +20,8 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 | Gate 2 | A person reviews and merges upstream. The harness never merges anything | The PR on the product repository |
 
 Between the gates, work is bounded by two subscription-usage stops, a run window, per-stage turn
-ceilings, one item at a time, a revise cap, a pinned gate sequence and at most two of its delivery
-pull requests open upstream at once.
+ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation while
+two of its delivery pull requests are open upstream.
 
 ## What it will and will not do
 
@@ -51,11 +51,12 @@ pull requests open upstream at once.
   in `.harness/trust.txt` that GitHub also confirms, either by an `author_association` of OWNER,
   MEMBER or COLLABORATOR or by a `vouch:<id>` on that line matching the commenter's account id
   (D68). Anyone else's comment is ignored.
-- **Upstream, it changes only what it opened.** Triage would let it label, lock or close anybody's
-  thread there. Every write that closes, labels, locks, edits or requests review reads who opened
-  the thread first and refuses one the machine account did not (D88).
+- **Upstream, it changes only what it opened.** Triage would let it label or close anybody's
+  thread there. Every write that can close, label, edit or request review on a product thread
+  reads who opened it first and refuses one the machine account did not (D88).
 - **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
-  requests are open upstream, no new item starts; revising one that is open still runs (D88).
+  requests are open upstream, no new item starts implementing; revising one that is open still
+  runs. A delivery a person runs by hand with `harness deliver` is not held (D88).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`
@@ -70,7 +71,7 @@ outside its own roots, or ask you for any access beyond `public_repo`, `notifica
 |---|---|---|
 | `jgoetzmann/bright-bots-harness` | This one: the code, the docs and the work queue | Opens and labels issues, opens proposal PRs into `proposals/`, commits the ledger to the `harness-state` branch |
 | `jgoetzmann-bot/brightboost` | The machine account's fork | Pushes the branches it creates, under `harness/`; fast-forwards the default branch from upstream. At tier 2 it is also the clone source |
-| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, opens pull requests into it from the fork, and files a tracking issue for a delivery with none. It labels and locks those issues and requests review on those pull requests, as Triage allows. No branch, and on anybody else's thread nothing but a comment |
+| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, opens pull requests into it from the fork, and files a tracking issue for a delivery with none. It labels those issues and requests review on those pull requests, as Triage allows. No branch, and on anybody else's thread nothing but a comment |
 
 ## Steering it
 

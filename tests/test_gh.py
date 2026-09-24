@@ -942,7 +942,13 @@ def test_B501_create_product_issue_targets_the_client_repo_redacted_and_tier_gat
     store = Store(tmp_path / "h.db", clock)
     store.migrate()
     token = "ghp_" + "FAKE0" * 8
-    client = GitHubClient("o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True)
+    # The edit checks who opened the issue first (D88), which a dry run reads too.
+    opener = FakeOpener(
+        FakeResponse({"login": "bot"}), FakeResponse({"number": 931, "user": {"login": "bot"}})
+    )
+    client = GitHubClient(
+        "o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True, opener=opener
+    )
 
     filed = client.create_product_issue("Signup", "See " + token, ["harness-tracking"])
     client.edit_product_issue(931, body="Now " + token, title="harness-tracking(#66): Signup")
@@ -1044,26 +1050,32 @@ def _own_thread_client(tmp_path, opener, *, dry_run=False):
                         self_repo="me/self", dry_run=dry_run, opener=opener)
 
 
+def _opened_by(login):
+    """The two reads the check makes: the account, then the thread."""
+    return (
+        FakeResponse({"login": "jgoetzmann-bot"}),
+        FakeResponse({"number": 931, "user": {"login": login}}),
+    )
+
+
 OWN_THREAD_WRITES = [
     ("label_product_issue", lambda c: c.label_product_issue(931, ["harness-tracking"])),
-    ("lock_product_issue", lambda c: c.lock_product_issue(931)),
     ("edit_product_issue", lambda c: c.edit_product_issue(931, body="b")),
     ("close_pull", lambda c: c.close_pull(REPO, 931)),
     ("request_reviewers", lambda c: c.request_reviewers(REPO, 931, ["BrightBoost-Tech"])),
 ]
 
 
+@pytest.mark.parametrize("dry_run", [False, True], ids=["live", "dry-run"])
 @pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
 def test_B516_a_thread_another_account_opened_is_refused_and_nothing_is_sent(
-    tmp_path, name, write
+    tmp_path, name, write, dry_run
 ):
-    """B516: Triage would let the account label, lock, close or request review on anybody's
-    thread, so each of these reads who opened it first and refuses a thread it did not open."""
-    opener = FakeOpener(
-        FakeResponse({"login": "jgoetzmann-bot"}),
-        FakeResponse({"number": 931, "user": {"login": "someone-else"}}),
-    )
-    client = _own_thread_client(tmp_path, opener)
+    """B516: Triage would let the account label, close or request review on anybody's thread,
+    so each of these reads who opened it first and refuses a thread it did not open. A dry run
+    refuses the same, so it never records a write a live run would not make."""
+    opener = FakeOpener(*_opened_by("someone-else"))
+    client = _own_thread_client(tmp_path, opener, dry_run=dry_run)
 
     with pytest.raises(GitHubError, match=f"{name}: refusing .*#931, which someone-else opened"):
         write(client)
@@ -1075,11 +1087,7 @@ def test_B516_a_thread_another_account_opened_is_refused_and_nothing_is_sent(
 @pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
 def test_B516_a_thread_the_account_opened_is_written(tmp_path, name, write):
     """B516: the other half, so a client that refused everything could not pass."""
-    opener = FakeOpener(
-        FakeResponse({"login": "jgoetzmann-bot"}),
-        FakeResponse({"number": 931, "user": {"login": "JGoetzmann-Bot"}}),
-        FakeResponse({}, status=200),
-    )
+    opener = FakeOpener(*_opened_by("JGoetzmann-Bot"), FakeResponse({}, status=200))
     client = _own_thread_client(tmp_path, opener)
 
     write(client)
@@ -1088,26 +1096,13 @@ def test_B516_a_thread_the_account_opened_is_written(tmp_path, name, write):
     assert opener.requests[-1].get_method() != "GET"
 
 
-def test_B516_a_dry_run_reads_nothing_for_the_check(tmp_path):
-    """B516: a dry run sends no write, so it asks GitHub nothing on the write's behalf."""
-    client = _own_thread_client(tmp_path, FakeOpener(), dry_run=True)
+def test_B516_the_label_is_added_to_the_client_repo_rather_than_replacing_its_labels(tmp_path):
+    """B516: POST adds to the labels a maintainer set, where PUT would replace them all."""
+    client = _own_thread_client(tmp_path, FakeOpener(*_opened_by("jgoetzmann-bot")), dry_run=True)
 
     client.label_product_issue(931, ["harness-tracking"])
-    client.lock_product_issue(931)
 
-    assert [entry["url"].rsplit("/", 1)[-1] for entry in client.sent] == ["labels", "lock"]
-
-
-def test_B516_label_and_lock_target_the_client_repo_and_add_rather_than_replace(tmp_path):
-    """B516: the label is added with POST, which keeps a maintainer's labels, and the lock is a
-    PUT on the issue's `lock`; both in the repository the client reads."""
-    client = _own_thread_client(tmp_path, FakeOpener(), dry_run=True)
-
-    client.label_product_issue(931, ["harness-tracking"])
-    client.lock_product_issue(931)
-
-    labelled, locked = client.sent
+    (labelled,) = client.sent
     assert labelled["method"] == "POST"
     assert labelled["url"] == f"{API}/repos/{REPO}/issues/931/labels"
     assert labelled["payload"] == {"labels": ["harness-tracking"]}
-    assert locked["method"] == "PUT" and locked["url"] == f"{API}/repos/{REPO}/issues/931/lock"

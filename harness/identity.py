@@ -120,8 +120,8 @@ NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
     "`admin:*`, no `write:org`, no `delete_repo`. `harness doctor` warns if the token "
     "carries one.",
     "Write access to the product repository. The account owns the fork; upstream it holds "
-    "the Triage role and nothing higher, which labels, locks and requests review but cannot "
-    "push or merge (D88).",
+    "the Triage role and nothing higher, which applies labels and requests review but cannot "
+    "push, merge or lock a conversation (D88).",
 )
 
 
@@ -644,10 +644,10 @@ class Identity:
                 actor="nathaniel",
                 detail=(
                     "The account delivers through pull requests from its own fork and must have "
-                    "no write access upstream (§5.1, review check R5.5). Triage lets it label and "
-                    "lock its tracking issues and request review on its pull requests, and "
-                    "cannot push or merge (D88). Confirm in the product repository's "
-                    "collaborator settings that its role is Triage, and keep it so."
+                    "no write access upstream (§5.1, review check R5.5). Triage lets it label its "
+                    "tracking issues and request review on its pull requests, and cannot push or "
+                    "merge (D88). Confirm in the product repository's collaborator settings that "
+                    "its role is Triage, and keep it so."
                 ),
                 verify=None,
             ),

@@ -3067,3 +3067,38 @@ def test_B512_dispatch_skips_the_item_with_the_caps_reason(tmp_path, monkeypatch
     assert plan["skipped"][str(item_id)] == (
         "2 delivery pull requests are open upstream; MAX_OPEN_DELIVERIES is 2"
     )
+
+
+def test_B512_one_run_counts_its_own_delivery_before_the_next_item(tmp_path, monkeypatch, capsys):
+    """B512: feedback.yml's `harness run` goes through every approved item; the pull request
+    the first one opened holds the second even while GitHub's list does not show it yet."""
+    import harness.stages as stages_mod
+
+    _capped_repo(tmp_path, monkeypatch, open_refs=["harness/fix-1-a"])
+    first = make_item(tmp_path, state="approved")
+    store = open_store(tmp_path)
+    second = store.create_work_item(kind="issue", external_ref="issue:817", title="second")
+    for step in ("proposed", "approved"):
+        store.transition(second, step, reason="test setup")
+    store.close()
+    set_item_fields(tmp_path, first, branch_name="harness/fix-816-first")
+    set_item_fields(tmp_path, second, branch_name="harness/fix-816-second")
+    ran: list = []
+    record_stages(monkeypatch, ran)
+
+    def delivers(ctx, item_id, *args, **kwargs):
+        ran.append(("deliver", item_id, dict(kwargs)))
+        return f"https://github.com/o/r/pull/{item_id}"
+
+    monkeypatch.setitem(stages_mod.STAGES, "deliver", delivers)
+    clone_dir = tmp_path / "runs" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert [entry[1] for entry in ran if entry[0] == "implement"] == [first]
+    assert f"item {second} waits: 2 delivery pull requests are open upstream" in out

@@ -485,9 +485,8 @@ GH_WRITE_METHODS = (
     # D83: the one issue a delivery files on the product repository, and its later edit.
     "create_product_issue",
     "edit_product_issue",
-    # D88: that issue's label and lock.
+    # D88: that issue's label.
     "label_product_issue",
-    "lock_product_issue",
     "update_issue_body",
     "create_pull",
     "request_reviewers",
@@ -1110,13 +1109,10 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
 
     edit = methods["edit_product_issue"]
     assert write_paths(edit) == ["f'/repos/{self.repo}/issues/{n}'"], write_paths(edit)
-    for name, tail in (("label_product_issue", "labels"), ("lock_product_issue", "lock")):
-        expected = ["f'/repos/{self.repo}/issues/{n}/" + tail + "'"]
-        assert write_paths(methods[name]) == expected, (name, write_paths(methods[name]))
+    label = methods["label_product_issue"]
+    assert write_paths(label) == ["f'/repos/{self.repo}/issues/{n}/labels'"], write_paths(label)
 
-    for name in (
-        "create_product_issue", "edit_product_issue", "label_product_issue", "lock_product_issue"
-    ):
+    for name in ("create_product_issue", "edit_product_issue", "label_product_issue"):
         naming = sorted(
             {
                 _rel(path)
@@ -1131,13 +1127,12 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
         assert naming == ["harness/stages/deliver.py"], (name, naming)
 
 
-#: The gh.py writes that change a thread's state on whichever repository they reach (D88).
+#: The gh.py writes that can change a product-repository thread's state (D88).
 OWN_THREAD_WRITES = (
     "close_pull",
     "request_reviewers",
     "edit_product_issue",
     "label_product_issue",
-    "lock_product_issue",
 )
 
 #: The queue's own writes, which may only ever name SELF_REPO (D88).
@@ -1145,7 +1140,7 @@ SELF_REPO_WRITES = ("set_labels", "update_issue_body", "create_label")
 
 
 def test_B518_a_thread_somebody_else_opened_is_never_changed():
-    """B518 (D88): every gh.py write that closes, labels, locks, edits or requests review on a
+    """B518 (D88): every gh.py write that can close, label, edit or request review on a product
     thread checks first that this account opened it, and the queue's label and body writes
     name SELF_REPO at every call site, so none reaches another person's issue upstream."""
     client = _class_def(_parse(HARNESS_DIR / "gh.py"), "GitHubClient")

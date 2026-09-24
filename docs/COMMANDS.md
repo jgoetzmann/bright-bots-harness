@@ -71,10 +71,10 @@ nothing.
 | `/harness promote <n>` from an audit | `via:audit` | no |
 | daily triage of the `harness-ok` pool | `via:suggested` | one ranking call |
 
-**Assigning the bot rarely helps.** GitHub offers an account as an assignee only when it is a
-collaborator, an organisation member or already in the thread; on brightboost the bot is a
-Triage collaborator, so it can be assigned there (D68, D88). Nearly every issue it has commented
-on already has a work item, which the assigned sweep leaves alone. `/harness work <link>` on the inbox is the route.
+**Assigning the bot rarely helps.** GitHub offers an account as an assignee only when it has
+access to the repository or is already in the thread (D68), and the assigned sweep leaves alone
+an issue that already has a work item, as nearly every issue the bot has commented on does.
+`/harness work <link>` on the inbox is the route.
 
 **`via:suggested` is the only route the harness starts by itself.** On `discover`'s 11:07 UTC run it
 suggests work only when nothing anybody asked for is outstanding (a delivery pull request awaiting

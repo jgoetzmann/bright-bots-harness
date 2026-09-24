@@ -335,10 +335,10 @@ commands by reading the machine account's notifications since the ledger cursor 
 `feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency there is up to three hours on a weekday,
 and until Monday for a comment left at the weekend.
 
-The machine account is a Triage collaborator there (D88). If GitHub subscribed it to the whole
-repository, through the account's *Automatically watch repositories* setting, set its watch on
-brightboost back to *Participating and @mentions*, so the sweep reads the threads it takes part
-in rather than every one.
+The machine account is a Triage collaborator there (D88). Its watch on brightboost belongs at
+*Participating and @mentions*, so the sweep reads the threads it takes part in rather than every
+one. After the role is granted, check it as the machine account, in the repository's Watch menu
+or with `GET /repos/Bright-Bots-Initiative/brightboost/subscription`.
 
 So `/harness revise` on an upstream PR at 14:00 UTC on a Friday is acted on at about 15:41; at 20:00
 Friday, at about 21:41; at 22:00 Friday, not until about 00:41 Monday, the 51-hour worst case. A
@@ -515,8 +515,8 @@ signal being present, and none falls back to a dollar figure — there is no dol
 reading in force — a fake backend, an older CLI, a call that never reached inference, or a reading
 whose window has reset — the usage stops and the headroom gates admit: unknown is not a stop. What
 bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, `MAX_OPEN_DELIVERIES`, the
-`MAX_TURNS_*` ceilings, both kill switches and the commanded halt, and the subscription's own refusal, which D71 records as
-`rate_limited_until` and which ends at its reset.
+`MAX_TURNS_*` ceilings, both kill switches and the commanded halt, and the subscription's own
+refusal, which D71 records as `rate_limited_until` and which ends at its reset.
 
 ### 13.2 The two stops
 
@@ -642,3 +642,16 @@ One item that cannot be moved — a locked issue, a transferred one, a 403 — i
 others are still approved. The step exits 0 either way and carries `continue-on-error`, because
 the keyword sweep runs after it in `feedback.yml`: a stuck item must never be what stops
 `/harness halt` being read.
+
+### 13.7 Open delivery pull requests
+
+`MAX_OPEN_DELIVERIES` in `.harness/config.json` (two) bounds how many of the machine account's
+pull requests may be waiting on the product repository. While that many are open, the dispatcher
+skips every approved item whose branch has none open, with the reason `N delivery pull requests
+are open upstream; MAX_OPEN_DELIVERIES is 2`, and `harness run` refuses it the same way before any
+clone. Discovery, proposals, audits and revisions of open pull requests go on. The pinned queue and
+`/harness status` carry the count as `open delivery pull requests upstream: N of 2`.
+
+Items start again on their own as pull requests merge or close. To change the bound, change the key
+in a pull request here; `0` or an empty value removes it. A delivery a person runs by hand with
+`harness deliver <id>` is not held (D88).

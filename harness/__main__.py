@@ -1452,6 +1452,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     rate_limited_until: str | None = None
     handed_off: dict | None = None
     waiting: dict[str, str] = {}
+    # Branches this run delivered, counted against the cap before GitHub lists them (D88).
+    opened: list[str] = []
     ctx = None
 
     try:
@@ -1473,7 +1475,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 stop = ctx.governor.refusal(item_id) if gate is None else None
                 # Its delivery would open another pull request upstream (D88).
                 if gate is None and stop is None:
-                    gate = deliver_stage.delivery_cap_refusals(ctx, [item]).get(int(item_id))
+                    gate = deliver_stage.delivery_cap_refusals(
+                        ctx, [item], opened=opened
+                    ).get(int(item_id))
                 if gate is not None or stop is not None:
                     LOG.info("run: item %s waits: %s", item_id, gate or stop)
                     waiting[str(item_id)] = str(gate or stop)
@@ -1516,6 +1520,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     pr_url = STAGES["deliver"](ctx, item_id)
                     if pr_url:
                         delivered.append(pr_url)
+                        shipped = ctx.store.get_work_item(item_id)
+                        opened.append(str(getattr(shipped, "branch_name", "") or ""))
             except (BudgetExhausted, RateLimited) as exc:
                 # A declined call and a rate limit are normal outcomes (B120): the item is handed
                 # off with its work committed and carried in the ledger, and the run exits 0
@@ -1909,11 +1915,11 @@ def _item_for_command(ctx, config, cmd) -> int | None:
         return int(match.group(1)) if match else None
     if not head_ref:
         return None
-    # A pull request from any other repository is not a delivery, whatever its branch is
+    # A pull request the machine account did not open is no delivery, whatever its branch is
     # called, so no command on it can close or revise one (D88).
-    fork = str(config.fork_repo or "").lower()
-    head_repo = str(((head or {}).get("repo") or {}).get("full_name") or "").lower()
-    if fork and head_repo != fork:
+    machine = str(config.fork_repo or "").split("/")[0].lower()
+    author = str(((pull or {}).get("user") or {}).get("login") or "").lower()
+    if machine and author != machine:
         return None
     for item in ctx.store.list_work_items():
         if item.branch_name and item.branch_name == head_ref:
@@ -2019,6 +2025,9 @@ def _usage_report(ctx, config, now) -> str:
             f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
             + ("; open now" if in_run_window(config, now) else "; closed now")
         )
+        cap_line = deliver_stage.delivery_cap_line(ctx)
+        if cap_line:
+            lines.append(cap_line)
         lines.append(f"- suggested work: {blocked or 'admitted'}")
     # Audits are gated on the allowance too, so a declined audit's reason shows here.
     audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config, now=now)
@@ -2737,6 +2746,9 @@ def _queue_block_lines(ctx, config, now) -> list[str]:
         f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
         + ("; open now" if in_run_window(config, now) else "; closed now")
     )
+    cap_line = deliver_stage.delivery_cap_line(ctx)
+    if cap_line:
+        lines.append(cap_line)
     lines.append(f"- next scheduled sweep **{_next_scheduled(now)}**")
     lines.append("")
     lines.append(
@@ -2847,8 +2859,8 @@ def _prune_one_issue(ctx, repo: str, number: int, now, logins: frozenset[str]) -
 
 
 def cmd_tidy(args: argparse.Namespace) -> int:
-    """Mark merged deliveries done, label and lock the tracking issues deliveries filed, publish
-    the queue on the pinned issue, and prune the harness's own old comments (D76, D86, D88).
+    """Mark merged deliveries done, label the tracking issues deliveries filed, publish the queue
+    on the pinned issue, and prune the harness's own old comments (D88).
 
     Spends nothing: no model call and no clone. The first two run on every sweep, so the pinned
     issue is fresh within minutes of anything changing; the prune is behind a weekly cursor in
@@ -2872,7 +2884,7 @@ def cmd_tidy(args: argparse.Namespace) -> int:
         try:
             tracking = deliver_stage.mark_tracking(ctx)
         except HarnessError as exc:
-            LOG.warning("tidy: labelling and locking tracking issues failed: %s", exc)
+            LOG.warning("tidy: labelling tracking issues failed: %s", exc)
         queue = _publish_queue(ctx, config)
         pruned, skipped = _prune_machine_comments(ctx, config)
     finally:
@@ -2886,7 +2898,7 @@ def cmd_tidy(args: argparse.Namespace) -> int:
     }
     lines = [
         f"done: {', '.join(f'#{n}' for n in done) or 'none'}",
-        f"tracking issues labelled or locked: {', '.join(f'#{n}' for n in tracking) or 'none'}",
+        f"tracking issues labelled: {', '.join(f'#{n}' for n in tracking) or 'none'}",
         f"queue: {queue}",
     ]
     lines.append(f"pruned: {len(pruned)} comment(s)" + (f" ({skipped})" if skipped else ""))

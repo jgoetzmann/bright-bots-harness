@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Collection, Sequence
+from typing import Collection, Mapping, Sequence
 
 from harness.clock import iso
 from harness.config import Config, in_run_window, is_daily_window, run_window_label
@@ -106,12 +106,14 @@ def plan(
     merged: Collection[int],
     halted: bool,
     suggested_refused: str | None = None,
+    capped: Mapping[int, str] | None = None,
 ) -> Plan:
     """Select in order: rate limit, halted, commanded halt, carry, usage stop, run window,
     then candidates.
 
     ``suggested_refused`` is why ``priority.admit`` would refuse suggested work now, and each
     suggested candidate is skipped with it, so the plan never starts what admission refuses.
+    ``capped`` maps an item to why the open-delivery cap holds it, the carry included (D88).
     Pure: the same inputs give a byte-identical plan.
     """
     now_iso = iso(now)
@@ -165,10 +167,14 @@ def plan(
     if not window_open and not carry_ok and not forced_ids:
         return Plan(start=(), reason=_window_reason(config), skipped={})
 
+    held = {int(key): str(value) for key, value in (capped or {}).items()}
     start: list[int] = []
     skipped: dict[str, str] = {}
     if carry_ok and carry_id is not None:
-        start.append(int(carry_id))
+        if int(carry_id) in held:
+            skipped[str(carry_id)] = held[int(carry_id)]
+        else:
+            start.append(int(carry_id))
     for candidate in ordered:
         key = str(candidate.issue)
         if carry_id is not None and int(candidate.issue) == carry_id:
@@ -183,6 +189,9 @@ def plan(
             continue
         if suggested_refused and candidate.cls == "suggested":
             skipped[key] = suggested_refused
+            continue
+        if int(candidate.issue) in held:
+            skipped[key] = held[int(candidate.issue)]
             continue
         unmet = [int(dep) for dep in candidate.depends_on if int(dep) not in merged_ids]
         if unmet:

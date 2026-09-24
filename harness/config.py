@@ -101,10 +101,14 @@ FIELD_KEYS: tuple[str, ...] = (
     "MAX_SELF_AUDIT_CYCLES",
     # D82: the person credited on every commit the harness makes.
     "CO_AUTHOR",
+    # D88: how many delivery pull requests may be open upstream at once.
+    "MAX_OPEN_DELIVERIES",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
-OPTIONAL_KEYS: tuple[str, ...] = ("FORK_REPO", "TRACKING_ISSUE", "CO_AUTHOR")
+OPTIONAL_KEYS: tuple[str, ...] = (
+    "FORK_REPO", "TRACKING_ISSUE", "CO_AUTHOR", "MAX_OPEN_DELIVERIES"
+)
 
 KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS + PASSTHROUGH_KEYS
 
@@ -130,6 +134,7 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "AUDIT_MIN_HEADROOM_PCT",
     "MAX_SELF_AUDIT_CYCLES",
     "CO_AUTHOR",
+    "MAX_OPEN_DELIVERIES",
 )
 
 #: Keys D74 removed. Accepted wherever a key is accepted and ignored, so an existing `.env` or
@@ -241,6 +246,8 @@ class Config:
     max_self_audit_cycles: int
     #: D82: ``Name <email>`` for the `Co-authored-by` trailer on every harness commit; "" is none.
     co_author: str
+    #: D88: open delivery pull requests upstream at which no new item starts; 0 is no cap.
+    max_open_deliveries: int
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -651,6 +658,18 @@ def load_config(
             f"{CO_AUTHOR_MAX} characters; got {co_author!r}"
         )
 
+    open_raw = values.get("MAX_OPEN_DELIVERIES", "").strip()
+    try:
+        max_open_deliveries = int(open_raw) if open_raw else 0
+    except ValueError as exc:
+        raise ConfigError(
+            f"MAX_OPEN_DELIVERIES must be a whole number or empty; got {open_raw!r}"
+        ) from exc
+    if max_open_deliveries < 0:
+        raise ConfigError(
+            f"MAX_OPEN_DELIVERIES must be 0 or more; got {max_open_deliveries}"
+        )
+
     # I-18 (D61): the harness never works on its own repository. A system that can rewrite the
     # rules it is governed by has no rules -- a change to gh.py or prompts/implement.md could
     # propose its way out of the kill switch, the credential door and the pin, and the
@@ -705,6 +724,7 @@ def load_config(
         audit_min_headroom_pct=audit_min_headroom_pct,
         max_self_audit_cycles=max_self_audit_cycles,
         co_author=co_author,
+        max_open_deliveries=max_open_deliveries,
     )
     _LAST_CONFIG = config
     return config

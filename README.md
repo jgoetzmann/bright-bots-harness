@@ -20,13 +20,14 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 | Gate 2 | A person reviews and merges upstream. The harness never merges anything | The PR on the product repository |
 
 Between the gates, work is bounded by two subscription-usage stops, a run window, per-stage turn
-ceilings, one item at a time, a revise cap and a pinned gate sequence.
+ceilings, one item at a time, a revise cap, a pinned gate sequence and at most two of its delivery
+pull requests open upstream at once.
 
 ## What it will and will not do
 
 - **It never merges.** No merge, approve or dismiss endpoint exists in the code (I-12).
 - **One GitHub credential.** A classic PAT with `public_repo`, `notifications` and `workflow`, on
-  a machine account that owns the fork and is not a collaborator on the product repository.
+  a machine account that owns the fork and holds only the Triage role on the product repository.
   `workflow` lets the fork fast-forward past upstream's own CI changes (D67); the harness itself
   refuses to push a commit of its own that touches `.github/` (I-15). `harness doctor` reads the
   token's scopes before every spending run and warns if they drift. The only other secret is the
@@ -50,11 +51,17 @@ ceilings, one item at a time, a revise cap and a pinned gate sequence.
   in `.harness/trust.txt` that GitHub also confirms, either by an `author_association` of OWNER,
   MEMBER or COLLABORATOR or by a `vouch:<id>` on that line matching the commenter's account id
   (D68). Anyone else's comment is ignored.
+- **Upstream, it changes only what it opened.** Triage would let it label, lock or close anybody's
+  thread there. Every write that closes, labels, locks, edits or requests review reads who opened
+  the thread first and refuses one the machine account did not (D88).
+- **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
+  requests are open upstream, no new item starts; revising one that is open still runs (D88).
 
-It will not push to the product repository, file an issue there, publish a change under
-`.github/` anywhere, move the fork's default branch except to fast-forward it from upstream,
-write a file outside its own roots, or ask you for any access beyond `public_repo`,
-`notifications` and `workflow` on its own account.
+It will not push to the product repository, file an issue there other than a delivery's tracking
+issue, change a thread there that somebody else opened, publish a change under `.github/`
+anywhere, move the fork's default branch except to fast-forward it from upstream, write a file
+outside its own roots, or ask you for any access beyond `public_repo`, `notifications` and
+`workflow` on its own account and the Triage role on the product repository.
 [docs/SAFETY.md](docs/SAFETY.md) states each guarantee with the command that checks it.
 
 ## The repositories
@@ -63,7 +70,7 @@ write a file outside its own roots, or ask you for any access beyond `public_rep
 |---|---|---|
 | `jgoetzmann/bright-bots-harness` | This one: the code, the docs and the work queue | Opens and labels issues, opens proposal PRs into `proposals/`, commits the ledger to the `harness-state` branch |
 | `jgoetzmann-bot/brightboost` | The machine account's fork | Pushes the branches it creates, under `harness/`; fast-forwards the default branch from upstream. At tier 2 it is also the clone source |
-| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, and opens pull requests into it from the fork. No branch, no issue, no other write |
+| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, opens pull requests into it from the fork, and files a tracking issue for a delivery with none. It labels and locks those issues and requests review on those pull requests, as Triage allows. No branch, and on anybody else's thread nothing but a comment |
 
 ## Steering it
 
@@ -113,7 +120,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B509 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B519 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

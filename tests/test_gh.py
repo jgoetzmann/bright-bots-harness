@@ -1027,3 +1027,87 @@ def test_B508_close_issue_targets_this_repository_and_is_tier_gated(tmp_path):
     unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
     with pytest.raises(TierViolation):
         unarmed.close_issue(54)
+
+
+# --- B516 (D88): on a thread somebody else opened, the client changes nothing ---------------
+
+
+def _own_thread_client(tmp_path, opener, *, dry_run=False):
+    from harness.clock import FrozenClock
+    from harness.gh import GitHubClient
+    from harness.store import Store
+
+    clock = FrozenClock(FROZEN_AT)
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    return GitHubClient(REPO, store, clock, 50, token="ghp_" + "FAKE0" * 8,
+                        self_repo="me/self", dry_run=dry_run, opener=opener)
+
+
+OWN_THREAD_WRITES = [
+    ("label_product_issue", lambda c: c.label_product_issue(931, ["harness-tracking"])),
+    ("lock_product_issue", lambda c: c.lock_product_issue(931)),
+    ("edit_product_issue", lambda c: c.edit_product_issue(931, body="b")),
+    ("close_pull", lambda c: c.close_pull(REPO, 931)),
+    ("request_reviewers", lambda c: c.request_reviewers(REPO, 931, ["BrightBoost-Tech"])),
+]
+
+
+@pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
+def test_B516_a_thread_another_account_opened_is_refused_and_nothing_is_sent(
+    tmp_path, name, write
+):
+    """B516: Triage would let the account label, lock, close or request review on anybody's
+    thread, so each of these reads who opened it first and refuses a thread it did not open."""
+    opener = FakeOpener(
+        FakeResponse({"login": "jgoetzmann-bot"}),
+        FakeResponse({"number": 931, "user": {"login": "someone-else"}}),
+    )
+    client = _own_thread_client(tmp_path, opener)
+
+    with pytest.raises(GitHubError, match=f"{name}: refusing .*#931, which someone-else opened"):
+        write(client)
+
+    assert client.sent == []
+    assert [request.get_method() for request in opener.requests] == ["GET", "GET"]
+
+
+@pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
+def test_B516_a_thread_the_account_opened_is_written(tmp_path, name, write):
+    """B516: the other half, so a client that refused everything could not pass."""
+    opener = FakeOpener(
+        FakeResponse({"login": "jgoetzmann-bot"}),
+        FakeResponse({"number": 931, "user": {"login": "JGoetzmann-Bot"}}),
+        FakeResponse({}, status=200),
+    )
+    client = _own_thread_client(tmp_path, opener)
+
+    write(client)
+
+    assert len(client.sent) == 1
+    assert opener.requests[-1].get_method() != "GET"
+
+
+def test_B516_a_dry_run_reads_nothing_for_the_check(tmp_path):
+    """B516: a dry run sends no write, so it asks GitHub nothing on the write's behalf."""
+    client = _own_thread_client(tmp_path, FakeOpener(), dry_run=True)
+
+    client.label_product_issue(931, ["harness-tracking"])
+    client.lock_product_issue(931)
+
+    assert [entry["url"].rsplit("/", 1)[-1] for entry in client.sent] == ["labels", "lock"]
+
+
+def test_B516_label_and_lock_target_the_client_repo_and_add_rather_than_replace(tmp_path):
+    """B516: the label is added with POST, which keeps a maintainer's labels, and the lock is a
+    PUT on the issue's `lock`; both in the repository the client reads."""
+    client = _own_thread_client(tmp_path, FakeOpener(), dry_run=True)
+
+    client.label_product_issue(931, ["harness-tracking"])
+    client.lock_product_issue(931)
+
+    labelled, locked = client.sent
+    assert labelled["method"] == "POST"
+    assert labelled["url"] == f"{API}/repos/{REPO}/issues/931/labels"
+    assert labelled["payload"] == {"labels": ["harness-tracking"]}
+    assert locked["method"] == "PUT" and locked["url"] == f"{API}/repos/{REPO}/issues/931/lock"

@@ -485,6 +485,9 @@ GH_WRITE_METHODS = (
     # D83: the one issue a delivery files on the product repository, and its later edit.
     "create_product_issue",
     "edit_product_issue",
+    # D88: that issue's label and lock.
+    "label_product_issue",
+    "lock_product_issue",
     "update_issue_body",
     "create_pull",
     "request_reviewers",
@@ -624,12 +627,15 @@ D3_NEW_CONFIG_JSON_KEYS = (
 D4_NEW_CONFIG_JSON_KEYS = ("INBOX_ISSUE",)
 # Who the harness credits on its commits is repository state, like the inbox (D82).
 D82_NEW_CONFIG_JSON_KEYS = ("CO_AUTHOR",)
+# D88: the cap on open delivery pull requests, set to the product maintainer's two.
+D88_NEW_CONFIG_JSON_KEYS = ("MAX_OPEN_DELIVERIES",)
 # The knob keys the shipped .harness/config.json carries.
 CONFIG_JSON_KEYS = (
     D2_CONFIG_JSON_KEYS
     + D3_NEW_CONFIG_JSON_KEYS
     + D4_NEW_CONFIG_JSON_KEYS
     + D82_NEW_CONFIG_JSON_KEYS
+    + D88_NEW_CONFIG_JSON_KEYS
 )
 
 # The .env keys and values the build_context test writes, kept inline.
@@ -1104,8 +1110,13 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
 
     edit = methods["edit_product_issue"]
     assert write_paths(edit) == ["f'/repos/{self.repo}/issues/{n}'"], write_paths(edit)
+    for name, tail in (("label_product_issue", "labels"), ("lock_product_issue", "lock")):
+        expected = ["f'/repos/{self.repo}/issues/{n}/" + tail + "'"]
+        assert write_paths(methods[name]) == expected, (name, write_paths(methods[name]))
 
-    for name in ("create_product_issue", "edit_product_issue"):
+    for name in (
+        "create_product_issue", "edit_product_issue", "label_product_issue", "lock_product_issue"
+    ):
         naming = sorted(
             {
                 _rel(path)
@@ -1118,6 +1129,49 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
             }
         )
         assert naming == ["harness/stages/deliver.py"], (name, naming)
+
+
+#: The gh.py writes that change a thread's state on whichever repository they reach (D88).
+OWN_THREAD_WRITES = (
+    "close_pull",
+    "request_reviewers",
+    "edit_product_issue",
+    "label_product_issue",
+    "lock_product_issue",
+)
+
+#: The queue's own writes, which may only ever name SELF_REPO (D88).
+SELF_REPO_WRITES = ("set_labels", "update_issue_body", "create_label")
+
+
+def test_B518_a_thread_somebody_else_opened_is_never_changed():
+    """B518 (D88): every gh.py write that closes, labels, locks, edits or requests review on a
+    thread checks first that this account opened it, and the queue's label and body writes
+    name SELF_REPO at every call site, so none reaches another person's issue upstream."""
+    client = _class_def(_parse(HARNESS_DIR / "gh.py"), "GitHubClient")
+    methods = {n.name: n for n in client.body if isinstance(n, ast.FunctionDef)}
+    for name in OWN_THREAD_WRITES:
+        calls = [
+            call
+            for call in ast.walk(methods[name])
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+        ]
+        guard = [c.lineno for c in calls if c.func.attr == "_require_own_thread"]
+        writes = [c.lineno for c in calls if c.func.attr == "_write"]
+        assert guard, f"{name} writes without `_require_own_thread`"
+        assert writes and min(guard) < min(writes), f"{name} writes before its check"
+
+    offenders: list[str] = []
+    for path in _harness_sources():
+        if path.name == "gh.py":
+            continue
+        for node in ast.walk(_parse(path)):
+            if not (isinstance(node, ast.Call) and _call_name(node) in SELF_REPO_WRITES):
+                continue
+            first = ast.unparse(node.args[0]) if node.args else ""
+            if "self_repo" not in first:
+                offenders.append(f"{_rel(path)}:{node.lineno} {_call_name(node)}({first})")
+    assert offenders == [], "writes that could reach another repository: " + "; ".join(offenders)
 
 
 # --------------------------------------------------------------------------------------
@@ -2214,6 +2268,7 @@ D3_CONFIG_JSON_KEYS = tuple(
         | set(D3_NEW_CONFIG_JSON_KEYS)
         | set(D4_NEW_CONFIG_JSON_KEYS)
         | set(D82_NEW_CONFIG_JSON_KEYS)
+        | set(D88_NEW_CONFIG_JSON_KEYS)
     )
 )
 
@@ -2842,8 +2897,8 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
 
     assert "ANTHROPIC_API_KEY=" not in env_example
     keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
-    assert len(keys) == 42, f".env.example carries {len(keys)} keys: {keys}"
-    assert len(shipped) == 14, f".harness/config.json carries {len(shipped)} keys"
+    assert len(keys) == 43, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(shipped) == 15, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS
 

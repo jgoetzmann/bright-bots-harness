@@ -330,10 +330,15 @@ To resume: delete `.harness/HALT` with a commit; `harness resume`; `.\bb-start.p
 Commands are event-driven on this repository and polled on the product repository (B134). Here,
 `issue_comment` and `pull_request_review_comment` trigger `feedback.yml`, which authorises, parses
 and acts in the same run, so latency is minutes. On the product repository the harness receives no
-events, because the machine account is not a collaborator there: `harness sweep` finds commands by
-reading the machine account's notifications since the ledger cursor (B140) on `feedback.yml`'s
-schedule, `41 */3 * * 1-5`. Latency there is up to three hours on a weekday,
+events, because events there never start this repository's workflows: `harness sweep` finds
+commands by reading the machine account's notifications since the ledger cursor (B140) on
+`feedback.yml`'s schedule, `41 */3 * * 1-5`. Latency there is up to three hours on a weekday,
 and until Monday for a comment left at the weekend.
+
+The machine account is a Triage collaborator there (D88). If GitHub subscribed it to the whole
+repository, through the account's *Automatically watch repositories* setting, set its watch on
+brightboost back to *Participating and @mentions*, so the sweep reads the threads it takes part
+in rather than every one.
 
 So `/harness revise` on an upstream PR at 14:00 UTC on a Friday is acted on at about 15:41; at 20:00
 Friday, at about 21:41; at 22:00 Friday, not until about 00:41 Monday, the 51-hour worst case. A
@@ -509,8 +514,8 @@ that window instead of STOPPED (B406).
 signal being present, and none falls back to a dollar figure — there is no dollar figure. With no
 reading in force — a fake backend, an older CLI, a call that never reached inference, or a reading
 whose window has reset — the usage stops and the headroom gates admit: unknown is not a stop. What
-bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, the `MAX_TURNS_*` ceilings, both kill
-switches and the commanded halt, and the subscription's own refusal, which D71 records as
+bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, `MAX_OPEN_DELIVERIES`, the
+`MAX_TURNS_*` ceilings, both kill switches and the commanded halt, and the subscription's own refusal, which D71 records as
 `rate_limited_until` and which ends at its reset.
 
 ### 13.2 The two stops

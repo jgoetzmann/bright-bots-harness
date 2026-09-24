@@ -33,7 +33,8 @@ startup.
 At tier 2 you may see a branch under `harness/` on `<machine-account>/brightboost`; a pull request
 on `Bright-Bots-Initiative/brightboost` opened by `jgoetzmann-bot`, with a review requested from
 every handle in `.harness/trust.txt`; an issue on the product repository from that account, filed
-when it delivers an item the product repository had no issue for (I-14); a comment from that
+when it delivers an item the product repository had no issue for, labelled `harness-tracking` and
+locked (I-14); a comment from that
 account on such a PR or on an issue here; an issue in this repository (a `decompose` sub-issue,
 or an `ops:` failure report); a commit to `state/ledger.json` on this repository's
 `harness-state` branch with `[skip ci]`; and a proposal PR into `proposals/` here that you merge
@@ -203,9 +204,16 @@ marker on a later delivery, so the pull request has an issue to close (D83).
 `create_product_issue` also takes no repository argument, always targets the product repository
 the client reads, and has no other caller. `COMMENT_UPSTREAM=false` turns it off.
 
-**Verify:** `pytest tests/test_invariants.py -k i14 -q` passes. By hand,
+The machine account holds Triage on the product repository, which would let it label, lock or
+close anybody's thread there. So every `gh.py` write that closes, labels, locks, edits or requests
+review first reads who opened the thread and refuses one this account did not open; the tracking
+issue's label and lock take no repository argument either, and only `deliver` names them. The
+queue's own label and body writes name `SELF_REPO` at every call site (D88).
+
+**Verify:** `pytest tests/test_invariants.py -k "i14 or B518" -q` passes. By hand,
 `grep -n "def create_issue\|def create_product_issue" harness/gh.py` shows two signatures with
-no `repo` parameter.
+no `repo` parameter, and `grep -n "_require_own_thread" harness/gh.py` shows the check in each
+of those writes.
 
 ### I-15 — No push may modify `.github/**`
 
@@ -294,8 +302,10 @@ account alongside a personal account. The account:
   audit trail filters by author, and revoking it is one action on your side.
 - holds one classic PAT, scopes **`public_repo`, `notifications` and `workflow`**, nothing
   else (D67).
-- has **no** write access to the product repository and is **not** a collaborator on it.
-  Verify: product repo → Settings → Collaborators; the machine account is absent.
+- has **no** write access to the product repository. It holds the **Triage** role there, which
+  lets it label and lock its tracking issues and request review on its pull requests, and which
+  cannot push or merge. Verify: product repo → Settings → Collaborators; the machine account is
+  listed with the Triage role and nothing higher.
 
 The token is classic because a fine-grained token cannot open a pull request from a fork into an
 upstream repository. On an account that owns nothing but the fork, its blast radius is the fork and
@@ -322,9 +332,11 @@ shows exactly one token with those three scopes.
 | Comment on a PR it opened | yes | `deliver.py`, `revise.py` |
 | Create issues in **this** repository | yes | `decompose.py`, `ops.yml` |
 | Create issues in the product repository | one per delivery, for an item with none | I-14 |
+| Label, lock or request review on a product thread | only on one the machine account opened | I-14, D88 |
+| Close, relabel or lock somebody else's thread | **no** | I-14, D88; each write checks who opened it |
 | Merge, approve, or dismiss any review | **no** | I-12 |
 | Push to `.github/**` anywhere | **no** | I-15, the harness's check before every push |
-| Push to the product repository directly | **no** | not a collaborator |
+| Push to the product repository directly | **no** | Triage cannot push |
 | Modify the fork's default branch | **no**, except fast-forward from upstream | B105; `sync-fork` fails loudly on anything else |
 | Force-push a branch a human has pushed to | **no** | B139; the item becomes `needs-human` |
 
@@ -382,7 +394,7 @@ the file, and nothing happens.
 - Organization administration
 - Any classic scope beyond `public_repo`, `notifications` and `workflow`
 - A fine-grained token with `Workflows` or `Administration` permission
-- Collaborator access to `brightboost` for the machine account
+- Any role above Triage on `brightboost` for the machine account
 - Branch-protection changes, or an exception to them
 - Merge rights, review-approval rights, or auto-merge
 - Access to any repository other than `brightboost` and this one

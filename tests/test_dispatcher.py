@@ -914,3 +914,42 @@ def test_B210_an_empty_window_is_always_in(tmp_path):
     for day in range(1, 8):
         moment = datetime(2026, 9, day, 3, 30, tzinfo=timezone.utc)
         assert in_run_window(config, moment) is True
+
+
+# ---------------------------------------------------------------------------
+# B510 (D88) - the open-delivery cap holds candidates and the carry alike
+# ---------------------------------------------------------------------------
+
+CAP_REASON = "2 delivery pull requests are open upstream; MAX_OPEN_DELIVERIES is 2"
+
+
+def test_B510_a_capped_candidate_is_skipped_with_the_caps_reason(tmp_path):
+    """B510: an item the cap holds waits with the cap's reason; one it does not hold, such as an
+    item whose pull request is already open, takes the slot."""
+    result = plan(now=NOW, ledger=empty_ledger(), config=github_config(tmp_path, slots=3),
+                  candidates=cands(816, 823), merged=frozenset(), halted=False,
+                  capped={816: CAP_REASON})
+
+    assert result.start == (823,)
+    assert result.skipped == {"816": CAP_REASON}
+
+
+def test_B510_the_cap_holds_the_carry_too(tmp_path):
+    """B510: a carried item that would open a new pull request waits like the rest, and the plan
+    says why instead of starting it first."""
+    result = plan(now=MON_INSIDE, ledger=usage_ledger(weekly=0.05, session=0.05, carry=830),
+                  config=d3_github_config(tmp_path, slots=3), candidates=cands(830),
+                  merged=frozenset(), halted=False, capped={830: CAP_REASON})
+
+    assert result.start == ()
+    assert result.skipped == {"830": CAP_REASON}
+
+
+def test_B510_no_cap_changes_nothing(tmp_path):
+    """B510: without `capped` the plan is the one it always was."""
+    config = github_config(tmp_path, slots=3)
+    before = run_plan(config, empty_ledger(), cands(816, 823))
+    after = plan(now=NOW, ledger=empty_ledger(), config=config, candidates=cands(816, 823),
+                 merged=frozenset(), halted=False, capped={})
+
+    assert after == before

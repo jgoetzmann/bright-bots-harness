@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from harness import links as links_mod
 from harness.clock import FrozenClock, iso
 from harness.clone import CloneManager, Lease, sync_fork
 from harness.config import load_config
@@ -53,11 +54,11 @@ GH_SURFACE = frozenset({
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
     "create_branch_file", "push_branch", "push_ref",
     "notifications", "issue_comments", "pull", "pull_reviews", "pull_review_comments",
-    "check_runs", "user",
+    "check_runs", "user", "paginate",
 })
 WRITE_METHODS = frozenset({
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
-    "create_branch_file", "push_branch", "push_ref",
+    "create_branch_file", "push_branch", "push_ref", "label_product_issue", "lock_product_issue",
 })
 # The writes deliver is allowed: push, PR, reviewers, comment+label.
 DELIVER_WRITES = frozenset({"push_branch", "push_ref", "create_pull", "request_reviewers",
@@ -419,6 +420,11 @@ class FakeGh:
         runs = self.check_runs_by_ref.get(ref, self.check_runs_by_ref.get(None, []))
         return copy.deepcopy(runs)
 
+    def paginate(self, path: str) -> list[dict]:
+        self._record("paginate", path=path)
+        rows = self.get(path)
+        return rows if isinstance(rows, list) else []
+
     def issue(self, number: int) -> dict:
         self._record("issue", number=number)
         return copy.deepcopy(self._issue(self.repo, number))
@@ -537,6 +543,21 @@ class FakeGh:
         if title:
             issue["title"] = title
         return copy.deepcopy(issue)
+
+    def label_product_issue(self, number, labels) -> list[dict]:
+        self._record("label_product_issue", number=number, labels=list(labels))
+        self._write("POST", f"/repos/{self.repo}/issues/{number}/labels", {"labels": list(labels)})
+        issue = self._issue(self.repo, int(number))
+        have = [lab["name"] for lab in issue["labels"]]
+        issue["labels"] = [{"name": n} for n in have + [n for n in labels if n not in have]]
+        return copy.deepcopy(issue["labels"])
+
+    def lock_product_issue(self, number) -> dict:
+        self._record("lock_product_issue", number=number)
+        self._write("PUT", f"/repos/{self.repo}/issues/{number}/lock", {})
+        issue = self._issue(self.repo, int(number))
+        issue["locked"] = True
+        return {"number": int(number), "locked": True}
 
     def close_issue(self, number) -> dict:
         self._record("close_issue", number=number)
@@ -1016,14 +1037,15 @@ def test_deliver_pushes_the_branch_to_the_fork_and_opens_the_pr_against_upstream
 
 
 def test_deliver_requests_review_from_every_trusted_handle(tmp_path):
-    """Reviewers == ctx.trusted, on the PR just opened."""
+    """Reviewers == ctx.trusted, on the PR just opened, one request per handle (D88)."""
     s = setup_deliver(tmp_path, trusted=frozenset({"jgoetzmann", "nathanhandle"}))
     deliver(s.ctx, ITEM)
     rr = s.gh.calls_named("request_reviewers")
-    assert len(rr) == 1
-    assert rr[0]["repo"] == UPSTREAM
-    assert rr[0]["number"] in s.gh.prs[UPSTREAM]
-    assert {h.lower() for h in rr[0]["reviewers"]} == {"jgoetzmann", "nathanhandle"}
+    assert len(rr) == 2
+    assert {r["repo"] for r in rr} == {UPSTREAM}
+    assert {r["number"] for r in rr} <= set(s.gh.prs[UPSTREAM])
+    assert sorted(h.lower() for r in rr for h in r["reviewers"]) == ["jgoetzmann", "nathanhandle"]
+    assert all(len(r["reviewers"]) == 1 for r in rr)
 
 
 def test_deliver_without_a_token_returns_empty_writes_deliver_json_and_sends_nothing(tmp_path):
@@ -2107,4 +2129,191 @@ def test_B508_a_delivery_that_cannot_be_read_is_left_for_the_next_run(tmp_path, 
     monkeypatch.setattr(s.gh, "get", flaky)
 
     assert mark_merged(s.ctx) == []
+    assert s.store.get_work_item(ITEM).state == "shipped"
+
+
+# --------------------------------------------------------------------------------------
+# B511 (D88) - the open-delivery cap counts the fork's pull requests upstream
+# --------------------------------------------------------------------------------------
+def _open_deliveries(s, *refs, fork=FORK, first=1500):
+    """One open pull request upstream per ref, each from `fork`, numbered from `first`."""
+    for n, ref in enumerate(refs, start=first):
+        pr = s.gh.add_pull(n, head_ref=ref, head_sha="a" * 40, base_sha=s.base)
+        pr["head"]["repo"] = {"full_name": fork}
+
+
+def test_B511_the_cap_refuses_new_work_once_that_many_deliveries_are_open(tmp_path):
+    """B511: at the cap every item that would open a new pull request waits, and the reason
+    names the count and the key."""
+    from harness.stages.deliver import delivery_cap_refusals
+
+    s = setup_deliver(tmp_path, state="approved", MAX_OPEN_DELIVERIES="2")
+    _open_deliveries(s, "harness/fix-1-a", "harness/fix-2-b")
+    item = s.store.get_work_item(ITEM)
+
+    refused = delivery_cap_refusals(s.ctx, [item])
+
+    assert refused == {
+        ITEM: "2 delivery pull requests are open upstream; MAX_OPEN_DELIVERIES is 2"
+    }
+
+
+def test_B511_under_the_cap_and_from_other_forks_nothing_waits(tmp_path):
+    """B511: only pull requests whose head is on the fork count, so a person's pull requests
+    upstream never hold the harness back."""
+    from harness.stages.deliver import delivery_cap_refusals
+
+    s = setup_deliver(tmp_path, state="approved", MAX_OPEN_DELIVERIES="2")
+    _open_deliveries(s, "harness/fix-1-a")
+    _open_deliveries(s, "feature/a", "feature/b", fork="someone/brightboost", first=1600)
+
+    assert delivery_cap_refusals(s.ctx, [s.store.get_work_item(ITEM)]) == {}
+
+
+def test_B511_an_item_whose_pull_request_is_open_is_not_held(tmp_path):
+    """B511: revising or resuming an item with an open pull request opens no new one."""
+    from harness.stages.deliver import delivery_cap_refusals
+
+    s = setup_deliver(tmp_path, state="approved", MAX_OPEN_DELIVERIES="2")
+    _open_deliveries(s, BRANCH, "harness/fix-2-b")
+
+    assert delivery_cap_refusals(s.ctx, [s.store.get_work_item(ITEM)]) == {}
+
+
+def test_B511_a_count_that_cannot_be_read_refuses(tmp_path):
+    """B511: the cap fails closed, since starting work it cannot count only delays it."""
+    from harness.stages.deliver import delivery_cap_refusals
+
+    s = setup_deliver(tmp_path, state="approved", MAX_OPEN_DELIVERIES="2")
+
+    def unreadable(path):
+        raise GitHubError("502 from the pulls endpoint")
+
+    s.gh.paginate = unreadable
+
+    (reason,) = delivery_cap_refusals(s.ctx, [s.store.get_work_item(ITEM)]).values()
+    assert reason.startswith("the open delivery pull requests could not be counted")
+
+
+@pytest.mark.parametrize("cap, can_write", [("", True), ("0", True), ("2", False)])
+def test_B511_no_cap_or_no_credential_reads_nothing(tmp_path, cap, can_write):
+    """B511: an unset cap, or a client that opens no pull request, holds nothing and asks
+    GitHub nothing."""
+    from harness.stages.deliver import delivery_cap_refusals
+
+    s = setup_deliver(tmp_path, state="approved", can_write=can_write, MAX_OPEN_DELIVERIES=cap)
+    _open_deliveries(s, "harness/fix-1-a", "harness/fix-2-b", "harness/fix-3-c")
+    s.gh.calls.clear()
+
+    assert delivery_cap_refusals(s.ctx, [s.store.get_work_item(ITEM)]) == {}
+    assert s.gh.calls_named("paginate") == []
+
+
+# --------------------------------------------------------------------------------------
+# B513-B514 (D88) - tracking issues are labelled and locked, and only the harness's own
+# --------------------------------------------------------------------------------------
+def test_B513_a_filed_tracking_issue_is_labelled_and_locked_after_the_pull_request(tmp_path):
+    """B513: GitHub drops the label on filing without triage, so the label is added; the lock
+    comes after the note names the pull request, so the note is final when it locks."""
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    deliver(s.ctx, ITEM)
+
+    (number,) = [n for n, i in s.gh.repos[UPSTREAM].items() if i["title"].endswith(TITLE)]
+    assert s.gh.labels(number, repo=UPSTREAM) == ["harness-tracking"]
+    assert s.gh.repos[UPSTREAM][number]["locked"] is True
+    order = [c["name"] for c in s.gh.calls
+             if c["name"] in ("edit_product_issue", "lock_product_issue")]
+    assert order == ["edit_product_issue", "lock_product_issue"]
+
+
+def test_B513_a_reused_issue_already_labelled_and_locked_is_left_alone(tmp_path):
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+    issue = s.gh.add_issue(1500, TITLE, body=f"Earlier.\n\n{ITEM_MARKER}\n", repo=UPSTREAM,
+                           user=BOT, labels=["harness-tracking"])
+    issue["locked"] = True
+
+    deliver(s.ctx, ITEM)
+
+    assert s.gh.calls_named("label_product_issue") == []
+    assert s.gh.calls_named("lock_product_issue") == []
+
+
+def test_B513_a_refused_label_or_lock_does_not_stop_the_delivery(tmp_path):
+    s = setup_deliver(tmp_path, ref=AUDIT_REF)
+
+    def refuse(*args, **kwargs):
+        raise GitHubError("403 Must have triage access")
+
+    s.gh.label_product_issue = refuse
+    s.gh.lock_product_issue = refuse
+
+    deliver(s.ctx, ITEM)
+
+    assert s.store.get_work_item(ITEM).state == "shipped"
+
+
+def test_B514_tidy_labels_and_locks_the_open_tracking_issues_the_harness_filed(tmp_path):
+    """B514: the backfill reaches an open issue the machine account filed with a work item's
+    marker, and nothing else: not a copied marker, not a closed issue, not a plain issue, and
+    not one already labelled and locked."""
+    from harness.stages.deliver import mark_tracking
+
+    s = setup_deliver(tmp_path, state="shipped")
+    marker = links_mod.product_issue_marker(SELF_REPO, ITEM)
+    other = links_mod.product_issue_marker(SELF_REPO, 817)
+    s.gh.add_issue(931, "harness-tracking(#816): t", body=f"x\n\n{marker}\n", repo=UPSTREAM,
+                   user=BOT)
+    s.gh.add_issue(932, "copied", body=f"x\n\n{marker}\n", repo=UPSTREAM, user="someone")
+    s.gh.add_issue(933, "closed", body=f"x\n\n{other}\n", repo=UPSTREAM, user=BOT,
+                   state="closed")
+    s.gh.add_issue(934, "plain", body="no marker", repo=UPSTREAM, user=BOT)
+    done = s.gh.add_issue(935, "done", body=f"x\n\n{other}\n", repo=UPSTREAM, user=BOT,
+                          labels=["harness-tracking"])
+    done["locked"] = True
+    s.gh.calls.clear()
+
+    assert mark_tracking(s.ctx) == [931]
+
+    assert s.gh.labels(931, repo=UPSTREAM) == ["harness-tracking"]
+    assert s.gh.repos[UPSTREAM][931]["locked"] is True
+    touched = {c["number"] for c in s.gh.calls
+               if c["name"] in ("label_product_issue", "lock_product_issue")}
+    assert touched == {931}
+
+
+@pytest.mark.parametrize("overrides", [{"COMMENT_UPSTREAM": "false"}, {"REPO": "someone/else"}])
+def test_B514_the_backfill_writes_nothing_where_delivery_files_nothing(tmp_path, overrides):
+    from harness.stages.deliver import mark_tracking
+
+    s = setup_deliver(tmp_path, state="shipped", **overrides)
+    marker = links_mod.product_issue_marker(SELF_REPO, ITEM)
+    s.gh.add_issue(931, "t", body=f"x\n\n{marker}\n", repo=UPSTREAM, user=BOT)
+
+    assert mark_tracking(s.ctx) == []
+    assert s.gh.sent == []
+
+
+# --------------------------------------------------------------------------------------
+# B515 (D88) - one review request per handle
+# --------------------------------------------------------------------------------------
+def test_B515_one_refused_reviewer_does_not_cost_the_others_and_the_bot_is_never_asked(
+    tmp_path,
+):
+    """B515: GitHub refuses a whole request for one handle that cannot review there, so each
+    handle is asked alone; the machine account opened the pull request and is never asked."""
+    s = setup_deliver(tmp_path, trusted=frozenset({"jgoetzmann", "outsider", BOT}))
+    real = s.gh.request_reviewers
+
+    def picky(repo, number, reviewers):
+        if reviewers == ["outsider"]:
+            raise GitHubError("422 Reviews may only be requested from collaborators")
+        return real(repo, number, reviewers)
+
+    s.gh.request_reviewers = picky
+
+    deliver(s.ctx, ITEM)
+
+    (pr,) = s.gh.prs[UPSTREAM].values()
+    assert [r["login"] for r in pr["requested_reviewers"]] == ["jgoetzmann"]
     assert s.store.get_work_item(ITEM).state == "shipped"

@@ -397,6 +397,7 @@ class GitHubClient(GitHubReadOnly):
         self.self_repo = self_repo or ""
         self.dry_run = bool(dry_run)
         self.sent: list[dict] = []
+        self._login = ""
 
     # ---------------------------------------------------------------- plumbing
 
@@ -449,6 +450,25 @@ class GitHubClient(GitHubReadOnly):
         if self.dry_run:
             return dry_result
         return self._send(method, path, payload)
+
+    def _require_own_thread(self, repo: str, number: int, action: str) -> None:
+        """Raise unless the account this token belongs to opened issue or pull request
+        ``number`` in ``repo``: on a thread somebody else opened the harness labels, locks,
+        closes, edits and requests review of nothing (D88). A dry run sends nothing, so it
+        reads nothing either."""
+        if self.dry_run:
+            return
+        if not self._login:
+            self._login = str(self.user().get("login") or "")
+        thread = self.get(f"/repos/{repo}/issues/{int(number)}")
+        user = thread.get("user") if isinstance(thread, dict) else None
+        author = str((user or {}).get("login") or "") if isinstance(user, dict) else ""
+        if not self._login or author.lower() != self._login.lower():
+            raise GitHubError(
+                f"{action}: refusing {repo}#{int(number)}, which "
+                f"{author or 'an unknown account'} opened; the harness changes only threads "
+                f"{self._login or 'its own account'} opened (D88)"
+            )
 
     # ------------------------------------------------------------------ writes
 
@@ -548,7 +568,8 @@ class GitHubClient(GitHubReadOnly):
     def create_product_issue(self, title: str, body: str, labels: Sequence[str]) -> dict:
         """Always in ``self.repo``, the product repository; there is no repo parameter. Only a
         delivery calls it, for an item the product repository has no issue for (I-14). GitHub
-        drops the labels in silence for an account that lacks triage access there."""
+        drops the labels in silence for an account that lacks triage access there, which
+        `label_product_issue` repairs."""
         self._require_write("create_product_issue")
         payload = redact.redact_json(
             {"title": str(title), "body": str(body), "labels": [str(label) for label in labels]}
@@ -572,6 +593,7 @@ class GitHubClient(GitHubReadOnly):
         a delivery calls it, on the issue it filed there (I-14)."""
         self._require_write("edit_product_issue")
         n = int(number)
+        self._require_own_thread(self.repo, n, "edit_product_issue")
         fields = {"body": str(body)} | ({"title": str(title)} if title else {})
         payload = redact.redact_json(fields)
         data = self._write(
@@ -581,6 +603,33 @@ class GitHubClient(GitHubReadOnly):
             {"number": n, "html_url": f"https://github.com/{self.repo}/issues/{n}", **payload},
         )
         return data if isinstance(data, dict) else {}
+
+    def label_product_issue(self, number: int, labels: Sequence[str]) -> list[dict]:
+        """Add ``labels`` to an issue in ``self.repo`` this account opened, keeping the labels it
+        has; only a delivery calls it, on the issue it filed there (D88)."""
+        self._require_write("label_product_issue")
+        n = int(number)
+        self._require_own_thread(self.repo, n, "label_product_issue")
+        payload = redact.redact_json({"labels": [str(label) for label in labels]})
+        data = self._write(
+            "POST",
+            f"/repos/{self.repo}/issues/{n}/labels",
+            payload,
+            [{"name": name} for name in payload["labels"]],
+        )
+        if not isinstance(data, list):
+            return []
+        return [row for row in data if isinstance(row, dict)]
+
+    def lock_product_issue(self, number: int) -> dict:
+        """Lock the conversation on an issue in ``self.repo`` this account opened, so discussion
+        goes to the pull request; only a delivery calls it, on the issue it filed there (D88)."""
+        self._require_write("lock_product_issue")
+        n = int(number)
+        self._require_own_thread(self.repo, n, "lock_product_issue")
+        payload = redact.redact_json({})
+        self._write("PUT", f"/repos/{self.repo}/issues/{n}/lock", payload, {})
+        return {"number": n, "locked": True}
 
     def create_pull(self, repo: str, *, head: str, base: str, title: str, body: str) -> dict:
         self._require_write("create_pull")
@@ -610,6 +659,7 @@ class GitHubClient(GitHubReadOnly):
         )
         if not payload["reviewers"]:
             return {}
+        self._require_own_thread(repo, n, "request_reviewers")
         data = self._write(
             "POST",
             f"/repos/{repo}/pulls/{n}/requested_reviewers",
@@ -638,8 +688,10 @@ class GitHubClient(GitHubReadOnly):
         return data if isinstance(data, dict) else {}
 
     def close_pull(self, repo: str, number: int) -> dict:
+        """Close a pull request this account opened: a proposal here, or a delivery (D88)."""
         self._require_write("close_pull")
         n = int(number)
+        self._require_own_thread(repo, n, "close_pull")
         payload = redact.redact_json({"state": "closed"})
         data = self._write(
             "PATCH",

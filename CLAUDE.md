@@ -92,7 +92,9 @@ through interop). The system `python3` is 3.12, which is too old.
   - `governor.py`: admission — the two subscription-usage stops, the stored rate limit and the
     per-stage turn caps.
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
-    starts nothing.
+    starts nothing. `capped` holds each item `deliver.delivery_cap_refusals` refuses while
+    `MAX_OPEN_DELIVERIES` of the fork's pull requests are open upstream; `harness run` asks the
+    same before each clone (D88).
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
     (D28). It holds the last usage reading and the carry slot: an item `deliver.handoff` hands
     off resumes before anything else, gated by `OVERRUN_PCT` instead of the weekly stop.
@@ -140,7 +142,12 @@ I-18, "the harness never works on its own repository", is `DECISIONS.md` D61).
 - `os.environ` is read only in `config.py`. SQL lives only in `store/sqlite.py`. Non-GET HTTP, the
   `Authorization` header and the token getter `config.github_token()` are used only in `gh.py`. The
   `gh` CLI is never invoked. No merge, approve or dismiss endpoint may exist. Issues are created
-  only in `SELF_REPO`. Every GitHub write passes through `redact`.
+  only in `SELF_REPO`, except a delivery's one tracking issue upstream (D83). The writes that can
+  close, label, edit or request review on a product thread (`close_pull`, `request_reviewers`,
+  `edit_product_issue`, `label_product_issue`) call `_require_own_thread` first, since Triage
+  upstream would allow them on anybody's thread; `set_labels`, `update_issue_body` and
+  `create_label` name `SELF_REPO` at every call site (D88). Every GitHub write passes through
+  `redact`.
 - Files are written only via `redact.guarded_write` / `write_redacted`, inside the roots set
   in `build_context`: `runs/`, `packages/`, the db dir, `state/`, `proposals/`, `HUMAN.md`, `.env`
   and `HALT_FILE`. `.harness/` is not a write root, so the harness can't change its own pin,

@@ -942,7 +942,13 @@ def test_B501_create_product_issue_targets_the_client_repo_redacted_and_tier_gat
     store = Store(tmp_path / "h.db", clock)
     store.migrate()
     token = "ghp_" + "FAKE0" * 8
-    client = GitHubClient("o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True)
+    # The edit checks who opened the issue first (D88), which a dry run reads too.
+    opener = FakeOpener(
+        FakeResponse({"login": "bot"}), FakeResponse({"number": 931, "user": {"login": "bot"}})
+    )
+    client = GitHubClient(
+        "o/r", store, clock, 50, token=token, self_repo="me/self", dry_run=True, opener=opener
+    )
 
     filed = client.create_product_issue("Signup", "See " + token, ["harness-tracking"])
     client.edit_product_issue(931, body="Now " + token, title="harness-tracking(#66): Signup")
@@ -1027,3 +1033,76 @@ def test_B508_close_issue_targets_this_repository_and_is_tier_gated(tmp_path):
     unarmed = GitHubClient("o/r", store, clock, 50, token="", self_repo="me/self", dry_run=True)
     with pytest.raises(TierViolation):
         unarmed.close_issue(54)
+
+
+# --- B516 (D88): on a thread somebody else opened, the client changes nothing ---------------
+
+
+def _own_thread_client(tmp_path, opener, *, dry_run=False):
+    from harness.clock import FrozenClock
+    from harness.gh import GitHubClient
+    from harness.store import Store
+
+    clock = FrozenClock(FROZEN_AT)
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    return GitHubClient(REPO, store, clock, 50, token="ghp_" + "FAKE0" * 8,
+                        self_repo="me/self", dry_run=dry_run, opener=opener)
+
+
+def _opened_by(login):
+    """The two reads the check makes: the account, then the thread."""
+    return (
+        FakeResponse({"login": "jgoetzmann-bot"}),
+        FakeResponse({"number": 931, "user": {"login": login}}),
+    )
+
+
+OWN_THREAD_WRITES = [
+    ("label_product_issue", lambda c: c.label_product_issue(931, ["harness-tracking"])),
+    ("edit_product_issue", lambda c: c.edit_product_issue(931, body="b")),
+    ("close_pull", lambda c: c.close_pull(REPO, 931)),
+    ("request_reviewers", lambda c: c.request_reviewers(REPO, 931, ["BrightBoost-Tech"])),
+]
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["live", "dry-run"])
+@pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
+def test_B516_a_thread_another_account_opened_is_refused_and_nothing_is_sent(
+    tmp_path, name, write, dry_run
+):
+    """B516: Triage would let the account label, close or request review on anybody's thread,
+    so each of these reads who opened it first and refuses a thread it did not open. A dry run
+    refuses the same, so it never records a write a live run would not make."""
+    opener = FakeOpener(*_opened_by("someone-else"))
+    client = _own_thread_client(tmp_path, opener, dry_run=dry_run)
+
+    with pytest.raises(GitHubError, match=f"{name}: refusing .*#931, which someone-else opened"):
+        write(client)
+
+    assert client.sent == []
+    assert [request.get_method() for request in opener.requests] == ["GET", "GET"]
+
+
+@pytest.mark.parametrize("name, write", OWN_THREAD_WRITES, ids=[n for n, _ in OWN_THREAD_WRITES])
+def test_B516_a_thread_the_account_opened_is_written(tmp_path, name, write):
+    """B516: the other half, so a client that refused everything could not pass."""
+    opener = FakeOpener(*_opened_by("JGoetzmann-Bot"), FakeResponse({}, status=200))
+    client = _own_thread_client(tmp_path, opener)
+
+    write(client)
+
+    assert len(client.sent) == 1
+    assert opener.requests[-1].get_method() != "GET"
+
+
+def test_B516_the_label_is_added_to_the_client_repo_rather_than_replacing_its_labels(tmp_path):
+    """B516: POST adds to the labels a maintainer set, where PUT would replace them all."""
+    client = _own_thread_client(tmp_path, FakeOpener(*_opened_by("jgoetzmann-bot")), dry_run=True)
+
+    client.label_product_issue(931, ["harness-tracking"])
+
+    (labelled,) = client.sent
+    assert labelled["method"] == "POST"
+    assert labelled["url"] == f"{API}/repos/{REPO}/issues/931/labels"
+    assert labelled["payload"] == {"labels": ["harness-tracking"]}

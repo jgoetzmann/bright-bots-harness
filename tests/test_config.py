@@ -824,6 +824,7 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
     "RUN_WINDOW_START": "run_window_start",
     "RUN_WINDOW_END": "run_window_end",
     "CO_AUTHOR": "co_author",
+    "MAX_OPEN_DELIVERIES": "max_open_deliveries",
 }
 
 
@@ -857,6 +858,8 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "MAX_SELF_AUDIT_CYCLES": 1,
     # D82.
     "CO_AUTHOR": "octo <1+octo@users.noreply.github.com>",
+    # D88.
+    "MAX_OPEN_DELIVERIES": 4,
 }
 
 
@@ -895,6 +898,7 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
     # exercised by the key-set assertion and asserted by nothing.
     assert config.max_self_audit_cycles == 1
     assert config.co_author == "octo <1+octo@users.noreply.github.com>"
+    assert config.max_open_deliveries == 4
 
 
 def test_b112_the_config_json_overrides_all_differ_from_the_env_values(tmp_path, write_d2_env):
@@ -1792,7 +1796,7 @@ def test_B416_a_retired_key_in_the_environment_changes_nothing(env_file):
     names = [f.name for f in dataclasses.fields(config)]
     banned = ("usd", "budget", "reserve", "clones")
     assert [n for n in names if any(word in n for word in banned)] == []
-    assert len(config_module.CONFIG_JSON_KEYS) == 20
+    assert len(config_module.CONFIG_JSON_KEYS) == 21
 
 
 def test_B5_B22_the_allowance_and_clone_range_checks_are_retired_with_their_keys(
@@ -1998,3 +2002,42 @@ def test_B498_a_co_author_holds_no_character_a_reader_cannot_see(name):
     assert co_author_ok("jgoetzmann <a@b.example>")
     assert not co_author_ok(f"{name} <a@b.example>")
     assert not co_author_ok("jgoetzmann <a@b.example>\n")
+
+
+# --------------------------------------------------------------------------------------
+# B519 (D88) - MAX_OPEN_DELIVERIES: optional, a whole number, 0 or empty for no cap
+# --------------------------------------------------------------------------------------
+
+
+def test_B519_max_open_deliveries_is_optional_and_empty_means_no_cap(tmp_path, write_d2_env):
+    absent = load_config(env_path=write_d2_env(tmp_path / "a" / ".env"), environ={})
+    empty = load_config(
+        env_path=write_d2_env(tmp_path / "b" / ".env", MAX_OPEN_DELIVERIES=""), environ={}
+    )
+    two = load_config(
+        env_path=write_d2_env(tmp_path / "c" / ".env", MAX_OPEN_DELIVERIES="2"), environ={}
+    )
+
+    assert absent.max_open_deliveries == 0
+    assert empty.max_open_deliveries == 0
+    assert two.max_open_deliveries == 2
+
+
+@pytest.mark.parametrize("value", ["-1", "two", "1.5"])
+def test_B519_max_open_deliveries_rejects_anything_but_a_whole_number(
+    tmp_path, write_d2_env, value
+):
+    with pytest.raises(ConfigError, match="MAX_OPEN_DELIVERIES must be"):
+        load_config(
+            env_path=write_d2_env(tmp_path / ".env", MAX_OPEN_DELIVERIES=value), environ={}
+        )
+
+
+def test_B519_the_committed_config_json_caps_open_deliveries_at_two():
+    """B519: the cap the product maintainer asked for is state every runner agrees on."""
+    committed = json.loads(
+        (Path(__file__).resolve().parent.parent / ".harness" / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert committed["MAX_OPEN_DELIVERIES"] == 2

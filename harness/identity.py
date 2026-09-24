@@ -79,7 +79,7 @@ PERMISSION_SETS: dict[int, tuple[tuple[str, str, str], ...]] = {
             "Contents",
             "Read and write",
             "Pushing a branch to the fork the account owns; the product repository is not "
-            "writable because the account is not a collaborator",
+            "writable, because the account holds only the Triage role there (D88)",
         ),
         (
             "Notifications",
@@ -119,8 +119,9 @@ NEVER_ASK_FOR_CLASSIC: tuple[str, ...] = NEVER_ASK_FOR_COMMON + (
     "Any classic scope beyond `public_repo`, `notifications` and `workflow`: no `repo`, no "
     "`admin:*`, no `write:org`, no `delete_repo`. `harness doctor` warns if the token "
     "carries one.",
-    "Write access to the product repository. The account owns the fork and nothing else; "
-    "it is not, and must not become, a collaborator upstream.",
+    "Write access to the product repository. The account owns the fork; upstream it holds "
+    "the Triage role and nothing higher, which applies labels and requests review but cannot "
+    "push, merge or lock a conversation (D88).",
 )
 
 
@@ -406,7 +407,7 @@ class Identity:
 
     def _tier2_prerequisites(self, current: int, target: int) -> tuple[Prerequisite, ...]:
         """The sixteen human prerequisites in order, then the tier agreement and the standing
-        confirmation that the account is not a collaborator upstream."""
+        confirmation that the account holds nothing above Triage upstream."""
         repo = self.repo or "the product repository"
         self_repo = self.self_repo or "this repository"
         codeowners = self.codeowners_text()
@@ -637,14 +638,16 @@ class Identity:
             ),
             Prerequisite(
                 id="collaborator",
-                title=f"`{self.handle}` is NOT a collaborator on `{repo}` — confirmed",
+                title=f"`{self.handle}` holds nothing above Triage on `{repo}` — confirmed",
                 tier_required=2,
                 satisfied=False,
                 actor="nathaniel",
                 detail=(
                     "The account delivers through pull requests from its own fork and must have "
-                    "no write access upstream (§5.1, review check R5.5). Confirm in the product "
-                    "repository's collaborator settings that it is absent, and keep it so."
+                    "no write access upstream (§5.1, review check R5.5). Triage lets it label its "
+                    "tracking issues and request review on its pull requests, and cannot push or "
+                    "merge (D88). Confirm in the product repository's collaborator settings that "
+                    "its role is Triage, and keep it so."
                 ),
                 verify=None,
             ),

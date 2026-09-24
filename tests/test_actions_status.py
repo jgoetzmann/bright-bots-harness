@@ -605,3 +605,23 @@ def test_B492_a_newline_in_a_workflow_name_cannot_forge_rows():
     assert lines[0] == "**Actions** — 1 running, 0 queued"
     assert len(lines) == 2, f"a name with a newline in it forged rows: {lines}"
     assert all("\n" not in line and "\r" not in line for line in lines)
+
+
+# --------------------------------------------------------------------------------------
+# B511 (D88) - the status reply and the pinned queue both show the open-delivery cap
+# --------------------------------------------------------------------------------------
+
+
+def test_B511_the_reply_and_the_pinned_queue_carry_the_cap_line(tmp_path, monkeypatch):
+    """B511: a hold that only the dispatch log mentions looks, from the pinned issue, like a
+    queue that is stuck for no reason."""
+    import harness.stages.deliver as deliver_mod
+
+    line = "- open delivery pull requests upstream: 6 of 2; no new item starts implementing"
+    monkeypatch.setattr(deliver_mod, "delivery_cap_line", lambda ctx: line)
+    rig = request_rig(tmp_path)
+    rig.gh.workflow_runs = lambda repo, per_page=30: []
+    now = rig.ctx.clock.now()
+
+    assert line in cli._usage_report(rig.ctx, rig.config, now).splitlines()
+    assert line in cli._queue_block_lines(rig.ctx, rig.config, now)

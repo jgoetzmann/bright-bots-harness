@@ -291,8 +291,8 @@ If steps 4 and 6 disagree, trust step 6 and open a bug against the harness.
 as the proposal's `baseline_red` declared. It syncs the fork, rebases the work branch onto the
 fork's main (a conflict becomes a `revise --source conflict` item), pushes the branch to the fork,
 opens a PR from `<machine-account>:harness/<kind>-<issue>-<slug>` into the product repository's
-default branch, requests review from every handle in `.harness/trust.txt`, comments the PR URL on
-the harness issue, and sets `stage:needs-review`.
+default branch, requests review from every handle in `.harness/trust.txt` one at a time,
+comments the PR URL on the harness issue, and sets `stage:needs-review`.
 
 The model writes none of the PR body (B108, B232): `deliver.build_pr_body` assembles it from the
 package on disk and the item's configuration, and `redact.py` redacts it before it is sent (I-13).

@@ -2108,3 +2108,38 @@ def test_a_rate_ceiling_partway_through_a_comment_still_says_what_ran(tmp_path):
     assert len(records) == 2, "it stopped at the one that failed, not before it"
     assert len(rig.gh.comments_posted) == 1
     assert "**Allowance**" in rig.gh.comments_posted[0][2], "the one that worked was still reported"
+
+
+# --------------------------------------------------------------------------------------
+# B517 (D88) - a delivery pull request is one from the fork, whatever its branch is called
+# --------------------------------------------------------------------------------------
+def _delivery_route(author):
+    from types import SimpleNamespace
+
+    import harness.__main__ as main_mod
+
+    config = SimpleNamespace(
+        self_repo="jgoetzmann/bright-bots-harness",
+        upstream_repo="Bright-Bots-Initiative/brightboost",
+        fork_repo="jgoetzmann-bot/brightboost",
+    )
+    item = SimpleNamespace(id=66, branch_name="harness/fix-61-signup")
+    pull = {"head": {"ref": "harness/fix-61-signup"}, "user": {"login": author}}
+    ctx = SimpleNamespace(
+        gh=SimpleNamespace(pull=lambda repo, number: pull),
+        store=SimpleNamespace(list_work_items=lambda: [item]),
+    )
+    return main_mod._item_for_command(ctx, config, _cmd("stop", surface="delivery_pr",
+                                                         number=926))
+
+
+def test_B517_a_pull_request_somebody_else_opened_is_no_delivery():
+    """B517: Triage lets the account close anybody's pull request, so a person's pull request
+    whose branch shares an item's name, even one from the machine account's public fork,
+    resolves to nothing, and no `stop` can close it."""
+    assert _delivery_route("someone") is None
+    assert _delivery_route("") is None
+
+
+def test_B517_the_machine_accounts_own_pull_request_still_resolves():
+    assert _delivery_route("JGoetzmann-Bot") == 66

@@ -11,8 +11,14 @@ It takes an issue on brightboost to a reviewable pull request and then waits for
 code, runs the repository's lint, typecheck, build and test commands, and opens a pull request from
 a fork.
 
-**It merges nothing**, neither its plans nor its code. It is not a collaborator on brightboost, and
-its own repository requires a review. Every path ends at a human clicking merge.
+**It merges nothing**, neither its plans nor its code. On brightboost it holds the Triage role,
+which cannot push or merge, and its own repository requires a review. Every path ends at a human
+clicking merge.
+
+**It touches only its own threads on brightboost.** It labels the tracking issues it files and
+requests your review on its own pull requests; it never closes, relabels or locks anybody else's
+issue, and each of those writes checks who opened the thread first. While two of its pull
+requests are waiting for you, it starts implementing nothing new; plans and revisions go on.
 
 ## 2. The one gesture
 
@@ -33,7 +39,8 @@ and copied into the run's transcript, and the item itself is a public issue.
 **Or comment on the brightboost issue itself**, mentioning the bot: `@jgoetzmann-bot /harness work`.
 The harness finds brightboost comments through its notifications, and an issue it has never touched
 sends none without the mention. Assigning the bot rarely helps: GitHub offers it as an assignee only
-on an issue it has already commented on (D68), and nearly every such issue has a work item already.
+where it has access or is already in the thread (D68), and nearly every issue it is in already has
+a work item.
 
 ### What to hand it
 
@@ -70,8 +77,9 @@ how a reviewer will know it worked. No code has been written.
 **`stage:needs-review` — gate 2.** A pull request on brightboost, from the fork, with the diff and
 the gate results in the body. Review it like any other contributor's PR. When the work came
 without a brightboost issue, such as an audit finding, the harness files one as it delivers,
-titled `harness-tracking(#<item>): …`, names it on the harness issue, and the pull request closes
-it when merged. Comment on the pull request, not on that tracking issue.
+titled `harness-tracking(#<item>): …` and labelled `harness-tracking` once that label exists on
+brightboost, names it on the harness issue, and the pull request closes it when merged. Comment on
+the pull request, not on that tracking issue.
 
 - `/harness revise <what to change>`: one more implementation pass, then the complete gate sequence.
 - `/harness rebase`: the same, after a conflict.

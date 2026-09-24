@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 31,
+    "calls": 50,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.09,
-        "resets_at": "2026-09-23T22:10:00Z"
+        "utilization": 0.47,
+        "resets_at": "2026-09-24T20:40:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-23T18:13:23Z"
+      "observed_at": "2026-09-24T17:13:25Z"
     }
   },
   "cursors": {
@@ -277,6 +277,120 @@
       "ts": "2026-09-23T18:13:23Z",
       "stage": "selfaudit",
       "issue": 54,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T15:47:55Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T15:49:56Z",
+      "stage": "propose",
+      "issue": 109,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T15:52:08Z",
+      "stage": "propose",
+      "issue": 108,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T15:55:28Z",
+      "stage": "propose",
+      "issue": 107,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T15:59:54Z",
+      "stage": "propose",
+      "issue": 88,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:06:37Z",
+      "stage": "propose",
+      "issue": 91,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:11:20Z",
+      "stage": "propose",
+      "issue": 94,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:16:59Z",
+      "stage": "propose",
+      "issue": 93,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:21:48Z",
+      "stage": "propose",
+      "issue": 100,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:27:03Z",
+      "stage": "propose",
+      "issue": 83,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:30:45Z",
+      "stage": "propose",
+      "issue": 96,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:34:45Z",
+      "stage": "propose",
+      "issue": 82,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:37:43Z",
+      "stage": "propose",
+      "issue": 97,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:43:22Z",
+      "stage": "propose",
+      "issue": 103,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:51:16Z",
+      "stage": "propose",
+      "issue": 84,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T16:56:37Z",
+      "stage": "propose",
+      "issue": 105,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T17:03:17Z",
+      "stage": "propose",
+      "issue": 99,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T17:08:44Z",
+      "stage": "propose",
+      "issue": 90,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-24T17:13:25Z",
+      "stage": "propose",
+      "issue": 85,
       "run": ""
     }
   ]

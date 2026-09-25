@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from harness import links
 from harness.context import Context
-from harness.errors import HarnessError
+from harness.errors import BudgetExhausted, HarnessError
 from harness.halt import check_halt
 from harness.stages import data_block, load_prompt, run_model
 from harness.store.sqlite import KIND_LABELS, VIA_LABELS
@@ -237,6 +237,12 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
         )
     if not ctx.gh.can_write:
         raise HarnessError("audit opens an issue and there is no write credential")
+
+    # Checked before the clone (B295). `run_model` checks it again, but by then a fresh clone of
+    # the product repository has been made for a call that is about to be refused.
+    stop = ctx.governor.usage_stop_reason()
+    if stop is not None:
+        raise BudgetExhausted(stop)
 
     lease = ctx.clones.acquire(_READER, run_id="audit", read_only=True)
     stopped = ""

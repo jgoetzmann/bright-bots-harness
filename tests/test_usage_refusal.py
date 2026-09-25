@@ -175,10 +175,9 @@ def test_b399_at_the_reset_the_refusal_expires_with_no_command(config, empty_sto
 
 
 def test_b399_the_governor_does_not_wait_for_its_own_week_to_roll(config, empty_store):
-    """B399: the deadlock this closes. Before it, a reading expired only when `period_start`
-    passed its `observed_at`, and `period_start` moves when the governor rolls the window --
-    which `authorize` does AFTER the usage stop has already refused. So the stop refused the one
-    call that could have brought a fresh reading, on every run, however long after the reset."""
+    """B399: a reading expires at its own reset, never by waiting for `period_start` to pass its
+    `observed_at`: the period moves only when a call is recorded, which a stop that is still
+    refusing would never allow."""
     led = incident_ledger(rate_limited_until=None, usage=SESSION_USAGE)
     governor = Governor(config, FrozenClock(MONDAY_HEARTBEAT), led)
 
@@ -473,7 +472,7 @@ def _cli_repo_with_a_rejected_reading(tmp_path, monkeypatch, write_env, now: dat
         ("2026-09-15T19:59:59Z", False),
         (RESET, False),
     ],
-    ids=["1s-before-session-reset", "at-session-reset", "1s-before-weekly-reset", "at-reset"],
+    ids=["1s-before-session-reset", "at-session-reset", "after-session-reset", "at-reset"],
 )
 def test_b406_the_ledger_and_status_views_agree_with_the_stop_on_both_sides_of_the_reset(
     tmp_path, monkeypatch, capsys, write_env, command, now, stopped

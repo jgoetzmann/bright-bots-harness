@@ -411,7 +411,7 @@ def _carry_issue(ledger) -> int | None:
 
 def _window_text(config) -> str:
     """The run window as the dispatcher names it in a reason: ``mon 08:00-tue 20:00 UTC`` or
-    ``daily 11:00-15:00 UTC`` (B411)."""
+    ``daily 11:00-16:00 UTC`` (B411)."""
     label = run_window_label(config)
     return f"{label} UTC" if label else "always open"
 
@@ -2928,7 +2928,7 @@ def _halt_lines(led) -> list[str]:
 
 
 def _usage_lines(led, config, now=None) -> list[str]:
-    """The measured subscription usage and how far it is from each stop (B221).
+    """The measured session usage and how far it is from the stop (B221).
 
     ``now`` marks a reading whose window has reset since. The governor and the dispatcher stop
     refusing at that instant, so this view stops saying STOPPED too (B406).

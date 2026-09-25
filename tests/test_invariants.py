@@ -647,9 +647,7 @@ D2_ENV_KEYS: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "",
     "RUN_WINDOW_END": "",
 }
@@ -1731,7 +1729,7 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_fourteen_knob_keys():
+def test_b112_harness_config_json_carries_exactly_the_committed_knob_keys():
     """B112: .harness/config.json's keys are exactly the operational knobs in `CONFIG_JSON_KEYS`
     above, and nothing that alters what the harness concludes."""
     path = REPO_ROOT / ".harness" / "config.json"
@@ -2209,10 +2207,10 @@ def test_b215_implement_yml_carries_exactly_the_d72_crons():
     assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 
 
-def test_B522_the_committed_window_is_one_session_before_dawn_pacific():
-    """B522 (D89): the account has one five-hour session limit and no weekly one, so Actions
-    mode works in a single session a day, 11:00 to 16:00 UTC, which is 03:00 to 08:00 PST, and
-    the last implement pass starts inside it."""
+def test_B522_the_committed_window_starts_work_only_before_dawn_pacific():
+    """B522 (D89): the account has a five-hour session limit and no weekly one, so Actions
+    mode starts work only from 11:00 to 16:00 UTC, which is 03:00 to 08:00 PST, and the last
+    implement pass starts inside it."""
     committed = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
     assert (committed["RUN_WINDOW_START"], committed["RUN_WINDOW_END"]) == (
         "daily 11:00", "daily 16:00"
@@ -2279,7 +2277,7 @@ D3_CONFIG_JSON_KEYS = tuple(
 )
 
 
-def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
+def test_b112_d3_harness_config_json_carries_the_usage_and_window_knobs():
     """B112: the session usage stop, the two run-window bounds and `INBOX_ISSUE` join the first
     seven knobs, nothing else does, and each knob has the right type."""
     path = REPO_ROOT / ".harness" / "config.json"

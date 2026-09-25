@@ -375,7 +375,7 @@ harness doctor      # binaries, versions, disk, halt, config, pin, trust levels
 harness status      # queue by state, subscription usage, what is in flight, what Actions is doing
 harness dispatch    # what may start now, the priority queue, why the head is not moving
 harness block       # with no argument, the block that stands (if any)
-harness ledger      # usage against each stop, calls made, window state
+harness ledger      # usage against the session stop, calls made, window state
 ```
 
 `dispatch` starts nothing. It answers "why is nothing happening":

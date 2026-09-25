@@ -5,11 +5,12 @@ name: implement
 
 on:
   schedule:
-    # The run window is daily 11:00 to 16:00 UTC, the one five-hour session discover opens at
-    # 11:07 (D89). Hourly firings because GitHub delivers every scheduled run late and drops
-    # some entirely, so a single firing is one dropped run away from a day that builds nothing
-    # (D80). What bounds a build starting at the far edge is SESSION_USAGE_STOP_PCT. A test
-    # (B412) fails if a row leaves the window (D72).
+    # The run window is daily 11:00 to 16:00 UTC, the five-hour session discover opens at 11:07
+    # (D89); it bounds starts, and a build started at 15:23 may run past it. Hourly firings
+    # because GitHub delivers every scheduled run late and drops some entirely, so a single
+    # firing is one dropped run away from a day that builds nothing (D80). What bounds a build
+    # starting at the far edge is SESSION_USAGE_STOP_PCT. A test (B412) fails if a row leaves
+    # the window (D72).
     # DST: GitHub cron is always UTC, so the session opens at 04:00 PDT or 03:00 PST and nothing
     # moves when the clocks change.
     - cron: "23 11-15 * * *"      # 11:23 through 15:23 UTC, hourly, every day

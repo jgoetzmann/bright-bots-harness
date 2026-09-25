@@ -91,6 +91,15 @@ def usage_headline(ledger: Any, config: Any, now: Any = None) -> list[str]:
         else:
             room = f"**{left:.0f} points** before the {stop:.0f}% stop"
         lines.append(f"- this session: **{used:.0f}% used**, {room}")
+    # A seven-day window in the reading means the subscription has a weekly limit that no stop
+    # here reads (D89), so it is named where the operator looks.
+    weekly = _raw_utilization(getattr(ledger, "window", {}) or {}, "seven_day", now)
+    if weekly is not None:
+        lines.append(
+            f"- **a seven-day reading arrived** ({weekly:.0f}% used). No weekly stop applies "
+            "(D89); only the subscription's own refusal, recorded as a rate limit, enforces it"
+        )
+    if used is not None:
         lines.append(
             "- shared with whatever else this subscription is used for, so this moves when the "
             "harness is doing nothing"

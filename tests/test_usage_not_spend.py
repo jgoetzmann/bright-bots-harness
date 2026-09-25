@@ -222,3 +222,33 @@ def test_the_audit_stage_has_no_weekly_gate(tmp_path):
 
     assert audit(rig.ctx, lens="accessibility", actor="jgoetzmann")
     assert len(rig.ctx.clones.acquired) == 1
+
+
+def test_B295_an_audit_at_the_session_stop_is_refused_before_the_clone(tmp_path):
+    """B295 (D89): the audit asks the governor's session stop before cloning, so a call that is
+    about to be refused costs no clone of the product repository."""
+    from harness.errors import BudgetExhausted
+    from harness.stages.audit import audit
+
+    from tests.test_d4_routes import request_rig
+
+    rig = request_rig(tmp_path)
+    rig.ctx.ledger.observe_usage(
+        {"five_hour": {"utilization": 1.0}},
+        rig.ctx.ledger.window.get("period_start") or "2026-09-08T00:00:00Z",
+    )
+
+    with pytest.raises(BudgetExhausted, match="session usage 100%"):
+        audit(rig.ctx, lens="accessibility", actor="jgoetzmann")
+    assert rig.ctx.clones.acquired == []
+
+
+def test_B399_a_seven_day_reading_is_named_on_the_headline_without_stopping_anything():
+    """B399 (D89): a seven-day window in the reading means a weekly limit no stop reads, so the
+    headline names it where the operator looks, and a reading without one says nothing of it."""
+    led = _ledger(weekly=0.93, session=0.18)
+    text = "\n".join(links.usage_headline(led, CONFIG))
+    assert "a seven-day reading arrived" in text and "93% used" in text
+    assert "18% used" in text and "nothing will start" not in text
+
+    assert "seven-day" not in "\n".join(links.usage_headline(_ledger(session=0.18), CONFIG))

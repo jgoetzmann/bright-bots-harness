@@ -739,7 +739,7 @@ def is_daily_window(config: Config) -> bool:
 
 
 def run_window_label(config: Config) -> str:
-    """``mon 08:00-tue 20:00`` or ``daily 11:00-15:00`` (B411); ``""`` when always open."""
+    """``mon 08:00-tue 20:00`` or ``daily 11:00-16:00`` (B411); ``""`` when always open."""
     start = str(getattr(config, "run_window_start", "") or "").strip()
     end = str(getattr(config, "run_window_end", "") or "").strip()
     if not start or not end:

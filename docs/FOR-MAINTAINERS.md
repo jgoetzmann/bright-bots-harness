@@ -211,11 +211,11 @@ notifications on the way.
 | 4. The code | inside the run window, **daily 11:00 to 16:00 UTC** (3–4 a.m. to 8–9 a.m. Pacific); a merge outside it waits for the next 11:23 UTC run unless Jack starts it |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
-Each scheduled build run starts one item, and on weekdays the 12:41 UTC sweep also builds what is
-approved. A busy morning is limited by the subscription session, which the harness stops using at
-80%. Worst case, with nothing halted or ahead of it, a request queued just after 11:07 UTC and
-merged after the window closes reaches a delivery pull request in about two days; a merge before
-16:00 UTC saves a day.
+Each scheduled build run starts one item, and on weekdays the 12:41 and 15:41 UTC sweeps also
+build what is approved. A busy morning is limited by the subscription session, which the harness
+stops using at 80%. Worst case, with nothing halted or ahead of it, a request queued just after
+11:07 UTC and merged after the window closes reaches a delivery pull request in about two days; a
+merge before 16:00 UTC saves a day.
 
 ## 10. If something looks wrong
 

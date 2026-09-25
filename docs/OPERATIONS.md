@@ -495,7 +495,9 @@ limited, and `harness dispatch` still starts nothing.
 reports, `five_hour` among them. It rides on the inference response headers, so the long-lived
 `setup-token` used in Actions mode receives it too. The runner keeps the last one of a call, the
 stage stamps `observed_at` from the clock, and the governor stores it under `window.usage`. A
-`seven_day` entry is stored when one is reported; no stop and no status surface reads it.
+`seven_day` entry is stored when one is reported. No stop reads it; the allowance headline names
+one when it arrives, since it means a weekly limit only the subscription's own refusal enforces,
+and `harness ledger --json` shows the raw reading (D89).
 
 ```bash
 harness ledger --json                       # window.usage, window.carry, rate-limit state
@@ -560,9 +562,11 @@ at 11:07 when there is something to triage, otherwise the first item a build sta
 fires five times across it, hourly from 11:23 to 15:23 UTC, because GitHub delivers every scheduled
 run late and drops some entirely, and the repeated firings are what a dropped run is caught by
 (D80). A firing that arrives after 16:00 finds the window shut. The window bounds only what
-starts: a build started at the last pass can run past 16:00, and what bounds its calls is
-`SESSION_USAGE_STOP_PCT` (80 in Actions), which stops new calls before a session is spent. A
-carried item waits for the window too (B413). GitHub cron is always UTC, so nothing needs moving
+starts: a build started at the 14:23 or 15:23 pass can run up to 120 minutes, the 15:41 weekday
+sweep builds inside the window, and scheduled discover is not window-gated (D32), so a late 13:07
+firing proposes in the afternoon UTC. Any of these can open a second session in your morning; what
+bounds their calls is `SESSION_USAGE_STOP_PCT` (80 in Actions), per session. A carried item waits
+for the window too (B413). GitHub cron is always UTC, so nothing needs moving
 when the clocks change.
 
 `harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
@@ -590,7 +594,7 @@ the next command, `harness revise <id> --source continue`.
 
 The carried item is the first thing the next run starts once the usage stop admits it; it is held
 to `SESSION_USAGE_STOP_PCT` like any other item (D89). A weekly run window does not hold it back; a
-daily one does, until it opens, and a block counts as the window being open (D72). Green gates then
+daily one does, until it opens, and a block counts as the window being open (D77). Green gates then
 move it to `stage:packaged`, clear the carry, and run the ordinary package and deliver steps; red
 gates block it with nothing pushed (B136).
 

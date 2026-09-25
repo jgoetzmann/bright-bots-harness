@@ -1334,9 +1334,11 @@ def test_usage_reports_the_subscription_the_queue_and_what_happens_next(tmp_path
 
     assert "**Allowance**" in out
     # Headroom, not only consumption: "20% used" is a fact, "50 points before the stop" is
-    # the one somebody can act on. The session is the one limit, so no weekly or audit line.
+    # the one somebody can act on. The session is the one limit; a seven-day reading is named as
+    # a limit nothing here stops on, and there is no audit line (D89).
     assert "this session: **20% used**" in out and "50 points" in out
-    assert "40%" not in out and "this week" not in out and "- audits:" not in out
+    assert "a seven-day reading arrived** (40% used)" in out
+    assert "this week" not in out and "- audits:" not in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
     # Subscription usage is the whole report: there is no dollar figure to follow it (D74).

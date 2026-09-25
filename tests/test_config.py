@@ -447,9 +447,7 @@ D2_ENV: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "",
     "RUN_WINDOW_END": "",
     "MODEL": "opus",
@@ -458,8 +456,6 @@ D2_ENV: dict[str, str] = {
     "SUGGEST_MAX_PER_RUN": "5",
     "COMMENT_UPSTREAM": "true",
     "ASK_MAX_PER_DAY": "20",
-    "SUGGEST_MIN_HEADROOM_PCT": "50",
-    "AUDIT_MIN_HEADROOM_PCT": "75",
     "MAX_SELF_AUDIT_CYCLES": "3",
 }
 # Every new key is required except the two that may be empty.
@@ -476,9 +472,7 @@ D2_NEW_FIELDS_IN_ORDER = (
     "tracking_issue",
     "store_backend",
     "repo_root",
-    "weekly_usage_stop_pct",
     "session_usage_stop_pct",
-    "overrun_pct",
     "run_window_start",
     "run_window_end",
 )
@@ -677,7 +671,7 @@ def test_a30_the_new_fields_follow_github_token_shape_ok_in_the_frozen_order(
     assert "github_token_shape_ok" in names
     after = names[names.index("github_token_shape_ok") + 1 :]
     # Each delivery appends its own block after this one, in its own frozen order: D3 added
-    # five, B225 added model and effort. What D2 pins is that its five come first and in order.
+    # the usage stop and the window, B225 model and effort. D2's fields come first and in order.
     assert tuple(after[: len(D2_NEW_FIELDS_IN_ORDER)]) == D2_NEW_FIELDS_IN_ORDER
 
 
@@ -798,14 +792,14 @@ def test_b112_config_json_overrides_env_for_max_subissues(tmp_path, write_d2_env
     assert config.max_subissues == 4
 
 
-def test_b112_config_json_overrides_overrun_pct_and_tracking_issue(tmp_path, write_d2_env):
-    """B112: OVERRUN_PCT and TRACKING_ISSUE are among the knobs."""
-    path = write_d2_env(tmp_path / ".env", OVERRUN_PCT="10", TRACKING_ISSUE="")
-    write_config_json(tmp_path, {"OVERRUN_PCT": 20, "TRACKING_ISSUE": 816})
+def test_b112_config_json_overrides_session_stop_and_tracking_issue(tmp_path, write_d2_env):
+    """B112: SESSION_USAGE_STOP_PCT and TRACKING_ISSUE are among the knobs."""
+    path = write_d2_env(tmp_path / ".env", SESSION_USAGE_STOP_PCT="70", TRACKING_ISSUE="")
+    write_config_json(tmp_path, {"SESSION_USAGE_STOP_PCT": 40, "TRACKING_ISSUE": 816})
 
     config = load_config(env_path=path, environ={})
 
-    assert config.overrun_pct == pytest.approx(20.0)
+    assert config.session_usage_stop_pct == pytest.approx(40.0)
     assert config.tracking_issue == 816
 
 
@@ -818,9 +812,7 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
     "FORK_REPO": "fork_repo",
     "UPSTREAM_REPO": "upstream_repo",
     "TRUST_FILE": "trust_file",
-    "WEEKLY_USAGE_STOP_PCT": "weekly_usage_stop_pct",
     "SESSION_USAGE_STOP_PCT": "session_usage_stop_pct",
-    "OVERRUN_PCT": "overrun_pct",
     "RUN_WINDOW_START": "run_window_start",
     "RUN_WINDOW_END": "run_window_end",
     "CO_AUTHOR": "co_author",
@@ -842,18 +834,14 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "FORK_REPO": FORK,
     "UPSTREAM_REPO": "Bright-Bots-Initiative/other-repo",
     "TRUST_FILE": "trust/list.txt",
-    "WEEKLY_USAGE_STOP_PCT": 80,
     "SESSION_USAGE_STOP_PCT": 60,
-    "OVERRUN_PCT": 5,
     "RUN_WINDOW_START": "wed 09:30",
     "RUN_WINDOW_END": "thu 21:45",
-    # Inbox, suggest, audit and ask.
+    # Inbox, suggest and ask.
     "INBOX_ISSUE": 7,
     "SUGGEST_MAX_PER_RUN": 3,
     "COMMENT_UPSTREAM": False,
     "ASK_MAX_PER_DAY": 9,
-    "SUGGEST_MIN_HEADROOM_PCT": 40,
-    "AUDIT_MIN_HEADROOM_PCT": 65,
     # D70.
     "MAX_SELF_AUDIT_CYCLES": 1,
     # D82.
@@ -889,9 +877,7 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
     assert config.fork_repo == FORK
     assert config.upstream_repo == "Bright-Bots-Initiative/other-repo"
     assert Path(config.trust_file).resolve() == (tmp_path / "trust" / "list.txt").resolve()
-    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
     assert config.session_usage_stop_pct == pytest.approx(60.0)
-    assert config.overrun_pct == pytest.approx(5.0)
     assert config.run_window_start == "wed 09:30"
     assert config.run_window_end == "thu 21:45"
     # D70: the value check above predates this knob; without this line its override is
@@ -1146,7 +1132,7 @@ def test_a7_the_shipped_env_example_loads_without_error(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# The five usage-governance keys, their ranges, the .harness/config.json knob set,
+# The three usage-governance keys, their ranges, the .harness/config.json knob set,
 # and the pure in_run_window helper.
 # --------------------------------------------------------------------------
 
@@ -1154,19 +1140,15 @@ from datetime import datetime, timezone
 
 # The new keys with their .env.example values (inline, on purpose).
 D3_ENV: dict[str, str] = {
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "mon 08:00",
     "RUN_WINDOW_END": "tue 20:00",
 }
-# Every one of the five is required in .env; the window pair may be empty, but only together.
+# Every one of the three is required in .env; the window pair may be empty, but only together.
 D3_REQUIRED_KEYS = tuple(D3_ENV)
 # Appended to Config in this order.
 D3_NEW_FIELDS_IN_ORDER = (
-    "weekly_usage_stop_pct",
     "session_usage_stop_pct",
-    "overrun_pct",
     "run_window_start",
     "run_window_end",
 )
@@ -1191,40 +1173,37 @@ def utc(day: int, hour: int, minute: int = 0) -> datetime:
 
 
 # --------------------------------------------------------------------------
-# The five keys are read, required, and land on the Config in the frozen order
+# The three keys are read, required, and land on the Config in the frozen order
 # --------------------------------------------------------------------------
 
 
 def test_d3_every_new_key_lands_on_the_matching_config_field(tmp_path, write_d3_env):
-    """The .env.example values map onto the five new fields —
-    percentages as floats, the window as the raw "day HH:MM" strings."""
+    """The .env.example values map onto the three new fields —
+    the percentage as a float, the window as the raw "day HH:MM" strings."""
     path = write_d3_env(tmp_path / ".env")
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_usage_stop_pct == pytest.approx(90.0)
     assert config.session_usage_stop_pct == pytest.approx(70.0)
-    assert config.overrun_pct == pytest.approx(10.0)
     assert config.run_window_start == "mon 08:00"
     assert config.run_window_end == "tue 20:00"
 
 
 def test_d3_the_new_fields_are_appended_last_in_the_frozen_order(tmp_path, write_d3_env):
     """Config fields appended in this order —
-    weekly_usage_stop_pct, session_usage_stop_pct, overrun_pct, run_window_start,
-    run_window_end."""
+    session_usage_stop_pct, run_window_start, run_window_end."""
     path = write_d3_env(tmp_path / ".env")
     config = load_config(env_path=path, environ={})
 
     names = [f.name for f in dataclasses.fields(config)]
 
-    # Later keys append their own block: model and effort follow these five (B225), and seven
-    # more follow those. What this pins is that the five come together and in order, after
+    # Later keys append their own block: model and effort follow these three (B225), and more
+    # follow those. What this pins is that the three come together and in order, after
     # github_token_shape_ok.
     start = names.index(D3_NEW_FIELDS_IN_ORDER[0])
-    assert tuple(names[start : start + 5]) == D3_NEW_FIELDS_IN_ORDER
-    assert tuple(names[start + 5 : start + 7]) == ("model", "effort")
-    assert names.index("weekly_usage_stop_pct") > names.index("github_token_shape_ok")
+    assert tuple(names[start : start + 3]) == D3_NEW_FIELDS_IN_ORDER
+    assert tuple(names[start + 3 : start + 5]) == ("model", "effort")
+    assert names.index("session_usage_stop_pct") > names.index("github_token_shape_ok")
 
 
 def test_d3_the_new_fields_are_frozen_too(tmp_path, write_d3_env):
@@ -1233,14 +1212,14 @@ def test_d3_the_new_fields_are_frozen_too(tmp_path, write_d3_env):
     config = load_config(env_path=path, environ={})
 
     with pytest.raises(dataclasses.FrozenInstanceError):
-        config.weekly_usage_stop_pct = 10.0
+        config.session_usage_stop_pct = 10.0
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.run_window_start = "sun 00:00"
 
 
 @pytest.mark.parametrize("missing", D3_REQUIRED_KEYS)
 def test_d3_a_missing_new_key_raises_config_error_naming_it(tmp_path, write_d3_env, missing):
-    """All five are required in .env — no defaults in code, and the
+    """All three are required in .env — no defaults in code, and the
     error names the key that is missing."""
     path = write_d3_env(tmp_path / ".env", **{missing: None})
 
@@ -1255,45 +1234,35 @@ def test_d3_environ_overrides_the_env_file_for_a_new_key(tmp_path, write_d3_env)
     path = write_d3_env(tmp_path / ".env")
 
     config = load_config(
-        env_path=path, environ={"WEEKLY_USAGE_STOP_PCT": "80", "RUN_WINDOW_END": "wed 06:00"}
+        env_path=path, environ={"SESSION_USAGE_STOP_PCT": "80", "RUN_WINDOW_END": "wed 06:00"}
     )
 
-    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
+    assert config.session_usage_stop_pct == pytest.approx(80.0)
     assert config.run_window_end == "wed 06:00"
 
 
 # --------------------------------------------------------------------------
-# Ranges: 0 < stop <= 100, 0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT
+# Ranges: 0 < SESSION_USAGE_STOP_PCT <= 100
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("WEEKLY_USAGE_STOP_PCT", "0"),
-        ("WEEKLY_USAGE_STOP_PCT", "0.0"),
-        ("WEEKLY_USAGE_STOP_PCT", "-1"),
-        ("WEEKLY_USAGE_STOP_PCT", "100.0001"),
-        ("WEEKLY_USAGE_STOP_PCT", "101"),
-        ("WEEKLY_USAGE_STOP_PCT", "ninety"),
-        ("WEEKLY_USAGE_STOP_PCT", ""),
         ("SESSION_USAGE_STOP_PCT", "0"),
+        ("SESSION_USAGE_STOP_PCT", "0.0"),
         ("SESSION_USAGE_STOP_PCT", "-0.5"),
         ("SESSION_USAGE_STOP_PCT", "100.0001"),
+        ("SESSION_USAGE_STOP_PCT", "101"),
         ("SESSION_USAGE_STOP_PCT", "seventy"),
         ("SESSION_USAGE_STOP_PCT", ""),
-        ("OVERRUN_PCT", "-0.0001"),
-        ("OVERRUN_PCT", "-10"),
-        ("OVERRUN_PCT", "ten"),
-        ("OVERRUN_PCT", ""),
     ],
 )
 def test_d3_an_out_of_range_or_malformed_usage_key_raises_config_error_naming_it(
     tmp_path, write_d3_env, key, value
 ):
-    """The stop percentages are 0 < x <= 100 and the leeway is
-    0 <= x < the weekly stop; anything else is a startup error naming the key, never a silently
-    different threshold."""
+    """The session stop is 0 < x <= 100; anything else is a startup error naming the key,
+    never a silently different threshold."""
     path = write_d3_env(tmp_path / ".env", **{key: value})
 
     with pytest.raises(ConfigError) as excinfo:
@@ -1303,76 +1272,21 @@ def test_d3_an_out_of_range_or_malformed_usage_key_raises_config_error_naming_it
 
 
 def test_d3_the_usage_boundary_values_are_accepted(tmp_path, write_d3_env):
-    """The inclusive ends load — 100 % stops and a zero leeway."""
-    path = write_d3_env(
-        tmp_path / ".env",
-        WEEKLY_USAGE_STOP_PCT="100",
-        SESSION_USAGE_STOP_PCT="100",
-        OVERRUN_PCT="0",
-    )
+    """The inclusive end loads — a 100 % stop."""
+    path = write_d3_env(tmp_path / ".env", SESSION_USAGE_STOP_PCT="100")
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_usage_stop_pct == pytest.approx(100.0)
     assert config.session_usage_stop_pct == pytest.approx(100.0)
-    assert config.overrun_pct == pytest.approx(0.0)
 
 
 def test_d3_the_smallest_admissible_stops_are_accepted(tmp_path, write_d3_env):
     """Anything strictly above 0 is a legal stop."""
-    path = write_d3_env(
-        tmp_path / ".env",
-        WEEKLY_USAGE_STOP_PCT="0.5",
-        SESSION_USAGE_STOP_PCT="0.0001",
-        OVERRUN_PCT="0.25",
-    )
+    path = write_d3_env(tmp_path / ".env", SESSION_USAGE_STOP_PCT="0.0001")
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_usage_stop_pct == pytest.approx(0.5)
     assert config.session_usage_stop_pct == pytest.approx(0.0001)
-    assert config.overrun_pct == pytest.approx(0.25)
-
-
-@pytest.mark.parametrize(
-    ("weekly", "overrun"),
-    [("90", "90"), ("90", "95"), ("90", "100"), ("20", "25"), ("10", "10")],
-)
-def test_d3_overrun_at_or_above_the_weekly_stop_is_rejected(
-    tmp_path, write_d3_env, weekly, overrun
-):
-    """OVERRUN_PCT is 0 <= x < WEEKLY_USAGE_STOP_PCT — a leeway that
-    reaches the weekly stop would let a carried item run past the very line the stop draws."""
-    path = write_d3_env(
-        tmp_path / ".env", WEEKLY_USAGE_STOP_PCT=weekly, OVERRUN_PCT=overrun
-    )
-
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(env_path=path, environ={})
-
-    assert "OVERRUN_PCT" in str(excinfo.value)
-
-
-def test_d3_an_overrun_just_below_the_weekly_stop_is_accepted(tmp_path, write_d3_env):
-    """The bound is strict on one side only — 89.9999 < 90 loads."""
-    path = write_d3_env(
-        tmp_path / ".env", WEEKLY_USAGE_STOP_PCT="90", OVERRUN_PCT="89.9999"
-    )
-
-    config = load_config(env_path=path, environ={})
-
-    assert config.overrun_pct == pytest.approx(89.9999)
-
-
-def test_d3_a_lowered_weekly_stop_narrows_the_leeway_range(tmp_path, write_d3_env):
-    """The leeway is checked against the configured weekly stop, not
-    against the shipped 90 — with the stop at 20 a leeway of 15 loads and 25 does not."""
-    ok = write_d3_env(tmp_path / "ok" / ".env", WEEKLY_USAGE_STOP_PCT="20", OVERRUN_PCT="15")
-    assert load_config(env_path=ok, environ={}).overrun_pct == pytest.approx(15.0)
-
-    bad = write_d3_env(tmp_path / "bad" / ".env", WEEKLY_USAGE_STOP_PCT="20", OVERRUN_PCT="25")
-    with pytest.raises(ConfigError):
-        load_config(env_path=bad, environ={})
 
 
 # --------------------------------------------------------------------------
@@ -1455,20 +1369,18 @@ def test_d3_only_one_empty_window_end_is_a_config_error(tmp_path, write_d3_env, 
 
 
 # --------------------------------------------------------------------------
-# B112 - the five join the .harness/config.json knob set
+# B112 - the three join the .harness/config.json knob set
 # --------------------------------------------------------------------------
 
 
-def test_b112_config_json_may_set_the_five_usage_knobs(tmp_path, write_d3_env):
-    """B112: add the five to the allowed set — config.json overrides
+def test_b112_config_json_may_set_the_three_usage_knobs(tmp_path, write_d3_env):
+    """B112: add the three to the allowed set — config.json overrides
     .env for each of them."""
     path = write_d3_env(tmp_path / ".env")
     write_config_json(
         tmp_path,
         {
-            "WEEKLY_USAGE_STOP_PCT": 80,
             "SESSION_USAGE_STOP_PCT": 55,
-            "OVERRUN_PCT": 5,
             "RUN_WINDOW_START": "sat 22:00",
             "RUN_WINDOW_END": "mon 08:00",
         },
@@ -1476,9 +1388,7 @@ def test_b112_config_json_may_set_the_five_usage_knobs(tmp_path, write_d3_env):
 
     config = load_config(env_path=path, environ={})
 
-    assert config.weekly_usage_stop_pct == pytest.approx(80.0)
     assert config.session_usage_stop_pct == pytest.approx(55.0)
-    assert config.overrun_pct == pytest.approx(5.0)
     assert config.run_window_start == "sat 22:00"
     assert config.run_window_end == "mon 08:00"
 
@@ -1507,18 +1417,6 @@ def test_b112_a_malformed_window_in_config_json_raises_config_error_naming_it(
         load_config(env_path=path, environ={})
 
     assert "RUN_WINDOW_START" in str(excinfo.value)
-
-
-def test_b112_the_leeway_is_checked_against_the_merged_weekly_stop(tmp_path, write_d3_env):
-    """B112: a knob override cannot sidestep the OVERRUN_PCT rule — lowering
-    the weekly stop in config.json below the .env leeway is a startup error."""
-    path = write_d3_env(tmp_path / ".env", WEEKLY_USAGE_STOP_PCT="90", OVERRUN_PCT="10")
-    write_config_json(tmp_path, {"WEEKLY_USAGE_STOP_PCT": 5})
-
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(env_path=path, environ={})
-
-    assert "OVERRUN_PCT" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------
@@ -1723,23 +1621,22 @@ def test_b411_the_window_is_named_the_way_an_operator_reads_it(
 
 
 # --------------------------------------------------------------------------
-# A7 - the shipped .env.example carries the five keys and the raised USD cap
+# A7 - the shipped .env.example carries the three keys and no retired one
 # --------------------------------------------------------------------------
 
 
 def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
-    """.env.example ships the five keys with the documented values."""
+    """.env.example ships the three keys with the documented values, and no retired key."""
     example = Path(__file__).resolve().parent.parent / ".env.example"
     target = tmp_path / ".env"
     target.write_text(example.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
 
     config = load_config(env_path=target, environ={})
 
-    assert config.weekly_usage_stop_pct == pytest.approx(90.0)
     assert config.session_usage_stop_pct == pytest.approx(70.0)
-    assert config.overrun_pct == pytest.approx(10.0)
     assert config.run_window_start == "mon 08:00"
     assert config.run_window_end == "tue 20:00"
+    assert config_module.retired_keys_seen() == ()
 
 
 # --------------------------------------------------------------------------------------
@@ -1749,7 +1646,7 @@ def test_d3_the_shipped_env_example_carries_the_usage_keys(tmp_path):
 
 @pytest.mark.parametrize("retired", config_module.RETIRED_KEYS)
 def test_B414_a_retired_key_in_the_env_loads_and_is_ignored(tmp_path, write_env, retired):
-    """B414: a `.env` still carrying a key D74 removed loads, at any value, and reaches no
+    """B414: a `.env` still carrying a key D74 or D89 removed loads at any value and reaches no
     Config field. `retired_keys_seen()` names it so `harness doctor` can warn about it."""
     path = write_env(tmp_path / ".env", **{retired: "999999"})
 
@@ -1796,7 +1693,7 @@ def test_B416_a_retired_key_in_the_environment_changes_nothing(env_file):
     names = [f.name for f in dataclasses.fields(config)]
     banned = ("usd", "budget", "reserve", "clones")
     assert [n for n in names if any(word in n for word in banned)] == []
-    assert len(config_module.CONFIG_JSON_KEYS) == 21
+    assert len(config_module.CONFIG_JSON_KEYS) == 17
 
 
 def test_B5_B22_the_allowance_and_clone_range_checks_are_retired_with_their_keys(
@@ -2041,3 +1938,46 @@ def test_B519_the_committed_config_json_caps_open_deliveries_at_two():
         )
     )
     assert committed["MAX_OPEN_DELIVERIES"] == 2
+
+
+# --------------------------------------------------------------------------------------
+# B520 (D89) - the account has a session limit and no weekly one, so the weekly keys retire
+# --------------------------------------------------------------------------------------
+
+# Each key D89 retired, with a value its old range check refused.
+D89_RETIRED: dict[str, object] = {
+    "WEEKLY_USAGE_STOP_PCT": 0,
+    "OVERRUN_PCT": 95,
+    "SUGGEST_MIN_HEADROOM_PCT": 101,
+    "AUDIT_MIN_HEADROOM_PCT": -1,
+}
+
+
+@pytest.mark.parametrize("key", D89_RETIRED)
+def test_B520_a_weekly_usage_key_loads_from_either_file_and_is_ignored(
+    tmp_path, write_d2_env, key
+):
+    """B520 (D89): each weekly-usage key loads from `.env` and from config.json at a value its
+    old range check refused, reaches no Config field, and `retired_keys_seen()` names it with
+    its source. None of them is a live key."""
+    only_this = {other: None for other in D89_RETIRED}
+    env_dir, json_dir = tmp_path / "env", tmp_path / "json"
+
+    from_env = load_config(
+        env_path=write_d2_env(env_dir / ".env", **{**only_this, key: D89_RETIRED[key]}),
+        environ={},
+    )
+    assert config_module.retired_keys_seen() == ((key, ".env"),)
+
+    json_env = write_d2_env(json_dir / ".env", **only_this)
+    write_config_json(json_dir, {key: D89_RETIRED[key], "MAX_SUBISSUES": 4})
+    from_json = load_config(env_path=json_env, environ={})
+    assert config_module.retired_keys_seen() == ((key, ".harness/config.json"),)
+    assert from_json.max_subissues == 4
+
+    for config in (from_env, from_json):
+        assert not hasattr(config, key.lower())
+        assert key.lower() not in {f.name for f in dataclasses.fields(config)}
+    assert key in config_module.RETIRED_KEYS
+    assert key not in config_module.FIELD_KEYS
+    assert key not in config_module.CONFIG_JSON_KEYS

@@ -60,10 +60,9 @@ reporting an empty queue as idle; in `ack`'s fast answer it is left out altogeth
 
 `harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
 `reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
-`weekly usage 91% >= 90%`, `session usage 82% >= 80%`, `carry leeway 10% reached`,
-`outside run window (daily 11:00-19:00 UTC)`, or `k of max n slots` (with
-`; weekly 49%, session 7%` appended when subscription usage is known). The usage stops, the leeway
-and the window are §13.
+`session usage 82% >= 80%`, `outside run window (daily 11:00-16:00 UTC)`, or `k of max n slots`
+(with `; session 7%` appended when subscription usage is known). The usage stop, the carry and the
+window are §13.
 
 ---
 
@@ -350,7 +349,7 @@ To skip the wait, run `feedback.yml` from the Actions tab, post any `/harness` c
 repository (it starts the same job, whose sweep reads the notifications too), or run `harness sweep`
 then `harness dispatch` from your machine. Reading notifications spends nothing (B141), but `ask`,
 `audit`, `split`, `revise`, `rebase` and a re-proposal call the model from inside `harness sweep`,
-under the same usage stops as any stage.
+under the same usage stop as any stage.
 
 A command is acted on once (B135). Editing a comment does not re-trigger it; post a new one.
 
@@ -423,7 +422,7 @@ Actions → pick the workflow → **Run workflow** → branch `main` → fill th
 | Workflow | Runs on its own | Inputs |
 |---|---|---|
 | `discover` | `7 11,13 * * *` | `mode`, `target`, `lens`, `ignore_allowlist` |
-| `implement` | `23 11-18 * * *`, and a push to `proposals/**` on `main` | `issue` |
+| `implement` | `23 11-15 * * *`, and a push to `proposals/**` on `main` | `issue` |
 | `feedback` | `41 */3 * * 1-5`, and any `/harness` comment here | none |
 | `ack` | any `/harness` comment here | none |
 | `heartbeat` | `5 9 * * 1` | none |
@@ -447,7 +446,7 @@ gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=assigned
 # triage without the harness-ok allowlist label; the other filters still apply
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
   -f mode=triage -f ignore_allowlist=true
-# one item now, by harness issue number; bypasses the run window, not the usage stops
+# one item now, by harness issue number; bypasses the run window, not the usage stop
 gh workflow run implement.yml -R jgoetzmann/bright-bots-harness -f issue=4
 gh workflow run feedback.yml  -R jgoetzmann/bright-bots-harness   # act on upstream comments now
 gh run list -R jgoetzmann/bright-bots-harness -w implement -L 5    # what happened
@@ -482,104 +481,108 @@ token writes it.
 
 ## 13. Usage-aware governance
 
-What stops work is the utilization of two subscription windows, five-hour (session) and seven-day
-(weekly), which the API reports on every call. The allowance is shared with everything else the
-account does, including the operator's own Claude Code sessions, so it moves while the harness is
-idle. Read this section when the queue is full, nothing is halted or rate limited, and
-`harness dispatch` still starts nothing.
+What stops work is the utilization of the five-hour subscription session, which the API reports on
+every call. The account is a uchicago.edu enterprise seat with a five-hour session limit and no
+weekly one, so the session is the only window the harness reads (D89). The allowance is shared with
+everything else the account does, including the operator's own Claude Code sessions, so it moves
+while the harness is idle. Read this section when the queue is full, nothing is halted or rate
+limited, and `harness dispatch` still starts nothing.
 
 ### 13.1 The signal
 
 `claude -p --output-format stream-json --verbose` emits one `rate_limit_event` per call, whose
-`unifiedWindows` carries a `utilization` fraction (0..1) and a `resetsAt` for `five_hour` and
-`seven_day`. It rides on the inference response headers, so the long-lived `setup-token` used in
-Actions mode receives it too. The runner keeps the last one of a call, the stage stamps
-`observed_at` from the clock, and the governor stores it under `window.usage`:
+`unifiedWindows` carries a `utilization` fraction (0..1) and a `resetsAt` for each window it
+reports, `five_hour` among them. It rides on the inference response headers, so the long-lived
+`setup-token` used in Actions mode receives it too. The runner keeps the last one of a call, the
+stage stamps `observed_at` from the clock, and the governor stores it under `window.usage`. A
+`seven_day` entry is stored when one is reported. No stop reads it; the allowance headline names
+one when it arrives, since it means a weekly limit only the subscription's own refusal enforces,
+and `harness ledger --json` shows the raw reading (D89).
 
 ```bash
 harness ledger --json                       # window.usage, window.carry, rate-limit state
 git fetch origin harness-state && git show FETCH_HEAD:state/ledger.json   # the copy Actions uses
 ```
 
-The weekly heartbeat comment prints the same numbers under **allowance**, read from the live copy on
-`harness-state` rather than the seed on `main`, and says which one it read (B402).
+The weekly heartbeat comment prints the session reading under **allowance**, read from the live
+copy on `harness-state` rather than the seed on `main`, and says which one it read (B402).
 
 A reading describes its window until that window's `resets_at` and nothing after (B399). A 100%
-seven-day reading stops work until the reset and then stops nothing, with no command needed; a
+session reading stops work until the reset and then stops nothing, with no command needed; a
 refused call also sets `rate_limited_until` to the same instant (B396), which lifts with it.
-`harness ledger` and `harness status` then print `window reset since; no longer stops anything` for
-that window instead of STOPPED (B406).
+`harness ledger` and `harness status` then print `window reset since; no longer stops anything`
+instead of STOPPED (B406).
 
 **Nothing depends on the signal** (B114, as D74 amends it). No decision may *depend* on the usage
 signal being present, and none falls back to a dollar figure — there is no dollar figure. With no
 reading in force — a fake backend, an older CLI, a call that never reached inference, or a reading
-whose window has reset — the usage stops and the headroom gates admit: unknown is not a stop. What
-bounds a call then is the run window, `MAX_CONCURRENT_ITEMS`, `MAX_OPEN_DELIVERIES`, the
-`MAX_TURNS_*` ceilings, both kill switches and the commanded halt, and the subscription's own
-refusal, which D71 records as `rate_limited_until` and which ends at its reset.
+whose window has reset — the usage stop admits: unknown is not a stop. What bounds a call then is
+the run window, `MAX_CONCURRENT_ITEMS`, `MAX_OPEN_DELIVERIES`, the `MAX_TURNS_*` ceilings, both
+kill switches and the commanded halt, and the subscription's own refusal, which D71 records as
+`rate_limited_until` and which ends at its reset.
 
-### 13.2 The two stops
+### 13.2 The stop
 
 | Knob | `.env.example` | `.harness/config.json` | `reason` when it trips |
 |---|---|---|---|
-| `WEEKLY_USAGE_STOP_PCT` | `90` | `90` | `weekly usage 91% >= 90%` |
 | `SESSION_USAGE_STOP_PCT` | `70` | `80` | `session usage 82% >= 80%` |
 
-`.harness/config.json` overrides `.env`, so Actions mode stops new session calls at 80%. A stop
-trips when that window's `utilization * 100` is at or above the knob.
+`.harness/config.json` overrides `.env`, so Actions mode stops new calls at 80% of the session. The
+stop trips when the session's `utilization * 100` is at or above the knob. It applies to every
+call alike, the carried item's included. `WEEKLY_USAGE_STOP_PCT`, `OVERRUN_PCT`,
+`SUGGEST_MIN_HEADROOM_PCT` and `AUDIT_MIN_HEADROOM_PCT` are retired: a file that still sets one
+loads, the value is ignored, and `harness doctor` names it as a warning (D89).
 
 The governor raises `BudgetExhausted(reason)` before it authorises a call, and the dispatcher
-applies the same rule in its own order: rate limit → halted → commanded halt → carry → usage
-stop → run window → candidates. A
-stop is a normal outcome: the command exits 0, the item is handed off (§13.4), and the next window
-picks it up. `harness dispatch` prints an empty `start` with the reason, the item keeps its label,
-and no comment claims failure. To get the work done anyway, wait for the reset in `window.usage`, or
-raise the knob in a reviewed PR (§13.5), knowing that your own Claude use competes for the same
-allowance.
+applies the same rule in its own order: rate limit → halted → commanded halt → usage stop →
+carry → run window → candidates. A stop is a normal outcome: the command exits 0, the item is
+handed off (§13.4), and the next window picks it up. `harness dispatch` prints an empty `start`
+with the reason, the item keeps its label, and no comment claims failure. To get the work done
+anyway, wait for the reset in `window.usage`, or raise the knob in a reviewed PR (§13.5), knowing
+that your own Claude use competes for the same allowance.
 
 ### 13.3 The run window
 
-`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 19:00` (D72,
-widened by D80). Both ends are UTC and take either a lowercase three-letter weekday, for a weekly
-window that may wrap past Sunday (the `.env.example` default is `mon 08:00` to `tue 20:00`), or
-`daily`, for a window that repeats every day and may wrap past midnight. Mixing the two is a
-startup error. Outside the window no new item starts, and the reason is
-`outside run window (daily 11:00-19:00 UTC)`. Both keys empty means always open.
+`.harness/config.json` sets `RUN_WINDOW_START=daily 11:00` and `RUN_WINDOW_END=daily 16:00`
+(D89). Both ends are UTC and take either a lowercase three-letter weekday, for a weekly window that
+may wrap past Sunday (the `.env.example` default is `mon 08:00` to `tue 20:00`), or `daily`, for a
+window that repeats every day and may wrap past midnight. Mixing the two is a startup error.
+Outside the window no new item starts, and the reason is
+`outside run window (daily 11:00-16:00 UTC)`. Both keys empty means always open.
 
 The window is not the schedule. `discover.yml` carries `7 11,13 * * *` and `implement.yml` carries
-`23 11-18 * * *`: the times GitHub wakes the jobs. The window is what the dispatcher enforces once
+`23 11-15 * * *`: the times GitHub wakes the jobs. The window is what the dispatcher enforces once
 they are awake. Move both together; `tests/test_invariants.py` (B412) fails the build when a daily
 window stops containing those crons, and B493 fails it when either workflow is down to a single
 firing.
 
-The window is eight hours wide because GitHub delivers every scheduled run late and drops some
-entirely: measured lateness over two days ran from 2 to 264 minutes, median 72 for implement and
-264 for discover, and one such run arriving 34 minutes after a four-hour window shut cost a whole
-day's builds (D80). The width is what a late run lands in; the repeated firings are what a dropped
-run is caught by.
-
-The hours still follow the subscription's five-hour session, which is shared with your own use and
-opens with the first model call of the day: discover's triage call at 11:07 when there is something
-to triage, otherwise the first item a build starts. A build starting near the far edge therefore
-runs into a second session and into the operator's own Pacific noon; what bounds it is
-`SESSION_USAGE_STOP_PCT` (80 in Actions), which stops new calls before a session is spent, rather
-than the window's tail. A carried item waits for the window too (B413). GitHub cron is always UTC;
-11:00 UTC is 04:00 PDT and 03:00 PST, so nothing needs moving when the clocks change.
+The window is one five-hour session a day, 03:00 to 08:00 PST and 04:00 to 09:00 PDT. The session
+is shared with your own use and opens with the first model call of the day: discover's triage call
+at 11:07 when there is something to triage, otherwise the first item a build starts. Implement
+fires five times across it, hourly from 11:23 to 15:23 UTC, because GitHub delivers every scheduled
+run late and drops some entirely, and the repeated firings are what a dropped run is caught by
+(D80). A firing that arrives after 16:00 finds the window shut. The window bounds only what
+starts: a build started at the 14:23 or 15:23 pass can run up to 120 minutes, the 15:41 weekday
+sweep builds inside the window, and scheduled discover is not window-gated (D32), so a late 13:07
+firing proposes in the afternoon UTC. Any of these can open a second session in your morning; what
+bounds their calls is `SESSION_USAGE_STOP_PCT` (80 in Actions), per session. A carried item waits
+for the window too (B413). GitHub cron is always UTC, so nothing needs moving
+when the clocks change.
 
 `harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
-usage stops.
+usage stop.
 
 **Lending it a session.** `/harness block <n>` (level 3), or `harness block <n>` from a terminal,
 suspends the window for the next `n` five-hour sessions, at most six. The end is measured once,
 when the command is acted on: the remainder of the session in progress plus `n − 1` whole ones, or
 `n × 5 h` from now when no reading exists. A later reading never moves it, it expires by itself,
-and `/harness block 0` cancels it. It lifts the window only — both usage stops, all three kill
+and `/harness block 0` cancels it. It lifts the window only — the usage stop, all three kill
 switches, the trust gate and both human gates are untouched, and `MAX_CONCURRENT_ITEMS` is
 unchanged. It creates no workflow runs, so it takes effect on the next run that happens anyway: a
 gate-1 merge (immediately), the three-hourly weekday sweep, or a manual dispatch. `harness dispatch`
 reports it under `block`, and every status surface carries one line while it stands.
 
-### 13.4 The leeway, the handoff, and the continue
+### 13.4 The handoff and the continue
 
 A stop, usage or rate limit, inside `implement`, `continue`, `package` or `deliver` triggers a
 handoff: uncommitted work is committed as `wip: handoff (<reason>)`, the branch is pushed to the
@@ -589,18 +592,15 @@ reason), and the command exits 0. `HANDOFF.md` holds the reason, the branch, the
 the last gate results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and
 the next command, `harness revise <id> --source continue`.
 
-The carried item is the first thing the next run starts. A weekly run window does not hold it back;
-a daily one does, until it opens (D72). Outside a weekly window it may spend `OVERRUN_PCT` (`10`)
-of the fresh week; when that leeway is used up the reason is `carry leeway 10% reached`, the item
-is handed off again on the same branch, and it waits for the window. Inside the window, and under a
-daily window, it is held to `WEEKLY_USAGE_STOP_PCT` like any other item, and a block counts as
-the window being open (D81). Green gates then
+The carried item is the first thing the next run starts once the usage stop admits it; it is held
+to `SESSION_USAGE_STOP_PCT` like any other item (D89). A weekly run window does not hold it back; a
+daily one does, until it opens, and a block counts as the window being open (D77). Green gates then
 move it to `stage:packaged`, clear the carry, and run the ordinary package and deliver steps; red
 gates block it with nothing pushed (B136).
 
 A handoff follows a stop inside work that has started. Work refused before it starts is not
 started at all: `harness dispatch` skips suggested work the priority gate refuses, with the
-refusal as its reason, and `harness run` asks the priority gate and the usage stops before each
+refusal as its reason, and `harness run` asks the priority gate and the usage stop before each
 clone and prints `item N waits: <reason>` for an item they refuse (D81).
 
 Only one item is carried at a time. To look at it, or to resume it by hand:
@@ -616,14 +616,13 @@ To drop a carry instead of resuming it, relabel the issue `stage:blocked` and de
 
 ### 13.5 Changing the knobs
 
-The five knobs live in `.env` and may be overridden in `.harness/config.json`, which is
+The three knobs live in `.env` and may be overridden in `.harness/config.json`, which is
 CODEOWNERS-protected, so a change is a reviewed PR. After merging, confirm what the harness loaded
 with `harness doctor` (every key with its value; exit 3 names any missing or out-of-range one) and
 `harness dispatch`, whose reason string reflects the new knobs immediately and which starts nothing.
 
-Ranges are enforced at startup: `0 < WEEKLY_USAGE_STOP_PCT <= 100`,
-`0 < SESSION_USAGE_STOP_PCT <= 100`, `0 <= OVERRUN_PCT < WEEKLY_USAGE_STOP_PCT`, and both window
-keys either empty or matching `^(mon|tue|wed|thu|fri|sat|sun|daily) ([01]\d|2[0-3]):[0-5]\d$`, with
+Ranges are enforced at startup: `0 < SESSION_USAGE_STOP_PCT <= 100`, and both window keys either
+empty or matching `^(mon|tue|wed|thu|fri|sat|sun|daily) ([01]\d|2[0-3]):[0-5]\d$`, with
 both ends `daily` or both weekdays. A typo is a `harness doctor` failure naming the key. The knobs
 cannot make the harness merge anything, move a gate, or lift the turn caps, the kill switches and
 the gate sequence that apply underneath them.

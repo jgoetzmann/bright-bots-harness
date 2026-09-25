@@ -1,4 +1,4 @@
-"""Admission control: the subscription usage stops, the stored rate limit, and the turn caps."""
+"""Admission control: the session usage stop, the stored rate limit, and the turn caps."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class Authorization:
 
 
 class Governor:
-    """What may start a model call: the usage stops, the stored rate limit, the turn caps.
+    """What may start a model call: the session usage stop, the stored rate limit, the turn caps.
 
     The ledger is required and holds every fact admission reads (D74).
     """
@@ -45,22 +45,16 @@ class Governor:
         self.clock = clock
         self.ledger = ledger
 
-    # -- usage stops ------------------------------------------------------------------------
+    # -- usage stop -------------------------------------------------------------------------
 
-    def usage_stop_reason(self, *, carry: bool = False) -> str | None:
+    def usage_stop_reason(self) -> str | None:
         """Why the subscription signal says to stop, or ``None`` (B206).
 
-        ``None`` while nothing has been observed: unknown admits. ``carry=True`` is the item
-        carried across a weekly reset, which runs on ``OVERRUN_PCT`` only outside a weekly run
-        window (D81). The rule itself lives in :func:`harness.dispatcher.usage_stop`, so
-        admission and the plan cannot drift apart.
+        ``None`` while nothing has been observed: unknown admits. The rule itself lives in
+        :func:`harness.dispatcher.usage_stop`, so admission and the plan cannot drift apart.
         """
         # Through the clock, so a reading whose window has reset no longer refuses (B399).
-        return usage_stop(self.ledger, self.config, carry=carry, now=self.clock.now())
-
-    def _is_carry(self, work_item_id: int) -> bool:
-        carried = self.ledger.carry_issue()
-        return carried is not None and int(carried) == int(work_item_id)
+        return usage_stop(self.ledger, self.config, now=self.clock.now())
 
     # -- admission --------------------------------------------------------------------------
 
@@ -76,10 +70,10 @@ class Governor:
     def refusal(self, work_item_id: int) -> str | None:
         """Why :meth:`authorize` would refuse a call for this item now, or ``None``.
 
-        The usage stop is checked before the rate limit, so an operator past the weekly stop
+        The usage stop is checked before the rate limit, so an operator past the session stop
         hears about the allowance rather than about a reset time (B208).
         """
-        stop = self.usage_stop_reason(carry=self._is_carry(work_item_id))
+        stop = self.usage_stop_reason()
         if stop is not None:
             return stop
         if self.ledger.rate_limited(iso(self.clock.now())):

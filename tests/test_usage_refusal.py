@@ -1,7 +1,7 @@
 """D71: a subscription refusal is a rate limit that ends at its reset. B398-B402.
 
-An exhausted weekly allowance refuses a call in about two seconds: a `rate_limit_event` with
-status "rejected" and seven_day at 1.0, then a result with `subtype: "success"`,
+An exhausted allowance refuses a call in about two seconds: a `rate_limit_event` with status
+"rejected" and the refusing window at 1.0, then a result with `subtype: "success"`,
 `is_error: true` and the message in `result`, at exit 0.
 
 B395-B397 (the runner) live in tests/test_runner_cli.py. This file holds what happens after
@@ -49,6 +49,15 @@ INCIDENT_USAGE = {
     "observed_at": OBSERVED,
 }
 
+#: A five-hour reading at 100 % observed at the same second: the session stop, the one usage
+#: stop the account has (D89).
+SESSION_USAGE = {
+    "five_hour": {"utilization": 1.0, "resets_at": FIVE_HOUR_RESET},
+    "seven_day": {"utilization": 0.5, "resets_at": RESET},
+    "status": "rejected",
+    "observed_at": OBSERVED,
+}
+
 SECRET = "sk-ant-" + "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5"
 
 
@@ -60,18 +69,20 @@ BEFORE_RESET = at("2026-09-15T19:59:59Z")
 MONDAY_HEARTBEAT = at("2026-09-14T09:05:00Z")
 AT_RESET = at(RESET)
 NEXT_SUNDAY = at("2026-09-20T07:17:00Z")  # the next scheduled discover
+BEFORE_SESSION_RESET = at("2026-09-13T17:39:59Z")
+AT_SESSION_RESET = at(FIVE_HOUR_RESET)
 
 
-def incident_ledger(*, rate_limited_until: str | None) -> Ledger:
+def incident_ledger(*, rate_limited_until: str | None, usage: dict = INCIDENT_USAGE) -> Ledger:
     led = Ledger.empty(PERIOD_START)
-    led.observe_usage(json.loads(json.dumps(INCIDENT_USAGE)), OBSERVED)
+    led.observe_usage(json.loads(json.dumps(usage)), OBSERVED)
     led.set_rate_limited(rate_limited_until)
     return led
 
 
 @pytest.fixture
 def config(tmp_path, write_env):
-    """The .env.example thresholds: weekly stop 90%, session stop 70%, an always-open window."""
+    """The .env.example session stop, 70%, and an always-open window."""
     return load_config(env_path=write_env(tmp_path / "cfg" / ".env"), environ={})
 
 
@@ -99,20 +110,38 @@ def _plan(config, led, now):
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "now", [at(OBSERVED), BEFORE_SESSION_RESET], ids=["observed", "1s-before"]
+)
+def test_b399_before_the_reset_the_stored_refusal_stops_everything(config, now):
+    """B399: until 2026-09-13T17:40:00Z the 100% session reading is a stop for the dispatcher,
+    the governor and the status headline alike."""
+    led = incident_ledger(rate_limited_until=None, usage=SESSION_USAGE)
+
+    assert usage_stop(led, config, now=now) == "session usage 100% >= 70%"
+    assert _plan(config, led, now).reason == "session usage 100% >= 70%"
+    governor = Governor(config, FrozenClock(now), led)
+    with pytest.raises(BudgetExhausted, match="session usage 100%"):
+        governor.authorize(1, "discover")
+    assert "nothing will start" in "\n".join(links.usage_headline(led, config, now))
+
+
 @pytest.mark.parametrize("now", [MONDAY_HEARTBEAT, BEFORE_RESET], ids=["monday", "1s-before"])
-def test_b399_before_the_reset_the_stored_refusal_stops_everything(config, empty_store, now):
-    """B399: until 2026-09-15T20:00:00Z the 100% reading is a stop for the dispatcher, the
-    governor, the audit and suggestion gates, and the status headline alike."""
+def test_b399_a_seven_day_reading_at_100_percent_stops_nothing(config, empty_store, now):
+    """B399 (D89): the account has no weekly limit, so the incident's seven-day reading of 100%
+    is no stop even before its own reset. The ledger keeps the raw reading and has no weekly
+    accessor; what holds work back after such a refusal is the rate limit B120 records."""
     led = incident_ledger(rate_limited_until=None)
 
-    assert usage_stop(led, config, now=now) == "weekly usage 100% >= 90%"
-    assert _plan(config, led, now).reason == "weekly usage 100% >= 90%"
+    assert usage_stop(led, config, now=now) is None
+    assert _plan(config, led, now).start == (816,)
     governor = Governor(config, FrozenClock(now), led)
-    with pytest.raises(BudgetExhausted, match="weekly usage 100%"):
-        governor.authorize(1, "discover")
-    assert priority.admit("audit", store=empty_store, ledger=led, config=config, now=now)
-    assert priority.admit("suggested", store=empty_store, ledger=led, config=config, now=now)
-    assert "nothing will start" in "\n".join(links.usage_headline(led, config, now))
+    assert isinstance(governor.authorize(1, "discover"), Authorization)
+    for cls in ("audit", "suggested"):
+        assert priority.admit(cls, store=empty_store, ledger=led, config=config, now=now) is None
+    assert "nothing will start" not in "\n".join(links.usage_headline(led, config, now))
+    assert led.window["usage"]["seven_day"]["utilization"] == 1.0
+    assert not hasattr(led, "weekly_utilization")
 
 
 def test_b399_before_the_reset_the_rate_limit_b120_recorded_holds_too(config):
@@ -122,17 +151,20 @@ def test_b399_before_the_reset_the_rate_limit_b120_recorded_holds_too(config):
     assert _plan(config, led, BEFORE_RESET).reason == f"rate limited until {RESET}"
 
 
-@pytest.mark.parametrize("now", [AT_RESET, NEXT_SUNDAY], ids=["at-reset", "next-sunday"])
-@pytest.mark.parametrize("limited", [RESET, None], ids=["b120-recorded", "never-recorded"])
+@pytest.mark.parametrize(
+    "now", [AT_SESSION_RESET, MONDAY_HEARTBEAT], ids=["at-reset", "next-heartbeat"]
+)
+@pytest.mark.parametrize(
+    "limited", [FIVE_HOUR_RESET, None], ids=["b120-recorded", "never-recorded"]
+)
 def test_b399_at_the_reset_the_refusal_expires_with_no_command(config, empty_store, now, limited):
-    """B399: at the reset instant, and at the next scheduled discover, nothing stops: the plan
+    """B399: at the session reset instant, and at the next heartbeat, nothing stops: the plan
     starts the candidate, the governor authorizes, both gates admit, and the headline stops
     claiming a stop. Whether or not B120 recorded the reset, the harness resumes by itself."""
-    led = incident_ledger(rate_limited_until=limited)
+    led = incident_ledger(rate_limited_until=limited, usage=SESSION_USAGE)
 
     assert led.rate_limited(iso(now)) is False
     assert usage_stop(led, config, now=now) is None
-    assert usage_stop(led, config, carry=True, now=now) is None
     result = _plan(config, led, now)
     assert result.start == (816,), result.reason
     governor = Governor(config, FrozenClock(now), led)
@@ -143,12 +175,11 @@ def test_b399_at_the_reset_the_refusal_expires_with_no_command(config, empty_sto
 
 
 def test_b399_the_governor_does_not_wait_for_its_own_week_to_roll(config, empty_store):
-    """B399: the deadlock this closes. Before it, a reading expired only when `period_start`
-    passed its `observed_at`, and `period_start` moves when the governor rolls the window --
-    which `authorize` does AFTER the usage stop has already refused. So the stop refused the one
-    call that could have brought a fresh reading, on every run, however long after the reset."""
-    led = incident_ledger(rate_limited_until=None)
-    governor = Governor(config, FrozenClock(NEXT_SUNDAY), led)
+    """B399: a reading expires at its own reset, never by waiting for `period_start` to pass its
+    `observed_at`: the period moves only when a call is recorded, which a stop that is still
+    refusing would never allow."""
+    led = incident_ledger(rate_limited_until=None, usage=SESSION_USAGE)
+    governor = Governor(config, FrozenClock(MONDAY_HEARTBEAT), led)
 
     assert governor.usage_stop_reason() is None
     assert isinstance(governor.authorize(1, "discover"), Authorization)
@@ -169,18 +200,18 @@ def test_b399_each_window_expires_at_its_own_reset(config):
     assert usage_stop(led, config, now=at("2026-09-13T17:39:59Z")) == "session usage 80% >= 70%"
     assert usage_stop(led, config, now=at(FIVE_HOUR_RESET)) is None
     assert led.session_utilization(at(FIVE_HOUR_RESET)) is None
-    assert led.weekly_utilization(at(FIVE_HOUR_RESET)) == pytest.approx(0.5)
+    assert led.window["usage"]["seven_day"] == {"utilization": 0.5, "resets_at": RESET}
 
 
 def test_b399_a_reading_with_no_stated_reset_is_kept(config):
     """B399/B114: expiry needs the window's own reset. A reading without one is kept exactly as
     before, and a caller that passes no clock sees exactly what it saw before."""
     led = Ledger.empty(PERIOD_START)
-    led.observe_usage({"seven_day": {"utilization": 0.95}, "status": "allowed"}, OBSERVED)
+    led.observe_usage({"five_hour": {"utilization": 0.95}, "status": "allowed"}, OBSERVED)
 
-    assert usage_stop(led, config, now=NEXT_SUNDAY) == "weekly usage 95% >= 90%"
-    expired = incident_ledger(rate_limited_until=None)
-    assert usage_stop(expired, config) == "weekly usage 100% >= 90%"
+    assert usage_stop(led, config, now=NEXT_SUNDAY) == "session usage 95% >= 70%"
+    expired = incident_ledger(rate_limited_until=None, usage=SESSION_USAGE)
+    assert usage_stop(expired, config) == "session usage 100% >= 70%"
 
 
 # --------------------------------------------------------------------------------------
@@ -356,7 +387,7 @@ def test_b401_the_ops_issue_carries_the_error_lines_as_well_as_the_tail():
         "##[error]Process completed with exit code 1.",
         "::error::harness discover exited 1",
         "rate limited until 2026-09-15T20:00:00Z",
-        "budget exhausted: weekly usage 100% >= 90%",
+        "budget exhausted: session usage 100% >= 70%",
     ):
         assert pattern.search(line), line
     for noise in ("Artifact discover-1 has been successfully uploaded", "ValueError: nope"):
@@ -434,21 +465,21 @@ def _cli_repo_with_a_rejected_reading(tmp_path, monkeypatch, write_env, now: dat
 
 @pytest.mark.parametrize("command", ["ledger", "status"])
 @pytest.mark.parametrize(
-    ("now", "session_stopped", "weekly_stopped"),
+    ("now", "stopped"),
     [
-        ("2026-09-15T13:59:59Z", True, True),
-        (SESSION_RESET, False, True),
-        ("2026-09-15T19:59:59Z", False, True),
-        (RESET, False, False),
+        ("2026-09-15T13:59:59Z", True),
+        (SESSION_RESET, False),
+        ("2026-09-15T19:59:59Z", False),
+        (RESET, False),
     ],
-    ids=["1s-before-session-reset", "at-session-reset", "1s-before-weekly-reset", "at-reset"],
+    ids=["1s-before-session-reset", "at-session-reset", "after-session-reset", "at-reset"],
 )
 def test_b406_the_ledger_and_status_views_agree_with_the_stop_on_both_sides_of_the_reset(
-    tmp_path, monkeypatch, capsys, write_env, command, now, session_stopped, weekly_stopped
+    tmp_path, monkeypatch, capsys, write_env, command, now, stopped
 ):
-    """B406/D71: `harness ledger` (the D41 view) and `harness status` printed STOPPED for a
-    reading whose window had already reset, while the governor and the dispatcher had stopped
-    refusing. Each window's line now follows its own reset, and says the same as the stop."""
+    """B406/D71: `harness ledger` (the D41 view) and `harness status` say STOPPED exactly while
+    the stop refuses. The session line follows its own reset; the seven-day reading, at 100%
+    until its reset, has no line and stops nothing (D89)."""
     frozen = at(now)
     _cli_repo_with_a_rejected_reading(tmp_path, monkeypatch, write_env, frozen)
     capsys.readouterr()
@@ -457,14 +488,13 @@ def test_b406_the_ledger_and_status_views_agree_with_the_stop_on_both_sides_of_t
 
     out = capsys.readouterr().out
     session = next(line for line in out.splitlines() if line.strip().startswith("session (5h)"))
-    weekly = next(line for line in out.splitlines() if line.strip().startswith("weekly  (7d)"))
-    for line, stopped in ((session, session_stopped), (weekly, weekly_stopped)):
-        assert ("(STOPPED)" in line) is stopped, line
-        assert ("(window reset since; no longer stops anything)" in line) is (not stopped), line
+    assert ("(STOPPED)" in session) is stopped, session
+    assert ("(window reset since; no longer stops anything)" in session) is (not stopped), session
+    assert "(7d)" not in out, out
 
     cfg = load_config(env_path=tmp_path / ".env", environ={})
     led = Ledger.from_json((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
-    assert (usage_stop(led, cfg, now=frozen) is not None) is (session_stopped or weekly_stopped)
+    assert (usage_stop(led, cfg, now=frozen) is not None) is stopped
 
 
 # --------------------------------------------------------------------------------------

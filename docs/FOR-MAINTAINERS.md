@@ -124,12 +124,8 @@ The other stages are the harness's own moves; [COMMANDS.md](COMMANDS.md#labels) 
 **Label a brightboost issue `harness-ok` and it is in the pool**, the only issues the harness may
 choose for itself. Remove the label and it is out.
 
-It looks once a day, on `discover`'s 11:07 UTC run, and suggests nothing unless both hold:
-
-- **Nothing anybody asked for is still open**, including a delivery pull request waiting for your
-  review.
-- **The week has room**: subscription usage under 50% (`SUGGEST_MIN_HEADROOM_PCT`), or not yet
-  observed.
+It looks once a day, on `discover`'s 11:07 UTC run, and suggests nothing while anything anybody
+asked for is still open, including a delivery pull request waiting for your review.
 
 One model call ranks the pool and at most five (`SUGGEST_MAX_PER_RUN`) become work items. An issue
 is skipped if it is assigned to anyone but the bot, already named by a branch or open pull request,
@@ -170,7 +166,7 @@ Reach for `status` when nothing seems to be happening. `fix`, `queue` and `usage
 ## 7. What you cannot do
 
 `block`, `halt`, `resume`, `reject` and `--force` are level 3 (Jack only). `--force` exempts one
-item from the run window, daily 11:00 to 19:00 UTC; `halt` stops all spending; `block` does the
+item from the run window, daily 11:00 to 16:00 UTC; `halt` stops all spending; `block` does the
 window's job in reverse, suspending it for a few five-hour sessions so the harness can use time the
 operator is not going to. You can queue as much work as you like, but when it runs is the operator's
 call, because it is the operator's subscription. If you use one of these, the reply names the level
@@ -212,14 +208,14 @@ notifications on the way.
 | 1. `/harness work` is heard | minutes on the inbox, up to three hours on brightboost; it opens a `stage:queued` item |
 | 2. The plan | the next `discover` run, **11:07 UTC every day**, unless Jack runs one sooner |
 | 3. Gate 1 | whenever Jack merges the proposal |
-| 4. The code | inside the run window, **daily 11:00 to 19:00 UTC** (3–4 a.m. to 11 a.m.–noon Pacific); a merge outside it waits for the next 11:23 UTC run unless Jack starts it |
+| 4. The code | inside the run window, **daily 11:00 to 16:00 UTC** (3–4 a.m. to 8–9 a.m. Pacific); a merge outside it waits for the next 11:23 UTC run unless Jack starts it |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
 
-Each scheduled build run starts one item, and on weekdays the 12:41 UTC sweep also builds what is
-approved. A busy morning is limited by the subscription session, which the harness stops using at
-80%. Worst case, with nothing halted or ahead of it, a request queued just after 11:07 UTC and
-merged after the window closes reaches a delivery pull request in about two days; a merge before
-19:00 UTC saves a day.
+Each scheduled build run starts one item, and on weekdays the 12:41 and 15:41 UTC sweeps also
+build what is approved. A busy morning is limited by the subscription session, which the harness
+stops using at 80%. Worst case, with nothing halted or ahead of it, a request queued just after
+11:07 UTC and merged after the window closes reaches a delivery pull request in about two days; a
+merge before 16:00 UTC saves a day.
 
 ## 10. If something looks wrong
 

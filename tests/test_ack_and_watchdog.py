@@ -836,17 +836,15 @@ def test_B438_a_commanded_halt_is_named_in_the_acknowledgement(tmp_path, capsys,
     assert "twenty minutes" not in out["comment"]
 
 
-def test_B438_an_audit_the_headroom_gate_will_refuse_is_not_promised_twenty_minutes(
-    tmp_path, capsys, monkeypatch
-):
-    """Fails on main, for the same two reasons: the headroom read raised and was swallowed, so
-    `ack` promised twenty minutes of audit that `priority.admit` then declined."""
+def test_B438_a_seven_day_reading_does_not_hold_back_an_audit(tmp_path, capsys, monkeypatch):
+    """The account has a five-hour session limit and no weekly one, so no headroom gate stands
+    in front of an audit and `ack` promises it at any seven-day reading (D89)."""
     from harness.ledger import Ledger
 
     led = Ledger.empty("2026-08-31T00:00:00Z")
     led.observe_usage(
         {
-            "seven_day": {"utilization": 0.88, "resets_at": "2026-09-08T00:00:00Z"},
+            "seven_day": {"utilization": 1.0, "resets_at": "2026-09-08T00:00:00Z"},
             "five_hour": {"utilization": 0.10, "resets_at": "2026-09-01T17:00:00Z"},
         },
         "2026-09-01T11:00:00Z",
@@ -855,9 +853,9 @@ def test_B438_an_audit_the_headroom_gate_will_refuse_is_not_promised_twenty_minu
     out = _ack_with_ledger(tmp_path, capsys, monkeypatch, led, "/harness audit accessibility")
 
     assert out["react"] is True
-    assert "Not now" in out["comment"]
-    assert "88%" in out["comment"]
-    assert "twenty minutes" not in out["comment"]
+    assert "Not now" not in out["comment"]
+    assert "100%" not in out["comment"]
+    assert "twenty minutes" in out["comment"]
 
 
 # --------------------------------------------------------------------------------------

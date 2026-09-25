@@ -295,7 +295,7 @@ def test_B464_a_granted_block_names_what_it_does_not_lift(tmp_path):
 
     reply = cli._block_command(rig.ctx, cmd("3 away this afternoon"))
 
-    for named in ("usage stops", ".harness/HALT", "/harness halt", "human gates"):
+    for named in ("session usage stop", ".harness/HALT", "/harness halt", "human gates"):
         assert named in reply, f"the reply must name {named}"
     assert "/harness block 0" in reply and "expires by itself" in reply
     assert "$" not in reply, "user-facing output reports usage, never money (D66/B419)"
@@ -349,7 +349,7 @@ def test_B466_the_plan_starts_work_outside_the_window_and_adds_no_reason_string(
     open_by_block = run_plan(config, blocked_ledger(3, reading=True), 816)
 
     assert open_by_block.start == (816,)
-    assert open_by_block.reason == "1 of max 1 slots; weekly 5%, session 5%"
+    assert open_by_block.reason == "1 of max 1 slots; session 5%"
     assert "block" not in open_by_block.reason
     assert set(_dispatcher_reasons()) == MUST_STOP_REASON_PREFIXES | MAY_PROCEED_REASON_PREFIXES
 
@@ -388,8 +388,8 @@ def test_B468_a_block_lifts_the_window_and_neither_usage_stop_nor_either_halt(tm
     """B468: the test this whole decision stands on. A block that could outlive a usage stop or a
     halt would be a way to spend an allowance somebody had already said to stop spending.
 
-    The order in `plan` is what makes it true: rate limit, halted, commanded halt, carry, usage
-    stop, *then* the window branch a block opens.
+    The order in `plan` is what makes it true: rate limit, halted, commanded halt, usage stop,
+    carry, *then* the window branch a block opens.
     """
     config = d3_config(tmp_path)
 
@@ -404,12 +404,6 @@ def test_B468_a_block_lifts_the_window_and_neither_usage_stop_nor_either_halt(tm
     stopped = run_plan(config, session_stopped, 816)
     assert stopped.start == (), "the session usage stop still stops it"
     assert stopped.reason == "session usage 82% >= 70%"
-
-    weekly_stopped = blocked_ledger(3)
-    weekly_stopped.observe_usage(
-        {"seven_day": {"utilization": 0.95, "resets_at": "2026-09-08T20:00:00Z"}}, NOW_ISO
-    )
-    assert run_plan(config, weekly_stopped, 816).reason == "weekly usage 95% >= 90%"
 
     assert run_plan(config, blocked_ledger(3), 816, halted=True).reason == "halted"
 
@@ -538,7 +532,7 @@ def test_B471_the_cli_sets_and_clears_the_same_grant_and_names_what_still_applie
     assert cli.main(["block", "3", "--reason", "away this afternoon"]) == 0
     out = capsys.readouterr().out
     assert "run window suspended for 3 session(s)" in out
-    assert "usage stops" in out and "human gates" in out
+    assert "session usage stop" in out and "human gates" in out
     assert "$" not in out
 
     stored = json.loads((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))

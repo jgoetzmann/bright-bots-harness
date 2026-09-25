@@ -59,12 +59,8 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("SUGGEST_MAX_PER_RUN", "5"),
     ("COMMENT_UPSTREAM", "true"),
     ("ASK_MAX_PER_DAY", "20"),
-    ("SUGGEST_MIN_HEADROOM_PCT", "50"),
-    ("AUDIT_MIN_HEADROOM_PCT", "75"),
     ("MAX_SELF_AUDIT_CYCLES", "3"),
-    ("WEEKLY_USAGE_STOP_PCT", "90"),
     ("SESSION_USAGE_STOP_PCT", "70"),
-    ("OVERRUN_PCT", "10"),
     ("RUN_WINDOW_START", ""),
     ("RUN_WINDOW_END", ""),
 )
@@ -364,15 +360,13 @@ def test_B122_plan_fields_are_immutable_tuple_and_dict(tmp_path):
 # ---------------------------------------------------------------------------
 # The run window (B209, B210, B211) and config.in_run_window.
 #
-# plan() order: rate limit → halted → carry → usage stop → run window → candidates.
+# plan() order: rate limit → halted → usage stop → carry → run window → candidates.
 # NOW (2026-09-02T12:00:00Z) is a Wednesday, outside the mon 08:00 → tue 20:00 window.
 # ---------------------------------------------------------------------------
 
-# The five new keys with their .env.example values (inline).
+# The D3 keys still live, with their .env.example values (inline).
 D3_ENV: dict[str, str] = {
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "mon 08:00",
     "RUN_WINDOW_END": "tue 20:00",
 }
@@ -386,7 +380,7 @@ D3_FIVE_HOUR_RESET = "2026-09-04T11:00:00Z"
 
 
 def write_d3_env(tmp_path: Path, **overrides: str) -> Path:
-    """Every D1 and D2 key (BASE_ENV) plus the five D3 keys, in a directory of its own."""
+    """Every D1 and D2 key (BASE_ENV) plus the D3 keys, in a directory of its own."""
     env = dict(BASE_ENV)
     env.update(D3_ENV)
     env.update(overrides)
@@ -421,7 +415,7 @@ def usage_ledger(*, weekly: float = 0.49, session: float = 0.07,
     ledger = empty_ledger()
     ledger.observe_usage(d3_usage(weekly=weekly, session=session), NOW_ISO)
     if carry is not None:
-        ledger.set_carry(carry, NOW_ISO, "weekly usage 91% >= 90%")
+        ledger.set_carry(carry, NOW_ISO, "session usage 72% >= 70%")
     return ledger
 
 
@@ -429,27 +423,16 @@ def usage_ledger(*, weekly: float = 0.49, session: float = 0.07,
 # dispatcher.usage_stop — the same rules the governor applies, for the planner
 # ---------------------------------------------------------------------------
 
-def test_B211_usage_stop_reports_the_weekly_and_session_reasons(tmp_path):
-    """usage_stop(ledger, config, carry=False) is the planner's
-    copy of the governor's rule, with the same exact reasons."""
+def test_B211_usage_stop_reports_the_session_reason(tmp_path):
+    """usage_stop(ledger, config) is the planner's copy of the governor's rule, with the same
+    exact reason. The account has no weekly limit, so a seven-day reading stops nothing (D89)."""
     from harness.dispatcher import usage_stop
 
     config = d3_config(tmp_path)
-    assert usage_stop(usage_ledger(weekly=0.91), config) == "weekly usage 91% >= 90%"
     assert usage_stop(usage_ledger(weekly=0.10, session=0.72), config) == \
         "session usage 72% >= 70%"
+    assert usage_stop(usage_ledger(weekly=1.0, session=0.07), config) is None
     assert usage_stop(usage_ledger(weekly=0.49, session=0.07), config) is None
-
-
-def test_B211_usage_stop_uses_the_leeway_for_a_carried_item(tmp_path):
-    """carry=True swaps the weekly stop for OVERRUN_PCT."""
-    from harness.dispatcher import usage_stop
-
-    config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.12)
-    assert usage_stop(ledger, config, carry=True) == "carry leeway 10% reached"
-    assert usage_stop(ledger, config, carry=False) is None
-    assert usage_stop(usage_ledger(weekly=0.05), config, carry=True) is None
 
 
 def test_B211_usage_stop_is_none_without_the_signal(tmp_path):
@@ -459,24 +442,23 @@ def test_B211_usage_stop_is_none_without_the_signal(tmp_path):
 
     config = d3_config(tmp_path)
     assert usage_stop(empty_ledger(), config) is None
-    assert usage_stop(empty_ledger(), config, carry=True) is None
 
 
 def test_B211_a_usage_stop_empties_the_plan_with_that_reason(tmp_path):
     """The usage stop sits between the halt and the run window — past
-    the weekly threshold nothing starts and the reason is the usage reason."""
+    the session threshold nothing starts and the reason is the usage reason."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
-    result = run_plan(config, usage_ledger(weekly=0.91), cands(816, 823))
+    result = run_plan(config, usage_ledger(session=0.72), cands(816, 823))
     assert result.start == ()
-    assert result.reason == "weekly usage 91% >= 90%"
-    assert json.loads(result.to_json())["reason"] == "weekly usage 91% >= 90%"
+    assert result.reason == "session usage 72% >= 70%"
+    assert json.loads(result.to_json())["reason"] == "session usage 72% >= 70%"
 
 
 def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
     """The D2 steps keep their places — a live rate limit is
     still the first thing reported."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
-    ledger = usage_ledger(weekly=0.91)
+    ledger = usage_ledger(session=0.72)
     ledger.set_rate_limited("2026-09-02T13:00:00Z")
     result = run_plan(config, ledger, cands(816))
     assert result.reason == "rate limited until 2026-09-02T13:00:00Z"
@@ -485,7 +467,7 @@ def test_B211_the_rate_limit_is_still_checked_before_the_usage_stop(tmp_path):
 def test_B211_halt_is_still_checked_before_the_usage_stop(tmp_path):
     """Halted still wins over the usage stop."""
     config = d3_config(tmp_path, RUN_WINDOW_START="", RUN_WINDOW_END="")
-    result = run_plan(config, usage_ledger(weekly=0.91), cands(816), halted=True)
+    result = run_plan(config, usage_ledger(session=0.72), cands(816), halted=True)
     assert result.reason == "halted"
 
 
@@ -494,8 +476,8 @@ def test_B211_halt_is_still_checked_before_the_usage_stop(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_B209_the_carry_item_starts_outside_the_run_window(tmp_path):
-    """B209: a carry item exists and usage_stop(carry=True) is None → it is the FIRST entry of
-    start, even outside the run window; the ordinary older candidate stays put."""
+    """B209: a carry item exists and usage_stop is None → it is the FIRST entry of start, even
+    outside the run window; the ordinary older candidate stays put."""
     config = d3_config(tmp_path)
     ledger = usage_ledger(weekly=0.05, session=0.05, carry=816)
 
@@ -549,28 +531,28 @@ def test_B413_a_carry_item_still_goes_first_inside_a_daily_window(tmp_path):
     assert result.start == (816,)
 
 
-def test_B209_a_carry_item_out_of_leeway_does_not_start(tmp_path):
-    """B209: the carry only runs while usage_stop(carry=True) is None — once the leeway is
-    spent the carried item waits like everything else."""
+def test_B209_a_seven_day_reading_at_100_percent_never_holds_the_carry(tmp_path):
+    """B209 (D89): the account has no weekly limit, so outside a weekly window the carried item
+    starts whatever the seven-day reading says."""
     config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.30, session=0.05, carry=816)
+    ledger = usage_ledger(weekly=1.0, session=0.05, carry=816)
+
+    result = run_plan(config, ledger, cands(810, 816), now=WED)
+
+    assert result.start == (816,)
+    assert result.skipped == {"810": "outside run window"}
+
+
+def test_B209_a_carry_item_past_the_session_stop_reports_the_usage_stop(tmp_path):
+    """B209/B211: past the session stop nothing starts at all — neither the carried item nor
+    the ordinary ones — and the reason is the usage stop."""
+    config = d3_config(tmp_path)
+    ledger = usage_ledger(weekly=0.10, session=0.72, carry=816)
 
     result = run_plan(config, ledger, cands(810, 816), now=WED)
 
     assert result.start == ()
-    assert result.reason == WINDOW_REASON
-
-
-def test_B209_a_carry_item_past_the_weekly_stop_reports_the_usage_stop(tmp_path):
-    """B209/B211: past the weekly stop nothing starts at all — neither the carried item (out of
-    leeway) nor the ordinary ones — and the reason is the usage stop."""
-    config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.95, session=0.10, carry=816)
-
-    result = run_plan(config, ledger, cands(810, 816), now=WED)
-
-    assert result.start == ()
-    assert result.reason == "weekly usage 95% >= 90%"
+    assert result.reason == "session usage 72% >= 70%"
 
 
 def test_B209_no_carry_means_no_exemption(tmp_path):
@@ -585,14 +567,14 @@ def test_B209_no_carry_means_no_exemption(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# B494 (D81) — the plan and admission agree on the carried item
+# B494 (D81, D89) — the plan and admission agree on the carried item, and no leeway holds it
 # ---------------------------------------------------------------------------
 
-def test_B494_inside_the_window_a_carry_past_its_leeway_still_goes_first(tmp_path):
-    """B494: at 30 % weekly the leeway is spent, but inside the window the carried item is held
-    to the ordinary stops, so it keeps its place at the front of the queue."""
+def test_B494_inside_the_window_a_carry_at_any_seven_day_reading_still_goes_first(tmp_path):
+    """B494: at 100 % seven-day usage the carried item is held only to the session stop, so
+    inside the window it keeps its place at the front of the queue."""
     config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.30, session=0.05, carry=816)
+    ledger = usage_ledger(weekly=1.0, session=0.05, carry=816)
 
     result = run_plan(config, ledger, cands(810, 816), now=MON_INSIDE)
 
@@ -602,9 +584,9 @@ def test_B494_inside_the_window_a_carry_past_its_leeway_still_goes_first(tmp_pat
 
 @pytest.mark.parametrize("forced", [False, True], ids=["queued", "forced"])
 @pytest.mark.parametrize("now", [WED, MON_INSIDE], ids=["outside", "inside"])
-@pytest.mark.parametrize("weekly", [0.05, 0.30, 0.95])
+@pytest.mark.parametrize("session", [0.05, 0.72])
 def test_B494_the_plan_starts_the_carry_only_when_the_governor_admits_it(
-    tmp_path, now, weekly, forced
+    tmp_path, now, session, forced
 ):
     """B494: the plan and the governor read one rule for the carried item, so the plan starts
     it exactly when its first call would be admitted, forced to the front or not (D81)."""
@@ -612,7 +594,7 @@ def test_B494_the_plan_starts_the_carry_only_when_the_governor_admits_it(
     from harness.governor import Governor
 
     config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=weekly, session=0.05, carry=816)
+    ledger = usage_ledger(weekly=0.95, session=session, carry=816)
     candidates = [
         Candidate(issue=816, created_at="2026-09-01T10:00:00Z", forced=forced),
         Candidate(issue=823, created_at="2026-09-01T10:01:00Z"),
@@ -644,17 +626,25 @@ def suggested_plan(tmp_path, candidates, refused):
                 suggested_refused=refused)
 
 
-def test_B494_a_forced_carry_past_its_leeway_waits_with_the_leeway_as_its_reason(tmp_path):
-    """B494: outside a weekly window a forced carry is still judged as the carry, so once its
-    leeway is spent the plan skips it and names the leeway."""
+def test_B494_a_forced_carry_is_never_held_by_a_leeway(tmp_path):
+    """B494 (D89): there is no carry leeway. Outside a weekly window a forced carry at 100 %
+    seven-day usage starts, and neither the stop nor the governor takes a carry argument."""
+    import inspect
+
+    from harness.dispatcher import usage_stop
+    from harness.governor import Governor
+
     config = d3_config(tmp_path)
-    ledger = usage_ledger(weekly=0.30, session=0.05, carry=816)
+    ledger = usage_ledger(weekly=1.0, session=0.05, carry=816)
     candidates = [Candidate(issue=816, created_at="2026-09-01T10:00:00Z", forced=True)]
 
     result = run_plan(config, ledger, candidates, now=WED)
 
-    assert result.start == ()
-    assert result.skipped == {"816": "carry leeway 10% reached"}
+    assert result.start == (816,)
+    assert result.skipped == {}
+    assert "leeway" not in result.to_json()
+    assert list(inspect.signature(usage_stop).parameters) == ["ledger", "config", "now"]
+    assert list(inspect.signature(Governor.usage_stop_reason).parameters) == ["self"]
 
 
 def test_B495_a_suggested_candidate_waits_with_the_refusal_as_its_reason(tmp_path):
@@ -767,15 +757,15 @@ def test_B210_an_empty_window_is_always_open(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_B211_the_reason_is_the_slot_count_with_the_utilization_appended(tmp_path):
-    """B211: inside the window with usage under both thresholds the reason is the slot count
-    with "; weekly 49%, session 7%" appended — percentages as integers."""
+    """B211: inside the window with usage under the session threshold the reason is the slot
+    count with "; session 7%" appended — an integer percentage, and no seven-day figure."""
     config = d3_config(tmp_path)
 
     result = run_plan(config, usage_ledger(weekly=0.49, session=0.07), cands(816),
                       now=MON_INSIDE)
 
     assert result.start == (816,)
-    assert result.reason == "1 of max 1 slots; weekly 49%, session 7%"
+    assert result.reason == "1 of max 1 slots; session 7%"
 
 
 def test_B211_the_suffix_reports_the_latest_observation(tmp_path):
@@ -785,7 +775,8 @@ def test_B211_the_suffix_reports_the_latest_observation(tmp_path):
     result = run_plan(config, usage_ledger(weekly=0.85, session=0.66), cands(816),
                       now=MON_INSIDE)
 
-    assert result.reason.endswith("; weekly 85%, session 66%")
+    assert result.reason.endswith("; session 66%")
+    assert "85" not in result.reason
 
 
 def test_B211_without_the_signal_the_reason_is_the_bare_slot_count(tmp_path):
@@ -814,7 +805,7 @@ def test_B211_inside_the_window_the_selection_is_unchanged(tmp_path):
 
     assert result.start == (816, 823)
     assert result.skipped == {"819": "depends_on 816 not merged", "830": "slots full"}
-    assert result.reason.endswith("; weekly 49%, session 7%")
+    assert result.reason.endswith("slots; session 7%")
 
 
 # ---------------------------------------------------------------------------
@@ -851,11 +842,11 @@ def test_B420_the_dispatcher_holds_no_dollar_state(tmp_path):
     for token in ("usd", "reserve", "$"):
         assert token not in source, token
 
-    # Order: outside the window a weekly stop is still the reason, because the usage stop is
+    # Order: outside the window a session stop is still the reason, because the usage stop is
     # checked first.
     config = d3_config(tmp_path)
-    result = run_plan(config, usage_ledger(weekly=0.95), cands(816), now=WED)
-    assert result.reason == "weekly usage 95% >= 90%"
+    result = run_plan(config, usage_ledger(session=0.72), cands(816), now=WED)
+    assert result.reason == "session usage 72% >= 70%"
 
 
 def test_B211_planning_still_mutates_nothing(tmp_path):

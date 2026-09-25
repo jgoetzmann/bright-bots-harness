@@ -19,9 +19,9 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 | `deliver` | Opens the pull request upstream, with the gate evidence in its body | A PR on the product repository from `jgoetzmann-bot:harness/…` |
 | Gate 2 | A person reviews and merges upstream. The harness never merges anything | The PR on the product repository |
 
-Between the gates, work is bounded by two subscription-usage stops, a run window, per-stage turn
-ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation while
-two of its delivery pull requests are open upstream.
+Between the gates, work is bounded by a subscription session-usage stop, a run window, per-stage
+turn ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation
+while two of its delivery pull requests are open upstream.
 
 ## What it will and will not do
 
@@ -88,7 +88,7 @@ level 0 nothing. A listed commenter whose level is too low gets a reply naming t
 needs. To add somebody, commit the line that `harness trust line` prints.
 
 Append `--force` to start something now instead of at the next run window. It is for level 3
-only and lifts only the calendar: halts, usage stops, the turn caps and both gates still apply.
+only and lifts only the calendar: halts, the usage stop, the turn caps and both gates still apply.
 
 A command is acted on once; editing the comment does not re-trigger it. Comments on this
 repository wake `feedback.yml` within minutes. The product repository sends the harness no
@@ -107,13 +107,13 @@ issues `harness-ok`, the pool triage draws from when nothing anybody asked for i
 makes a good request.
 
 The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 11:00
-to 19:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
-`harness run --item N` and `--force` start work outside it; neither bypasses the usage stops.
+to 16:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
+`harness run --item N` and `--force` start work outside it; neither bypasses the usage stop.
 `discover.yml` is not window-gated.
 
 To lend it time you are not using, `/harness block <n>` (level 3) suspends the run window for the
 next `n` five-hour subscription sessions, at most six. It expires by itself, `/harness block 0`
-cancels it, and it lifts the calendar only: both usage stops, both kill switches and the two human
+cancels it, and it lifts the calendar only: the usage stop, both kill switches and the two human
 gates still apply.
 
 ## What is in here
@@ -121,7 +121,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B519 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B522 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

@@ -240,13 +240,9 @@ def audit(ctx: Context, *, lens: str, actor: str = "") -> int:
 
     # Checked before the clone (B295). `run_model` checks it again, but by then a fresh clone of
     # the product repository has been made for a call that is about to be refused.
-    from harness import priority
-
-    refused = priority.admit(
-        "audit", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
-    )
-    if refused:
-        raise BudgetExhausted(refused)
+    stop = ctx.governor.usage_stop_reason()
+    if stop is not None:
+        raise BudgetExhausted(stop)
 
     lease = ctx.clones.acquire(_READER, run_id="audit", read_only=True)
     stopped = ""

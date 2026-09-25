@@ -256,8 +256,8 @@ def _render_queue(ctx: Context, queued: Sequence[Any]) -> str:
 
 def _triage_product_repo(ctx: Context, lens: str | None, ignore_allowlist: bool) -> list[int]:
     # Looking at the product repository for work is suggesting, and a suggestion runs only when
-    # nothing anybody asked for is outstanding and the week has headroom left (B257). Checked
-    # before the GitHub reads as well as before the model call, since the refusal is the same.
+    # nothing anybody asked for is outstanding (B257). Checked before the GitHub reads as well
+    # as before the model call, since the refusal is the same.
     refused = priority.admit(
         "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
     )

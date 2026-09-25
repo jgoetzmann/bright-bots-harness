@@ -51,9 +51,7 @@ MAX_SUBISSUES=8
 SELF_REPO=jgoetzmann/bright-bots-harness
 TRACKING_ISSUE=
 STORE_BACKEND=sqlite
-WEEKLY_USAGE_STOP_PCT=90
 SESSION_USAGE_STOP_PCT=70
-OVERRUN_PCT=10
 RUN_WINDOW_START=
 RUN_WINDOW_END=
 MODEL=opus
@@ -62,8 +60,6 @@ INBOX_ISSUE=0
 SUGGEST_MAX_PER_RUN=5
 COMMENT_UPSTREAM=true
 ASK_MAX_PER_DAY=20
-SUGGEST_MIN_HEADROOM_PCT=50
-AUDIT_MIN_HEADROOM_PCT=75
 MAX_SELF_AUDIT_CYCLES=3
 HARNESS_GITHUB_TOKEN=
 ANTHROPIC_API_KEY=
@@ -371,8 +367,9 @@ def test_B68_status_json_emits_valid_json_with_queue_and_usage(tmp_path, monkeyp
     assert "queue" in payload
     assert "budget" not in payload
     assert payload["queue"]["proposed"] == 1
-    for key in ("weekly_pct", "session_pct", "rate_limited_until"):
+    for key in ("session_pct", "rate_limited_until"):
         assert key in payload["usage"]
+    assert "weekly_pct" not in payload["usage"]
 
 
 # --------------------------------------------------------------------------
@@ -1391,18 +1388,16 @@ def test_B65_d2_decompose_of_an_unreachable_issue_exits_1_without_a_model_call(
 # window empty, where "both empty = always open".
 # --------------------------------------------------------------------------
 
-# The five new keys, with their .env.example values. ENV_BODY
+# The D3 keys still live, with their .env.example values. ENV_BODY
 # carries them already; this is the documented list the fixtures are built from.
 D3_ENV_LINES = """\
-WEEKLY_USAGE_STOP_PCT=90
 SESSION_USAGE_STOP_PCT=70
-OVERRUN_PCT=10
 RUN_WINDOW_START=mon 08:00
 RUN_WINDOW_END=tue 20:00
 """
 D3_BRANCH = "harness/fix-816-bundle-size-check-misreports-esm"
 D3_BASE_SHA = "0123456789abcdef0123456789abcdef01234567"
-D3_STOP_REASON = "weekly usage 91% >= 90%"
+D3_STOP_REASON = "session usage 72% >= 70%"
 HARNESS_EMAIL = "harness@brightboost-harness"
 
 
@@ -1728,9 +1723,7 @@ def test_B214_budget_exhausted_hands_the_item_back_to_approved_with_a_handoff_fi
 # --------------------------------------------------------------------------
 
 D3_DOCTOR_KEYS = (
-    "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
-    "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
 )
@@ -1738,8 +1731,8 @@ D3_DOCTOR_KEYS = (
 
 def test_A30_doctor_names_every_delivery_3_config_key(tmp_path, monkeypatch, capsys):
     """A30: OPERATIONS sends the operator to `harness doctor` to
-    confirm exactly these five knobs after a reviewed change, so doctor prints each with the
-    value it loaded - in the text report and in `--json` alike."""
+    confirm exactly these knobs after a reviewed change, so doctor prints each with the
+    value it loaded - in the text report and in `--json` alike. The keys D89 retired are gone."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(tmp_path, RUN_WINDOW_START="mon 08:00", RUN_WINDOW_END="tue 20:00")
     assert cli.main(["init"]) == 0
@@ -1757,9 +1750,8 @@ def test_A30_doctor_names_every_delivery_3_config_key(tmp_path, monkeypatch, cap
 
     payload = json.loads(capsys.readouterr().out)
     keys = payload["config_keys"]
-    assert keys["WEEKLY_USAGE_STOP_PCT"] == "90.0"
     assert keys["SESSION_USAGE_STOP_PCT"] == "70.0"
-    assert keys["OVERRUN_PCT"] == "10.0"
+    assert "WEEKLY_USAGE_STOP_PCT" not in keys and "OVERRUN_PCT" not in keys
     assert keys["RUN_WINDOW_START"] == "mon 08:00"
     assert keys["RUN_WINDOW_END"] == "tue 20:00"
 
@@ -2046,13 +2038,14 @@ def add_approved_item(tmp_path: Path, ref: str, *, via: str = "requested") -> in
     return item_id
 
 
-def observe_weekly(tmp_path: Path, weekly: float, at: datetime) -> None:
+def observe_usage(tmp_path: Path, at: datetime, *, session: float, weekly: float = 0.05) -> None:
     """Record one subscription reading in the ledger file, taken at `at`."""
     stamp = "%Y-%m-%dT%H:%M:%SZ"
     path = tmp_path / "state" / "ledger.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
+    session_reset = (at + timedelta(hours=4)).strftime(stamp)
     payload["window"]["usage"] = {
-        "five_hour": {"utilization": 0.05, "resets_at": (at + timedelta(hours=4)).strftime(stamp)},
+        "five_hour": {"utilization": session, "resets_at": session_reset},
         "seven_day": {"utilization": weekly, "resets_at": (at + timedelta(days=5)).strftime(stamp)},
         "status": "allowed",
         "observed_at": at.strftime(stamp),
@@ -2083,11 +2076,11 @@ def test_B496_run_skips_refused_suggested_work_and_implements_the_next_item(
 def test_B496_run_at_a_usage_stop_starts_nothing_and_carries_nothing(
     tmp_path, monkeypatch, capsys
 ):
-    """B496: past the weekly stop the first item is refused before its clone, with nothing to
+    """B496: past the session stop the first item is refused before its clone, with nothing to
     hand off, and a usage stop refuses every item, so the loop ends there."""
     first = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
     add_approved_item(tmp_path, "issue:817")
-    observe_weekly(tmp_path, 0.95, INSIDE_THE_WINDOW)
+    observe_usage(tmp_path, INSIDE_THE_WINDOW, session=0.72)
     ran: list = []
     record_stages(monkeypatch, ran)
     handoffs: list = []
@@ -2101,20 +2094,20 @@ def test_B496_run_at_a_usage_stop_starts_nothing_and_carries_nothing(
     assert rc == 0, captured
     assert ran == [] and handoffs == [], (ran, handoffs)
     result = json.loads(captured.out)
-    assert result["waiting"] == {str(first): "weekly usage 95% >= 90%"}
+    assert result["waiting"] == {str(first): "session usage 72% >= 70%"}
     assert result["handed_off"] is None
 
 
-def test_B496_run_outside_a_weekly_window_leaves_a_carry_past_its_leeway_waiting(
+def test_B496_run_outside_a_weekly_window_leaves_a_carry_past_the_session_stop_waiting(
     tmp_path, monkeypatch, capsys
 ):
-    """B496: outside a weekly window only the carried item may start, on the leeway. With the
-    leeway spent it waits, still carried, instead of being cloned and handed back (D81)."""
+    """B496: outside a weekly window only the carried item may start. Past the session stop it
+    waits, still carried, instead of being cloned and handed back; no leeway exists (D89)."""
     item_id = windowed_repo(tmp_path, monkeypatch, OUTSIDE_THE_WINDOW)
     set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH)
     write_carry_ledger(tmp_path, carry_issue=item_id)
     align_ledger_window(tmp_path, OUTSIDE_THE_WINDOW)
-    observe_weekly(tmp_path, 0.30, OUTSIDE_THE_WINDOW)
+    observe_usage(tmp_path, OUTSIDE_THE_WINDOW, session=0.72, weekly=1.0)
     ran: list = []
     record_stages(monkeypatch, ran)
     handoffs: list = []
@@ -2127,7 +2120,8 @@ def test_B496_run_outside_a_weekly_window_leaves_a_carry_past_its_leeway_waiting
     captured = capsys.readouterr()
     assert rc == 0, captured
     assert ran == [] and handoffs == [], (ran, handoffs)
-    assert f"item {item_id} waits: carry leeway 10% reached" in captured.out, captured.out
+    assert f"item {item_id} waits: session usage 72% >= 70%" in captured.out, captured.out
+    assert "leeway" not in captured.out
     ledger = json.loads((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
     assert ledger["window"]["carry"]["issue"] == item_id
 
@@ -2480,7 +2474,7 @@ USAGE_SAMPLE = {
 
 
 def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monkeypatch, capsys):
-    """B221: the two D3 stops are computed from these numbers, so the ledger must show them.
+    """B221: the session stop is computed from these numbers, so the ledger must show them.
 
     The clock is frozen between USAGE_SAMPLE's observation and its first reset. Unfrozen, this
     test read the host's clock, and B406 marks a reading whose window has reset since -- which
@@ -2499,11 +2493,12 @@ def test_b221_ledger_prints_the_observed_usage_and_the_room_left(tmp_path, monke
 
     out = capsys.readouterr().out
     assert "49.0%" in out and "stop at 70%" in out
-    assert "58.0%" in out and "stop at 90%" in out
     # One decimal, not zero: with 0.4 points left ":.0f" printed "0 to go", which reads as
     # stopped when it is not.
-    assert "21.0 to go" in out and "32.0 to go" in out
-    assert "2026-09-08T20:00:00Z" in out
+    assert "21.0 to go" in out
+    assert "2026-09-04T11:00:00Z" in out
+    # The account has no weekly limit, so the seven-day reading gets no row (D89).
+    assert "58.0%" not in out and "(7d)" not in out and "2026-09-08T20:00:00Z" not in out
 
 
 def test_b221_ledger_says_so_plainly_when_usage_was_never_observed(tmp_path, monkeypatch, capsys):
@@ -2569,10 +2564,10 @@ def test_b221_a_fraction_of_a_point_left_does_not_read_as_none(tmp_path, monkeyp
 def test_B417_doctor_warns_about_a_retired_config_key_and_still_exits_zero(
     tmp_path, monkeypatch, capsys
 ):
-    """B417: a key D74 removed is a stale line in the operator's own file, not a fault. It is a
-    warning, because a problem exits 3 and that exit code gates the spending workflows."""
+    """B417: a key D74 or D89 removed is a stale line in the operator's own file, not a fault.
+    It is a warning, because a problem exits 3 and that exit code gates the spending workflows."""
     monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path, WEEKLY_CAP_USD="400.00")
+    write_d2_repo(tmp_path, WEEKLY_CAP_USD="400.00", WEEKLY_USAGE_STOP_PCT="90")
     (tmp_path / ".harness").mkdir(exist_ok=True)
     (tmp_path / ".harness" / "config.json").write_text(
         json.dumps({"RESERVE_PCT": 10}) + "\n", encoding="utf-8", newline="\n"
@@ -2586,6 +2581,7 @@ def test_B417_doctor_warns_about_a_retired_config_key_and_still_exits_zero(
     payload = json.loads(capsys.readouterr().out)
     warned = " ".join(payload["warnings"])
     assert "WEEKLY_CAP_USD" in warned and ".env" in warned
+    assert "WEEKLY_USAGE_STOP_PCT" in warned
     assert "RESERVE_PCT" in warned and ".harness/config.json" in warned
     assert not any("WEEKLY_CAP_USD" in p or "RESERVE_PCT" in p for p in payload["problems"])
 
@@ -2674,7 +2670,7 @@ def test_B430_rebuild_replays_the_history_without_discarding_the_window(
     payload = json.loads(path.read_text(encoding="utf-8"))
     period_start = payload["window"]["period_start"]
     payload["window"]["carry"] = {
-        "issue": 7, "since": iso_now(-120), "reason": "weekly usage 91% >= 90%"
+        "issue": 7, "since": iso_now(-120), "reason": "session usage 72% >= 70%"
     }
     payload["cursors"]["seen_comment_ids"] = ["IC_kept"]
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")

@@ -465,7 +465,7 @@ ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # implement fire inside the daily 11:00 -> 19:00 UTC run window (D72, widened by D80).
 FROZEN_CRONS = {
     "discover.yml": ["7 11,13 * * *"],
-    "implement.yml": ["23 11-18 * * *"],
+    "implement.yml": ["23 11-15 * * *"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
     # Offset from feedback's in both fields, so the watchdog never fires with what it watches
@@ -613,11 +613,10 @@ D2_CONFIG_JSON_KEYS = (
     "UPSTREAM_REPO",
     "TRUST_FILE",
 )
-# The five usage-governance knobs, kept apart so `D3_CONFIG_JSON_KEYS` below is a real union.
+# The usage-governance knobs, the session stop and the window, kept apart so
+# `D3_CONFIG_JSON_KEYS` below is a real union (D89).
 D3_NEW_CONFIG_JSON_KEYS = (
-    "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
-    "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
 )
@@ -648,9 +647,7 @@ D2_ENV_KEYS: dict[str, str] = {
     "SELF_REPO": "jgoetzmann/bright-bots-harness",
     "TRACKING_ISSUE": "",
     "STORE_BACKEND": "sqlite",
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "",
     "RUN_WINDOW_END": "",
 }
@@ -1732,7 +1729,7 @@ def test_d2_state_ledger_ships_as_an_empty_window_starting_2026_09_07():
     assert isinstance(payload["cursors"], dict)
 
 
-def test_b112_harness_config_json_carries_exactly_the_fourteen_knob_keys():
+def test_b112_harness_config_json_carries_exactly_the_committed_knob_keys():
     """B112: .harness/config.json's keys are exactly the operational knobs in `CONFIG_JSON_KEYS`
     above, and nothing that alters what the harness concludes."""
     path = REPO_ROOT / ".harness" / "config.json"
@@ -2193,10 +2190,10 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 # The implement schedule and the knob set.
 # ======================================================================================
 
-# implement.yml runs hourly inside the daily 11:00 → 19:00 UTC window, and discover opens the
-# session at 11:07 with a second attempt at 13:07 (D72, widened by D80). feedback and heartbeat
-# keep their own schedules.
-D72_IMPLEMENT_CRONS = ["23 11-18 * * *"]
+# implement.yml runs hourly inside the daily 11:00 → 16:00 UTC window, the one five-hour session
+# discover opens at 11:07, with a second attempt at 13:07 (D89). feedback and heartbeat keep
+# their own schedules.
+D72_IMPLEMENT_CRONS = ["23 11-15 * * *"]
 D72_UNCHANGED_CRONS = {
     "feedback.yml": "41 */3 * * 1-5",
     "heartbeat.yml": "5 9 * * 1",
@@ -2204,11 +2201,23 @@ D72_UNCHANGED_CRONS = {
 
 
 def test_b215_implement_yml_carries_exactly_the_d72_crons():
-    """B215: implement.yml is scheduled as eight hourly passes, 11:23 to 18:23 UTC every day,
-    and nothing else; B209's run window and carry loop run on that schedule (D72, D80)."""
+    """B215: implement.yml is scheduled as five hourly passes, 11:23 to 15:23 UTC every day,
+    and nothing else; B209's run window and carry loop run on that schedule (D89)."""
     crons = _cron_values(_d2_workflow("implement.yml"))
     assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 
+
+def test_B522_the_committed_window_starts_work_only_before_dawn_pacific():
+    """B522 (D89): the account has a five-hour session limit and no weekly one, so Actions
+    mode starts work only from 11:00 to 16:00 UTC, which is 03:00 to 08:00 PST, and the last
+    implement pass starts inside it."""
+    committed = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
+    assert (committed["RUN_WINDOW_START"], committed["RUN_WINDOW_END"]) == (
+        "daily 11:00", "daily 16:00"
+    )
+    assert "WEEKLY_USAGE_STOP_PCT" not in committed and "OVERRUN_PCT" not in committed
+    assert _cron_values(_d2_workflow("implement.yml")) == ["23 11-15 * * *"]
+    assert _cron_values(_d2_workflow("discover.yml")) == ["7 11,13 * * *"]
 
 def test_b215_the_implement_crons_stay_inside_the_run_window():
     """Every scheduled implement run fires every day, and B412 checks each firing against the
@@ -2268,9 +2277,9 @@ D3_CONFIG_JSON_KEYS = tuple(
 )
 
 
-def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
-    """B112: the two usage stops, the carry leeway, the two run-window bounds and `INBOX_ISSUE`
-    join the first seven knobs, nothing else does, and each knob has the right type."""
+def test_b112_d3_harness_config_json_carries_the_usage_and_window_knobs():
+    """B112: the session usage stop, the two run-window bounds and `INBOX_ISSUE` join the first
+    seven knobs, nothing else does, and each knob has the right type."""
     path = REPO_ROOT / ".harness" / "config.json"
     assert path.is_file(), ".harness/config.json is required"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2278,8 +2287,7 @@ def test_b112_d3_harness_config_json_carries_the_five_new_knobs():
     assert set(payload) == set(D3_CONFIG_JSON_KEYS), (
         f"keys differ from the D3 knob set: {sorted(payload)}"
     )
-    for key in ("WEEKLY_USAGE_STOP_PCT", "SESSION_USAGE_STOP_PCT", "OVERRUN_PCT"):
-        assert isinstance(payload[key], (int, float)), f"{key} must be a number"
+    assert isinstance(payload["SESSION_USAGE_STOP_PCT"], (int, float)), "must be a number"
     for key in ("RUN_WINDOW_START", "RUN_WINDOW_END"):
         assert isinstance(payload[key], str), f"{key} must be a string"
 
@@ -2304,9 +2312,7 @@ MUST_STOP_REASON_PREFIXES = frozenset({
     # The commanded halt (`/harness halt`), classified apart so a `case` matching bare `halted`
     # exactly still stops on it.
     "halted by @",
-    "weekly usage ",
     "session usage ",
-    "carry leeway ",
 })
 # The one stop reason that must not stop discovery, which the run window does not gate (D32).
 MAY_PROCEED_REASON_PREFIXES = frozenset({
@@ -2892,8 +2898,8 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
 
     assert "ANTHROPIC_API_KEY=" not in env_example
     keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
-    assert len(keys) == 43, f".env.example carries {len(keys)} keys: {keys}"
-    assert len(shipped) == 15, f".harness/config.json carries {len(shipped)} keys"
+    assert len(keys) == 39, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS
 

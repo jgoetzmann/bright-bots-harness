@@ -41,30 +41,14 @@ class Plan:
         return json.dumps(payload, indent=2, sort_keys=False)
 
 
-def usage_stop(
-    ledger: Ledger, config: Config, carry: bool = False, now: datetime | None = None
-) -> str | None:
+def usage_stop(ledger: Ledger, config: Config, now: datetime | None = None) -> str | None:
     """The usage stop for this ledger, or ``None`` when nothing observed stops work (B206).
 
     The one rule: ``Governor.usage_stop_reason`` delegates here, so admission and the plan
-    cannot disagree. ``carry=True`` replaces the weekly stop with ``OVERRUN_PCT`` only while a
-    weekly window is closed and no block stands; otherwise the carry obeys the ordinary stops
-    (D81). ``now`` expires a reading whose window has reset; without it the leeway applies.
+    cannot disagree. The account has a five-hour session limit and no weekly one, so the
+    session reading is the only stop (D89). ``now`` expires a reading whose window has reset.
     """
-    weekly = ledger.weekly_utilization(now)
     session = ledger.session_utilization(now)
-    if carry and now is not None:
-        window_open = in_run_window(config, now) or ledger.block_open(now)
-        carry = not window_open and not is_daily_window(config)
-    if weekly is not None:
-        if carry:
-            leeway = float(config.overrun_pct)
-            if weekly * 100.0 >= leeway:
-                return f"carry leeway {leeway:.0f}% reached"
-        else:
-            limit = float(config.weekly_usage_stop_pct)
-            if weekly * 100.0 >= limit:
-                return f"weekly usage {weekly * 100:.0f}% >= {limit:.0f}%"
     if session is not None:
         limit = float(config.session_usage_stop_pct)
         if session * 100.0 >= limit:
@@ -73,15 +57,14 @@ def usage_stop(
 
 
 def _usage_suffix(ledger: Ledger) -> str:
-    """``"; weekly 49%, session 7%"`` once both utilizations are known, else nothing (B211).
+    """``"; session 7%"`` once the session utilization is known, else nothing (B211).
 
-    The last readings as observed, without the expiry the stops above apply.
+    The last reading as observed, without the expiry the stop above applies.
     """
-    weekly = ledger.weekly_utilization()
     session = ledger.session_utilization()
-    if weekly is None or session is None:
+    if session is None:
         return ""
-    return f"; weekly {weekly * 100:.0f}%, session {session * 100:.0f}%"
+    return f"; session {session * 100:.0f}%"
 
 
 def rank(cls: str) -> int:
@@ -108,7 +91,7 @@ def plan(
     suggested_refused: str | None = None,
     capped: Mapping[int, str] | None = None,
 ) -> Plan:
-    """Select in order: rate limit, halted, commanded halt, carry, usage stop, run window,
+    """Select in order: rate limit, halted, commanded halt, usage stop, carry, run window,
     then candidates.
 
     ``suggested_refused`` is why ``priority.admit`` would refuse suggested work now, and each
@@ -129,26 +112,19 @@ def plan(
         why = f": {commanded['reason']}" if commanded.get("reason") else ""
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
-    # An item carried across a weekly reset resumes before anything else. It may run outside a
-    # weekly run window, on the overrun leeway instead of the weekly stop, but not a daily one: a
-    # daily window is the one subscription session a day, and a carry resuming outside it would
-    # run in the operator's own daytime session (B413).
+    # A carried item resumes before anything else. It may run outside a weekly run window, but
+    # not a daily one: a daily window is the one subscription session a day, and a carry
+    # resuming outside it would run in the operator's own daytime session (B413).
     # A block is the operator lending the harness sessions they do not need, so it opens the
     # window and nothing else (D77). Everything downstream inherits it: the carry test, the
     # early return below and the per-candidate skip all read `window_open`. It sits after the
     # usage stop deliberately, so a block can never outlive one.
     window_open = in_run_window(config, now) or ledger.block_open(now)
     carry_id = ledger.carry_issue()
-    carry_stop = usage_stop(ledger, config, carry=True, now=now) if carry_id is not None else None
-    carry_ok = (
-        carry_id is not None
-        and (window_open or not is_daily_window(config))
-        and carry_stop is None
-    )
-
     stopped = usage_stop(ledger, config, now=now)
-    if stopped is not None and not carry_ok:
+    if stopped is not None:
         return Plan(start=(), reason=stopped, skipped={})
+    carry_ok = carry_id is not None and (window_open or not is_daily_window(config))
 
     max_slots = int(config.max_concurrent_items)
     if config.store_backend != "github":
@@ -177,13 +153,8 @@ def plan(
             start.append(int(carry_id))
     for candidate in ordered:
         key = str(candidate.issue)
-        if carry_id is not None and int(candidate.issue) == carry_id:
-            if carry_ok:
-                continue
-            if carry_stop is not None:
-                # Forced or not, the governor judges this item as the carry (B494).
-                skipped[key] = carry_stop
-                continue
+        if carry_id is not None and int(candidate.issue) == carry_id and carry_ok:
+            continue
         if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
             continue

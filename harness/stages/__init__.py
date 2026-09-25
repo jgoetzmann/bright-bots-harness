@@ -207,8 +207,8 @@ def run_model(
 
     Every model call the harness makes passes through here, so admission lives here: priority
     says whether this class of call should run at all right now, then the governor applies the
-    usage stops and the stored rate limit. Priority never overrules the governor: a class-0
-    `ask` past a usage stop does not run.
+    session usage stop and the stored rate limit. Priority never overrules the governor: a
+    class-0 `ask` past the usage stop does not run.
     """
     # Both switches, via the context: the file and the commanded halt. Every stage checks at its
     # own entry too, so a halted harness does not clone a repository before finding out.
@@ -244,7 +244,7 @@ def run_model(
     result = ctx.runner.run(request)
     transcript_path = ctx.write_transcript(stage, result.transcript)
     # Every call carries the rate-limit windows back from the inference headers. The governor
-    # stores them; the dispatcher and the usage stops read them from the ledger.
+    # stores them; the dispatcher and the usage stop read them from the ledger.
     usage = stamp_usage(getattr(result, "usage", None), ctx.clock.now())
 
     limited = runner_base.is_rate_limited(result)

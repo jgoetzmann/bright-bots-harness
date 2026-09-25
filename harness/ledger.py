@@ -261,11 +261,6 @@ class Ledger:
             return None
         return _fraction(window.get("utilization"))
 
-    def weekly_utilization(self, now: datetime | str | None = None) -> float | None:
-        """The seven-day utilization as a fraction; ``None`` when it predates this window, or
-        (given ``now``) when that window has reset since it was observed (B399)."""
-        return self._utilization("seven_day", now)
-
     def session_utilization(self, now: datetime | str | None = None) -> float | None:
         """The five-hour utilization as a fraction; ``None`` when it predates this window, or
         (given ``now``) when that window has reset since it was observed (B399)."""
@@ -337,7 +332,7 @@ class Ledger:
 
         The opposite of the halt, and the same shape: a scheduling fact the operator states in a
         comment, stored where every runner fetches it. It lifts the calendar and nothing else —
-        the usage stops, both kill switches, the commanded halt, the trust gate and the two
+        the usage stop, both kill switches, the commanded halt, the trust gate and the two
         human gates all still apply.
 
         The end is measured **once**, here, from the session clock as it stands now. Re-measuring

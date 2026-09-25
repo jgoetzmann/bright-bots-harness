@@ -63,42 +63,43 @@ VERB_HELP: tuple[tuple[str, str], ...] = (
 
 
 def usage_headline(ledger: Any, config: Any, now: Any = None) -> list[str]:
-    """How much of the subscription allowance is left: the five-hour and seven-day windows.
+    """How much of the five-hour session allowance is left, the one limit the account has (D89).
 
-    The API reports both on the headers of every model call. The allowance is shared with
+    The API reports it on the headers of every model call. The allowance is shared with
     whatever else the same subscription is used for, so the headline says so.
 
     ``now`` drops a reading whose window has reset since, so a refusal that has lifted is not
     reported as "at or past the stop — nothing will start" (B399).
     """
     lines = ["**Allowance**"]
-    weekly = _utilization(ledger, "seven_day", now)
-    session = _utilization(ledger, "five_hour", now)
-    weekly_stop = float(getattr(config, "weekly_usage_stop_pct", 90.0))
-    session_stop = float(getattr(config, "session_usage_stop_pct", 70.0))
+    used = _utilization(ledger, "five_hour", now)
+    stop = float(getattr(config, "session_usage_stop_pct", 70.0))
 
-    if weekly is None and session is None:
+    if used is None:
         lines.append(
             "- **not measured yet** — the reading arrives with a real model call, and none has "
             "been made in this window."
         )
     else:
-        for label, used, stop in (
-            ("this week", weekly, weekly_stop),
-            ("this session", session, session_stop),
-        ):
-            if used is None:
-                continue
-            left = stop - used
-            if left <= 0:
-                room = f"**at or past** the {stop:.0f}% stop — nothing will start"
-            elif left < 1:
-                # `{:.0f}` of 0.4 is "0", and "0 points before the stop" reads as stopped while
-                # work continues. Below a point, say so rather than round to a claim.
-                room = f"**under a point** before the {stop:.0f}% stop"
-            else:
-                room = f"**{left:.0f} points** before the {stop:.0f}% stop"
-            lines.append(f"- {label}: **{used:.0f}% used**, {room}")
+        left = stop - used
+        if left <= 0:
+            room = f"**at or past** the {stop:.0f}% stop — nothing will start"
+        elif left < 1:
+            # `{:.0f}` of 0.4 is "0", and "0 points before the stop" reads as stopped while
+            # work continues. Below a point, say so rather than round to a claim.
+            room = f"**under a point** before the {stop:.0f}% stop"
+        else:
+            room = f"**{left:.0f} points** before the {stop:.0f}% stop"
+        lines.append(f"- this session: **{used:.0f}% used**, {room}")
+    # A seven-day window in the reading means the subscription has a weekly limit that no stop
+    # here reads (D89), so it is named where the operator looks.
+    weekly = _raw_utilization(getattr(ledger, "window", {}) or {}, "seven_day", now)
+    if weekly is not None:
+        lines.append(
+            f"- **a seven-day reading arrived** ({weekly:.0f}% used). No weekly stop applies "
+            "(D89); only the subscription's own refusal, recorded as a rate limit, enforces it"
+        )
+    if used is not None:
         lines.append(
             "- shared with whatever else this subscription is used for, so this moves when the "
             "harness is doing nothing"
@@ -106,17 +107,17 @@ def usage_headline(ledger: Any, config: Any, now: Any = None) -> list[str]:
     return lines
 
 
-#: The ledger accessor for each window. A window turnover moves `period_start` and leaves the
-#: last observation in place, and the accessors' staleness check is what stops last week's
-#: figure being reported as this week's, so these are used rather than `window["usage"]`.
-_LEDGER_ACCESSOR = {"seven_day": "weekly_utilization", "five_hour": "session_utilization"}
+#: The ledger accessor for each window read here. A window turnover moves `period_start` and
+#: leaves the last observation in place, and the accessor's staleness check is what stops an
+#: old figure being reported as the current one, so it is used rather than `window["usage"]`.
+_LEDGER_ACCESSOR = {"five_hour": "session_utilization"}
 
 
 def _utilization(ledger: Any, key: str, now: Any = None) -> float | None:
     """`key`'s utilization as a percentage, or None when it is unknown for this window.
 
     Unknown means never observed, not reported, or observed before the window rolled. A fresh
-    week still carrying Friday's 88% would otherwise read as "2 points before the stop".
+    session still carrying the last one's 78% would otherwise read as "2 points before the stop".
     """
     accessor = getattr(ledger, _LEDGER_ACCESSOR[key], None)
     if callable(accessor):
@@ -371,7 +372,7 @@ def signature(
         lines.append("")
         lines.append(
             "Add `--force` to run now instead of waiting for the next window; only the "
-            "operator may. Nothing bypasses the kill switch, the usage stops or the two gates."
+            "operator may. Nothing bypasses the kill switch, the usage stop or the two gates."
         )
         lines.append("")
         where_trust = (
@@ -600,7 +601,7 @@ def block_line(ledger: Any, now: Any = None) -> str:
     why = f" — {grant['reason']}" if grant.get("reason") else ""
     return (
         f"> **Run window suspended** by @{who}: {sessions} {word}, until **{until}**{why}. "
-        "The usage stops, both kill switches and the two human gates still apply. "
+        "The session usage stop, both kill switches and the two human gates still apply. "
         "`/harness block 0` cancels it."
     )
 

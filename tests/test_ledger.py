@@ -388,7 +388,7 @@ def test_B422_a_pre_d74_ledger_loads_and_is_saved_without_the_dollar_fields():
 
     assert ledger.schema == 1
     assert ledger.window.get("spent_usd") is None
-    assert ledger.weekly_utilization() == pytest.approx(1.0)
+    assert ledger.session_utilization() == pytest.approx(0.0)
     assert ledger.window["usage"]["status"] == "rejected"
     assert ledger.window["calls"] == 2
     assert ledger.carry_issue() is None
@@ -552,11 +552,10 @@ def usage(*, weekly: float = 0.49, session: float = 0.07,
 # ---------------------------------------------------------------------------
 
 def test_B204_observe_usage_stores_the_signal_on_the_window():
-    """B204: observe_usage(usage, now_iso) stores it under window.usage, and
-    weekly_utilization()/session_utilization() report the fractions unchanged."""
+    """B204: observe_usage(usage, now_iso) stores both windows under window.usage, and
+    session_utilization() reports the five-hour fraction unchanged."""
     ledger = fresh()
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
-    assert ledger.weekly_utilization() == pytest.approx(0.49)
     assert ledger.session_utilization() == pytest.approx(0.07)
     stored = ledger.window["usage"]
     assert stored["seven_day"]["utilization"] == pytest.approx(0.49)
@@ -570,16 +569,15 @@ def test_B204_a_second_observation_replaces_the_first():
     ledger = fresh()
     ledger.observe_usage(usage(weekly=0.10, session=0.02), NOW_ISO)
     ledger.observe_usage(usage(weekly=0.51, session=0.33), "2026-09-02T13:00:00Z")
-    assert ledger.weekly_utilization() == pytest.approx(0.51)
+    assert ledger.window["usage"]["seven_day"]["utilization"] == pytest.approx(0.51)
     assert ledger.session_utilization() == pytest.approx(0.33)
 
 
 def test_B204_a_never_observed_ledger_reports_none():
     """B204/B114: no decision may depend on the signal being present — with nothing observed
-    both readers return None rather than a guess, and the window carries no usage."""
+    the reader returns None rather than a guess, and the window carries no usage."""
     ledger = fresh()
     calls(ledger, n=3)
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
     assert ledger.window.get("usage") is None
 
@@ -589,16 +587,14 @@ def test_B204_observe_usage_of_none_is_a_no_op_not_a_crash():
     invent a utilization."""
     ledger = fresh()
     ledger.observe_usage(None, NOW_ISO)
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
 
 
 def test_B204_usage_observed_before_the_window_start_is_stale():
-    """B204: weekly_utilization/session_utilization are None when the observation predates the
-    current window's start — a stale reading is no reading."""
+    """B204: session_utilization is None when the observation predates the current window's
+    start — a stale reading is no reading."""
     ledger = Ledger.empty("2026-09-01T00:00:00Z")
     ledger.observe_usage(usage(weekly=0.49, session=0.07), "2026-08-30T00:00:00Z")
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
 
 
@@ -608,7 +604,7 @@ def test_B204_usage_survives_to_json_and_from_json():
     ledger = fresh()
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
     again = Ledger.from_json(ledger.to_json())
-    assert again.weekly_utilization() == pytest.approx(0.49)
+    assert again.window["usage"]["seven_day"]["utilization"] == pytest.approx(0.49)
     assert again.session_utilization() == pytest.approx(0.07)
     assert again.to_json() == ledger.to_json()
 
@@ -617,12 +613,12 @@ def test_B204_save_then_load_round_trips_the_usage_and_the_carry(state_dir: Path
     """B204/B115: save/load keeps both new window entries byte for byte."""
     ledger = fresh()
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
     path = state_dir / "ledger.json"
     save(ledger, path)
     loaded = load(path)
     assert loaded.to_json() == ledger.to_json()
-    assert loaded.weekly_utilization() == pytest.approx(0.49)
+    assert loaded.session_utilization() == pytest.approx(0.07)
     assert loaded.carry_issue() == 816
 
 
@@ -644,10 +640,10 @@ def test_B204_observing_usage_does_not_touch_calls_or_history():
 def test_B205_a_new_seven_day_reset_rolls_the_window_and_keeps_the_carry():
     """B205: when seven_day.resets_at differs from the one the window implies and now is past
     the previous reset, the window rolls to that previous reset — the call count zeroed, the
-    carried item kept so it can continue on the new week's leeway."""
+    carried item kept so it can continue in the new window."""
     ledger = Ledger.empty("2026-09-01T20:00:00Z")
     calls(ledger, n=2, ts="2026-09-02T00:00:00Z")
-    ledger.set_carry(816, "2026-09-08T19:00:00Z", "weekly usage 91% >= 90%")
+    ledger.set_carry(816, "2026-09-08T19:00:00Z", "session usage 72% >= 70%")
     ledger.observe_usage(usage(weekly=0.91, seven_day_resets=D3_SEVEN_DAY_RESET),
                          "2026-09-08T19:00:00Z")
     assert ledger.window["period_start"] == "2026-09-01T20:00:00Z"
@@ -659,7 +655,7 @@ def test_B205_a_new_seven_day_reset_rolls_the_window_and_keeps_the_carry():
     assert ledger.window["period_start"] == D3_SEVEN_DAY_RESET
     assert ledger.window["calls"] == 0
     assert ledger.carry_issue() == 816
-    assert ledger.weekly_utilization() == pytest.approx(0.02)
+    assert ledger.session_utilization() == pytest.approx(0.01)
 
 
 def test_B205_the_roll_keeps_the_history():
@@ -686,7 +682,7 @@ def test_B205_the_same_seven_day_reset_does_not_roll_the_window():
                          "2026-09-05T00:00:00Z")
     assert ledger.window["period_start"] == "2026-09-01T20:00:00Z"
     assert ledger.window["calls"] == 1
-    assert ledger.weekly_utilization() == pytest.approx(0.40)
+    assert ledger.window["usage"]["seven_day"]["utilization"] == pytest.approx(0.40)
 
 
 def test_B205_a_later_reset_before_the_previous_one_has_passed_does_not_roll():
@@ -723,7 +719,6 @@ def test_B205_usage_observed_before_the_rolled_window_start_is_stale():
     }))
 
     assert ledger.window["period_start"] == "2026-09-14T00:00:00Z"
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
 
 
@@ -736,10 +731,10 @@ def test_B205_set_carry_records_issue_since_and_reason():
     carry_issue() reads the issue number back."""
     ledger = fresh()
     assert ledger.carry_issue() is None
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
     assert ledger.carry_issue() == 816
     assert ledger.window["carry"] == {"issue": 816, "since": NOW_ISO,
-                                      "reason": "weekly usage 91% >= 90%"}
+                                      "reason": "session usage 72% >= 70%"}
 
 
 def test_B205_clear_carry_removes_it():
@@ -755,11 +750,11 @@ def test_B205_clear_carry_removes_it():
 def test_B205_set_carry_replaces_a_previous_carry():
     """One carried item at a time — the newest handoff wins."""
     ledger = fresh()
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
-    ledger.set_carry(823, "2026-09-02T13:00:00Z", "carry leeway 10% reached")
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
+    ledger.set_carry(823, "2026-09-02T13:00:00Z", "halted by @jgoetzmann")
     assert ledger.carry_issue() == 823
     assert ledger.window["carry"]["since"] == "2026-09-02T13:00:00Z"
-    assert ledger.window["carry"]["reason"] == "carry leeway 10% reached"
+    assert ledger.window["carry"]["reason"] == "halted by @jgoetzmann"
 
 
 def test_B205_clearing_a_carry_that_was_never_set_is_a_no_op():
@@ -773,10 +768,10 @@ def test_B205_carry_survives_to_json_and_from_json():
     """The carry is persisted — the next process knows which item to
     continue."""
     ledger = fresh()
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
     again = Ledger.from_json(ledger.to_json())
     assert again.carry_issue() == 816
-    assert again.window["carry"]["reason"] == "weekly usage 91% >= 90%"
+    assert again.window["carry"]["reason"] == "session usage 72% >= 70%"
     assert again.to_json() == ledger.to_json()
 
 
@@ -784,11 +779,11 @@ def test_B205_carry_is_independent_of_the_usage_observation():
     """Clearing the carry does not clear the usage, and observing
     usage does not clear the carry."""
     ledger = fresh()
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
     ledger.observe_usage(usage(weekly=0.91, session=0.30), NOW_ISO)
     assert ledger.carry_issue() == 816
     ledger.clear_carry()
-    assert ledger.weekly_utilization() == pytest.approx(0.91)
+    assert ledger.session_utilization() == pytest.approx(0.30)
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +798,6 @@ def test_B204_from_json_accepts_a_file_without_the_new_keys():
     assert ledger.window["calls"] == 2
     assert ledger.window.get("usage") is None
     assert ledger.window.get("carry") is None
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
     assert ledger.carry_issue() is None
     assert ledger.seen("IC_1") is True
@@ -814,8 +808,8 @@ def test_B204_a_delivery_2_ledger_can_then_observe_and_carry():
     usage and sets a carry on it without a migration step."""
     ledger = Ledger.from_json(D2_LEDGER_TEXT)
     ledger.observe_usage(usage(weekly=0.49, session=0.07), NOW_ISO)
-    ledger.set_carry(816, NOW_ISO, "weekly usage 91% >= 90%")
-    assert ledger.weekly_utilization() == pytest.approx(0.49)
+    ledger.set_carry(816, NOW_ISO, "session usage 72% >= 70%")
+    assert ledger.session_utilization() == pytest.approx(0.07)
     assert ledger.carry_issue() == 816
     assert Ledger.from_json(ledger.to_json()).carry_issue() == 816
 
@@ -824,7 +818,6 @@ def test_B204_load_of_a_missing_file_has_no_usage_and_no_carry(tmp_path: Path):
     """B117: the empty ledger a missing file yields reports no
     utilization and carries nothing."""
     ledger = load(tmp_path / "nope" / "ledger.json")
-    assert ledger.weekly_utilization() is None
     assert ledger.session_utilization() is None
     assert ledger.carry_issue() is None
 
@@ -865,7 +858,7 @@ def test_B204_from_json_normalises_a_hand_edited_usage_block():
     assert stored["five_hour"] == {"utilization": 0.3, "resets_at": D3_FIVE_HOUR_RESET}
     assert stored["status"] == "allowed"
     assert stored["observed_at"] == NOW_ISO
-    assert ledger.weekly_utilization() == pytest.approx(0.91)
+    assert ledger.session_utilization() == pytest.approx(0.3)
 
     written = json.loads(ledger.to_json())["window"]["usage"]
     assert written == stored

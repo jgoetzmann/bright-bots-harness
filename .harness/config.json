@@ -7,11 +7,9 @@
   "FORK_REPO": "jgoetzmann-bot/brightboost",
   "UPSTREAM_REPO": "Bright-Bots-Initiative/brightboost",
   "TRUST_FILE": ".harness/trust.txt",
-  "WEEKLY_USAGE_STOP_PCT": 90,
   "SESSION_USAGE_STOP_PCT": 80,
-  "OVERRUN_PCT": 10,
   "RUN_WINDOW_START": "daily 11:00",
-  "RUN_WINDOW_END": "daily 19:00",
+  "RUN_WINDOW_END": "daily 16:00",
   "CO_AUTHOR": "jgoetzmann <95732896+jgoetzmann@users.noreply.github.com>",
   "MAX_OPEN_DELIVERIES": 2
 }

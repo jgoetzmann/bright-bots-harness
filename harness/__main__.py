@@ -104,10 +104,8 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("SELF_REPO", "self_repo"),
     ("TRACKING_ISSUE", "tracking_issue"),
     ("STORE_BACKEND", "store_backend"),
-    # The two usage stops, the overrun allowance and the run window.
-    ("WEEKLY_USAGE_STOP_PCT", "weekly_usage_stop_pct"),
+    # The session usage stop and the run window.
     ("SESSION_USAGE_STOP_PCT", "session_usage_stop_pct"),
-    ("OVERRUN_PCT", "overrun_pct"),
     ("RUN_WINDOW_START", "run_window_start"),
     ("RUN_WINDOW_END", "run_window_end"),
     # What the model calls run as; a changed model or effort changes the work (B225).
@@ -118,8 +116,6 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("SUGGEST_MAX_PER_RUN", "suggest_max_per_run"),
     ("COMMENT_UPSTREAM", "comment_upstream"),
     ("ASK_MAX_PER_DAY", "ask_max_per_day"),
-    ("SUGGEST_MIN_HEADROOM_PCT", "suggest_min_headroom_pct"),
-    ("AUDIT_MIN_HEADROOM_PCT", "audit_min_headroom_pct"),
     # How many audit/fix cycles run before delivery; 0 is off (D70).
     ("MAX_SELF_AUDIT_CYCLES", "max_self_audit_cycles"),
     # Who every harness commit credits as co-author (D82).
@@ -738,7 +734,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         # exits 3, and that exit code gates the spending workflows (D74).
         for key, where in config_mod.retired_keys_seen():
             warnings.append(
-                f"retired config key ignored: {key} (in {where}) -- D74 removed it; delete it"
+                f"retired config key ignored: {key} (in {where}) -- D74 or D89 retired it; "
+                "delete it"
             )
 
     disk: dict[str, object] = {}
@@ -1191,7 +1188,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     now = ctx.clock.now()
     usage = {
-        "weekly_pct": _as_pct(ctx.ledger.weekly_utilization(now)),
         "session_pct": _as_pct(ctx.ledger.session_utilization(now)),
         "rate_limited_until": dict(ctx.ledger.window).get("rate_limited_until"),
     }
@@ -1398,7 +1394,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
         # Outside the run window only the carried item may start (B210). `--item` bypasses the
-        # window and nothing else: every stage still passes through the governor's usage stops.
+        # window and nothing else: every stage still passes through the governor's usage stop.
         # A block opens the window here exactly as it does in the plan, and lifts nothing else
         # (D77).
         now = listing_ctx.clock.now()
@@ -2029,9 +2025,6 @@ def _usage_report(ctx, config, now) -> str:
         if cap_line:
             lines.append(cap_line)
         lines.append(f"- suggested work: {blocked or 'admitted'}")
-    # Audits are gated on the allowance too, so a declined audit's reason shows here.
-    audit_blocked = priority.admit("audit", store=ctx.store, ledger=led, config=config, now=now)
-    lines.append(f"- audits: {audit_blocked or 'admitted'}")
     return "\n".join(lines)
 
 
@@ -2050,7 +2043,7 @@ def _forced(ctx, cmd, item_id: int | None) -> str:
     )
     return (
         f" — forced by @{cmd.actor}: it starts on the next sweep, even outside the run window. "
-        "Halts, usage stops and both human gates still apply."
+        "Halts, the session usage stop and both human gates still apply."
     )
 
 
@@ -2101,8 +2094,8 @@ _GO_DEAD_ENDS: dict[str, str] = {
 #: What a block still cannot do, said on every reply that grants one. It lifts the calendar and
 #: nothing else, and the surest way to be misread is to leave that implicit.
 _BLOCK_KEEPS = (
-    "Still in force: both usage stops, `.harness/HALT`, `/harness halt`, the trust gate and "
-    "both human gates. One item at a time, as always."
+    "Still in force: the session usage stop, `.harness/HALT`, `/harness halt`, the trust gate "
+    "and both human gates. One item at a time, as always."
 )
 
 
@@ -2639,16 +2632,6 @@ def cmd_ack(args: argparse.Namespace) -> int:
     # A halted harness does none of this. Both switches count: the committed file stops the
     # workflows, and the commanded halt stops the spending.
     stopped = _ack_halt_reason(config)
-    if not stopped and "audit" in verbs:
-        # The gate `stages/audit` applies at entry, so the acknowledgement never promises an
-        # audit the sweep will decline. Read-only and never raised.
-        try:
-            led = ledger_mod.load(ledger_path_for(config))
-            refused = priority.admit("audit", store=None, ledger=led, config=config)
-        except Exception:  # pragma: no cover - a diagnostic must not fail the diagnosis
-            refused = None
-        if refused:
-            stopped = f"**Not now** — {refused}"
     if stopped:
         return _say(react=True, comment=mark_machine_written(stopped))
 
@@ -2959,10 +2942,7 @@ def _usage_lines(led, config, now=None) -> list[str]:
             "   DEPEND on it. What bounds a call meanwhile is the run window, the turn caps,",
             "   both halts and the subscription's own refusal.)",
         ]
-    rows = [
-        ("session (5h) ", "five_hour", float(config.session_usage_stop_pct)),
-        ("weekly  (7d) ", "seven_day", float(config.weekly_usage_stop_pct)),
-    ]
+    rows = [("session (5h) ", "five_hour", float(config.session_usage_stop_pct))]
     # The allowance is shared with the rest of the account, so it moves while the harness sleeps.
     lines = ["subscription (shared with everything else this account does):"]
     for label, key, stop in rows:

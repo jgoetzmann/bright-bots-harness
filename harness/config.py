@@ -83,9 +83,7 @@ FIELD_KEYS: tuple[str, ...] = (
     "SELF_REPO",
     "TRACKING_ISSUE",
     "STORE_BACKEND",
-    "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
-    "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
     "MODEL",
@@ -95,8 +93,6 @@ FIELD_KEYS: tuple[str, ...] = (
     "SUGGEST_MAX_PER_RUN",
     "COMMENT_UPSTREAM",
     "ASK_MAX_PER_DAY",
-    "SUGGEST_MIN_HEADROOM_PCT",
-    "AUDIT_MIN_HEADROOM_PCT",
     # D70: the adversarial self-audit before delivery.
     "MAX_SELF_AUDIT_CYCLES",
     # D82: the person credited on every commit the harness makes.
@@ -121,25 +117,21 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "FORK_REPO",
     "UPSTREAM_REPO",
     "TRUST_FILE",
-    "WEEKLY_USAGE_STOP_PCT",
     "SESSION_USAGE_STOP_PCT",
-    "OVERRUN_PCT",
     "RUN_WINDOW_START",
     "RUN_WINDOW_END",
     "INBOX_ISSUE",
     "SUGGEST_MAX_PER_RUN",
     "COMMENT_UPSTREAM",
     "ASK_MAX_PER_DAY",
-    "SUGGEST_MIN_HEADROOM_PCT",
-    "AUDIT_MIN_HEADROOM_PCT",
     "MAX_SELF_AUDIT_CYCLES",
     "CO_AUTHOR",
     "MAX_OPEN_DELIVERIES",
 )
 
-#: Keys D74 removed. Accepted wherever a key is accepted and ignored, so an existing `.env` or
-#: `.harness/config.json` keeps loading; `harness doctor` names them as a warning until they
-#: are deleted. Never re-used for a live key.
+#: Keys D74 and D89 removed. Accepted wherever a key is accepted and ignored, so an existing
+#: `.env` or `.harness/config.json` keeps loading; `harness doctor` names them as a warning
+#: until they are deleted. Never re-used for a live key.
 RETIRED_KEYS: tuple[str, ...] = (
     "WEEKLY_BUDGET_PCT",
     "SESSION_BUDGET_PCT",
@@ -151,6 +143,11 @@ RETIRED_KEYS: tuple[str, ...] = (
     "NOTIFY_POLL_HOURS",
     "AUDIT_CAP_USD",
     "ASK_CAP_USD",
+    # D89: the account has a five-hour session limit and no weekly one.
+    "WEEKLY_USAGE_STOP_PCT",
+    "OVERRUN_PCT",
+    "SUGGEST_MIN_HEADROOM_PCT",
+    "AUDIT_MIN_HEADROOM_PCT",
 )
 
 #: The retired keys the last :func:`load_config` found, as ``(key, source)``.
@@ -225,9 +222,7 @@ class Config:
     tracking_issue: int | None
     store_backend: Literal["sqlite", "github"]
     repo_root: Path
-    weekly_usage_stop_pct: float
     session_usage_stop_pct: float
-    overrun_pct: float
     run_window_start: str
     run_window_end: str
     #: B225: the model alias and the reasoning effort every stage runs at. Pinned in `.env`
@@ -240,8 +235,6 @@ class Config:
     suggest_max_per_run: int
     comment_upstream: bool
     ask_max_per_day: int
-    suggest_min_headroom_pct: float
-    audit_min_headroom_pct: float
     #: D70: audit/fix cycles after the gates go green; 0 turns the self-audit off entirely.
     max_self_audit_cycles: int
     #: D82: ``Name <email>`` for the `Co-authored-by` trailer on every harness commit; "" is none.
@@ -571,23 +564,10 @@ def load_config(
 
     # --- Delivery 3 keys (RUN-DECISIONS-D3 "Config"), in Config field order ---
 
-    weekly_usage_stop_pct = _require_float(values, "WEEKLY_USAGE_STOP_PCT")
-    if not 0 < weekly_usage_stop_pct <= 100:
-        raise ConfigError(
-            f"WEEKLY_USAGE_STOP_PCT must be in (0, 100]; got {weekly_usage_stop_pct}"
-        )
-
     session_usage_stop_pct = _require_float(values, "SESSION_USAGE_STOP_PCT")
     if not 0 < session_usage_stop_pct <= 100:
         raise ConfigError(
             f"SESSION_USAGE_STOP_PCT must be in (0, 100]; got {session_usage_stop_pct}"
-        )
-
-    overrun_pct = _require_float(values, "OVERRUN_PCT")
-    if not 0 <= overrun_pct < weekly_usage_stop_pct:
-        raise ConfigError(
-            f"OVERRUN_PCT must be in [0, WEEKLY_USAGE_STOP_PCT); got {overrun_pct} "
-            f"with WEEKLY_USAGE_STOP_PCT={weekly_usage_stop_pct}"
         )
 
     run_window_start = _require_window(values, "RUN_WINDOW_START")
@@ -631,19 +611,6 @@ def load_config(
     ask_max_per_day = _require_int(values, "ASK_MAX_PER_DAY")
     if ask_max_per_day < 0:
         raise ConfigError(f"ASK_MAX_PER_DAY must be 0 or more; got {ask_max_per_day}")
-
-    audit_min_headroom_pct = _require_float(values, "AUDIT_MIN_HEADROOM_PCT")
-    if not 0 <= audit_min_headroom_pct <= 100:
-        raise ConfigError(
-            "AUDIT_MIN_HEADROOM_PCT must be in [0, 100]; got "
-            f"{audit_min_headroom_pct}"
-        )
-    suggest_min_headroom_pct = _require_float(values, "SUGGEST_MIN_HEADROOM_PCT")
-    if not 0 <= suggest_min_headroom_pct <= 100:
-        raise ConfigError(
-            "SUGGEST_MIN_HEADROOM_PCT must be in [0, 100]; got "
-            f"{suggest_min_headroom_pct}"
-        )
 
     max_self_audit_cycles = _require_int(values, "MAX_SELF_AUDIT_CYCLES")
     if max_self_audit_cycles < 0:
@@ -709,9 +676,7 @@ def load_config(
         tracking_issue=tracking_issue,
         store_backend=store_backend,
         repo_root=base_dir,
-        weekly_usage_stop_pct=weekly_usage_stop_pct,
         session_usage_stop_pct=session_usage_stop_pct,
-        overrun_pct=overrun_pct,
         run_window_start=run_window_start,
         run_window_end=run_window_end,
         model=model,
@@ -720,8 +685,6 @@ def load_config(
         suggest_max_per_run=suggest_max_per_run,
         comment_upstream=comment_upstream,
         ask_max_per_day=ask_max_per_day,
-        suggest_min_headroom_pct=suggest_min_headroom_pct,
-        audit_min_headroom_pct=audit_min_headroom_pct,
         max_self_audit_cycles=max_self_audit_cycles,
         co_author=co_author,
         max_open_deliveries=max_open_deliveries,

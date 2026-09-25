@@ -22,7 +22,6 @@ __all__ = [
     "rank",
     "admit",
     "outstanding",
-    "headroom_pct",
     "queue",
     "via_of",
 ]
@@ -124,46 +123,6 @@ def _is_suggested(item: Any) -> bool:
     return via_of(item) == "suggested"
 
 
-def headroom_pct(ledger: Any, now: Any = None) -> float | None:
-    """Weekly subscription usage as a percentage, or None when nothing has been observed.
-
-    None means unknown and is never read as zero. Given ``now``, a reading whose seven-day
-    window has reset since is unknown too, because it describes a week that is over (B399).
-    """
-    # Through the ledger's own accessor, which applies the staleness guard: the subscription's
-    # own reset moves `period_start` and leaves the last observation in place, so a raw read
-    # reports the previous week's figure and would refuse every audit in a fresh window (B295).
-    accessor = getattr(ledger, "weekly_utilization", None)
-    if callable(accessor):
-        fraction = accessor() if now is None else accessor(now)
-        return None if fraction is None else float(fraction) * 100.0
-    window = getattr(ledger, "window", {}) or {}
-    usage = window.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    observed_at, start = usage.get("observed_at"), window.get("period_start")
-    if observed_at and start and str(observed_at) < str(start):
-        return None
-    # `seven_day` is the key the ledger stores and the one `runner/cli.py` reads: `USAGE_WINDOWS`
-    # names the two windows, and "weekly" is not one of them. A wrong key here returns None
-    # forever instead of raising, which silently unbinds the headroom half of B290.
-    weekly = usage.get("seven_day")
-    if not isinstance(weekly, dict):
-        return None
-    if now is not None and weekly.get("resets_at"):
-        from harness.ledger import window_has_reset
-
-        if window_has_reset(weekly, now):
-            return None
-    utilization = weekly.get("utilization")
-    if utilization is None:
-        return None
-    try:
-        return float(utilization) * 100.0
-    except (TypeError, ValueError):
-        return None
-
-
 def admit(
     cls: str,
     *,
@@ -174,25 +133,10 @@ def admit(
 ) -> str | None:
     """None when a call of this class may proceed, else the reason it may not (B290).
 
-    ``now`` is the caller's clock, so a reading whose window has reset stops refusing (B399).
-
-    Two classes are refused here. `suggested` is work nobody asked for, so it waits for an
-    empty queue and for headroom. `audit` was asked for, but it is the longest single call the
-    harness makes and it draws on the seven-day utilization this account shares with everything
-    else, so it needs room measured in that unit.
-
-    Every other class was asked for by a person and is bounded by the governor.
+    Only `suggested` is refused here: it is work nobody asked for, so it waits for an empty
+    queue. Every other class was asked for by a person and is bounded by the governor's session
+    stop; the account has no weekly allowance to keep headroom in (D89).
     """
-    if cls == "audit":
-        floor = float(getattr(config, "audit_min_headroom_pct", 75.0) or 0.0)
-        used = headroom_pct(ledger, now)
-        if used is not None and used >= floor:
-            return (
-                f"weekly subscription usage is {used:.0f}%, at or above the {floor:.0f}% ceiling "
-                "for an audit — it is the longest single call the harness makes, and the "
-                "allowance is shared. Ask again after the window resets, or narrow the lens"
-            )
-        return None
     if cls != "suggested":
         return None
 
@@ -203,19 +147,6 @@ def admit(
         return (
             f"work somebody asked for is still outstanding ({named}); suggested work runs "
             "only when the queue is empty"
-        )
-
-    limit = float(getattr(config, "suggest_min_headroom_pct", 50.0) or 0.0)
-    used = headroom_pct(ledger, now)
-    if used is None:
-        # Unobserved means unknown, not "no headroom": the signal arrives with a real model
-        # call, so a fresh ledger, a tier-0 run and every local run have none, and refusing
-        # here would disable discovery. The two usage stops guard the allowance on every call.
-        return None
-    if used >= limit:
-        return (
-            f"weekly usage is {used:.0f}%, at or above the {limit:.0f}% ceiling for suggested "
-            "work; the rest of the week is reserved for work somebody asked for"
         )
     return None
 

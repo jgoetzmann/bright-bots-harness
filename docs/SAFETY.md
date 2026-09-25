@@ -103,9 +103,9 @@ outside this directory", and a stage can still read an unrelated checkout on the
 Anything from your environment enters the program through one place. The second configuration
 source, `.harness/config.json`, is read by the same function (`load_config`) and accepts only the
 closed list of keys in `config.CONFIG_JSON_KEYS`; any other key is a startup error. The one
-exception is `config.RETIRED_KEYS`, the keys D74 removed: they are accepted and ignored wherever a
-key is accepted, so an existing `.env` keeps loading, and `harness doctor` names each one it finds
-as a warning.
+exception is `config.RETIRED_KEYS`, the keys D74 and D89 removed: they are accepted and ignored
+wherever a key is accepted, so an existing `.env` keeps loading, and `harness doctor` names each
+one it finds as a warning.
 
 **Verify:** `grep -rn "os.environ" harness/` names only `harness/config.py`.
 
@@ -474,7 +474,7 @@ the procedure, and §7 the order of steps when a credential leaks.
 
 `/harness block <n>` is not a fourth switch, and it is not the reverse of one. It suspends the run
 window for a few five-hour sessions so the operator can lend the harness time they are not going to
-use (D77), and it lifts the calendar alone: both usage stops, all three kill switches, the trust
+use (D77), and it lifts the calendar alone: the usage stop, all three kill switches, the trust
 gate and the two human gates apply exactly as they did, no extra item may run at once, and the
 grant expires by itself without anything having to run. It is capped at six sessions, a count
 above that is refused rather than quietly reduced, and no grant runs longer than the count
@@ -485,7 +485,7 @@ whatever the session reading says.
 ## The worst a single bad run can do
 
 Take one run whose model output is wrong in every respect at once. It runs within its turn cap and
-the usage stops. It pushes a bad branch to the fork the machine account owns, and opens one pull
+the usage stop. It pushes a bad branch to the fork the machine account owns, and opens one pull
 request against `Bright-Bots-Initiative/brightboost` whose body carries the output of a pinned gate
 sequence. That output cannot read green for a broken tree, because a red tree is a `blocked` item
 that never reaches `deliver`. It requests review from the trusted handles and comments on its issue

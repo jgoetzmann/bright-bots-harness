@@ -231,9 +231,7 @@ jobs:
             lines.push('### allowance (shared with everything else this account does)');
             lines.push(`- ledger read from: ${ledgerSource}`);
             if (usage && !stale) {
-              const week = usage.seven_day || {};
               const session = usage.five_hour || {};
-              lines.push(`- this week: ${pct(week)} used — ${room(week, Number(cfg.WEEKLY_USAGE_STOP_PCT))} before the ${fmt(cfg.WEEKLY_USAGE_STOP_PCT)}% stop; resets ${fmt(week.resets_at)}${overNote(week)}`);
               lines.push(`- this session: ${pct(session)} used — ${room(session, Number(cfg.SESSION_USAGE_STOP_PCT))} before the ${fmt(cfg.SESSION_USAGE_STOP_PCT)}% stop; resets ${fmt(session.resets_at)}${overNote(session)}`);
               lines.push(`- status: ${fmt(usage.status)}, observed ${fmt(usage.observed_at)}`);
             } else if (stale) {
@@ -241,7 +239,7 @@ jobs:
             } else {
               lines.push('- not measured yet: no `rate_limit_event` has been recorded.');
             }
-            lines.push(`- run window: ${fmt(cfg.RUN_WINDOW_START)} → ${fmt(cfg.RUN_WINDOW_END)} UTC; carry leeway OVERRUN_PCT ${fmt(cfg.OVERRUN_PCT)}%`);
+            lines.push(`- run window: ${fmt(cfg.RUN_WINDOW_START)} → ${fmt(cfg.RUN_WINDOW_END)} UTC`);
             const carry = w.carry || null;
             lines.push(carry
               ? `- carried item: #${fmt(carry.issue)} since ${fmt(carry.since)} — ${fmt(carry.reason)}`

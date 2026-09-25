@@ -559,23 +559,20 @@ def test_B290_suggested_waits_while_anything_is_outstanding(tmp_path):
     assert "outstanding" in refused
 
 
-def test_B290_suggested_waits_when_the_week_has_no_headroom(tmp_path):
-    """Built through `observe_usage`, not by hand. The first version of this test assigned
-    `window["usage"] = {"weekly": ...}` — a shape nothing in production can produce, because
-    `USAGE_WINDOWS` is `("five_hour", "seven_day")`. It passed against a `headroom_pct` that
-    read the wrong key and therefore returned None forever, so the refusal it asserted was
-    unreachable and suggested work was admitted at any usage at all."""
+def test_B290_a_seven_day_reading_refuses_neither_suggested_work_nor_an_audit(tmp_path):
+    """The account has a five-hour session limit and no weekly one, so a seven-day reading at
+    100% leaves both classes admitted, and the headroom gate is gone (D89)."""
     rig = request_rig(tmp_path)
     ledger = Ledger.empty("2026-09-01T00:00:00Z")
     ledger.observe_usage(
-        {"seven_day": {"utilization": 0.8}, "five_hour": {"utilization": 0.1}},
+        {"seven_day": {"utilization": 1.0}, "five_hour": {"utilization": 0.1}},
         "2026-09-07T00:00:00Z",
     )
 
-    refused = priority.admit("suggested", store=rig.store, ledger=ledger, config=rig.config)
-
-    assert refused is not None
-    assert "80%" in refused
+    for cls in ("suggested", "audit"):
+        assert priority.admit(cls, store=rig.store, ledger=ledger, config=rig.config) is None
+    assert not hasattr(priority, "headroom_pct") and "headroom_pct" not in priority.__all__
+    assert not hasattr(ledger, "weekly_utilization")
 
 
 def test_B290_suggested_runs_when_the_queue_is_empty_and_the_week_is_fresh(tmp_path):
@@ -614,19 +611,6 @@ def test_B290_a_queued_suggestion_does_not_block_the_next_one(tmp_path):
     )
 
     assert priority.admit("suggested", store=rig.store, ledger=ledger, config=rig.config) is None
-
-
-def test_B290_the_headroom_signal_is_the_one_the_ledger_actually_writes():
-    """The bug the test above was blind to, pinned directly: `headroom_pct` must read the same
-    window name `observe_usage` writes, or it silently returns None and the gate never binds."""
-    from harness.ledger import USAGE_WINDOWS
-
-    ledger = Ledger.empty("2026-09-01T00:00:00Z")
-    ledger.observe_usage({"seven_day": {"utilization": 0.95}}, "2026-09-07T00:00:00Z")
-
-    assert "seven_day" in USAGE_WINDOWS and "weekly" not in USAGE_WINDOWS
-    assert priority.headroom_pct(ledger) == 95.0
-    assert ledger.weekly_utilization() == 0.95
 
 
 def test_B288_a_refused_class_stops_the_call_before_the_runner(tmp_path):
@@ -688,8 +672,8 @@ def test_B292_the_head_quotes_the_plan_when_the_plan_is_the_authority(tmp_path):
         Plan(start=(), reason="r", skipped={"4": "slots full"}), rows, None
     )["reason"] == "slots full"
     assert _head_reason(
-        Plan(start=(), reason="weekly usage 91% >= 90%", skipped={}), rows, None
-    )["reason"] == "weekly usage 91% >= 90%"
+        Plan(start=(), reason="session usage 72% >= 70%", skipped={}), rows, None
+    )["reason"] == "session usage 72% >= 70%"
 
 
 def test_B292_an_empty_queue_says_so(tmp_path):
@@ -1349,9 +1333,10 @@ def test_usage_reports_the_subscription_the_queue_and_what_happens_next(tmp_path
     out = main_mod._act_on_command(rig.ctx, rig.config, _cmd("status"))
 
     assert "**Allowance**" in out
-    # Headroom, not only consumption: "40% used" is a fact, "50 points before the stop" is
-    # the one somebody can act on.
-    assert "40% used" in out and "50 points" in out
+    # Headroom, not only consumption: "20% used" is a fact, "50 points before the stop" is
+    # the one somebody can act on. The session is the one limit, so no weekly or audit line.
+    assert "this session: **20% used**" in out and "50 points" in out
+    assert "40%" not in out and "this week" not in out and "- audits:" not in out
     assert "**Queue** — 1 waiting" in out and "#1 asked for" in out
     assert "**Next**" in out and "next scheduled sweep is" in out
     # Subscription usage is the whole report: there is no dollar figure to follow it (D74).

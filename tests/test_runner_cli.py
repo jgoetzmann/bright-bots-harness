@@ -977,9 +977,7 @@ def test_B432_an_is_error_result_with_a_json_body_keeps_its_turns_and_its_own_me
 
 # The five new keys with their .env.example values (inline).
 D3_USAGE_ENV: dict[str, str] = {
-    "WEEKLY_USAGE_STOP_PCT": "90",
     "SESSION_USAGE_STOP_PCT": "70",
-    "OVERRUN_PCT": "10",
     "RUN_WINDOW_START": "mon 08:00",
     "RUN_WINDOW_END": "tue 20:00",
 }

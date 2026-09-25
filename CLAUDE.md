@@ -89,18 +89,18 @@ through interop). The system `python3` is 3.12, which is too old.
   probe in `migrate()` to the new name. A new stage also needs entries in
   `governor._TURNS_FALLBACK` and `priority.CLASS_OF_STAGE`.
 - Governance:
-  - `governor.py`: admission — the two subscription-usage stops, the stored rate limit and the
-    per-stage turn caps.
+  - `governor.py`: admission — the session usage stop, the stored rate limit and the per-stage
+    turn caps. The account has a five-hour session limit and no weekly one (D89).
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
     starts nothing. `capped` holds each item `deliver.delivery_cap_refusals` refuses while
     `MAX_OPEN_DELIVERIES` of the fork's pull requests are open upstream; `harness run` asks the
     same before each clone (D88).
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
     (D28). It holds the last usage reading and the carry slot: an item `deliver.handoff` hands
-    off resumes before anything else, gated by `OVERRUN_PCT` instead of the weekly stop.
+    off resumes before anything else, under the same usage stop as any item.
   - `priority.py`: five call classes, highest first `answer` > `unblock` > `directed` > `audit` >
     `suggested`. A `via:suggested` item is refused while any asked-for item is outstanding
-    (`proposed` counts) or weekly usage is past `SUGGEST_MIN_HEADROOM_PCT`.
+    (`proposed` counts); `admit` refuses no other class.
 - GitHub: `gh.py` is the only authenticated client and the only module that writes. It stamps
   `MACHINE_MARKER` on every comment so workflows ignore the harness's own replies. `trust.py`
   is the one gate: a level in `.harness/trust.txt` plus either an OWNER/MEMBER/COLLABORATOR

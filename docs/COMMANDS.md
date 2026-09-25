@@ -78,11 +78,10 @@ an issue that already has a work item, as nearly every issue the bot has comment
 
 **`via:suggested` is the only route the harness starts by itself.** On `discover`'s 11:07 UTC run it
 suggests work only when nothing anybody asked for is outstanding (a delivery pull request awaiting
-review counts), weekly usage is under `SUGGEST_MIN_HEADROOM_PCT` (50) or has never been observed,
-and the issue carries `ALLOWLIST_LABEL` (`harness-ok`), the pool maintainers fill on brightboost. A
-pool issue is still skipped if it is assigned to someone other than the bot, claimed by a branch or
-open pull request, labelled `intern-starter`, `large` or `architecture`, or has ever had a work
-item (B332). At most `SUGGEST_MAX_PER_RUN` (5) per run.
+review counts) and the issue carries `ALLOWLIST_LABEL` (`harness-ok`), the pool maintainers fill on
+brightboost. A pool issue is still skipped if it is assigned to someone other than the bot, claimed
+by a branch or open pull request, labelled `intern-starter`, `large` or `architecture`, or has ever
+had a work item (B332). At most `SUGGEST_MAX_PER_RUN` (5) per run.
 
 A suggestion is proposed first; then the harness comments on the issue saying it has a plan and has
 not started. The operator's merge at gate 1 builds it whether or not anybody answered. A yes is a
@@ -179,7 +178,7 @@ makes no model call.
 /harness status
 ```
 
-Replies with the subscription left against both usage stops, the queue in priority order, what
+Replies with the session allowance left before the usage stop, the queue in priority order, what
 GitHub Actions is running or has queued behind the ledger lock (and what it cancelled in the last
 six hours), whether the harness is halted or blocked out, whether the run window is open, when the
 next sweep runs, and whether suggested work is admitted. Changes nothing. Try it first when
@@ -193,8 +192,8 @@ nothing seems to be happening: it is what tells "queued behind a build" from "as
 
 Opens one issue: a ranked findings report labelled `kind:audit`, with no stage label, so it never
 enters the queue and creates no work. An audit cut short by its turn cap still opens the issue,
-listing under `## Not reached` what it never opened. It is refused when seven-day usage is at or
-above `AUDIT_MIN_HEADROOM_PCT` (75), and refused before any model call when the lens is missing.
+listing under `## Not reached` what it never opened. It is refused before any model call when the
+lens is missing, and has no usage gate of its own beyond the session stop every call obeys (D89).
 
 ### `promote` — turn findings into work
 
@@ -317,9 +316,9 @@ progress plus `n − 1` whole ones when a reading exists, otherwise `n × 5 h` f
 reading never moves it. It expires by itself — nothing has to run for it to end — and
 `/harness block 0` cancels it early. With no argument it reports the block that stands, if any.
 
-**It lifts the calendar and nothing else.** Both usage stops (90% weekly, 80% session),
-`.harness/HALT`, `/harness halt`, the trust gate and both human gates still apply, and it does not
-raise `MAX_CONCURRENT_ITEMS`: one item at a time, as always.
+**It lifts the calendar and nothing else.** The usage stop (80% of the session), `.harness/HALT`,
+`/harness halt`, the trust gate and both human gates still apply, and it does not raise
+`MAX_CONCURRENT_ITEMS`: one item at a time, as always.
 
 A block creates no workflow runs. It takes effect on runs that already happen — a gate-1 merge
 starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or a manual dispatch
@@ -332,11 +331,11 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 /harness go --force
 ```
 
-Exempts the item from the run window (daily 11:00 → 19:00 UTC), and says so on the item, in the
+Exempts the item from the run window (daily 11:00 → 16:00 UTC), and says so on the item, in the
 ledger and in the reply. It is honoured by `implement`'s next run outside the window (a gate-1 merge
 or the operator's dispatch), not by the sweep (D68), and proposes nothing sooner. Level 3 only;
-below that the flag is dropped and the rest of the command runs. `.harness/HALT`, both usage stops
-(90% weekly, 80% session), the turn caps and both human gates still apply.
+below that the flag is dropped and the rest of the command runs. `.harness/HALT`, the usage stop
+(80% of the session), the turn caps and both human gates still apply.
 
 ## Who may run what
 
@@ -384,7 +383,7 @@ harness ledger      # usage against each stop, calls made, window state
 ```json
 {
   "start": [],
-  "reason": "outside run window (daily 11:00-19:00 UTC)",
+  "reason": "outside run window (daily 11:00-16:00 UTC)",
   "skipped": {},
   "queue": [{ "class": "directed", "rank": 2, "item": 4, "state": "discovered" }],
   "head": { "item": 4, "reason": "waiting to be proposed" },
@@ -438,7 +437,7 @@ instead of sending them, but the ranking call still runs. `discover.yml` takes t
 harness propose 4       # the work package -> a proposal pull request (gate 1)
 harness approve 4       # proposed -> approved by hand; normally the gate-1 merge does this
 harness approve --merged   # approve every proposed item whose proposal file is on main (gate 1)
-harness run --item 4    # implement, gates, package; bypasses the run window, not the usage stops
+harness run --item 4    # implement, gates, package; bypasses the run window, not the usage stop
 harness package 4       # build the review package
 harness deliver 4       # push the branch to the fork and open the upstream PR (gate 2)
 harness revise 4 --source review --notes "..."    # one bounded revision cycle

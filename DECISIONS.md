@@ -1486,3 +1486,43 @@ Open: the notifications sweep reads every thread GitHub subscribes the account t
 granted.
 
 Allocates B510-B519.
+
+## D89 / B520-B522 - one session a day, and the session is the only allowance
+
+Decision:
+- The account is a university enterprise seat whose subscription has a five-hour session limit
+  and no weekly limit. Everything that read the seven-day figure goes: the weekly usage stop,
+  the carry leeway, the headroom gate under suggested work and the one under `/harness audit`.
+  `WEEKLY_USAGE_STOP_PCT`, `OVERRUN_PCT`, `SUGGEST_MIN_HEADROOM_PCT` and `AUDIT_MIN_HEADROOM_PCT`
+  join `config.RETIRED_KEYS`, so an `.env` that still sets them loads and `harness doctor` names
+  them; `CONFIG_JSON_KEYS` holds seventeen keys.
+- `dispatcher.usage_stop` returns only the session stop, and the plan applies it before the
+  carry, which is no longer exempt from it. `Governor.usage_stop_reason` takes no carry
+  argument. `priority.admit` refuses suggested work only while something asked for is
+  outstanding, and audits pass through it; `stages/audit.py` and `harness ack` no longer
+  pre-refuse an audit on usage. `Ledger.weekly_utilization` is gone.
+- Every status surface reports the session reading alone: the pinned queue, `/harness status`,
+  `harness status` (no `weekly_pct`), `harness ledger` and the heartbeat comment. The runner and
+  the ledger still record whatever windows the CLI reports, and the ledger still rolls its
+  period on a reported seven-day reset; nothing reads that figure.
+- `.harness/config.json` sets the window to `daily 11:00` to `daily 16:00`, which is 03:00 to
+  08:00 PST and 04:00 to 09:00 PDT. `implement.yml` fires `23 11-15 * * *`, five hourly passes;
+  `discover.yml` keeps `7 11,13 * * *`. B412 still checks every firing against the window.
+
+Why. The account never sends a seven-day reading, so the weekly stop, the leeway and both
+headroom gates could never refuse anything, and each status surface carried a line about an
+allowance that does not exist. The session is the allowance, and it is shared with the
+operator, so the harness takes the one session before the operator's day starts rather than the
+eight hours D80 widened the window to.
+
+Unchanged: `SESSION_USAGE_STOP_PCT` (80), `/harness block`, the rate-limit record, both kill
+switches, both human gates, `MAX_OPEN_DELIVERIES` and every other schedule.
+
+Rejected: moving the headroom gates onto the session reading, which would newly hold suggested
+work and audits back in the one session the harness has; keeping the keys live and unused, which
+leaves the docs describing stops that never fire.
+
+Accepted gap: a run GitHub delivers after 16:00, which D80 measured at a median of 72 minutes
+late for implement, starts nothing that day; five hourly firings are what cover it.
+
+Allocates B520-B522.

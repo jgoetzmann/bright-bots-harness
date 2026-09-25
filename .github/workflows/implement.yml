@@ -1,19 +1,18 @@
-# implement.yml: eight passes inside the daily run window, on dispatch, and on a merged proposal,
+# implement.yml: five passes inside the daily run window, on dispatch, and on a merged proposal,
 # drain the approved queue. Spends subscription capacity. Step order: HALT check,
 # checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
 name: implement
 
 on:
   schedule:
-    # The run window is daily 11:00 to 19:00 UTC: discover opens the day's five-hour session at
-    # 11:07, and these passes start work across it. Eight firings rather than four because
-    # GitHub delivers every scheduled run late and drops some entirely, so a single firing is
-    # one dropped run away from a day that builds nothing (D80). What bounds a build starting
-    # at the far edge is SESSION_USAGE_STOP_PCT, not the window's tail. A test (B412) fails if
-    # a row leaves the window (D72).
+    # The run window is daily 11:00 to 16:00 UTC, the one five-hour session discover opens at
+    # 11:07 (D89). Hourly firings because GitHub delivers every scheduled run late and drops
+    # some entirely, so a single firing is one dropped run away from a day that builds nothing
+    # (D80). What bounds a build starting at the far edge is SESSION_USAGE_STOP_PCT. A test
+    # (B412) fails if a row leaves the window (D72).
     # DST: GitHub cron is always UTC, so the session opens at 04:00 PDT or 03:00 PST and nothing
     # moves when the clocks change.
-    - cron: "23 11-18 * * *"      # 11:23 through 18:23 UTC, hourly, every day
+    - cron: "23 11-15 * * *"      # 11:23 through 15:23 UTC, hourly, every day
   workflow_dispatch:
     inputs:
       issue:

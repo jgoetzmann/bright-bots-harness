@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 56,
+    "calls": 61,
     "rate_limited_until": null,
     "usage": {
       "five_hour": {
-        "utilization": 0.16,
-        "resets_at": "2026-09-25T20:40:00Z"
+        "utilization": 0.21,
+        "resets_at": "2026-09-26T19:50:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-09-25T16:12:32Z"
+      "observed_at": "2026-09-26T15:30:11Z"
     }
   },
   "cursors": {
@@ -427,6 +427,36 @@
       "ts": "2026-09-25T16:12:32Z",
       "stage": "propose",
       "issue": 101,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-26T14:57:49Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-26T15:01:01Z",
+      "stage": "propose",
+      "issue": 106,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-26T15:07:39Z",
+      "stage": "propose",
+      "issue": 87,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-26T15:18:00Z",
+      "stage": "propose",
+      "issue": 101,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-26T15:30:11Z",
+      "stage": "propose",
+      "issue": 86,
       "run": ""
     }
   ]

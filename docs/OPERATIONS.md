@@ -653,4 +653,4 @@ clone. Discovery, proposals, audits and revisions of open pull requests go on. T
 
 Items start again on their own as pull requests merge or close. To change the bound, change the key
 in a pull request here; `0` or an empty value removes it. A delivery a person runs by hand with
-`harness deliver <id>` is not held (D88).
+`harness deliver <id>` waits the same way, unless the item's pull request is already open (D90).

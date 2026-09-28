@@ -1815,7 +1815,17 @@ def cmd_deliver(args: argparse.Namespace) -> int:
     config = _load(args)
     check_halt(config.halt_file)
     ctx = _context(config, args, run_id=f"item-{args.item_id}")
-    _require_item(ctx, args.item_id)
+    item = _require_item(ctx, args.item_id)
+    # The maintainer's limit counts every open delivery, whoever typed the command; an item
+    # whose pull request is already open is only updated, and goes on (D90).
+    held = deliver_stage.delivery_cap_refusals(ctx, [item]).get(int(item.id))
+    if held:
+        _emit(
+            {"item_id": args.item_id, "pr_url": "", "delivered": False, "waits": held},
+            f"item {args.item_id} waits: {held}",
+            args,
+        )
+        return EXIT_OK
     try:
         pr_url = STAGES["deliver"](ctx, args.item_id)
     finally:

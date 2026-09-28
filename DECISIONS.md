@@ -1537,3 +1537,27 @@ cover. With no seven-day reset the ledger's period no longer rolls, so its call 
 without end; nothing decides on it.
 
 Allocates B520-B522.
+
+## D90 / B523 - a delivery run by hand waits at the cap too
+
+Decision:
+- `harness deliver <id>` asks `deliver.delivery_cap_refusals` before it delivers, as `harness
+  run` does before each clone. At `MAX_OPEN_DELIVERIES` it opens no new pull request and prints
+  `item N waits: <reason>`; an item whose own pull request is already open is only updated and
+  goes on. Where the client cannot write there is no cap, as before.
+
+Why. The maintainer asked that the two-open-PR limit cover deliveries started by hand. D88 held
+every automated path and `harness run --item`, but left `harness deliver` unheld as something a
+person types on purpose; that was the one way a hand delivery could take the count past two. No
+workflow runs `harness deliver`, so holding it strands no package in Actions, and local mode
+opens no pull request.
+
+This reverses D88's rejection of holding `harness deliver <id>`. Its other review finding still
+stands: a pull request somebody else reopens can take the count past the cap, and nothing then
+starts until it is back under.
+
+Rejected: an override flag, which would reopen the path the maintainer asked to close; raising
+the cap for a person, which `MAX_OPEN_DELIVERIES` in `.harness/config.json` already does through
+a reviewed change.
+
+Allocates B523.

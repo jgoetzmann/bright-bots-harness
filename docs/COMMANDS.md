@@ -219,10 +219,11 @@ item. `all` takes every unticked finding, up to `SUGGEST_MAX_PER_RUN` (5).
 | the **delivery** PR (gate 2) | one more implementation pass, then the complete gate sequence again |
 
 On a delivery pull request it force-pushes to the fork only if the branch is under `harness/` and
-its tip is still a commit the harness authored. Red gates afterwards block the item and push
-nothing. The pull request body keeps the evidence it was opened with; the new gate run is in the
-workflow artifact. Bounded by `MAX_REVISE_CYCLES` (3); at the cap the item goes
-`stage:needs-human` and only a trusted `/harness revise` restarts it.
+its tip on the fork is still a commit the harness authored, and only while the fork still points
+there (D91). Red gates afterwards block the item and push nothing. The pull request body keeps
+the evidence it was opened with; the new gate run is in the workflow artifact. Bounded by
+`MAX_REVISE_CYCLES` (3); at the cap the item goes `stage:needs-human` and only a trusted
+`/harness revise` restarts it.
 
 Write it in the Conversation tab's comment box or as an inline comment on the diff. A `/harness`
 line in the *Review changes* summary box is never read (D68). Once a `revise` has arrived on a

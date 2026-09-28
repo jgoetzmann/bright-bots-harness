@@ -36,7 +36,8 @@ __all__ = [
     "gather_ci_feedback",
     "gather_review_feedback",
     "revise",
-    "tip_author_email",
+    "commit_author_email",
+    "fork_tip_at_acquire",
 ]
 
 log = logging.getLogger("harness")
@@ -289,6 +290,9 @@ def _revise_leased(
         f"revise ({source}) holds clone {lease.path} on branch {lease.branch}; "
         f"entry state {entry_state}"
     )
+    # The fork's tip as the clone fetched it, read before an install step or the model can move
+    # a ref. B139 judges this commit, and the push leases against it (D91).
+    fork_tip = fork_tip_at_acquire(lease)
     if not nested:
         prep = list(implement_mod.PREPARE(lease.path))
         implement_mod._write_gates(ctx, "prepare", prep)
@@ -327,7 +331,9 @@ def _revise_leased(
         ctx.record_decision(f"revise ({source}): no feedback to act on; no model call was made")
         if source == "conflict":
             # /harness rebase with a clean rebase still re-runs every gate (B136).
-            return _gate_and_ship(ctx, item, lease, entry_state=entry_state, source=source)
+            return _gate_and_ship(
+                ctx, item, lease, entry_state=entry_state, source=source, fork_tip=fork_tip
+            )
         _back_to(ctx, item_id, entry_state, f"revise ({source}) found nothing to act on")
         return None
     if signature and _signature_seen(ctx, item_id, signature):
@@ -388,11 +394,13 @@ def _revise_leased(
         implement_mod._format_and_commit(ctx, pkg, item, lease, changed, first=False)
     if source == CONTINUE:
         return _gate_and_hand_over(ctx, item, lease)
-    return _gate_and_ship(ctx, item, lease, entry_state=entry_state, source=source)
+    return _gate_and_ship(
+        ctx, item, lease, entry_state=entry_state, source=source, fork_tip=fork_tip
+    )
 
 
 def _gate_and_ship(
-    ctx: Context, item: Any, lease: Lease, *, entry_state: str, source: str
+    ctx: Context, item: Any, lease: Lease, *, entry_state: str, source: str, fork_tip: str = ""
 ) -> Lease | None:
     """B136: the complete sequence, then either blocked (red) or pushed and shipped (green)."""
     item_id = int(item.id)
@@ -421,15 +429,6 @@ def _gate_and_ship(
             ctx, item_id, f"branch {lease.branch} is outside harness/; never force-pushed (B139)"
         )
         return None
-    email = tip_author_email(lease)
-    if email not in HARNESS_AUTHOR_EMAILS:
-        _to_needs_human(
-            ctx,
-            item_id,
-            f"branch tip authored by {email or 'an unknown author'}, not the harness; "
-            "a human has pushed to this branch, so nothing was force-pushed (B139)",
-        )
-        return None
 
     if not ctx.gh.can_write:
         ctx.record_decision(
@@ -441,8 +440,34 @@ def _gate_and_ship(
         return lease
 
     fork = str(ctx.config.fork_repo)
-    ctx.gh.push_branch(lease.path, lease.branch, remote_repo=fork, force=True)
-    ctx.record_decision(f"force-pushed {lease.branch} to {fork} (tip authored by {email})")
+    # B139 asks about the commit the push replaces, the fork's tip as fetched at acquire: the
+    # clone's own tip is this revise's commit by now (D91).
+    if fork_tip:
+        email = commit_author_email(lease, fork_tip)
+        if email not in HARNESS_AUTHOR_EMAILS:
+            _to_needs_human(
+                ctx,
+                item_id,
+                f"the fork's tip {fork_tip[:12]} was authored by {email or 'an unknown author'}, "
+                "not the harness; a human has pushed to this branch, so nothing was force-pushed "
+                "(B139)",
+            )
+            return None
+    elif entry_state != "packaged":
+        _to_needs_human(
+            ctx,
+            item_id,
+            f"{lease.branch} was not on {fork} when this revise began, and only a first delivery "
+            "creates it there; nothing was pushed",
+        )
+        return None
+    try:
+        ctx.gh.push_branch(lease.path, lease.branch, remote_repo=fork, force=True, lease=fork_tip)
+    except GitHubError as exc:
+        # Most often the lease: somebody moved the fork's branch while this revise ran.
+        _to_needs_human(ctx, item_id, f"the push of {lease.branch} to {fork} was refused: {exc}")
+        return None
+    ctx.record_decision(f"force-pushed {lease.branch} to {fork} over {fork_tip[:12] or 'nothing'}")
     if entry_state == "packaged":
         # deliver's rebase conflicted before any pull request existed: open it.
         url = deliver_mod.deliver(ctx, item_id, lease=lease)
@@ -609,9 +634,19 @@ def _review_feedback(ctx: Context, upstream: str, pr: dict | None) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def tip_author_email(lease: Lease) -> str:
-    """``git log -1 --format=%ae``: who authored the branch tip (B139)."""
-    code, out, _ = gates.run_command(["git", "log", "-1", "--format=%ae"], lease.path)
+def commit_author_email(lease: Lease, sha: str) -> str:
+    """Who authored ``sha`` in the clone (B139); "" when the clone does not have it."""
+    argv = [*clone_mod.GUARD_GIT, "log", "-1", "--format=%ae", sha, "--"]
+    code, out, _ = gates.run_command(argv, lease.path)
+    return out.strip() if code == 0 else ""
+
+
+def fork_tip_at_acquire(lease: Lease) -> str:
+    """The commit ``refs/remotes/origin/<branch>`` names, the fork's tip when the clone fetched
+    it; "" when the clone has no such ref, as on a branch the fork does not have yet (D91)."""
+    ref = f"refs/remotes/origin/{lease.branch}^{{commit}}"
+    argv = [*clone_mod.GUARD_GIT, "rev-parse", "--verify", "--quiet", ref]
+    code, out, _ = gates.run_command(argv, lease.path)
     return out.strip() if code == 0 else ""
 
 

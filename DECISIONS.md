@@ -1563,3 +1563,33 @@ the cap for a person, which `MAX_OPEN_DELIVERIES` in `.harness/config.json` alre
 a reviewed change.
 
 Allocates B523.
+
+## D91 / B524 - a revise push leases against the fork's tip as fetched, by name
+
+Decision:
+- `GitHubClient.push_branch(force=True)` requires `lease`: the fork's tip sha, or `""` for a
+  branch the fork does not have. It pushes with `--force-with-lease=refs/heads/<branch>:<lease>`
+  and refuses any other value, since git would resolve a revision name inside the clone.
+- `revise` records `refs/remotes/origin/<branch>` right after the clone is acquired, before the
+  install step or the model can move a ref. The clone's `origin` is the fork, so that is the
+  fork's tip when the revise began. B139 judges that commit, read with `clone.GUARD_GIT`, and the
+  push leases against it, so a person's push to the fork at any point during the revise makes
+  the push refuse.
+- A refused push sends the item to `stage:needs-human` instead of leaving it at `revising`. A
+  shipped item whose branch is not on the fork is not re-created there; only a first delivery,
+  from `packaged`, pushes with an empty lease.
+
+Why. `git push --force-with-lease` with no value compares against a remote-tracking ref, and the
+harness pushes to a URL, which has none, so git refused every forced push as `(stale info)`. No
+`/harness revise` or `/harness rebase` on a delivery pull request could land: on 09-28 all three
+the maintainer asked for, on #926, #929 and #930, did their work and failed at the push.
+`local/watchdog-bb.ps1` already named its lease for the same reason (LOCAL-MODE.md). B139 also
+read the clone's tip, which after a revise is always the revise's own commit, so it could not see
+a person's push to the fork.
+
+Rejected: pushing with `-f`, which drops the protection B139 exists for; reading the fork's tip
+with `git ls-remote` just before the push, which leases against whatever the fork holds by then,
+so a person's push during the revise is overwritten, and which runs in the clone, whose config
+the model can edit to point the token elsewhere.
+
+Allocates B524.

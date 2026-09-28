@@ -768,17 +768,23 @@ class GitHubClient(GitHubReadOnly):
         *,
         remote_repo: str,
         force: bool = False,
+        lease: str | None = None,
         git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None = None,
     ) -> None:
-        """Push a work branch to the fork. ``force`` uses ``--force-with-lease``, never ``-f``.
+        """Push a work branch to the fork. ``force`` replaces the fork's tip only while it is
+        still ``lease`` (``""``: while the branch does not exist), never with ``-f`` (D91).
 
         Nothing leaves until `_refuse_protected_commits` has walked the commits the harness
         authored on the branch and found none under `.github/` (B298). It is the last check
         before the network and every publishing path shares it, so it runs under ``dry_run``
-        too, and it refuses when git cannot answer. It takes no base, because a rebase moves
-        any recorded base.
+        too, and it refuses when git cannot answer.
         """
         self._require_write("push_branch")
+        if force and (lease is None or not re.fullmatch(r"(?:[0-9a-f]{40})?", lease)):
+            raise GitHubError(
+                f"refusing to force-push {branch}: the lease must be the fork's tip sha, or empty "
+                f"for a branch the fork does not have; got {lease!r}"
+            )
         run = git_runner if git_runner is not None else run_command
         self._refuse_protected_commits(Path(clone), str(branch), run)
         self._git_push(
@@ -786,6 +792,7 @@ class GitHubClient(GitHubReadOnly):
             str(branch),
             remote_repo=remote_repo,
             force=bool(force),
+            lease=f"refs/heads/{branch}:{lease or ''}" if force else "",
             git_runner=git_runner,
         )
 
@@ -855,10 +862,13 @@ class GitHubClient(GitHubReadOnly):
         remote_repo: str,
         force: bool,
         git_runner: Callable[[list[str], Path], tuple[int, str, str]] | None,
+        lease: str = "",
     ) -> None:
         """``git push`` over https with the token in an ``http.extraheader``, never in the URL."""
         remote_url = f"https://github.com/{remote_repo}.git"
-        record = redact.redact_json({"refspec": refspec, "force": force, "cwd": str(cwd)})
+        record = redact.redact_json(
+            {"refspec": refspec, "force": force, "lease": lease, "cwd": str(cwd)}
+        )
         self._record("git push", remote_url, record)
         if self.dry_run:
             return
@@ -876,7 +886,9 @@ class GitHubClient(GitHubReadOnly):
             "-c",
             f"core.hooksPath={HOOKS_OFF}",
             "push",
-            "--force-with-lease" if force else "--",
+            # A bare lease compares against a remote-tracking ref, which a push to a URL does
+            # not have, so git refuses it as stale; the expected tip is always named (D91).
+            f"--force-with-lease={lease}" if force else "--",
             remote_url,
             refspec,
         ]

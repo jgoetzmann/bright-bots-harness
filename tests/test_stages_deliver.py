@@ -605,9 +605,10 @@ class FakeGh:
         self.branch_names.setdefault(repo, []).append(branch)
         return {"content": {"path": path}, "commit": {"sha": "c" * 40}}
 
-    def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
+    def push_branch(self, clone, branch, *, remote_repo, force=False, lease=None,
+                    git_runner=None) -> None:
         self._record("push_branch", clone=str(clone), branch=branch, remote_repo=remote_repo,
-                     force=bool(force))
+                     force=bool(force), lease=lease)
         if not self.can_write:  # `_require_write` comes first in production, so it does here
             self._write("git push", f"https://github.com/{remote_repo}.git {branch}", {})
         # D67: the production guard itself, not a copy of it. A fake that pushed whatever it
@@ -615,7 +616,8 @@ class FakeGh:
         # FakeGh.comment once had with the machine marker. A dry-run client walks the real
         # clone exactly as `gh.push_branch` does and sends nothing.
         GitHubClient(UPSTREAM, None, None, 0, token="guard", dry_run=True).push_branch(
-            clone, branch, remote_repo=remote_repo, force=force, git_runner=git_runner
+            clone, branch, remote_repo=remote_repo, force=force, lease=lease,
+            git_runner=git_runner
         )
         self.guarded.append(str(branch))
         self._write("git push", f"https://github.com/{remote_repo}.git {branch}",

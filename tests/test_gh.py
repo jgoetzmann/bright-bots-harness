@@ -707,7 +707,7 @@ def test_b297_a_human_commit_on_top_ends_the_walk_where_b139_takes_over(tmp_path
     once -- that commit is its author's to have pushed -- and B139 is what refuses to
     force-push over it. They agree on the one fact they share: the tip is not the harness's."""
     from harness.clone import HARNESS_AUTHOR_EMAILS, Lease, walk_harness_commits
-    from harness.stages.revise import tip_author_email
+    from harness.stages.revise import commit_author_email
 
     repo = _repo(tmp_path)
     _commit(repo, DEV, {"README.md": "# p\n"}, "chore: seed")
@@ -718,7 +718,7 @@ def test_b297_a_human_commit_on_top_ends_the_walk_where_b139_takes_over(tmp_path
 
     assert walk.commits == () and walk.stopped_at == human
     lease = Lease(run_id="r", path=repo, base_sha="", branch="main")
-    assert tip_author_email(lease) not in HARNESS_AUTHOR_EMAILS
+    assert commit_author_email(lease, human) not in HARNESS_AUTHOR_EMAILS
 
 
 def test_b297_a_root_commit_lists_its_paths(tmp_path):
@@ -1106,3 +1106,79 @@ def test_B516_the_label_is_added_to_the_client_repo_rather_than_replacing_its_la
     assert labelled["method"] == "POST"
     assert labelled["url"] == f"{API}/repos/{REPO}/issues/931/labels"
     assert labelled["payload"] == {"labels": ["harness-tracking"]}
+
+
+
+def _push_client(tmp_path, *, dry_run=False):
+    from harness.clock import FrozenClock
+    from harness.gh import GitHubClient
+    from harness.store import Store
+    from datetime import datetime, timezone
+
+    clock = FrozenClock(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+    store = Store(tmp_path / "h.db", clock)
+    store.migrate()
+    return GitHubClient("o/r", store, clock, 50, token="ghp_" + "FAKE0" * 8, dry_run=dry_run)
+
+
+def test_B524_a_forced_push_names_the_tip_it_replaces(tmp_path):
+    """B524 (D91): a bare `--force-with-lease` compares against a remote-tracking ref, which a
+    push to a URL does not have, so git refused every revise push as stale."""
+    seen: list[list[str]] = []
+
+    def git(argv, cwd):
+        seen.append(list(argv))
+        return 0, "", ""
+
+    client = _push_client(tmp_path)
+    client._git_push(tmp_path, "harness/fix-1-x", remote_repo="o/fork", force=True,
+                     lease="refs/heads/harness/fix-1-x:" + "a" * 40, git_runner=git)
+
+    (argv,) = seen
+    assert "--force-with-lease=refs/heads/harness/fix-1-x:" + "a" * 40 in argv
+    assert "--force-with-lease" not in argv, "never the bare form"
+
+
+@pytest.mark.parametrize("lease", [None, "HEAD", "main", "a" * 39])
+def test_B524_a_forced_push_leases_only_against_a_sha_or_nothing(tmp_path, lease):
+    """B524: git would resolve any revision name given as the expected value inside the clone."""
+    from harness.errors import GitHubError
+
+    with pytest.raises(GitHubError, match="lease must be"):
+        _push_client(tmp_path, dry_run=True).push_branch(
+            tmp_path, "harness/fix-1-x", remote_repo="o/fork", force=True, lease=lease
+        )
+
+
+def test_B524_the_lease_holds_against_a_real_fork(tmp_path):
+    """B524: with real git and the fork's URL mapped to a local bare repository, a push naming
+    the fork's tip lands, one naming a stale tip is refused, and an empty lease creates a branch
+    only where there is none."""
+    from harness.errors import GitHubError
+    from harness.gates import run_command
+
+    fork = tmp_path / "fork.git"
+    run_command(["git", "init", "-q", "--bare", str(fork)], tmp_path)
+    repo = _repo(tmp_path)
+    first = _commit(repo, HARNESS, {"README.md": "# p\n"}, "chore: seed")
+    url = "https://github.com/o/fork.git"
+
+    def local(argv, cwd):
+        return run_command([str(fork) if a == url else a for a in argv], cwd)
+
+    client = _push_client(tmp_path)
+
+    def push(lease):
+        client.push_branch(repo, "main", remote_repo="o/fork", force=True, lease=lease,
+                           git_runner=local)
+
+    push("")  # the fork has no main: created
+    second = _commit(repo, HARNESS, {"README.md": "# q\n"}, "chore: again")
+    with pytest.raises(GitHubError):
+        push("")  # the fork has main now: an empty lease refuses
+    with pytest.raises(GitHubError):
+        push("0" * 40)  # a stale expectation refuses
+    push(first)  # the fork's real tip: replaced
+
+    code, out, _ = run_command(["git", "rev-parse", "main"], fork)
+    assert code == 0 and out.strip() == second

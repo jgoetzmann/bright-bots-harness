@@ -492,17 +492,19 @@ class FakeGh:
         self.branch_names.setdefault(repo, []).append(branch)
         return {"content": {"path": path}, "commit": {"sha": "c" * 40}}
 
-    def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
+    def push_branch(self, clone, branch, *, remote_repo, force=False, lease=None,
+                    git_runner=None) -> None:
         from harness.gh import GitHubClient
 
         self._record("push_branch", clone=str(clone), branch=branch, remote_repo=remote_repo,
-                     force=bool(force))
+                     force=bool(force), lease=lease)
         if not self.can_write:  # `_require_write` comes first in production, so it does here
             self._write("git push", f"https://github.com/{remote_repo}.git {branch}", {})
         # D67: the production push guard itself, walking the real clone, so this fake is no
         # more permissive than `gh.push_branch` (see test_stages_deliver.FakeGh.push_branch).
         GitHubClient(UPSTREAM, None, None, 0, token="guard", dry_run=True).push_branch(
-            clone, branch, remote_repo=remote_repo, force=force, git_runner=git_runner
+            clone, branch, remote_repo=remote_repo, force=force, lease=lease,
+            git_runner=git_runner
         )
         self._write("git push", f"https://github.com/{remote_repo}.git {branch}",
                     {"force": bool(force), "clone": str(clone)})
@@ -521,9 +523,10 @@ class TimelineGh(FakeGh):
         super().__init__(**kwargs)
         self.timeline = timeline
 
-    def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
+    def push_branch(self, clone, branch, *, remote_repo, force=False, lease=None,
+                    git_runner=None) -> None:
         self.timeline.append("push")
-        super().push_branch(clone, branch, remote_repo=remote_repo, force=force,
+        super().push_branch(clone, branch, remote_repo=remote_repo, force=force, lease=lease,
                             git_runner=git_runner)
 
 
@@ -674,6 +677,8 @@ def setup_revise(tmp_path: Path, monkeypatch, *, state="shipped", tip_email=HARN
     scratch.migrate()
     store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL)
     repo, base, tip = make_work_repo(tmp_path, config.runs_dir, ITEM, tip_email=tip_email)
+    # A clone taken from the fork records the fork's tip as `origin/<branch>` (D91).
+    _git("update-ref", f"refs/remotes/origin/{BRANCH}", tip, cwd=repo)
     gh.add_issue(ITEM, TITLE, body="issue:816", labels=[LABELS[state]])
     spec = _w(config.runs_dir / f"item-{ITEM}" / "spec" / f"{ITEM}.md", SPEC_TEXT)
     store.update_work_item(ITEM, base_sha=base, branch_name=BRANCH, spec_path=str(spec))
@@ -845,8 +850,38 @@ def test_B139_harness_authored_tip_is_force_pushed_exactly_once(tmp_path, monkey
     assert pb[0]["force"] is True
     assert pb[0]["branch"] == BRANCH
     assert pb[0]["remote_repo"] == FORK
+    assert pb[0]["lease"] == s.tip, "the push leases against the fork's tip, by name (D91)"
     assert Path(pb[0]["clone"]).resolve() == s.repo.resolve()
     assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
+
+
+def test_B524_a_refused_push_sends_the_item_to_needs_human(tmp_path, monkeypatch,
+                                                           quiet_implement):
+    """B524 (D91): the lease refuses when somebody moved the fork's branch during the revise;
+    the item goes to a person rather than staying at `revising`."""
+    s = setup_revise(tmp_path, monkeypatch, tip_email=HARNESS_EMAIL)
+
+    def moved(*args, **kwargs):
+        raise GitHubError("git push failed (1): ! [rejected] (stale info)")
+
+    monkeypatch.setattr(s.gh, "push_branch", moved)
+
+    revise(s.ctx, ITEM, source="ci")
+
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
+
+
+def test_B524_a_shipped_item_whose_fork_branch_is_gone_is_not_recreated(tmp_path, monkeypatch,
+                                                                         quiet_implement):
+    """B524: with no `origin/<branch>` the fork has nothing to replace; only a first delivery
+    creates the branch there, so a revise of a shipped item stops."""
+    s = setup_revise(tmp_path, monkeypatch, tip_email=HARNESS_EMAIL)
+    _git("update-ref", "-d", f"refs/remotes/origin/{BRANCH}", cwd=s.repo)
+
+    revise(s.ctx, ITEM, source="ci")
+
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
+    assert pushes(s.gh) == []
 
 
 def test_B139_force_push_targets_only_the_fork_and_only_a_harness_branch(tmp_path, monkeypatch,
@@ -1385,3 +1420,18 @@ def test_B328_a_vouched_maintainers_review_reaches_the_model_and_an_impostors_do
     assert IMPOSTOR_REVIEW not in text, "the same login on another account is not the line"
     assert TRUSTED_REVIEW in text, "the operator's OWNER review is admitted as before"
     assert UNTRUSTED_REVIEW not in text and UNTRUSTED_COMMENT not in text
+
+
+
+def test_B524_a_harness_commit_on_a_human_fork_tip_is_never_force_pushed(tmp_path, monkeypatch):
+    """B524 (D91): the revise commits on top of a person's push. The clone's tip is then the
+    harness's, and B139 still refuses, because it judges the fork's tip as fetched."""
+    s = setup_revise(tmp_path, monkeypatch, tip_email=HUMAN_EMAIL)
+    model_commits(s, {"src/pages/Dashboard.tsx": "export const Dashboard = () => null;\n"},
+                  email=HARNESS_EMAIL)
+
+    revise(s.ctx, ITEM, source="ci")
+
+    assert _git("log", "-1", "--format=%ae", cwd=s.repo) == HARNESS_EMAIL
+    assert s.gh.state_labels(ITEM) == ["stage:needs-human"]
+    assert pushes(s.gh) == []

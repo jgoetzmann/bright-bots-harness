@@ -427,7 +427,8 @@ class FakeGh:
         self.branch_names.setdefault(repo, []).append(branch)
         return {"content": {"path": path}, "commit": {"sha": "c" * 40}}
 
-    def push_branch(self, clone, branch, *, remote_repo, force=False, git_runner=None) -> None:
+    def push_branch(self, clone, branch, *, remote_repo, force=False, lease=None,
+                    git_runner=None) -> None:
         self._record("push_branch", clone=str(clone), branch=branch, remote_repo=remote_repo,
                      force=bool(force))
         self._write("git push", f"https://github.com/{remote_repo}.git {branch}",

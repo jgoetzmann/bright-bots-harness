@@ -56,7 +56,7 @@ while two of its delivery pull requests are open upstream.
   reads who opened it first and refuses one the machine account did not (D88).
 - **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
   requests are open upstream, no new item starts implementing; revising one that is open still
-  runs. A delivery a person runs by hand with `harness deliver` is not held (D88).
+  runs. A delivery a person runs by hand with `harness deliver` waits the same way (D90).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`

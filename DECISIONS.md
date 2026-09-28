@@ -1541,10 +1541,12 @@ Allocates B520-B522.
 ## D90 / B523 - a delivery run by hand waits at the cap too
 
 Decision:
-- `harness deliver <id>` asks `deliver.delivery_cap_refusals` before it delivers, as `harness
-  run` does before each clone. At `MAX_OPEN_DELIVERIES` it opens no new pull request and prints
-  `item N waits: <reason>`; an item whose own pull request is already open is only updated and
-  goes on. Where the client cannot write there is no cap, as before.
+- `harness deliver <id>` asks `deliver.delivery_cap_refusals` before it delivers a `packaged` or
+  `revising` item, as `harness run` does before each clone. At `MAX_OPEN_DELIVERIES` it opens no
+  new pull request and prints `item N waits: <reason>`, naming the command to run again, since
+  nothing retries a `packaged` item. An item in any other state is left for the stage to refuse,
+  as before, and one whose branch already has an open pull request is not held, since GitHub
+  refuses a second pull request from that branch. Where the client cannot write there is no cap.
 
 Why. The maintainer asked that the two-open-PR limit cover deliveries started by hand. D88 held
 every automated path and `harness run --item`, but left `harness deliver` unheld as something a

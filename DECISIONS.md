@@ -1537,3 +1537,59 @@ cover. With no seven-day reset the ledger's period no longer rolls, so its call 
 without end; nothing decides on it.
 
 Allocates B520-B522.
+
+## D90 / B523 - a delivery run by hand waits at the cap too
+
+Decision:
+- `harness deliver <id>` asks `deliver.delivery_cap_refusals` before it delivers a `packaged` or
+  `revising` item, as `harness run` does before each clone. At `MAX_OPEN_DELIVERIES` it opens no
+  new pull request and prints `item N waits: <reason>`, naming the command to run again, since
+  nothing retries a `packaged` item. An item in any other state is left for the stage to refuse,
+  as before, and one whose branch already has an open pull request is not held, since GitHub
+  refuses a second pull request from that branch. Where the client cannot write there is no cap.
+
+Why. The maintainer asked that the two-open-PR limit cover deliveries started by hand. D88 held
+every automated path and `harness run --item`, but left `harness deliver` unheld as something a
+person types on purpose; that was the one way a hand delivery could take the count past two. No
+workflow runs `harness deliver`, so holding it strands no package in Actions, and local mode
+opens no pull request.
+
+This reverses D88's rejection of holding `harness deliver <id>`. Its other review finding still
+stands: a pull request somebody else reopens can take the count past the cap, and nothing then
+starts until it is back under.
+
+Rejected: an override flag, which would reopen the path the maintainer asked to close; raising
+the cap for a person, which `MAX_OPEN_DELIVERIES` in `.harness/config.json` already does through
+a reviewed change.
+
+Allocates B523.
+
+## D91 / B524 - a revise push leases against the fork's tip as fetched, by name
+
+Decision:
+- `GitHubClient.push_branch(force=True)` requires `lease`: the fork's tip sha, or `""` for a
+  branch the fork does not have. It pushes with `--force-with-lease=refs/heads/<branch>:<lease>`
+  and refuses any other value, since git would resolve a revision name inside the clone.
+- `revise` records `refs/remotes/origin/<branch>` right after the clone is acquired, before the
+  install step or the model can move a ref. The clone's `origin` is the fork, so that is the
+  fork's tip when the revise began. B139 judges that commit, read with `clone.GUARD_GIT`, and the
+  push leases against it, so a person's push to the fork at any point during the revise makes
+  the push refuse.
+- A refused push sends the item to `stage:needs-human` instead of leaving it at `revising`. A
+  shipped item whose branch is not on the fork is not re-created there; only a first delivery,
+  from `packaged`, pushes with an empty lease.
+
+Why. `git push --force-with-lease` with no value compares against a remote-tracking ref, and the
+harness pushes to a URL, which has none, so git refused every forced push as `(stale info)`. No
+`/harness revise` or `/harness rebase` on a delivery pull request could land: on 09-28 all three
+the maintainer asked for, on #926, #929 and #930, did their work and failed at the push.
+`local/watchdog-bb.ps1` already named its lease for the same reason (LOCAL-MODE.md). B139 also
+read the clone's tip, which after a revise is always the revise's own commit, so it could not see
+a person's push to the fork.
+
+Rejected: pushing with `-f`, which drops the protection B139 exists for; reading the fork's tip
+with `git ls-remote` just before the push, which leases against whatever the fork holds by then,
+so a person's push during the revise is overwritten, and which runs in the clone, whose config
+the model can edit to point the token elsewhere.
+
+Allocates B524.

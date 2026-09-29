@@ -1815,7 +1815,21 @@ def cmd_deliver(args: argparse.Namespace) -> int:
     config = _load(args)
     check_halt(config.halt_file)
     ctx = _context(config, args, run_id=f"item-{args.item_id}")
-    _require_item(ctx, args.item_id)
+    item = _require_item(ctx, args.item_id)
+    # The maintainer's limit counts every open delivery, whoever typed the command. An item in
+    # any other state is left for the stage to refuse, and one whose branch already has an open
+    # pull request cannot open a second, so neither is held (D90).
+    held = ""
+    if item.state in ("packaged", "revising"):
+        held = deliver_stage.delivery_cap_refusals(ctx, [item]).get(int(item.id), "")
+    if held:
+        _emit(
+            {"item_id": args.item_id, "pr_url": "", "delivered": False, "waits": held},
+            f"item {args.item_id} waits: {held}; it stays {item.state}, so run "
+            f"`harness deliver {args.item_id}` again once fewer are open",
+            args,
+        )
+        return EXIT_OK
     try:
         pr_url = STAGES["deliver"](ctx, args.item_id)
     finally:

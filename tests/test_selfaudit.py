@@ -365,7 +365,7 @@ def loop_rig(
     rig.gh.can_write = can_write
     rig.gh.pushed = []
 
-    def push_branch(clone, branch, *, remote_repo, force=False, git_runner=None):
+    def push_branch(clone, branch, *, remote_repo, force=False, lease=None, git_runner=None):
         rig.gh.pushed.append((branch, remote_repo, bool(force)))
 
     rig.gh.push_branch = push_branch

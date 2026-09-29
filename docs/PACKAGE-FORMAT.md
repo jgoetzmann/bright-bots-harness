@@ -335,5 +335,5 @@ its own that touches `.github/`, and that refusal is the only guard: the token c
 under `.github/` is a harness bug: do not merge it.
 
 A `/harness revise` or `/harness rebase` from a trusted handle starts one bounded revise cycle that
-re-runs the complete gate sequence and force-pushes the branch only if its tip is still a commit the
-harness authored (B136, B139).
+re-runs the complete gate sequence and force-pushes the branch only if its tip on the fork is still
+a commit the harness authored (B136, B139).

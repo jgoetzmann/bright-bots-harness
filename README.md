@@ -56,7 +56,7 @@ while two of its delivery pull requests are open upstream.
   reads who opened it first and refuses one the machine account did not (D88).
 - **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
   requests are open upstream, no new item starts implementing; revising one that is open still
-  runs. A delivery a person runs by hand with `harness deliver` is not held (D88).
+  runs. A delivery a person runs by hand with `harness deliver` waits the same way (D90).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`
@@ -121,7 +121,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B522 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B524 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

@@ -3098,3 +3098,74 @@ def test_B512_one_run_counts_its_own_delivery_before_the_next_item(tmp_path, mon
     assert rc == 0, out
     assert [entry[1] for entry in ran if entry[0] == "implement"] == [first]
     assert f"item {second} waits: 2 delivery pull requests are open upstream" in out
+
+
+# --------------------------------------------------------------------------
+# B523 (D90) - a delivery a person runs by hand waits at the cap too
+# --------------------------------------------------------------------------
+
+
+def _packaged_capped(tmp_path, monkeypatch, *, open_refs, branch=""):
+    _capped_repo(tmp_path, monkeypatch, open_refs=open_refs)
+    item_id = make_item(tmp_path, state="approved")
+    store = open_store(tmp_path)
+    for step in ("implementing", "packaged"):
+        store.transition(item_id, step, reason="test setup")
+    store.close()
+    if branch:
+        set_item_fields(tmp_path, item_id, branch_name=branch)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    return item_id, ran
+
+
+def test_B523_deliver_by_hand_waits_while_the_cap_is_reached(tmp_path, monkeypatch, capsys):
+    """B523: `harness deliver <id>` opens no new pull request past MAX_OPEN_DELIVERIES, and
+    says why, as `harness run` does."""
+    item_id, ran = _packaged_capped(
+        tmp_path, monkeypatch, open_refs=["harness/fix-1-a", "harness/fix-2-b"]
+    )
+    capsys.readouterr()
+
+    rc = cli.main(["deliver", str(item_id)])
+
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "deliver" not in stage_names(ran)
+    assert f"item {item_id} waits: 2 delivery pull requests are open upstream" in out
+    assert f"run `harness deliver {item_id}` again" in out
+    assert item_state(tmp_path, item_id) == "packaged"
+
+
+def test_B523_deliver_by_hand_is_not_held_for_a_branch_already_open(tmp_path, monkeypatch, capsys):
+    """B523: an item whose branch already has an open pull request cannot open a second, so the
+    cap does not hold it."""
+    item_id, ran = _packaged_capped(
+        tmp_path,
+        monkeypatch,
+        open_refs=["harness/fix-1-a", "harness/fix-2-b"],
+        branch="harness/fix-2-b",
+    )
+    capsys.readouterr()
+
+    assert cli.main(["deliver", str(item_id)]) == 0
+    assert "deliver" in stage_names(ran)
+
+
+def test_B523_deliver_by_hand_under_the_cap_goes_ahead(tmp_path, monkeypatch, capsys):
+    item_id, ran = _packaged_capped(tmp_path, monkeypatch, open_refs=["harness/fix-1-a"])
+    capsys.readouterr()
+
+    assert cli.main(["deliver", str(item_id)]) == 0
+    assert "deliver" in stage_names(ran)
+
+
+def test_B523_an_item_not_ready_to_deliver_is_refused_as_before_not_held(tmp_path, monkeypatch):
+    """B523: at the cap, an `approved` item still meets the stage's refusal (B65), rather than a
+    "waits" that suggests it will go later."""
+    _capped_repo(tmp_path, monkeypatch, open_refs=["harness/fix-1-a", "harness/fix-2-b"])
+    item_id = make_item(tmp_path, state="approved")
+    forbid_everything(monkeypatch)  # the real stage refuses before any clone or request
+
+    assert cli.main(["deliver", str(item_id)]) != 0
+    assert item_state(tmp_path, item_id) == "approved"

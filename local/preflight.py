@@ -432,7 +432,7 @@ def _watchdog_walk(body: str) -> dict[str, object]:
 
 def check_publishers_agree() -> None:
     """local/watchdog-bb.ps1 is the ONLY publisher in local mode (P5); harness/gh.py is the one in
-    Actions mode. gh.push_branch documents "``force`` uses ``--force-with-lease``, never ``-f``"
+    Actions mode. gh.push_branch leases against the fork's tip by name and never uses ``-f``,
     and a Python test pins its argv - but that test cannot see the PowerShell copy, which once
     pushed with a bare `--force` and would discard a commit a human pushed to the same fork
     branch. These assertions are the only thing holding the two publishers together.

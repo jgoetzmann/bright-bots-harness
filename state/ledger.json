@@ -2,19 +2,21 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 76,
-    "rate_limited_until": null,
+    "calls": 77,
+    "rate_limited_until": "2026-09-30T00:30:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.24,
-        "resets_at": "2026-09-29T19:30:00Z"
+        "utilization": 1.0,
+        "resets_at": "2026-09-30T00:30:00Z"
       },
-      "status": "allowed",
-      "observed_at": "2026-09-29T17:04:27Z"
+      "status": "rejected",
+      "rejected_resets_at": "2026-09-30T00:30:00Z",
+      "rate_limit_type": "five_hour",
+      "observed_at": "2026-09-29T22:37:59Z"
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-09-29T18:15:39Z",
+    "notifications_last_seen": "2026-09-29T22:36:52Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -44,11 +46,13 @@
       "IC_kwDOOiDENs8AAAABXe66BQ",
       "IC_kwDOOiDENs8AAAABXq87BQ",
       "IC_kwDOOiDENs8AAAABXq86Pw",
-      "IC_kwDOOiDENs8AAAABXq85kA"
+      "IC_kwDOOiDENs8AAAABXq85kA",
+      "IC_kwDOOiDENs8AAAABX5VnIw",
+      "IC_kwDOOiDENs8AAAABX5XOAA"
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 114
+      "github-actions[bot]": 116
     },
     "ask_calls": {
       "date": "2026-09-09",
@@ -553,6 +557,12 @@
       "ts": "2026-09-29T17:04:27Z",
       "stage": "propose",
       "issue": 89,
+      "run": ""
+    },
+    {
+      "ts": "2026-09-29T22:38:00Z",
+      "stage": "revise",
+      "issue": 69,
       "run": ""
     }
   ]

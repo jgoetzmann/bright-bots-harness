@@ -68,6 +68,8 @@ PING_FLAGS: tuple[str, ...] = (
 )
 #: Seconds one ping may take before it counts as a sample with no reading.
 PING_TIMEOUT_S = 120
+#: The name the ping's empty working directory starts with.
+PING_DIR_PREFIX = "harness-ping-"
 
 _ISO_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
@@ -452,24 +454,26 @@ class ClaudeCliRunner:
 
     def ping(self, timeout_s: int = PING_TIMEOUT_S) -> RunResult:
         """One usage sample for the quiet check (D93): :data:`PING_FLAGS`, the prompt on stdin,
-        and :meth:`build_env`'s environment, in an empty temporary directory so no CLAUDE.md
-        is read. ``usage`` is the last `rate_limit_event` whatever the exit; the directory is
-        the one the harness creates outside its write roots, and it is removed on return.
+        and :meth:`build_env`'s environment, in an empty temporary directory so no repository's
+        CLAUDE.md is read. ``usage`` is the last `rate_limit_event` whatever the exit, a timeout
+        included; the directory is the one the harness makes outside its write roots, and it is
+        removed on return.
         """
         argv = [self.claude_bin, *PING_FLAGS]
-        scratch = tempfile.TemporaryDirectory(prefix="harness-ping-", ignore_cleanup_errors=True)
-        with scratch as empty:
-            request = RunRequest(
-                stage=PING_STAGE,
-                prompt=PING_PROMPT,
-                system_prompt=None,
-                allowed_tools=(),
-                disallowed_tools=(),
-                max_turns=1,
-                cwd=Path(empty),
-                timeout_s=int(timeout_s),
-            )
-            try:
+        request = RunRequest(
+            stage=PING_STAGE,
+            prompt=PING_PROMPT,
+            system_prompt=None,
+            allowed_tools=(),
+            disallowed_tools=(),
+            max_turns=1,
+            cwd=Path(tempfile.gettempdir()),
+            timeout_s=int(timeout_s),
+        )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=PING_DIR_PREFIX, ignore_cleanup_errors=True
+            ) as empty:
                 proc = self.spawn(
                     argv,
                     cwd=empty,
@@ -482,10 +486,13 @@ class ClaudeCliRunner:
                     encoding="utf-8",
                     errors="replace",
                 )
-            except subprocess.TimeoutExpired:
-                return self._failure(request, EXIT_TIMEOUT, f"claude timed out after {timeout_s}s")
-            except OSError as exc:
-                return self._failure(request, EXIT_NOT_EXECUTABLE, f"{self.claude_bin}: {exc}")
+        except subprocess.TimeoutExpired as exc:
+            # The event precedes the result line, so a ping cut short can still carry it.
+            _, usage = parse_stream(_as_text(getattr(exc, "stdout", None)))
+            error = f"claude timed out after {timeout_s}s"
+            return self._failure(request, EXIT_TIMEOUT, error, usage=usage)
+        except OSError as exc:
+            return self._failure(request, EXIT_NOT_EXECUTABLE, f"{self.claude_bin}: {exc}")
         stderr = _as_text(getattr(proc, "stderr", ""))
         exit_code = int(getattr(proc, "returncode", 0) or 0)
         data, usage = parse_stream(_as_text(getattr(proc, "stdout", "")))

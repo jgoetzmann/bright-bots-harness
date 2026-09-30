@@ -97,8 +97,8 @@ outside this directory", and a stage can still read an unrelated checkout on the
 
 The quiet check's ping (D93, `ClaudeCliRunner.ping`) is the one call built from another template,
 `PING_FLAGS`: `--print --output-format stream-json --verbose --model haiku --max-turns 1
---strict-mcp-config`, with no bypass either, run in an empty temporary directory so no `CLAUDE.md`
-is read, and asked only to reply `ok`.
+--strict-mcp-config`, with no bypass either, run in an empty temporary directory so no
+repository's `CLAUDE.md` is read, and asked only to reply `ok`.
 
 **Verify:** `grep -rn "dangerously-skip-permissions" harness/` returns nothing.
 `python -m pytest tests/test_runner_cli.py -k B218` pins the flags and the rule form.

@@ -207,8 +207,8 @@ jobs:
 
         # D93: nothing starts while somebody else is using the subscription. A dispatch in any mode
         # but triage names what to do, which is the operator asking for it now, so it skips the
-        # wait; a triage dispatch waits like the schedule. It exits 0 either way, and while it
-        # waits the job holds the ledger lock.
+        # wait; a triage dispatch waits like the schedule. While it waits, the job holds the
+        # ledger lock.
       - name: Wait until the subscription is quiet (harness quiet)
         if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true'
         id: quiet
@@ -216,6 +216,9 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_MODE: ${{ github.event.inputs.mode }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           mkdir -p runs
@@ -225,10 +228,22 @@ jobs:
             force="--force"
           fi
           harness --json quiet ${force} | tee runs/quiet.json
-          if [ "$(jq -r '.quiet' runs/quiet.json)" = "true" ]; then
+          quiet="$(jq -r '.quiet' runs/quiet.json)"
+          reason="$(jq -r '.reason' runs/quiet.json)"
+          if [ "${quiet}" = "true" ]; then
+            # The wait can be long, so the committed kill switch is read again before work starts.
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${REPO}/contents/.harness/HALT?ref=${REF}" || echo 000)"
+            if [ "${code}" = "200" ]; then
+              quiet="false"
+              reason=".harness/HALT was committed during the wait"
+            fi
+          fi
+          if [ "${quiet}" = "true" ]; then
             echo "quiet=true" >> "$GITHUB_OUTPUT"
           else
-            echo "not quiet: $(jq -r '.reason' runs/quiet.json)"
+            echo "not quiet: ${reason}"
             echo "quiet=false" >> "$GITHUB_OUTPUT"
           fi
 

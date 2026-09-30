@@ -374,7 +374,7 @@ before the subcommand: `harness --json discover …`, not `harness discover --js
 
 ```bash
 harness doctor      # binaries, versions, disk, halt, config, pin, trust levels
-harness status      # queue by state, subscription usage, what is in flight, what Actions is doing
+harness status      # queue, usage, the last quiet check, in flight, what Actions is doing
 harness dispatch    # what may start now, the priority queue, why the head is not moving
 harness block       # with no argument, the block that stands (if any)
 harness ledger      # usage against the session stop, calls made, window state
@@ -472,8 +472,9 @@ night bot, which shares the subscription, was inside a `Build, check and review`
 and does not count. Anything else keeps it sampling every interval until `QUIET_MAX_WAIT_MINUTES`
 (40), and then the run starts nothing. `--json` prints the samples and whether the partner excused
 a rise. `--force`, or `--items` naming an item somebody forced with `/harness … --force`, skips the
-wait, and so does `QUIET_ENABLED=false`. It always exits 0 and stores its verdict in the ledger,
-where `harness status` shows it as `quiet check:`.
+wait, and so does `QUIET_ENABLED=false`. `--window`, which `implement.yml` passes, answers not
+quiet when the run window closes while it waits. It exits 0 whether or not the subscription is
+quiet and stores its verdict in the ledger, where `harness status` shows it as `quiet check:`.
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

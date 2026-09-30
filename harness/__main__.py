@@ -43,7 +43,7 @@ from harness import priority
 from harness import quiet as quiet_mod
 from harness.packager import archive as archive_package
 from harness.packager import build as build_package
-from harness.redact import allowed_roots, guarded_write, set_write_roots
+from harness.redact import allowed_roots, guarded_write, redact, redact_json, set_write_roots
 from harness.runner.base import exhausted_reset
 from harness.stages import STAGES, resolve_reset, stamp_usage
 from harness.stages import deliver as deliver_stage
@@ -252,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="N",
         help="the items this run starts; one started with --force skips the check",
+    )
+    quiet.add_argument(
+        "--window",
+        action="store_true",
+        help="not quiet when the run window closes while the check waits",
     )
 
     deliver = sub.add_parser("deliver", help="push the branch and open the upstream PR")
@@ -1843,18 +1848,25 @@ QUIET_ERROR_CHARS = 300
 
 
 def _quiet_sample(ctx) -> quiet_mod.Sample:
-    """One ping, its reading stored as the ledger's usage observation (D93)."""
+    """One ping, its reading saved at once as the ledger's usage observation (D93)."""
     ping = getattr(ctx.runner, "ping", None)
     result = ping() if callable(ping) else None
     now = ctx.clock.now()
     usage = getattr(result, "usage", None)
     reading = dict(usage) if isinstance(usage, dict) and usage else None
     ctx.ledger.observe_usage(stamp_usage(reading, now), iso(now))
+    # Saved per sample, so a job cancelled during the wait still commits what it read.
+    _save_ledger(ctx)
     error = None
     if reading is None:
         error = "this backend cannot ping" if result is None else str(result.error or "")
-        error = (error or "no rate_limit_event")[:QUIET_ERROR_CHARS]
+        error = redact(error or "no rate_limit_event")[:QUIET_ERROR_CHARS]
     return quiet_mod.Sample(at=iso(now), usage=reading, error=error)
+
+
+def _window_open(ctx, config, now) -> bool:
+    """The run window as the dispatcher reads it: open, or opened by a block (D77)."""
+    return in_run_window(config, now) or ctx.ledger.block_open(now)
 
 
 def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
@@ -1885,11 +1897,13 @@ def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
         )
     # A read without the token is worth trying only after one that carried it.
     public = PUBLIC_READER if getattr(ctx.gh, "can_write", False) else None
+    window_was_open = _window_open(ctx, config, ctx.clock.now())
     outcome = quiet_mod.wait_until_quiet(
         sample=lambda: _quiet_sample(ctx),
         sleep=SLEEP,
+        clock=ctx.clock,
         interval_s=config.quiet_interval_minutes * 60,
-        intervals=config.quiet_max_wait_minutes // config.quiet_interval_minutes,
+        max_wait_s=config.quiet_max_wait_minutes * 60,
         partner_check=lambda start, end: quiet_mod.partner_spending(
             partner, start, end, reader=ctx.gh, public=public
         ),
@@ -1898,6 +1912,14 @@ def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
         # A refusal is a rate limit that ends at its reset, as for any other call (D71).
         reset = exhausted_reset(outcome.refused.usage)
         ctx.ledger.set_rate_limited(resolve_reset(reset, ctx.clock.now()))
+    closed = not _window_open(ctx, config, ctx.clock.now())
+    if outcome.quiet and getattr(args, "window", False) and window_was_open and closed:
+        # The window bounds when work starts, and a plan made inside it expires with it (D72).
+        outcome.quiet = False
+        outcome.reason = (
+            f"the run window ({_window_text(config)}) closed while the check waited; "
+            f"nothing starts this run ({outcome.reason})"
+        )
     return outcome
 
 
@@ -1907,8 +1929,9 @@ def cmd_quiet(args: argparse.Namespace) -> int:
     Prints ``quiet`` or ``not quiet`` and one reason; `--json` adds the samples and whether the
     partner bot's spending excused a rise, and a workflow starts nothing while ``.quiet`` is
     false. `--force`, an item forced with `--force` and `QUIET_ENABLED=false` skip the check. A
-    halt, the usage stop or a stored rate limit reads not quiet without a ping. Every reading is
-    stored as the ledger's usage observation, and the verdict beside it for `harness status`.
+    halt, the usage stop or a stored rate limit reads not quiet without a ping, and with
+    `--window` so does a run window that closed during the wait. Every reading is stored as the
+    ledger's usage observation, and the verdict beside it for `harness status`.
     """
     try:
         check_repo_halt(_repo_root(args))
@@ -1920,10 +1943,12 @@ def cmd_quiet(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="quiet")
     outcome = _quiet_outcome(ctx, config, args)
+    # The reason can quote a failed ping or a GitHub error body, so it is redacted first.
+    outcome.reason = redact(outcome.reason)
     ctx.ledger.record_quiet(at=iso(ctx.clock.now()), quiet=outcome.quiet, reason=outcome.reason)
     _save_ledger(ctx)
     verdict = "quiet" if outcome.quiet else "not quiet"
-    _emit(outcome.to_json(), f"{verdict}: {outcome.reason}", args)
+    _emit(redact_json(outcome.to_json()), f"{verdict}: {outcome.reason}", args)
     return EXIT_OK
 
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from harness.clock import parse_iso
+from harness.clock import Clock, parse_iso
 from harness.errors import GitHubError
 from harness.ledger import USAGE_WINDOWS
 from harness.runner.base import exhausted_reset, usage_rejected
@@ -120,11 +120,11 @@ def _five_hour_reset(usage: object) -> object:
 
 
 def compare(first: Sample, second: Sample) -> tuple[str, tuple[str, ...]]:
-    """The pair's verdict and the windows that rose (B526).
+    """The pair's verdict and the windows that rose.
 
     ``refused`` when either reading says the subscription refused the ping; ``unread`` when the
     two share no window with a utilization; ``reset`` when the five-hour ``resets_at`` changed
-    between them, which leaves the pair inconclusive (B528); else ``rose`` or ``quiet``.
+    between them, which leaves the pair inconclusive; else ``rose`` or ``quiet`` (B526).
     """
     if usage_rejected(first.usage) or usage_rejected(second.usage):
         return REFUSED, ()
@@ -211,11 +211,7 @@ def _rise(first: Sample, second: Sample, rose: tuple[str, ...]) -> str:
 
 
 def _unread(sample: Sample) -> str:
-    why = sample.error or "no rate_limit_event"
-    return (
-        f"the ping at {sample.at} reported no usage ({why}); unknown is not a stop, so this run "
-        "goes ahead (B114)"
-    )
+    return f"the ping at {sample.at} reported no usage ({sample.error or 'no rate_limit_event'})"
 
 
 def _refused(sample: Sample) -> str:
@@ -228,23 +224,26 @@ def wait_until_quiet(
     *,
     sample: Callable[[], Sample],
     sleep: Callable[[float], None],
+    clock: Clock,
     interval_s: float,
-    intervals: int,
+    max_wait_s: float,
     partner_check: Callable[[datetime, datetime], tuple[list[str], str]],
 ) -> Outcome:
-    """Sample, wait ``interval_s``, sample, until a pair is quiet or ``intervals`` are spent.
+    """Sample, wait ``interval_s``, sample, until a pair is quiet or the wait is spent.
 
-    A rise the partner check explains is quiet (B531) and one it does not explain waits another
-    interval, as does a reset pair (B528); after the last interval the run gives up (B527). A
-    refusal stops at once (B529), and a sample with no reading admits (B530).
+    The wait ends after ``max_wait_s // interval_s`` pairs, or once ``max_wait_s`` has passed on
+    ``clock`` with the pings' own time counted, whichever comes first. An unexplained rise, a reset
+    pair and a later sample with no reading each take another interval, and a refusal stops at
+    once. A first sample with no reading admits, since nothing may depend on the signal (B114).
     """
+    started = clock.now()
     first = sample()
     samples = [first]
     if usage_rejected(first.usage):
         return Outcome(False, _refused(first), samples, refused=first)
     if not _levels(first.usage):
-        return Outcome(True, _unread(first), samples)
-    rounds = max(1, int(intervals))
+        return Outcome(True, f"{_unread(first)}; unknown is not a stop", samples)
+    rounds = max(1, int(max_wait_s // interval_s))
     last = ""
     note = ""
     for _ in range(rounds):
@@ -256,8 +255,6 @@ def wait_until_quiet(
             return Outcome(True, f"no window rose from {first.at} to {second.at}", samples)
         if verdict == REFUSED:
             return Outcome(False, _refused(second), samples, refused=second)
-        if verdict == UNREAD:
-            return Outcome(True, _unread(second), samples)
         if verdict == ROSE:
             steps, note = partner_check(parse_iso(first.at), parse_iso(second.at))
             if steps:
@@ -270,10 +267,18 @@ def wait_until_quiet(
                     partner_steps=steps,
                 )
             last = f"{_rise(first, second, rose)}, and {note}"
-        else:
+        elif verdict == RESET:
+            note = ""
             last = f"the five-hour window reset between {first.at} and {second.at}"
-        first = second
-    waited = round(rounds * interval_s / 60)
+        else:
+            note = ""
+            last = _unread(second)
+        # A sample with no reading is skipped: the next one is compared with the last readable one.
+        if verdict != UNREAD:
+            first = second
+        if (clock.now() - started).total_seconds() >= max_wait_s:
+            break
+    waited = round((clock.now() - started).total_seconds() / 60)
     return Outcome(
         False,
         f"not quiet after {waited} minutes: {last}; nothing starts this run",

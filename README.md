@@ -21,8 +21,8 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 
 Between the gates, work is bounded by a subscription session-usage stop, a run window, per-stage
 turn ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation
-while two of its delivery pull requests are open upstream. A scheduled run also starts only while
-nobody else is using the subscription.
+while two of its delivery pull requests are open upstream. A run of `implement.yml` or
+`discover.yml` also starts only while nobody else is using the subscription.
 
 ## What it will and will not do
 
@@ -60,9 +60,9 @@ nobody else is using the subscription.
   runs. A delivery a person runs by hand with `harness deliver` waits the same way (D90).
 - **It waits for a quiet subscription.** Before `implement.yml` or `discover.yml` starts
   anything, `harness quiet` reads the subscription's usage twice, ten minutes apart, and starts
-  nothing unless it held still. The JackiOh night bot shares the subscription, and a rise during
-  one of its builds is that bot rather than a person. Otherwise it keeps sampling for up to 40
-  minutes and then gives up for that run (D93).
+  nothing unless it held still. The JackiOh night bot shares the subscription, so a rise during
+  one of its builds counts as that bot. Otherwise it keeps sampling for up to 40 minutes and then
+  gives up for that run (D93).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`
@@ -115,9 +115,10 @@ makes a good request.
 The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 11:00
 to 16:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
 `harness run --item N` and `--force` start work outside it; neither bypasses the usage stop.
-`discover.yml` is not window-gated. Inside the window a run then waits for a quiet subscription,
-which `--force` and `implement.yml`'s `issue` input skip; `feedback.yml`, which answers your
-comments, never waits.
+`discover.yml` is not window-gated. A run of either then waits for a quiet subscription, which
+`--force` and `implement.yml`'s `issue` input skip, and an `implement.yml` run whose window closes
+during the wait starts nothing. `feedback.yml` never waits: it answers your comments, and its
+weekday sweeps also build what is approved.
 
 To lend it time you are not using, `/harness block <n>` (level 3) suspends the run window for the
 next `n` five-hour subscription sessions, at most six. It expires by itself, `/harness block 0`

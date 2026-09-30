@@ -51,7 +51,7 @@ EXIT_ARGV_TOO_LONG = 126
 ARGV_LIMIT_WINDOWS = 8191
 ARGV_LIMIT_POSIX = 131072
 
-#: The quiet check's usage sample (D92): the smallest call that still carries a
+#: The quiet check's usage sample (D93): the smallest call that still carries a
 #: `rate_limit_event`. The argv and the prompt are a contract shared with the partner bot.
 PING_STAGE = "ping"
 PING_PROMPT = "Reply with the word ok."
@@ -451,7 +451,7 @@ class ClaudeCliRunner:
         return self._from_json(request, data, stderr, exit_code, usage=usage)
 
     def ping(self, timeout_s: int = PING_TIMEOUT_S) -> RunResult:
-        """One usage sample for the quiet check (D92): :data:`PING_FLAGS`, the prompt on stdin,
+        """One usage sample for the quiet check (D93): :data:`PING_FLAGS`, the prompt on stdin,
         and :meth:`build_env`'s environment, in an empty temporary directory so no CLAUDE.md
         is read. ``usage`` is the last `rate_limit_event` whatever the exit; the directory is
         the one the harness creates outside its write roots, and it is removed on return.

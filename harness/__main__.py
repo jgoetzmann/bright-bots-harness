@@ -124,7 +124,7 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("CO_AUTHOR", "co_author"),
     # How many delivery pull requests may be open upstream before no new item starts (D88).
     ("MAX_OPEN_DELIVERIES", "max_open_deliveries"),
-    # The quiet check before a spending run, and the bot sharing the subscription (D92).
+    # The quiet check before a spending run, and the bot sharing the subscription (D93).
     ("QUIET_ENABLED", "quiet_enabled"),
     ("QUIET_INTERVAL_MINUTES", "quiet_interval_minutes"),
     ("QUIET_MAX_WAIT_MINUTES", "quiet_max_wait_minutes"),
@@ -694,7 +694,7 @@ def _doctor_config_keys(
         for key, attr in CONFIG_KEYS:
             value = getattr(config, attr, None)
             if isinstance(value, tuple):
-                # The one list-valued knob, printed as it is written (D92).
+                # The one list-valued knob, printed as it is written (D93).
                 value = config_mod.QUIET_STEP_SEPARATOR.join(str(part) for part in value)
             keys[key] = "" if value is None else str(value)
         return keys
@@ -1843,7 +1843,7 @@ QUIET_ERROR_CHARS = 300
 
 
 def _quiet_sample(ctx) -> quiet_mod.Sample:
-    """One ping, its reading stored as the ledger's usage observation (D92)."""
+    """One ping, its reading stored as the ledger's usage observation (D93)."""
     ping = getattr(ctx.runner, "ping", None)
     result = ping() if callable(ping) else None
     now = ctx.clock.now()
@@ -1902,7 +1902,7 @@ def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
 
 
 def cmd_quiet(args: argparse.Namespace) -> int:
-    """Wait until nobody else is using the subscription, or give up; exit 0 either way (D92).
+    """Wait until nobody else is using the subscription, or give up; exit 0 either way (D93).
 
     Prints ``quiet`` or ``not quiet`` and one reason; `--json` adds the samples and whether the
     partner bot's spending excused a rise, and a workflow starts nothing while ``.quiet`` is
@@ -3067,7 +3067,7 @@ def _halt_lines(led) -> list[str]:
 
 
 def _quiet_lines(led) -> list[str]:
-    """The last quiet check in one line, and nothing before the first one (B535)."""
+    """The last quiet check in one line, and nothing before the first one (B536)."""
     last = led.quiet_check()
     if last is None:
         return []

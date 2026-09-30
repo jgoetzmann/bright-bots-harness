@@ -857,7 +857,7 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "CO_AUTHOR": "octo <1+octo@users.noreply.github.com>",
     # D88.
     "MAX_OPEN_DELIVERIES": 4,
-    # D92 (B533).
+    # D93 (B534).
     "QUIET_ENABLED": False,
     "QUIET_INTERVAL_MINUTES": 5,
     "QUIET_MAX_WAIT_MINUTES": 30,

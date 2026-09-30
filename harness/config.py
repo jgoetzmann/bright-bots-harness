@@ -99,7 +99,7 @@ FIELD_KEYS: tuple[str, ...] = (
     "CO_AUTHOR",
     # D88: how many delivery pull requests may be open upstream at once.
     "MAX_OPEN_DELIVERIES",
-    # D92: start spending only while the subscription is quiet, and the bot that shares it.
+    # D93: start spending only while the subscription is quiet, and the bot that shares it.
     "QUIET_ENABLED",
     "QUIET_INTERVAL_MINUTES",
     "QUIET_MAX_WAIT_MINUTES",
@@ -148,7 +148,7 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "QUIET_PARTNER_STEPS",
 )
 
-#: The ranges the quiet check's two durations must fall in, in minutes (D92). The wait stops at
+#: The ranges the quiet check's two durations must fall in, in minutes (D93). The wait stops at
 #: an hour so a run that waits the longest keeps an hour of its 120 for the work (B125).
 QUIET_INTERVAL_RANGE: tuple[int, int] = (1, 60)
 QUIET_MAX_WAIT_LIMIT = 60
@@ -271,7 +271,7 @@ class Config:
     co_author: str
     #: D88: open delivery pull requests upstream at which no new item starts; 0 is no cap.
     max_open_deliveries: int
-    #: D92: the quiet check before a spending run, its two durations, and the bot sharing the
+    #: D93: the quiet check before a spending run, its two durations, and the bot sharing the
     #: subscription whose spending excuses a rise; an empty partner repository excuses none.
     quiet_enabled: bool
     quiet_interval_minutes: int
@@ -753,7 +753,7 @@ def load_config(
 
 
 def _quiet_partner(values: Mapping[str, str]) -> tuple[str, str, tuple[str, ...]]:
-    """``(repo, workflow file, step-name prefixes)`` of the quiet check's partner (D92).
+    """``(repo, workflow file, step-name prefixes)`` of the quiet check's partner (D93).
 
     An empty repository is no partner, and then the other two are ignored; with one, the
     workflow must be a file name and at least one prefix must be given.

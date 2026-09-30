@@ -1,4 +1,4 @@
-"""B525-B535: the quiet check that starts spending only while the subscription is quiet (D92).
+"""B526-B536: the quiet check that starts spending only while the subscription is quiet (D93).
 
 Nothing here spends, sleeps or reaches the network: the ping is a scripted runner or the fake
 backend's `ping.json`, `SLEEP` advances a frozen clock, and the partner bot's runs and jobs come
@@ -88,12 +88,12 @@ def run(script: Script, *, intervals: int = 4, partner_check=never_spending) -> 
 
 
 # --------------------------------------------------------------------------------------
-# B525 - quiet when neither window rose between two samples an interval apart
+# B526 - quiet when neither window rose between two samples an interval apart
 # --------------------------------------------------------------------------------------
 
 
 def test_B525_two_equal_readings_an_interval_apart_are_quiet():
-    """B525: one interval, two pings, and no window rose."""
+    """B526: one interval, two pings, and no window rose."""
     script = Script(reading(0.2, week=0.4), reading(0.2, week=0.4))
 
     outcome = run(script)
@@ -105,7 +105,7 @@ def test_B525_two_equal_readings_an_interval_apart_are_quiet():
 
 
 def test_B525_a_fall_is_quiet_and_every_shared_window_is_compared():
-    """B525: only a rise counts, in either window the two readings share."""
+    """B526: only a rise counts, in either window the two readings share."""
     first, second = sample(T1, reading(0.3, week=0.5)), sample(T2, reading(0.2, week=0.5))
     assert quiet.compare(first, second) == (quiet.QUIET, ())
 
@@ -116,7 +116,7 @@ def test_B525_a_fall_is_quiet_and_every_shared_window_is_compared():
 
 
 def test_B525_the_json_names_quiet_the_reason_the_samples_and_the_excuse():
-    """B525: the document a workflow reads with jq."""
+    """B526: the document a workflow reads with jq."""
     script = Script(reading(0.2), reading(0.2))
 
     payload = run(script).to_json()
@@ -129,12 +129,12 @@ def test_B525_the_json_names_quiet_the_reason_the_samples_and_the_excuse():
 
 
 # --------------------------------------------------------------------------------------
-# B526 - a rise waits another interval, and the run gives up after the longest wait
+# B527 - a rise waits another interval, and the run gives up after the longest wait
 # --------------------------------------------------------------------------------------
 
 
 def test_B526_a_rise_samples_again_and_a_later_quiet_pair_goes_ahead():
-    """B526: 20% -> 24% is somebody spending; 24% -> 24% is quiet."""
+    """B527: 20% -> 24% is somebody spending; 24% -> 24% is quiet."""
     script = Script(reading(0.20), reading(0.24), reading(0.24))
 
     outcome = run(script)
@@ -145,7 +145,7 @@ def test_B526_a_rise_samples_again_and_a_later_quiet_pair_goes_ahead():
 
 
 def test_B526_a_rise_every_interval_gives_up_after_the_longest_wait():
-    """B526: 40 minutes at 10 is four pairs from five samples, then nothing starts."""
+    """B527: 40 minutes at 10 is four pairs from five samples, then nothing starts."""
     script = Script(*(reading(0.2 + n / 100) for n in range(5)))
 
     outcome = run(script, intervals=4)
@@ -161,12 +161,12 @@ def test_B526_a_rise_every_interval_gives_up_after_the_longest_wait():
 
 
 # --------------------------------------------------------------------------------------
-# B527 - a five-hour reset between the samples is inconclusive
+# B528 - a five-hour reset between the samples is inconclusive
 # --------------------------------------------------------------------------------------
 
 
 def test_B527_a_changed_five_hour_reset_is_inconclusive_and_takes_another_interval():
-    """B527: 60% before the reset and 2% after it says nothing about who is spending."""
+    """B528: 60% before the reset and 2% after it says nothing about who is spending."""
     later = "2026-09-01T17:10:00Z"
     first, second = sample(T1, reading(0.6)), sample(T2, reading(0.02, reset=later))
     assert quiet.compare(first, second) == (quiet.RESET, ())
@@ -181,7 +181,7 @@ def test_B527_a_changed_five_hour_reset_is_inconclusive_and_takes_another_interv
 
 
 def test_B527_resets_until_the_longest_wait_give_up_with_the_reset_as_the_reason():
-    """B527: an inconclusive pair is not a quiet one."""
+    """B528: an inconclusive pair is not a quiet one."""
     resets = [f"2026-09-01T1{n}:00:00Z" for n in range(3)]
     script = Script(*(reading(0.1, reset=value) for value in resets))
 
@@ -192,12 +192,12 @@ def test_B527_resets_until_the_longest_wait_give_up_with_the_reset_as_the_reason
 
 
 # --------------------------------------------------------------------------------------
-# B528 - a refused ping is a usage stop
+# B529 - a refused ping is a usage stop
 # --------------------------------------------------------------------------------------
 
 
 def test_B528_a_refused_first_ping_stops_at_once():
-    """B528: `rejected` is the subscription refusing; no interval is waited for it."""
+    """B529: `rejected` is the subscription refusing; no interval is waited for it."""
     script = Script(reading(1.0, status="rejected"))
 
     outcome = run(script)
@@ -210,7 +210,7 @@ def test_B528_a_refused_first_ping_stops_at_once():
 
 
 def test_B528_a_refused_second_ping_stops_too_and_overage_is_no_refusal():
-    """B528: a call running on extra usage was not refused (B396)."""
+    """B529: a call running on extra usage was not refused (B396)."""
     script = Script(reading(0.5), reading(1.0, status="rejected"))
     assert run(script).quiet is False
 
@@ -220,12 +220,12 @@ def test_B528_a_refused_second_ping_stops_too_and_overage_is_no_refusal():
 
 
 # --------------------------------------------------------------------------------------
-# B529 - a ping with no reading admits
+# B530 - a ping with no reading admits
 # --------------------------------------------------------------------------------------
 
 
 def test_B529_a_ping_that_reports_no_usage_admits_without_waiting():
-    """B529: no decision may depend on the signal being there (B114)."""
+    """B530: no decision may depend on the signal being there (B114)."""
     script = Script(None)
 
     outcome = run(script)
@@ -236,7 +236,7 @@ def test_B529_a_ping_that_reports_no_usage_admits_without_waiting():
 
 
 def test_B529_a_second_ping_with_no_shared_window_admits():
-    """B529: two readings with no window in common cannot be compared."""
+    """B530: two readings with no window in common cannot be compared."""
     first = sample(T1, reading(0.2))
     only_week = sample(T2, reading(None, week=0.3))
     assert quiet.compare(first, only_week) == (quiet.UNREAD, ())
@@ -244,7 +244,7 @@ def test_B529_a_second_ping_with_no_shared_window_admits():
 
 
 # --------------------------------------------------------------------------------------
-# B530 - a rise is excused while the partner bot was spending
+# B531 - a rise is excused while the partner bot was spending
 # --------------------------------------------------------------------------------------
 
 
@@ -286,7 +286,7 @@ def one_step(run_id: int, **step) -> tuple[list[dict], dict]:
 
 
 def test_B530_a_spending_step_running_across_the_interval_excuses_the_rise():
-    """B530: run 9004's build step started at 12:03 and is still going."""
+    """B531: run 9004's build step started at 12:03 and is still going."""
     reader = Reader()
 
     steps, note = quiet.partner_spending(PARTNER, T1, T2, reader=reader)
@@ -300,7 +300,7 @@ def test_B530_a_spending_step_running_across_the_interval_excuses_the_rise():
 
 
 def test_B530_the_fixture_without_the_running_build_excuses_nothing():
-    """B530: a step that ended before t1, and one still queued, spent nothing in [t1, t2]."""
+    """B531: a step that ended before t1, and one still queued, spent nothing in [t1, t2]."""
     runs = [run for run in partner_runs() if run["id"] != 9004]
 
     steps, note = quiet.partner_spending(PARTNER, T1, T2, reader=Reader(runs=runs))
@@ -337,7 +337,7 @@ def test_B530_the_fixture_without_the_running_build_excuses_nothing():
     ],
 )
 def test_B530_a_step_counts_only_when_it_overlaps_the_interval(step, excused):
-    """B530: started by t2, not finished before t1, a spending name, and not skipped."""
+    """B531: started by t2, not finished before t1, a spending name, and not skipped."""
     runs, jobs = one_step(77, **step)
 
     steps, _ = quiet.partner_spending(PARTNER, T1, T2, reader=Reader(runs=runs, jobs=jobs))
@@ -346,7 +346,7 @@ def test_B530_a_step_counts_only_when_it_overlaps_the_interval(step, excused):
 
 
 def test_B530_an_api_error_excuses_nothing():
-    """B530: failing closed; the note says why."""
+    """B531: failing closed; the note says why."""
     failing = Reader(error=GitHubError("github returned 500 for x: boom", status=500))
 
     steps, note = quiet.partner_spending(PARTNER, T1, T2, reader=failing, public=lambda: Reader())
@@ -357,20 +357,20 @@ def test_B530_an_api_error_excuses_nothing():
 
 @pytest.mark.parametrize("broken", [KeyError("id"), ValueError("not an ISO timestamp"), OSError()])
 def test_B530_any_other_failure_excuses_nothing(broken):
-    """B530: a malformed answer or a dropped connection is not the partner spending."""
+    """B531: a malformed answer or a dropped connection is not the partner spending."""
     steps, note = quiet.partner_spending(PARTNER, T1, T2, reader=Reader(error=broken))
 
     assert steps == [] and note.startswith("the partner could not be read")
 
 
 def test_B530_no_partner_excuses_nothing():
-    """B530: an empty QUIET_PARTNER_REPO turns excusing off."""
+    """B531: an empty QUIET_PARTNER_REPO turns excusing off."""
     assert quiet.partner_spending(None, T1, T2, reader=Reader()) == ([], quiet.NO_PARTNER)
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
 def test_B530_a_refused_token_read_is_retried_once_without_the_token(status):
-    """B530: the partner repository is public, so a token without access to it is no reason
+    """B531: the partner repository is public, so a token without access to it is no reason
     to give up."""
     refused = Reader(error=GitHubError(f"github returned {status} for x", status=status))
     public = Reader()
@@ -386,7 +386,7 @@ def test_B530_a_refused_token_read_is_retried_once_without_the_token(status):
 
 
 def test_B530_the_client_reads_both_endpoints_with_the_token_then_once_without(tmp_path):
-    """B530: the paths the contract names, the token on the first read, none on the retry."""
+    """B531: the paths the contract names, the token on the first read, none on the retry."""
     from tests.conftest import VALID_GHP
 
     runs_url = (
@@ -427,7 +427,7 @@ def test_B530_the_client_reads_both_endpoints_with_the_token_then_once_without(t
 
 
 def test_B530_an_excused_rise_is_quiet_and_says_whose_spending_excused_it():
-    """B530: the partner's build explains 20% -> 26%, so this run goes ahead."""
+    """B531: the partner's build explains 20% -> 26%, so this run goes ahead."""
     script = Script(reading(0.20), reading(0.26))
     seen: list[tuple[datetime, datetime]] = []
 
@@ -444,7 +444,7 @@ def test_B530_an_excused_rise_is_quiet_and_says_whose_spending_excused_it():
 
 
 def test_B530_an_unexcused_rise_is_not_quiet():
-    """B530: with the partner idle, the rise is somebody else."""
+    """B531: with the partner idle, the rise is somebody else."""
     runs = [run for run in partner_runs() if run["id"] != 9004]
 
     def check(start, end):
@@ -457,7 +457,7 @@ def test_B530_an_unexcused_rise_is_not_quiet():
 
 
 # --------------------------------------------------------------------------------------
-# B531-B532 - `harness quiet`, the skips, the ping and the ledger
+# B532-B533 - `harness quiet`, the skips, the ping and the ledger
 # --------------------------------------------------------------------------------------
 
 
@@ -523,7 +523,7 @@ def stored_window(root: Path) -> dict:
 def test_B531_the_command_is_quiet_on_the_fake_backend_and_keeps_every_reading(
     repo, monkeypatch, capsys
 ):
-    """B531 / B532: `BACKEND=fake` replays `ping.json` twice, spends nothing, and each reading
+    """B532 / B533: `BACKEND=fake` replays `ping.json` twice, spends nothing, and each reading
     becomes the ledger's usage observation; the verdict is stored beside it."""
     write_d2_repo(repo.path, QUIET_PARTNER_REPO="")
 
@@ -539,7 +539,7 @@ def test_B531_the_command_is_quiet_on_the_fake_backend_and_keeps_every_reading(
 
 
 def test_B531_the_command_gives_up_after_the_wait_and_still_exits_zero(repo, monkeypatch, capsys):
-    """B531: not quiet is a normal outcome; the text form is one line."""
+    """B532: not quiet is a normal outcome; the text form is one line."""
     write_d2_repo(repo.path, QUIET_PARTNER_REPO="", QUIET_MAX_WAIT_MINUTES="20")
     use_runner(monkeypatch, PingRunner(reading(0.1), reading(0.2), reading(0.3)))
 
@@ -555,7 +555,7 @@ def test_B531_the_command_gives_up_after_the_wait_and_still_exits_zero(repo, mon
 
 @pytest.mark.parametrize("argv", [["--force"], ["--force", "--items", "4"]])
 def test_B531_force_skips_the_check_and_pings_nothing(repo, monkeypatch, capsys, argv):
-    """B531: the operator asked for this run now."""
+    """B532: the operator asked for this run now."""
     write_d2_repo(repo.path)
     runner = PingRunner()
     use_runner(monkeypatch, runner)
@@ -567,7 +567,7 @@ def test_B531_force_skips_the_check_and_pings_nothing(repo, monkeypatch, capsys,
 
 
 def test_B531_an_item_forced_with_force_skips_the_check(repo, monkeypatch, capsys):
-    """B531: `/harness work ... --force` marked item 4 in the ledger; item 5 was not."""
+    """B532: `/harness work ... --force` marked item 4 in the ledger; item 5 was not."""
     write_d2_repo(repo.path, QUIET_PARTNER_REPO="")
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
     ledger.force(4)
@@ -593,7 +593,7 @@ def test_B531_an_item_forced_with_force_skips_the_check(repo, monkeypatch, capsy
     ],
 )
 def test_B531_a_known_answer_needs_no_ping(repo, monkeypatch, capsys, setup, expected):
-    """B531: the check off, a halt, the usage stop and a stored rate limit are each answered
+    """B532: the check off, a halt, the usage stop and a stored rate limit are each answered
     without a model call."""
     write_d2_repo(repo.path, QUIET_ENABLED="false" if setup == "disabled" else "true")
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
@@ -616,7 +616,7 @@ def test_B531_a_known_answer_needs_no_ping(repo, monkeypatch, capsys, setup, exp
 
 
 def test_B531_the_committed_halt_is_one_json_document_and_exit_zero(repo, capsys):
-    """B531: a workflow feeds this stdout to jq, so a halt answers in JSON too."""
+    """B532: a workflow feeds this stdout to jq, so a halt answers in JSON too."""
     write_d2_repo(repo.path)
     (repo.path / ".harness").mkdir()
     (repo.path / ".harness" / "HALT").write_text("stop\n", encoding="utf-8")
@@ -627,7 +627,7 @@ def test_B531_the_committed_halt_is_one_json_document_and_exit_zero(repo, capsys
 
 
 def test_B531_a_refused_ping_records_the_rate_limit_until_its_reset(repo, monkeypatch, capsys):
-    """B531 / B528: a refusal holds every call until the refused window resets (D71)."""
+    """B532 / B529: a refusal holds every call until the refused window resets (D71)."""
     write_d2_repo(repo.path)
     use_runner(monkeypatch, PingRunner(reading(1.0, status="rejected")))
 
@@ -638,7 +638,7 @@ def test_B531_a_refused_ping_records_the_rate_limit_until_its_reset(repo, monkey
 
 
 def test_B531_the_partner_excuses_a_rise_through_the_harness_client(repo, monkeypatch, capsys):
-    """B531 / B530: the committed partner, read through the context's GitHub client."""
+    """B532 / B531: the committed partner, read through the context's GitHub client."""
     write_d2_repo(
         repo.path,
         QUIET_PARTNER_REPO="jgoetzmann/JackiOh",
@@ -665,7 +665,7 @@ def test_B531_the_partner_excuses_a_rise_through_the_harness_client(repo, monkey
 
 
 def test_B532_the_ping_argv_prompt_directory_and_environment(monkeypatch):
-    """B532: the shared contract's argv, the prompt on stdin, an empty directory outside the
+    """B533: the shared contract's argv, the prompt on stdin, an empty directory outside the
     repository that is gone afterwards, and no API key in the child's environment."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-" + "x" * 30)
     stream = "\n".join(
@@ -718,7 +718,7 @@ def test_B532_the_ping_argv_prompt_directory_and_environment(monkeypatch):
 
 
 def test_B532_a_ping_that_cannot_run_carries_no_reading():
-    """B532: a timeout or a missing binary is a sample with an error and no usage."""
+    """B533: a timeout or a missing binary is a sample with an error and no usage."""
 
     def timeout(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, 1)
@@ -732,7 +732,7 @@ def test_B532_a_ping_that_cannot_run_carries_no_reading():
 
 
 def test_B532_the_fake_backend_replays_ping_json():
-    """B532: `BACKEND=fake` answers the ping from the committed fixture."""
+    """B533: `BACKEND=fake` answers the ping from the committed fixture."""
     shipped = json.loads((DEFAULT_FIXTURES_DIR / "ping.json").read_text(encoding="utf-8"))
 
     result = FakeRunner().ping()
@@ -742,12 +742,12 @@ def test_B532_the_fake_backend_replays_ping_json():
 
 
 # --------------------------------------------------------------------------------------
-# B533 - the six keys
+# B534 - the six keys
 # --------------------------------------------------------------------------------------
 
 
 def test_B533_the_committed_defaults_are_the_partner_and_ten_of_forty(tmp_path):
-    """B533: `.env.example` ships the check on, 10 and 40 minutes, and the JackiOh night bot."""
+    """B534: `.env.example` ships the check on, 10 and 40 minutes, and the JackiOh night bot."""
     example = tmp_path / ".env"
     example.write_text(
         (REPO_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8"
@@ -772,7 +772,7 @@ def test_B533_the_committed_defaults_are_the_partner_and_ten_of_forty(tmp_path):
 
 
 def test_B533_the_contract_step_names_are_not_prefixes_of_each_other():
-    """B533: this harness's own step is not one the partner counts as spending."""
+    """B534: this harness's own step is not one the partner counts as spending."""
     assert not QUIET_STEP.startswith("Build, check and review")
 
 
@@ -803,7 +803,7 @@ def half_partner(workflow: str, steps: str) -> dict[str, str]:
 def test_B533_an_out_of_range_or_half_configured_key_is_a_startup_error(
     tmp_path, write_env, overrides
 ):
-    """B533: refused at load, naming the key."""
+    """B534: refused at load, naming the key."""
     path = write_env(tmp_path / ".env", **overrides)
 
     with pytest.raises(ConfigError) as excinfo:
@@ -813,7 +813,7 @@ def test_B533_an_out_of_range_or_half_configured_key_is_a_startup_error(
 
 
 def test_B533_an_empty_partner_needs_nothing_else_and_steps_split_on_the_bar(tmp_path, write_env):
-    """B533: a prefix may hold a comma, so `|` separates them."""
+    """B534: a prefix may hold a comma, so `|` separates them."""
     none = load_config(env_path=write_env(tmp_path / ".env", QUIET_PARTNER_REPO=""), environ={})
     assert (none.quiet_partner_repo, none.quiet_partner_steps) == ("", ())
 
@@ -828,7 +828,7 @@ def test_B533_an_empty_partner_needs_nothing_else_and_steps_split_on_the_bar(tmp
 
 
 def test_B533_doctor_prints_the_prefixes_as_they_are_written(tmp_path, monkeypatch, capsys):
-    """B533: a tuple is shown joined with the bar, not as a Python repr."""
+    """B534: a tuple is shown joined with the bar, not as a Python repr."""
     monkeypatch.chdir(tmp_path)
     write_d2_repo(
         tmp_path,
@@ -846,7 +846,7 @@ def test_B533_doctor_prints_the_prefixes_as_they_are_written(tmp_path, monkeypat
 
 
 # --------------------------------------------------------------------------------------
-# B534 - where the check sits in the workflows
+# B535 - where the check sits in the workflows
 # --------------------------------------------------------------------------------------
 
 
@@ -870,7 +870,7 @@ def step_block(name: str, label: str) -> str:
     ],
 )
 def test_B534_the_check_is_the_step_right_before_the_spending_step(name, spender):
-    """B534: after dispatch, immediately before the spending step, which waits on its output."""
+    """B535: after dispatch, immediately before the spending step, which waits on its output."""
     names = step_names(name)
 
     assert names.count(QUIET_STEP) == 1
@@ -885,7 +885,7 @@ def test_B534_the_check_is_the_step_right_before_the_spending_step(name, spender
 
 
 def test_B534_an_issue_input_or_a_named_mode_is_the_operator_asking_now():
-    """B534: implement passes `--force` for an `issue` input and the plan's items otherwise;
+    """B535: implement passes `--force` for an `issue` input and the plan's items otherwise;
     discover passes it for any dispatched mode but triage."""
     implement = step_block("implement.yml", QUIET_STEP)
     assert 'if [ -n "${INPUT_ISSUE// }" ]; then\n            args=(--force)' in implement
@@ -902,13 +902,13 @@ def test_B534_an_issue_input_or_a_named_mode_is_the_operator_asking_now():
     "name", ["feedback.yml", "ack.yml", "heartbeat.yml", "ops.yml", "watchdog.yml"]
 )
 def test_B534_the_workflows_that_answer_a_person_do_not_wait(name):
-    """B534: a person commanding the harness is using it on purpose."""
+    """B535: a person commanding the harness is using it on purpose."""
     assert "harness quiet" not in (WORKFLOWS / name).read_text(encoding="utf-8")
     assert "--json quiet" not in (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
 def test_B534_the_steps_the_partner_watches_keep_their_names():
-    """B534: the JackiOh bot counts these steps of this harness as spending, by prefix."""
+    """B535: the JackiOh bot counts these steps of this harness as spending, by prefix."""
     names = step_names("implement.yml") + step_names("discover.yml") + step_names("feedback.yml")
     watched = ("Run planned items", "Discover and propose", "Sweep keywords", "Reconcile stale")
     for prefix in watched:
@@ -917,12 +917,12 @@ def test_B534_the_steps_the_partner_watches_keep_their_names():
 
 
 # --------------------------------------------------------------------------------------
-# B535 - status says when the last check ran and what it found
+# B536 - status says when the last check ran and what it found
 # --------------------------------------------------------------------------------------
 
 
 def test_B535_the_ledger_keeps_the_last_check_and_an_older_file_round_trips():
-    """B535: written only once a check has run, so a ledger without one is unchanged."""
+    """B536: written only once a check has run, so a ledger without one is unchanged."""
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
     before = ledger.to_json()
     assert "quiet" not in json.loads(before)["window"]
@@ -939,7 +939,7 @@ def test_B535_the_ledger_keeps_the_last_check_and_an_older_file_round_trips():
 
 
 def test_B535_status_names_the_last_check(repo, monkeypatch, capsys):
-    """B535: one line in `harness status`, and the record in its JSON."""
+    """B536: one line in `harness status`, and the record in its JSON."""
     write_d2_repo(repo.path, QUIET_PARTNER_REPO="")
     monkeypatch.setattr(gh_mod.GitHubReadOnly, "workflow_runs", lambda self, repo, **kw: [])
     capsys.readouterr()

@@ -349,7 +349,7 @@ class GitHubReadOnly:
 
     def workflow_file_runs(self, repo: str, workflow: str, *, per_page: int) -> list[dict]:
         """``/repos/{repo}/actions/workflows/{workflow}/runs``: one workflow's newest runs, one
-        page, for the quiet check's partner (D92)."""
+        page, for the quiet check's partner (D93)."""
         pairs = [("per_page", str(int(per_page)))]
         name = urllib.parse.quote(str(workflow), safe="")
         data = self.get(f"/repos/{repo}/actions/workflows/{name}/runs?{_query(pairs)}")
@@ -360,7 +360,7 @@ class GitHubReadOnly:
 
     def run_jobs(self, repo: str, run_id: int) -> list[dict]:
         """``/repos/{repo}/actions/runs/{run_id}/jobs``: each job of one run with its ``steps``,
-        one page of the largest size (D92)."""
+        one page of the largest size (D93)."""
         pairs = [("per_page", str(PER_PAGE))]
         data = self.get(f"/repos/{repo}/actions/runs/{int(run_id)}/jobs?{_query(pairs)}")
         rows = data.get("jobs") if isinstance(data, dict) else None

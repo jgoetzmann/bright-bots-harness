@@ -1594,7 +1594,7 @@ the model can edit to point the token elsewhere.
 
 Allocates B524.
 
-## D92 / B525-B535 - start only while the subscription is quiet
+## D93 / B526-B536 - start only while the subscription is quiet
 
 Decision:
 - One subscription serves this harness (runs start 11:00 to 16:00 UTC), the JackiOh night bot
@@ -1684,4 +1684,4 @@ Accepted gaps:
 - An operator `.env` written before this change lacks the three required keys and fails to load
   until they are added; `harness doctor` names them.
 
-Allocates B525-B535.
+Allocates B526-B536.

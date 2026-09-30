@@ -665,7 +665,7 @@ The subscription is shared three ways: this harness, the JackiOh night bot (`bot
 `jgoetzmann/JackiOh`, 21:00 to 07:00 America/Chicago) and you. The step **Wait until the
 subscription is quiet (harness quiet)** runs just before `implement.yml` runs its planned items and
 just before `discover.yml` discovers and proposes, and lets the run start only while nobody else is
-spending (D92):
+spending (D93):
 
 1. It pings: `claude --print --output-format stream-json --verbose --model haiku --max-turns 1
    --strict-mcp-config`, with `Reply with the word ok.` on stdin, in an empty temporary directory

@@ -333,7 +333,7 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 ```
 
 Exempts the item from the run window (daily 11:00 → 16:00 UTC) and from the wait for a quiet
-subscription (D92), and says so on the item, in the ledger and in the reply. It is honoured by
+subscription (D93), and says so on the item, in the ledger and in the reply. It is honoured by
 `implement`'s next run outside the window (a gate-1 merge or the operator's dispatch), not by the
 sweep (D68), and proposes nothing sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, the usage stop
@@ -465,7 +465,7 @@ harness local-loop           # the container loop: dispatch, run, sleep
 harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 ```
 
-`quiet` is what `implement.yml` and `discover.yml` run just before they start work (D92). It pings
+`quiet` is what `implement.yml` and `discover.yml` run just before they start work (D93). It pings
 the subscription with the smallest model call there is, waits `QUIET_INTERVAL_MINUTES` (10),
 pings again, and prints `quiet` when neither usage window rose in between. A rise while the JackiOh
 night bot, which shares the subscription, was inside a `Build, check and review` step is that bot

@@ -402,7 +402,7 @@ class Ledger:
     # -- the quiet check -----------------------------------------------------------------------
 
     def record_quiet(self, *, at: str, quiet: bool, reason: str) -> None:
-        """Keep the last quiet check: when it ran, whether it read quiet, and why (D92)."""
+        """Keep the last quiet check: when it ran, whether it read quiet, and why (D93)."""
         self.window["quiet"] = {"at": str(at), "quiet": bool(quiet), "reason": str(reason)}
 
     def quiet_check(self) -> dict | None:
@@ -478,7 +478,7 @@ class Ledger:
                 "anchor": str(block.get("anchor", "")),
                 "reason": str(block.get("reason", "")),
             }
-        # Written only once a quiet check has run, like the four above (D92).
+        # Written only once a quiet check has run, like the four above (D93).
         quiet = self.quiet_check()
         if quiet is not None:
             window["quiet"] = {

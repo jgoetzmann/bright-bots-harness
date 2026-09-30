@@ -1,4 +1,4 @@
-"""The quiet check: start spending only while nobody else is using the subscription (D92).
+"""The quiet check: start spending only while nobody else is using the subscription (D93).
 
 Two usage readings an interval apart, each from the smallest model call there is (the ping).
 The pair is quiet when no window's utilization rose between them. A rise is excused while the
@@ -120,11 +120,11 @@ def _five_hour_reset(usage: object) -> object:
 
 
 def compare(first: Sample, second: Sample) -> tuple[str, tuple[str, ...]]:
-    """The pair's verdict and the windows that rose (B525).
+    """The pair's verdict and the windows that rose (B526).
 
     ``refused`` when either reading says the subscription refused the ping; ``unread`` when the
     two share no window with a utilization; ``reset`` when the five-hour ``resets_at`` changed
-    between them, which leaves the pair inconclusive (B527); else ``rose`` or ``quiet``.
+    between them, which leaves the pair inconclusive (B528); else ``rose`` or ``quiet``.
     """
     if usage_rejected(first.usage) or usage_rejected(second.usage):
         return REFUSED, ()
@@ -143,7 +143,7 @@ def partner_steps(reader: Any, partner: Partner, start: datetime, end: datetime)
 
     Only a run still going, or updated at or after ``start``, is opened. A step counts when its
     name starts with one of the prefixes, it started by ``end``, it had not finished before
-    ``start``, and GitHub did not skip it (B530).
+    ``start``, and GitHub did not skip it (B531).
     """
     found: list[str] = []
     for run in reader.workflow_file_runs(partner.repo, partner.workflow, per_page=PARTNER_RUNS):
@@ -182,7 +182,7 @@ def partner_spending(
 
     ``reader`` goes first. ``public`` builds a reader that sends no token, tried once when the
     first answer was a 401, 403 or 404. Any failure to read is a note and excuses nothing
-    (B530).
+    (B531).
     """
     if partner is None:
         return [], NO_PARTNER
@@ -234,9 +234,9 @@ def wait_until_quiet(
 ) -> Outcome:
     """Sample, wait ``interval_s``, sample, until a pair is quiet or ``intervals`` are spent.
 
-    A rise the partner check explains is quiet (B530) and one it does not explain waits another
-    interval, as does a reset pair (B527); after the last interval the run gives up (B526). A
-    refusal stops at once (B528), and a sample with no reading admits (B529).
+    A rise the partner check explains is quiet (B531) and one it does not explain waits another
+    interval, as does a reset pair (B528); after the last interval the run gives up (B527). A
+    refusal stops at once (B529), and a sample with no reading admits (B530).
     """
     first = sample()
     samples = [first]

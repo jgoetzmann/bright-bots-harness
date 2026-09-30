@@ -30,7 +30,7 @@ class FakeRunner:
         return self.fixtures_dir / f"{stage}.json"
 
     def ping(self) -> RunResult:
-        """The quiet check's sample, replayed from ``ping.json``; nothing is spent (D92)."""
+        """The quiet check's sample, replayed from ``ping.json``; nothing is spent (D93)."""
         return self.run(
             RunRequest(
                 stage="ping",

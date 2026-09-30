@@ -205,7 +205,7 @@ jobs:
               echo "proceed=true" >> "$GITHUB_OUTPUT" ;;
           esac
 
-        # D92: nothing starts while somebody else is using the subscription. A dispatch in any mode
+        # D93: nothing starts while somebody else is using the subscription. A dispatch in any mode
         # but triage names what to do, which is the operator asking for it now, so it skips the
         # wait; a triage dispatch waits like the schedule. It exits 0 either way, and while it
         # waits the job holds the ledger lock.

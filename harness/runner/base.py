@@ -153,7 +153,7 @@ class Runner(Protocol):
     def run(self, request: RunRequest) -> RunResult: ...
 
     def ping(self) -> RunResult:
-        """One minimal call whose only product is its ``usage`` reading (D92)."""
+        """One minimal call whose only product is its ``usage`` reading (D93)."""
         ...
 
 

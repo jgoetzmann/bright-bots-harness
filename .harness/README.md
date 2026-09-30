@@ -17,7 +17,7 @@ A knob that changes how much or how often the harness works: concurrency, revise
 self-audit cap, the decomposition bound, the session usage stop, the run window, the suggestion
 and ask limits, how many delivery pull requests may be open upstream at once, whether it may
 comment upstream, the fork and upstream names, the inbox and tracking issues, the trust file path,
-and the quiet check with the partner bot whose spending it excuses (D92).
+and the quiet check with the partner bot whose spending it excuses (D93).
 [docs/OPERATIONS.md](../docs/OPERATIONS.md) explains the usage stop, the run window and the quiet
 check, and how to change them.
 

@@ -201,7 +201,7 @@ jobs:
           echo "items=${items}" >> "$GITHUB_OUTPUT"
           echo "plan: start=[${items}] reason=$(printf '%s' "$plan" | jq -r '.reason')"
 
-        # D92: nothing starts while somebody else is using the subscription. The check pings only
+        # D93: nothing starts while somebody else is using the subscription. The check pings only
         # when there is something to start; an `issue` input, or an item forced with `--force`,
         # is the operator asking for it now and skips the wait. It exits 0 either way, and while
         # it waits the job holds the ledger lock.

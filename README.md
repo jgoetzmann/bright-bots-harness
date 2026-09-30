@@ -62,7 +62,7 @@ nobody else is using the subscription.
   anything, `harness quiet` reads the subscription's usage twice, ten minutes apart, and starts
   nothing unless it held still. The JackiOh night bot shares the subscription, and a rise during
   one of its builds is that bot rather than a person. Otherwise it keeps sampling for up to 40
-  minutes and then gives up for that run (D92).
+  minutes and then gives up for that run (D93).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`
@@ -129,7 +129,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B535 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390, B394–B524 and B526–B536 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

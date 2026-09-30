@@ -65,7 +65,7 @@ SPEC_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
-    # D92: the quiet check before a spending run starts anything.
+    # D93: the quiet check before a spending run starts anything.
     "harness/quiet.py",
 ]
 
@@ -553,7 +553,7 @@ D2_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
-    # D92: the quiet check before a spending run starts anything.
+    # D93: the quiet check before a spending run starts anything.
     "harness/quiet.py",
 ]
 
@@ -2816,7 +2816,7 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
     reachable = {
         "discover", "propose", "implement", "package", "revise", "decompose",
         "diagnose_gate_failure", "ask", "audit",
-        # The quiet check's sample (D92).
+        # The quiet check's sample (D93).
         "ping",
     }
     present = {path.stem for path in DEFAULT_FIXTURES_DIR.glob("*.json")}

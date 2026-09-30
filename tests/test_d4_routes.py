@@ -2161,18 +2161,22 @@ def test_B525_a_comment_the_limit_stopped_first_is_held_for_the_next_sweep(tmp_p
     real, main_mod._act_on_command = _limited(main_mod)
     try:
         _records, keep_going = main_mod.run_comment(
-            rig.ctx, rig.config, [_cmd("revise", surface="delivery_pr", number=929, args="es")]
+            rig.ctx, rig.config,
+            [dataclasses.replace(_cmd("revise", surface="delivery_pr", number=929, args="es"),
+                                 posted="2026-09-01T11:00:00Z")],
         )
     finally:
         main_mod._act_on_command = real
 
     assert keep_going is False
-    assert not rig.ctx.ledger.seen("IC_x")
+    assert rig.ctx.ledger.seen("IC_x"), "unseen by the first sweep after the reset"
     assert rig.ctx.ledger.retry_threads() == [
-        {"repo": rig.config.upstream_repo, "surface": "delivery_pr", "number": 929}
+        {"repo": rig.config.upstream_repo, "surface": "delivery_pr", "number": 929,
+         "comment_id": "IC_x", "since": "2026-09-01T11:00:00Z"}
     ]
     (reply,) = [body for *_where, body in rig.gh.comments_posted]
     assert "Not now — rate limited until 2026-09-09T12:00:00Z" in reply
+    assert "runs again on the first sweep after the reset" in reply
 
 
 def test_B525_a_comment_partly_run_is_not_replayed(tmp_path):
@@ -2192,3 +2196,77 @@ def test_B525_a_comment_partly_run_is_not_replayed(tmp_path):
     assert rig.ctx.ledger.seen("IC_x")
     assert rig.ctx.ledger.retry_threads() == []
     assert "not run — rate limited" in rig.gh.comments_posted[-1][2]
+
+
+def test_B525_a_command_the_stored_limit_refuses_is_held_too(tmp_path):
+    """B525: after the first limited call the governor refuses every spending command until the
+    reset; one posted in that time is held like the first, and the batch goes on, since a
+    command that spends nothing can still run."""
+    import harness.__main__ as main_mod
+    from harness.errors import BudgetExhausted
+
+    rig = request_rig(tmp_path)
+    rig.ctx.ledger.set_rate_limited("2026-09-09T12:00:00Z")
+    real = main_mod._act_on_command
+
+    def refused(ctx, config, cmd):
+        raise BudgetExhausted("rate limited until 2026-09-09T12:00:00Z")
+
+    main_mod._act_on_command = refused
+    try:
+        cmds = [dataclasses.replace(_cmd("revise", surface="delivery_pr", number=929),
+                                    comment_id="IC_y") for _ in range(2)]
+        records, keep_going = main_mod.run_comment(rig.ctx, rig.config, cmds)
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is True
+    assert len(records) == 1, "the rest of the comment runs with it after the reset"
+    assert [t["comment_id"] for t in rig.ctx.ledger.retry_threads()] == ["IC_y"]
+    assert "Not now — rate limited until 2026-09-09T12:00:00Z" in rig.gh.comments_posted[-1][2]
+
+
+def test_B525_a_usage_stop_is_answered_and_not_held(tmp_path):
+    """B525: a usage stop has no reset for a sweep to wait on, so the reply is the plain one."""
+    import harness.__main__ as main_mod
+    from harness.errors import BudgetExhausted
+
+    rig = request_rig(tmp_path)
+    real = main_mod._act_on_command
+
+    def refused(ctx, config, cmd):
+        raise BudgetExhausted("session usage 85% is past the 80% stop")
+
+    main_mod._act_on_command = refused
+    try:
+        main_mod.run_comment(rig.ctx, rig.config, [_cmd("revise", surface="delivery_pr")])
+    finally:
+        main_mod._act_on_command = real
+
+    assert rig.ctx.ledger.retry_threads() == []
+    assert rig.gh.comments_posted[-1][2].startswith("Not now — session usage 85% is past")
+
+
+def test_B525_a_github_ceiling_is_not_held(tmp_path):
+    """B525: GitHub's ceiling can stop a command after its first write, so replaying it could
+    do that write twice; the person is asked to say it again, and no URL is echoed."""
+    import harness.__main__ as main_mod
+    from harness.errors import RateCeilingReached
+
+    rig = request_rig(tmp_path)
+    real = main_mod._act_on_command
+
+    def ceiling(ctx, config, cmd):
+        raise RateCeilingReached("403 https://api.github.com/repos/o/r/issues/1/comments")
+
+    main_mod._act_on_command = ceiling
+    try:
+        _records, keep_going = main_mod.run_comment(rig.ctx, rig.config, [_cmd("status")])
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is False
+    assert rig.ctx.ledger.retry_threads() == []
+    reply = rig.gh.comments_posted[-1][2]
+    assert reply.startswith("not run — GitHub's API rate ceiling was reached")
+    assert "api.github.com" not in reply

@@ -6,7 +6,7 @@ import logging
 import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from harness.errors import GitHubError
@@ -169,6 +169,8 @@ class Command:
     #: It rides beside `args`, never inside: a stage reads `args` as what was asked for, so
     #: `/harness work #5 --force` from level 2 stays a pointer to issue 5.
     note: str = ""
+    #: When the comment was posted; a held comment's thread is re-read from here (D92).
+    posted: str = field(default="", compare=False)
 
 
 def comment_id(comment: Mapping[str, Any]) -> str:
@@ -376,9 +378,13 @@ def commands_from(
     ledger.mark_seen(cid)
     actor = str(comment["user"]["login"])
     level = trusted.level_of(actor) if hasattr(trusted, "level_of") else 1
+    posted = str(comment.get("created_at") or "")
     return [
-        _one(v, a, typed=t, surface=surface, number=number, cid=cid, actor=actor, level=level,
-             ledger=ledger)
+        replace(
+            _one(v, a, typed=t, surface=surface, number=number, cid=cid, actor=actor,
+                 level=level, ledger=ledger),
+            posted=posted,
+        )
         for v, a, t in parsed
     ]
 
@@ -569,13 +575,20 @@ def sweep(
                 continue
             commands.extend(found)
 
+    # A held comment stays seen while the stored limit stands, so no read collects it early;
+    # after the reset it is unseen and its thread read from when it was posted. Entries are
+    # released only when the sweep returns, so a sweep that raises reads them again (D92).
+    held = [] if ledger.rate_limited(now_iso) else ledger.retry_threads()
+    for entry in held:
+        ledger.unsee(str(entry.get("comment_id", "")))
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))
-    # Threads a rate limit left commands on are read whole, however old those commands are,
-    # and then forgotten; a command stopped again is held again (D92).
-    for held in ledger.retry_threads():
-        read(str(held.get("repo", "")), str(held.get("surface", "")), int(held.get("number", 0)))
-    ledger.clear_retry_threads()
+    for entry in held:
+        repo, number = str(entry.get("repo", "")), int(entry.get("number", 0) or 0)
+        try:
+            read(repo, str(entry.get("surface", "")), number, bound=str(entry.get("since") or ""))
+        except GitHubError as exc:
+            log.warning("held thread %s#%s unreadable, dropped: %s", repo, number, exc)
     if thread and int(thread) != int(inbox_issue or 0):
         try:
             data = gh.get(f"/repos/{self_repo}/issues/{int(thread)}")
@@ -595,6 +608,7 @@ def sweep(
         # product-issue mentions, so the inbox is read above this line and what it found is
         # returned rather than letting the refusal out of `sweep`.
         log.warning("notifications unavailable, inbox only: %s", exc)
+        ledger.release_retry_threads(held)
         return commands
     for notification in notifications:
         target = thread_target(
@@ -609,4 +623,5 @@ def sweep(
     # Advanced only on a feed that came back. Advancing after a failure would skip the window
     # the failed call covered, and those mentions would never be read.
     ledger.cursors["notifications_last_seen"] = now_iso
+    ledger.release_retry_threads(held)
     return commands

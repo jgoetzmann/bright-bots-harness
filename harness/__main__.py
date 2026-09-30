@@ -2399,7 +2399,7 @@ def _by_comment(commands) -> list[list]:
 
 def run_command(ctx, config, cmd) -> tuple[dict, bool]:
     """Act on one command, answer in its thread, and say whether the batch may continue."""
-    record, answer, keep_going = _outcome(ctx, config, cmd)
+    record, answer, keep_going, _limit = _outcome(ctx, config, cmd)
     _reply(ctx, config, cmd, answer)
     return record, keep_going
 
@@ -2414,21 +2414,23 @@ def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
     parts: list[str] = []
     keep_going = True
     for index, cmd in enumerate(cmds):
-        record, answer, keep_going = _outcome(ctx, config, cmd)
+        record, answer, keep_going, limit = _outcome(ctx, config, cmd)
         records.append(record)
-        if not keep_going and not answer:
-            # A limit stopped this command. When nothing in the comment ran yet, the whole
-            # comment runs again after the reset; otherwise the rest must be said again (D92).
-            if index == 0:
-                _hold_for_retry(ctx, config, cmd)
-                answer = f"Not now — {record['result']}; this runs on the first sweep after that."
-            else:
-                answer = f"not run — {record['result']}; say it again after that."
+        held = bool(limit) and index == 0
+        if held:
+            # Nothing in the comment ran, so all of it runs again after the reset (D92).
+            _hold_for_retry(ctx, config, cmd)
+            answer = (
+                f"Not now — {limit}; this comment runs again on the first sweep after the reset."
+            )
+        elif limit or not (keep_going or answer):
+            why = limit or "GitHub's API rate ceiling was reached"
+            answer = f"not run — {why}; say it again after the reset."
         if answer:
             said = getattr(cmd, "typed", "") or cmd.verb
             # Labelled only when the comment carried more than one command.
             parts.append(f"**`/harness {said}`** — {answer}" if len(cmds) > 1 else answer)
-        if not keep_going:
+        if held or not keep_going:
             break
     if parts:
         _reply(ctx, config, cmds[0], "\n\n".join(parts))
@@ -2436,14 +2438,17 @@ def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
 
 
 def _hold_for_retry(ctx, config, cmd) -> None:
-    """Unmark the command's comment and name its thread for the next sweep (D92)."""
+    """Name the command's thread for the first sweep after the reset (D92)."""
     here = cmd.surface in ("issue", "inbox", "proposal_pr")
     repo = str(config.self_repo if here else config.upstream_repo)
-    ctx.ledger.hold_for_retry(cmd.comment_id, repo, cmd.surface, int(cmd.number))
+    ctx.ledger.hold_for_retry(
+        cmd.comment_id, repo, cmd.surface, int(cmd.number), getattr(cmd, "posted", "")
+    )
 
 
-def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
-    """`(record, what to say, may the batch continue)` for one command. Writes no comment."""
+def _outcome(ctx, config, cmd) -> tuple[dict, str, bool, str]:
+    """`(record, what to say, may the batch continue, the model limit that stopped it or "")`
+    for one command. Writes no comment."""
     record = {
         "verb": cmd.verb,
         "args": cmd.args,
@@ -2460,32 +2465,36 @@ def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
         if getattr(cmd, "note", ""):
             result = "\n\n".join(part for part in (result, cmd.note) if part)
         record["result"] = result
-        return record, result, True
+        return record, result, True, ""
     except Halted as exc:
         # A commanded halt refuses this command without aborting the batch. Every command is
         # marked seen when the batch is collected, so aborting would consume the rest, including
         # a `/harness resume` that lifts the halt.
         record["result"] = str(exc)
-        return record, str(exc), True
+        return record, str(exc), True, ""
     except RateLimited as exc:
         # The next command would fail the same way, so the batch stops here.
-        record["result"] = f"rate limited until {exc.reset_at or 'unknown'}"
-        return record, "", False
+        record["result"] = f"rate limited until {exc.reset_at}" if exc.reset_at else "rate limited"
+        return record, "", False, record["result"]
     except RateCeilingReached as exc:
         # GitHub's rate ceiling, separate from the model's, arrives as an ordinary error. Stop
         # here as for RateLimited, so the remaining commands do not post refused replies.
         record["result"] = f"github rate ceiling reached: {exc}"
-        return record, "", False
+        return record, "", False, ""
     except BudgetExhausted as exc:
         # A usage stop is a normal outcome, like a closed run window (D3), so the reply says
         # "Not now" and reports no failure.
         record["result"] = f"declined: {exc}"
-        return record, f"Not now — {exc}", True
+        stored = ctx.ledger.rate_limited(iso(ctx.clock.now()))
+        if stored and ctx.governor.usage_stop_reason() is None:
+            # The stored model limit refused it, so it waits for the reset like a limited call.
+            return record, "", True, str(exc)
+        return record, f"Not now — {exc}", True, ""
     except HarnessError as exc:
         # A failed command is answered in the thread as well as recorded.
         record["result"] = f"error: {exc}"
-        return record, f"that did not work: {exc}", True
-    return record, "", True
+        return record, f"that did not work: {exc}", True, ""
+    return record, "", True, ""
 
 
 def _ack_halt_reason(config) -> str:

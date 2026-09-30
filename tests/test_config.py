@@ -457,6 +457,9 @@ D2_ENV: dict[str, str] = {
     "COMMENT_UPSTREAM": "true",
     "ASK_MAX_PER_DAY": "20",
     "MAX_SELF_AUDIT_CYCLES": "3",
+    "QUIET_ENABLED": "true",
+    "QUIET_INTERVAL_MINUTES": "10",
+    "QUIET_MAX_WAIT_MINUTES": "40",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))
@@ -817,6 +820,12 @@ KNOB_KEY_TO_FIELD: dict[str, str] = {
     "RUN_WINDOW_END": "run_window_end",
     "CO_AUTHOR": "co_author",
     "MAX_OPEN_DELIVERIES": "max_open_deliveries",
+    "QUIET_ENABLED": "quiet_enabled",
+    "QUIET_INTERVAL_MINUTES": "quiet_interval_minutes",
+    "QUIET_MAX_WAIT_MINUTES": "quiet_max_wait_minutes",
+    "QUIET_PARTNER_REPO": "quiet_partner_repo",
+    "QUIET_PARTNER_WORKFLOW": "quiet_partner_workflow",
+    "QUIET_PARTNER_STEPS": "quiet_partner_steps",
 }
 
 
@@ -848,6 +857,13 @@ ALL_KNOB_OVERRIDES: dict[str, object] = {
     "CO_AUTHOR": "octo <1+octo@users.noreply.github.com>",
     # D88.
     "MAX_OPEN_DELIVERIES": 4,
+    # D92 (B533).
+    "QUIET_ENABLED": False,
+    "QUIET_INTERVAL_MINUTES": 5,
+    "QUIET_MAX_WAIT_MINUTES": 30,
+    "QUIET_PARTNER_REPO": "octo/partner",
+    "QUIET_PARTNER_WORKFLOW": "night.yml",
+    "QUIET_PARTNER_STEPS": "Build, check and review|Answer",
 }
 
 
@@ -885,6 +901,12 @@ def test_b112_config_json_may_set_every_one_of_the_knobs(tmp_path, write_d2_env)
     assert config.max_self_audit_cycles == 1
     assert config.co_author == "octo <1+octo@users.noreply.github.com>"
     assert config.max_open_deliveries == 4
+    assert config.quiet_enabled is False
+    assert config.quiet_interval_minutes == 5
+    assert config.quiet_max_wait_minutes == 30
+    assert config.quiet_partner_repo == "octo/partner"
+    assert config.quiet_partner_workflow == "night.yml"
+    assert config.quiet_partner_steps == ("Build, check and review", "Answer")
 
 
 def test_b112_the_config_json_overrides_all_differ_from_the_env_values(tmp_path, write_d2_env):
@@ -1693,7 +1715,7 @@ def test_B416_a_retired_key_in_the_environment_changes_nothing(env_file):
     names = [f.name for f in dataclasses.fields(config)]
     banned = ("usd", "budget", "reserve", "clones")
     assert [n for n in names if any(word in n for word in banned)] == []
-    assert len(config_module.CONFIG_JSON_KEYS) == 17
+    assert len(config_module.CONFIG_JSON_KEYS) == 23
 
 
 def test_B5_B22_the_allowance_and_clone_range_checks_are_retired_with_their_keys(

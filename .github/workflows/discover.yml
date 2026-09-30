@@ -1,6 +1,6 @@
 # discover.yml: daily, and on dispatch, triage queued issues into proposal PRs. Spends
 # subscription capacity (triage and propose are model calls). Step order: HALT check,
-# checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
+# checkout/setup, doctor, sync-fork, dispatch, quiet check, work, ledger, artifacts.
 name: discover
 
 on:
@@ -205,8 +205,35 @@ jobs:
               echo "proceed=true" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Discover and propose (harness discover, harness propose)
+        # D92: nothing starts while somebody else is using the subscription. A dispatch in any mode
+        # but triage names what to do, which is the operator asking for it now, so it skips the
+        # wait; a triage dispatch waits like the schedule. It exits 0 either way, and while it
+        # waits the job holds the ledger lock.
+      - name: Wait until the subscription is quiet (harness quiet)
         if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true'
+        id: quiet
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p runs
+          force=""
+          mode="${INPUT_MODE:-triage}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${mode}" != "triage" ]; then
+            force="--force"
+          fi
+          harness --json quiet ${force} | tee runs/quiet.json
+          if [ "$(jq -r '.quiet' runs/quiet.json)" = "true" ]; then
+            echo "quiet=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "not quiet: $(jq -r '.reason' runs/quiet.json)"
+            echo "quiet=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Discover and propose (harness discover, harness propose)
+        if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true' && steps.quiet.outputs.quiet == 'true'
         shell: bash
         env:
           INPUT_MODE: ${{ github.event.inputs.mode }}
@@ -354,6 +381,7 @@ jobs:
             runs/item-*/
             runs/dispatch-plan.json
             runs/discover.out
+            runs/quiet.json
             runs/**/*.md
             runs/**/*.json
             runs/**/*.jsonl

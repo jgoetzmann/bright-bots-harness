@@ -29,6 +29,21 @@ class FakeRunner:
     def fixture_path(self, stage: str) -> Path:
         return self.fixtures_dir / f"{stage}.json"
 
+    def ping(self) -> RunResult:
+        """The quiet check's sample, replayed from ``ping.json``; nothing is spent (D92)."""
+        return self.run(
+            RunRequest(
+                stage="ping",
+                prompt="",
+                system_prompt=None,
+                allowed_tools=(),
+                disallowed_tools=(),
+                max_turns=1,
+                cwd=self.fixtures_dir,
+                timeout_s=1,
+            )
+        )
+
     def run(self, request: RunRequest) -> RunResult:
         path = self.fixture_path(request.stage)
         try:

@@ -152,6 +152,10 @@ class Runner(Protocol):
 
     def run(self, request: RunRequest) -> RunResult: ...
 
+    def ping(self) -> RunResult:
+        """One minimal call whose only product is its ``usage`` reading (D92)."""
+        ...
+
 
 def is_rate_limited(result: RunResult) -> bool:
     """True when a failed result is the CLI saying "come back later" (D71).

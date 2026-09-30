@@ -65,6 +65,8 @@ SPEC_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
+    # D92: the quiet check before a spending run starts anything.
+    "harness/quiet.py",
 ]
 
 # Test modules that must exist.
@@ -551,6 +553,8 @@ D2_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
+    # D92: the quiet check before a spending run starts anything.
+    "harness/quiet.py",
 ]
 
 # Test modules and fixtures that must exist.
@@ -1981,6 +1985,7 @@ def test_b146_ops_never_retries_a_step_that_could_have_spent():
     )
     # Every step that runs a model call, a gate, or anything after the spend.
     for step in (
+        "Wait until the subscription is quiet",
         "Discover and propose",
         "Run planned items",
         "Sweep keywords",
@@ -2811,6 +2816,8 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
     reachable = {
         "discover", "propose", "implement", "package", "revise", "decompose",
         "diagnose_gate_failure", "ask", "audit",
+        # The quiet check's sample (D92).
+        "ping",
     }
     present = {path.stem for path in DEFAULT_FIXTURES_DIR.glob("*.json")}
 
@@ -2898,7 +2905,7 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
 
     assert "ANTHROPIC_API_KEY=" not in env_example
     keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
-    assert len(keys) == 39, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(keys) == 45, f".env.example carries {len(keys)} keys: {keys}"
     assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS

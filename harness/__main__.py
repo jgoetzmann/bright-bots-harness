@@ -40,10 +40,12 @@ from harness.gh import machine_logins, mark_machine_written, public_reader
 from harness.halt import check_halt, check_repo_halt, disengage, engage, halted, repo_halted
 from harness.identity import Identity, write_human_doc
 from harness import priority
+from harness import quiet as quiet_mod
 from harness.packager import archive as archive_package
 from harness.packager import build as build_package
 from harness.redact import allowed_roots, guarded_write, set_write_roots
-from harness.stages import STAGES
+from harness.runner.base import exhausted_reset
+from harness.stages import STAGES, resolve_reset, stamp_usage
 from harness.stages import deliver as deliver_stage
 from harness.stages import discover as discover_stage
 from harness.store import (
@@ -122,6 +124,13 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
     ("CO_AUTHOR", "co_author"),
     # How many delivery pull requests may be open upstream before no new item starts (D88).
     ("MAX_OPEN_DELIVERIES", "max_open_deliveries"),
+    # The quiet check before a spending run, and the bot sharing the subscription (D92).
+    ("QUIET_ENABLED", "quiet_enabled"),
+    ("QUIET_INTERVAL_MINUTES", "quiet_interval_minutes"),
+    ("QUIET_MAX_WAIT_MINUTES", "quiet_max_wait_minutes"),
+    ("QUIET_PARTNER_REPO", "quiet_partner_repo"),
+    ("QUIET_PARTNER_WORKFLOW", "quiet_partner_workflow"),
+    ("QUIET_PARTNER_STEPS", "quiet_partner_steps"),
 )
 
 # An item left in a running state longer than this with no live run is reset (B147).
@@ -229,6 +238,21 @@ def build_parser() -> argparse.ArgumentParser:
     block.add_argument("--reason", default="", metavar="TEXT")
 
     sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
+
+    quiet = sub.add_parser(
+        "quiet", help="wait until nobody else is using the subscription; exit 0 either way"
+    )
+    quiet.add_argument(
+        "--force", action="store_true", help="skip the check: the operator asked for this now"
+    )
+    quiet.add_argument(
+        "--items",
+        type=int,
+        nargs="*",
+        default=[],
+        metavar="N",
+        help="the items this run starts; one started with --force skips the check",
+    )
 
     deliver = sub.add_parser("deliver", help="push the branch and open the upstream PR")
     deliver.add_argument("item_id", type=int, metavar="item-id")
@@ -669,6 +693,9 @@ def _doctor_config_keys(
     if config is not None:
         for key, attr in CONFIG_KEYS:
             value = getattr(config, attr, None)
+            if isinstance(value, tuple):
+                # The one list-valued knob, printed as it is written (D92).
+                value = config_mod.QUIET_STEP_SEPARATOR.join(str(part) for part in value)
             keys[key] = "" if value is None else str(value)
         return keys
     root = _repo_root(args)
@@ -1204,6 +1231,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "in_flight": in_flight,
         "halt": halt,
         "block": ctx.ledger.block_grant(),
+        "quiet": ctx.ledger.quiet_check(),
         "actions": {"runs": runs, "error": actions_error or None, "truncated": actions_cut},
     }
 
@@ -1215,6 +1243,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines.append("queue:")
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.extend(_usage_lines(ctx.ledger, config, now))
+    lines.extend(_quiet_lines(ctx.ledger))
     lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
@@ -1806,6 +1835,99 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------------------
+# quiet
+# --------------------------------------------------------------------------------------
+
+#: How much of a failed ping's error a sample keeps.
+QUIET_ERROR_CHARS = 300
+
+
+def _quiet_sample(ctx) -> quiet_mod.Sample:
+    """One ping, its reading stored as the ledger's usage observation (D92)."""
+    ping = getattr(ctx.runner, "ping", None)
+    result = ping() if callable(ping) else None
+    now = ctx.clock.now()
+    usage = getattr(result, "usage", None)
+    reading = dict(usage) if isinstance(usage, dict) and usage else None
+    ctx.ledger.observe_usage(stamp_usage(reading, now), iso(now))
+    error = None
+    if reading is None:
+        error = "this backend cannot ping" if result is None else str(result.error or "")
+        error = (error or "no rate_limit_event")[:QUIET_ERROR_CHARS]
+    return quiet_mod.Sample(at=iso(now), usage=reading, error=error)
+
+
+def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
+    """What `harness quiet` finds, without a ping when the answer is known beforehand."""
+    if getattr(args, "force", False):
+        return quiet_mod.Outcome(True, "forced: the operator asked for this run now", forced=True)
+    forced = sorted({int(n) for n in (args.items or ())} & set(ctx.ledger.forced()))
+    if forced:
+        return quiet_mod.Outcome(
+            True, f"forced: item {forced[0]} was asked for with --force", forced=True
+        )
+    if not config.quiet_enabled:
+        return quiet_mod.Outcome(True, "the check is off (QUIET_ENABLED=false)")
+    try:
+        ctx.check_halt()
+    except Halted as exc:
+        return quiet_mod.Outcome(False, f"halted: {exc}")
+    # A ping is a model call, so whatever refuses every call refuses it too.
+    refused = ctx.governor.refusal(0)
+    if refused is not None:
+        return quiet_mod.Outcome(False, refused)
+    partner = None
+    if config.quiet_partner_repo:
+        partner = quiet_mod.Partner(
+            config.quiet_partner_repo,
+            config.quiet_partner_workflow,
+            tuple(config.quiet_partner_steps),
+        )
+    # A read without the token is worth trying only after one that carried it.
+    public = PUBLIC_READER if getattr(ctx.gh, "can_write", False) else None
+    outcome = quiet_mod.wait_until_quiet(
+        sample=lambda: _quiet_sample(ctx),
+        sleep=SLEEP,
+        interval_s=config.quiet_interval_minutes * 60,
+        intervals=config.quiet_max_wait_minutes // config.quiet_interval_minutes,
+        partner_check=lambda start, end: quiet_mod.partner_spending(
+            partner, start, end, reader=ctx.gh, public=public
+        ),
+    )
+    if outcome.refused is not None:
+        # A refusal is a rate limit that ends at its reset, as for any other call (D71).
+        reset = exhausted_reset(outcome.refused.usage)
+        ctx.ledger.set_rate_limited(resolve_reset(reset, ctx.clock.now()))
+    return outcome
+
+
+def cmd_quiet(args: argparse.Namespace) -> int:
+    """Wait until nobody else is using the subscription, or give up; exit 0 either way (D92).
+
+    Prints ``quiet`` or ``not quiet`` and one reason; `--json` adds the samples and whether the
+    partner bot's spending excused a rise, and a workflow starts nothing while ``.quiet`` is
+    false. `--force`, an item forced with `--force` and `QUIET_ENABLED=false` skip the check. A
+    halt, the usage stop or a stored rate limit reads not quiet without a ping. Every reading is
+    stored as the ledger's usage observation, and the verdict beside it for `harness status`.
+    """
+    try:
+        check_repo_halt(_repo_root(args))
+    except RepoHalted as exc:
+        # Still one JSON document, since a workflow feeds this stdout to jq.
+        stopped = quiet_mod.Outcome(False, f"halted: {exc}")
+        _emit(stopped.to_json(), f"not quiet: {stopped.reason}", args)
+        return EXIT_OK
+    config = _load(args)
+    ctx = _context(config, args, run_id="quiet")
+    outcome = _quiet_outcome(ctx, config, args)
+    ctx.ledger.record_quiet(at=iso(ctx.clock.now()), quiet=outcome.quiet, reason=outcome.reason)
+    _save_ledger(ctx)
+    verdict = "quiet" if outcome.quiet else "not quiet"
+    _emit(outcome.to_json(), f"{verdict}: {outcome.reason}", args)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------------------
 # deliver / revise / decompose
 # --------------------------------------------------------------------------------------
 
@@ -2053,11 +2175,14 @@ def _forced(ctx, cmd, item_id: int | None) -> str:
     # The dispatcher reads the exemption from the ledger.
     ctx.ledger.force(int(item_id))
     ctx.store.append_event(
-        int(item_id), "info", f"forced by @{cmd.actor}: exempt from the run window"
+        int(item_id),
+        "info",
+        f"forced by @{cmd.actor}: exempt from the run window and the quiet check",
     )
     return (
-        f" — forced by @{cmd.actor}: it starts on the next sweep, even outside the run window. "
-        "Halts, the session usage stop and both human gates still apply."
+        f" — forced by @{cmd.actor}: it starts on the next sweep, even outside the run window, "
+        "without waiting for a quiet subscription. Halts, the session usage stop and both human "
+        "gates still apply."
     )
 
 
@@ -2941,6 +3066,15 @@ def _halt_lines(led) -> list[str]:
     ]
 
 
+def _quiet_lines(led) -> list[str]:
+    """The last quiet check in one line, and nothing before the first one (B535)."""
+    last = led.quiet_check()
+    if last is None:
+        return []
+    verdict = "quiet" if last.get("quiet") else "not quiet"
+    return [f"quiet check: {verdict} at {last.get('at') or 'unknown'}: {last.get('reason', '')}"]
+
+
 def _usage_lines(led, config, now=None) -> list[str]:
     """The measured session usage and how far it is from the stop (B221).
 
@@ -3526,6 +3660,7 @@ COMMANDS = {
     "halt": cmd_halt,
     "resume": cmd_resume,
     "dispatch": cmd_dispatch,
+    "quiet": cmd_quiet,
     "deliver": cmd_deliver,
     "revise": cmd_revise,
     "decompose": cmd_decompose,

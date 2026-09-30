@@ -21,7 +21,8 @@ the result ships. Both decisions are pull request merges. Python 3.13, standard 
 
 Between the gates, work is bounded by a subscription session-usage stop, a run window, per-stage
 turn ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation
-while two of its delivery pull requests are open upstream.
+while two of its delivery pull requests are open upstream. A scheduled run also starts only while
+nobody else is using the subscription.
 
 ## What it will and will not do
 
@@ -57,6 +58,11 @@ while two of its delivery pull requests are open upstream.
 - **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
   requests are open upstream, no new item starts implementing; revising one that is open still
   runs. A delivery a person runs by hand with `harness deliver` waits the same way (D90).
+- **It waits for a quiet subscription.** Before `implement.yml` or `discover.yml` starts
+  anything, `harness quiet` reads the subscription's usage twice, ten minutes apart, and starts
+  nothing unless it held still. The JackiOh night bot shares the subscription, and a rise during
+  one of its builds is that bot rather than a person. Otherwise it keeps sampling for up to 40
+  minutes and then gives up for that run (D92).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`
@@ -109,7 +115,9 @@ makes a good request.
 The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 11:00
 to 16:00 UTC in `.harness/config.json`), and `implement.yml`'s crons follow that window.
 `harness run --item N` and `--force` start work outside it; neither bypasses the usage stop.
-`discover.yml` is not window-gated.
+`discover.yml` is not window-gated. Inside the window a run then waits for a quiet subscription,
+which `--force` and `implement.yml`'s `issue` input skip; `feedback.yml`, which answers your
+comments, never waits.
 
 To lend it time you are not using, `/harness block <n>` (level 3) suspends the run window for the
 next `n` five-hour subscription sessions, at most six. It expires by itself, `/harness block 0`
@@ -121,7 +129,7 @@ gates still apply.
 | Path | What it holds |
 |---|---|
 | `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B524 is cited by a test that names it |
+| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B535 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
 | `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |

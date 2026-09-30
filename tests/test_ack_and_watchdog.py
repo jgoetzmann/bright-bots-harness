@@ -493,6 +493,8 @@ def test_every_step_of_every_spending_workflow_is_classified():
     # Everything after the spend, plus the spending steps themselves. Named here so the two
     # lists together have to cover every step, and neither can silently shrink.
     never = {
+        # Its ping is a model call, so a re-run of the job would spend it again (D92).
+        "Wait until the subscription is quiet (harness quiet)",
         "Discover and propose (harness discover, harness propose)",
         "Run planned items (harness run --item)",
         "Sweep keywords (harness sweep; may run revise/propose)",

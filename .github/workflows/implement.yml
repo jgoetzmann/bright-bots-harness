@@ -1,6 +1,6 @@
 # implement.yml: five passes inside the daily run window, on dispatch, and on a merged proposal,
 # drain the approved queue. Spends subscription capacity. Step order: HALT check,
-# checkout/setup, doctor, sync-fork, dispatch, work, ledger, artifacts.
+# checkout/setup, doctor, sync-fork, dispatch, quiet check, work, ledger, artifacts.
 name: implement
 
 on:
@@ -201,9 +201,42 @@ jobs:
           echo "items=${items}" >> "$GITHUB_OUTPUT"
           echo "plan: start=[${items}] reason=$(printf '%s' "$plan" | jq -r '.reason')"
 
+        # D92: nothing starts while somebody else is using the subscription. The check pings only
+        # when there is something to start; an `issue` input, or an item forced with `--force`,
+        # is the operator asking for it now and skips the wait. It exits 0 either way, and while
+        # it waits the job holds the ledger lock.
+      - name: Wait until the subscription is quiet (harness quiet)
+        if: steps.halt.outputs.halted != 'true'
+        id: quiet
+        shell: bash
+        env:
+          INPUT_ISSUE: ${{ github.event.inputs.issue }}
+          PLAN_ITEMS: ${{ steps.dispatch.outputs.items }}
+        run: |
+          set -euo pipefail
+          mkdir -p runs
+          items="${INPUT_ISSUE:-${PLAN_ITEMS}}"
+          if [ -z "${items// }" ]; then
+            echo "nothing to start; no quiet check"
+            echo "quiet=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "${INPUT_ISSUE// }" ]; then
+            args=(--force)
+          else
+            args=(--items ${items})
+          fi
+          harness --json quiet "${args[@]}" | tee runs/quiet.json
+          if [ "$(jq -r '.quiet' runs/quiet.json)" = "true" ]; then
+            echo "quiet=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "not quiet: $(jq -r '.reason' runs/quiet.json)"
+            echo "quiet=false" >> "$GITHUB_OUTPUT"
+          fi
+
         # harness run --item N implements, packages and (when the client can write) delivers the item.
       - name: Run planned items (harness run --item)
-        if: steps.halt.outputs.halted != 'true'
+        if: steps.halt.outputs.halted != 'true' && steps.quiet.outputs.quiet == 'true'
         shell: bash
         env:
           INPUT_ISSUE: ${{ github.event.inputs.issue }}
@@ -280,6 +313,7 @@ jobs:
           path: |
             runs/item-*/
             runs/dispatch-plan.json
+            runs/quiet.json
             runs/**/*.md
             runs/**/*.json
             runs/**/*.jsonl

@@ -88,6 +88,9 @@ DEFAULT_ENV: dict[str, str] = {
     "COMMENT_UPSTREAM": "true",
     "ASK_MAX_PER_DAY": "20",
     "MAX_SELF_AUDIT_CYCLES": "3",
+    "QUIET_ENABLED": "true",
+    "QUIET_INTERVAL_MINUTES": "10",
+    "QUIET_MAX_WAIT_MINUTES": "40",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }

@@ -399,6 +399,16 @@ class Ledger:
         if isinstance(rows, list) and int(item_id) in rows:
             rows.remove(int(item_id))
 
+    # -- the quiet check -----------------------------------------------------------------------
+
+    def record_quiet(self, *, at: str, quiet: bool, reason: str) -> None:
+        """Keep the last quiet check: when it ran, whether it read quiet, and why (D92)."""
+        self.window["quiet"] = {"at": str(at), "quiet": bool(quiet), "reason": str(reason)}
+
+    def quiet_check(self) -> dict | None:
+        check = self.window.get("quiet")
+        return dict(check) if isinstance(check, dict) and check else None
+
     # -- cursors ---------------------------------------------------------------------------
 
     def seen(self, comment_id: str) -> bool:
@@ -467,6 +477,14 @@ class Ledger:
                 "until": str(block.get("until", "")),
                 "anchor": str(block.get("anchor", "")),
                 "reason": str(block.get("reason", "")),
+            }
+        # Written only once a quiet check has run, like the four above (D92).
+        quiet = self.quiet_check()
+        if quiet is not None:
+            window["quiet"] = {
+                "at": str(quiet.get("at", "")),
+                "quiet": bool(quiet.get("quiet", False)),
+                "reason": str(quiet.get("reason", "")),
             }
         cursors = {
             "notifications_last_seen": self.cursors.get("notifications_last_seen"),

@@ -1,0 +1,68 @@
+{
+  "9004": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 49004,
+        "run_id": 9004,
+        "name": "night",
+        "status": "in_progress",
+        "steps": [
+          {"name": "Set up job", "status": "completed", "conclusion": "success", "number": 1,
+           "started_at": "2026-09-01T11:50:05Z", "completed_at": "2026-09-01T11:50:09Z"},
+          {"name": "Build, check and review (item 12)", "status": "in_progress", "conclusion": null,
+           "number": 2, "started_at": "2026-09-01T12:03:00Z", "completed_at": null}
+        ]
+      }
+    ]
+  },
+  "9003": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 49003,
+        "run_id": 9003,
+        "name": "night",
+        "status": "completed",
+        "steps": [
+          {"name": "Build, check and review (item 11)", "status": "completed",
+           "conclusion": "success", "number": 2,
+           "started_at": "2026-09-01T11:31:00Z", "completed_at": "2026-09-01T11:58:00Z"},
+          {"name": "Commit the state", "status": "completed", "conclusion": "success",
+           "number": 3, "started_at": "2026-09-01T11:58:00Z", "completed_at": "2026-09-01T12:04:00Z"}
+        ]
+      }
+    ]
+  },
+  "9002": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 49002,
+        "run_id": 9002,
+        "name": "night",
+        "status": "queued",
+        "steps": [
+          {"name": "Build, check and review (item 13)", "status": "queued", "conclusion": null,
+           "number": 2, "started_at": null, "completed_at": null}
+        ]
+      }
+    ]
+  },
+  "9001": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 49001,
+        "run_id": 9001,
+        "name": "night",
+        "status": "completed",
+        "steps": [
+          {"name": "Build, check and review (item 10)", "status": "completed",
+           "conclusion": "success", "number": 2,
+           "started_at": "2026-09-01T08:01:00Z", "completed_at": "2026-09-01T08:59:00Z"}
+        ]
+      }
+    ]
+  }
+}

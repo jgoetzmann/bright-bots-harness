@@ -1593,3 +1593,95 @@ so a person's push during the revise is overwritten, and which runs in the clone
 the model can edit to point the token elsewhere.
 
 Allocates B524.
+
+## D92 / B525-B535 - start only while the subscription is quiet
+
+Decision:
+- One subscription serves this harness (runs start 11:00 to 16:00 UTC), the JackiOh night bot
+  in `jgoetzmann/JackiOh` (21:00 to 07:00 America/Chicago) and the operator's own sessions. A
+  bot starts model work only while nobody else is spending, and the two bots do not count each
+  other as somebody.
+- `harness quiet` (`harness/quiet.py`, `cmd_quiet`) samples usage with a ping:
+  `claude --print --output-format stream-json --verbose --model haiku --max-turns 1
+  --strict-mcp-config`, `Reply with the word ok.` on stdin, run by `ClaudeCliRunner.ping` in an
+  empty temporary directory so no `CLAUDE.md` is read, with the environment `build_env` strips.
+  `parse_stream` reads the last `rate_limit_event`, and each reading goes through
+  `Ledger.observe_usage`. `FakeRunner.ping` replays `tests/fixtures/runner/ping.json`. The argv
+  and the prompt are a contract shared with the JackiOh bot, which implements the same rule.
+- Two samples `QUIET_INTERVAL_MINUTES` (10) apart. The pair is quiet when neither window's
+  utilization rose. A pair whose five-hour `resets_at` changed is inconclusive. A rise is
+  excused when the partner was spending during the interval: a step of a run of the partner's
+  workflow whose name starts with one of its prefixes, with `started_at <= t2` and
+  `completed_at` null or `>= t1`. Not quiet, it samples again every interval for
+  `QUIET_MAX_WAIT_MINUTES // QUIET_INTERVAL_MINUTES` pairs (four), then prints `quiet: false`
+  and one reason and exits 0; the workflow starts nothing and ends green.
+- A `rejected` reading is not quiet at once. The reason is a usage stop, and
+  `rate_limited_until` is set to the refused window's reset, as for every refused call (D71).
+- The partner is `QUIET_PARTNER_REPO`, `QUIET_PARTNER_WORKFLOW` and `QUIET_PARTNER_STEPS`,
+  prefixes separated by `|` because the committed one holds a comma: `jgoetzmann/JackiOh`,
+  `bot-night.yml`, `Build, check and review`. An empty repository excuses nothing. The check lists
+  `/actions/workflows/{file}/runs?per_page=10` and reads `/actions/runs/{id}/jobs` for each run
+  not completed or updated since `t1` (`GitHubReadOnly.workflow_file_runs`, `run_jobs`). It reads
+  with the harness's client, and once more with `public_reader` after a 401, 403 or 404, which
+  `GitHubError.status` now carries. Any failure to read counts as the partner not spending.
+- `implement.yml` runs `Wait until the subscription is quiet (harness quiet)` immediately before
+  `Run planned items (harness run --item)`, and `discover.yml` immediately before
+  `Discover and propose (harness discover, harness propose)`. The step writes `quiet=true|false`
+  to `$GITHUB_OUTPUT` from `harness --json quiet`, and the spending step runs only on `true`.
+  The JackiOh bot counts `Run planned items`, `Discover and propose`, `Sweep keywords` and
+  `Reconcile stale` as this harness's spending, so those names stay. `feedback.yml`, `ack.yml`,
+  `heartbeat.yml`, `ops.yml` and `watchdog.yml` do not wait, and `ops.yml` does not re-run a job
+  that failed at the check, whose pings are model calls.
+- `QUIET_ENABLED`, `QUIET_INTERVAL_MINUTES` (1 to 60) and `QUIET_MAX_WAIT_MINUTES` (the interval
+  to 60) are required keys, and the three partner keys optional. All six join
+  `CONFIG_JSON_KEYS`, which now holds twenty-three keys; `.env.example` carries the committed
+  values and `.harness/config.json` does not repeat them.
+- The ledger keeps the last verdict under `window.quiet`, and `harness status` prints it as
+  `quiet check: …`.
+
+Decided here, since the request left them open:
+- The check pings only when the run has something to start: `implement.yml` skips it, and writes
+  `quiet=true`, when neither the plan nor the `issue` input names an item; `discover.yml` runs it
+  only once the dispatcher's reason lets discover proceed.
+- What skips the wait is the operator asking for the run now. In `implement.yml` that is an
+  `issue` input, which passes `--force`, or a planned item in `Ledger.forced()`, which `--items`
+  finds; a gate-1 merge and a blank dispatch wait. In `discover.yml` it is a dispatch in any mode
+  but `triage`, since directed, assigned and audit name what to do; a triage dispatch waits like
+  the schedule. The `/harness … --force` reply now says the quiet check is lifted too.
+- A ping that reports no usage lets the run go ahead at once, because no decision may depend on
+  the signal being there (B114). A CLI that stopped sending the event would otherwise stop the
+  harness for good.
+- A step GitHub skipped is not the partner spending, although it carries both timestamps. The
+  shared contract does not say so; the JackiOh side should skip them too.
+- A halt, the session usage stop and a stored rate limit answer `not quiet` without a ping, and
+  `.harness/HALT` answers in JSON with exit 0, since a workflow feeds the output to jq.
+- The wait is counted in whole intervals rather than by the clock, so a slow ping cannot cost a
+  pair. It stops at 60 minutes because it counts against the job's 120 (B125).
+- The ping's argv and prompt live in `harness/runner/cli.py` rather than `prompts/`, so the pin
+  does not move; the ping asks for `ok` and its answer is never read.
+
+Why. A usage reading is the one sign of somebody else's use that both bots can see. One reading
+gives a level; two an interval apart show whether anybody is spending now. Two bots applying the
+same rule would each read the other's build as a person and hold back while their windows
+overlap, so each excuses the other's spending steps by name, and only those: a partner run that
+is checking out or committing does not explain a rise.
+
+Rejected: gating `feedback.yml`, which answers a person who is using the harness on purpose;
+counting an unreadable partner as spending, which would excuse a person whenever GitHub is down;
+counting any step of a partner run in progress; a separate job for the check to escape the
+120-minute timeout, since the ledger lock and the step order are per job; a threshold on one
+reading.
+
+Accepted gaps:
+- A person spending while the partner is inside a spending step reads as the partner, so the
+  rise is excused.
+- A local-mode run of either bot appears in no workflow, so the other bot takes it for a person,
+  and the `bb` container never waits.
+- The job holds the `harness-ledger` lock while it waits, so a `feedback.yml` run can queue
+  behind it for up to the whole wait.
+- Every checked run waits at least one interval and makes two pings of its own. Utilization moves
+  in whole percents, so a ping rarely moves it; if one did, no pair would ever read quiet.
+- An operator `.env` written before this change lacks the three required keys and fails to load
+  until they are added; `harness doctor` names them.
+
+Allocates B525-B535.

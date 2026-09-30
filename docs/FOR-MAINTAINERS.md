@@ -213,7 +213,10 @@ notifications on the way.
 
 Each scheduled build run starts one item, and on weekdays the 12:41 and 15:41 UTC sweeps also
 build what is approved. A busy morning is limited by the subscription session, which the harness
-stops using at 80%. Worst case, with nothing halted or ahead of it, a request queued just after
+stops using at 80%. The subscription is shared with Jack and with a second bot, so a scheduled run
+first checks that nobody else is using it, which takes ten minutes; while somebody is, it waits up
+to 40 minutes and then leaves the work for the next run. A comment of yours is never held back by
+this. Worst case, with nothing halted or ahead of it, a request queued just after
 11:07 UTC and merged after the window closes reaches a delivery pull request in about two days; a
 merge before 16:00 UTC saves a day.
 

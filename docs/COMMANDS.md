@@ -332,9 +332,10 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 /harness go --force
 ```
 
-Exempts the item from the run window (daily 11:00 → 16:00 UTC), and says so on the item, in the
-ledger and in the reply. It is honoured by `implement`'s next run outside the window (a gate-1 merge
-or the operator's dispatch), not by the sweep (D68), and proposes nothing sooner. Level 3 only;
+Exempts the item from the run window (daily 11:00 → 16:00 UTC) and from the wait for a quiet
+subscription (D92), and says so on the item, in the ledger and in the reply. It is honoured by
+`implement`'s next run outside the window (a gate-1 merge or the operator's dispatch), not by the
+sweep (D68), and proposes nothing sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, the usage stop
 (80% of the session), the turn caps and both human gates still apply.
 
@@ -456,12 +457,23 @@ harness sweep                # poll notifications, parse /harness commands, act 
 harness tidy                 # mark merged deliveries done; rewrite the pinned queue; prune
 harness relabel              # migrate open issues from harness:* to stage:/kind:/via:
 harness sync-fork            # fast-forward the fork from upstream; loud on divergence
+harness quiet                # wait until nobody else is using the subscription; exit 0 either way
 harness init --labels        # create the nineteen labels
 harness setup --tier 2       # what a tier still needs and who must act (writes HUMAN.md)
 harness archive 4            # promote a review package from runs/ into packages/
 harness local-loop           # the container loop: dispatch, run, sleep
 harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 ```
+
+`quiet` is what `implement.yml` and `discover.yml` run just before they start work (D92). It pings
+the subscription with the smallest model call there is, waits `QUIET_INTERVAL_MINUTES` (10),
+pings again, and prints `quiet` when neither usage window rose in between. A rise while the JackiOh
+night bot, which shares the subscription, was inside a `Build, check and review` step is that bot
+and does not count. Anything else keeps it sampling every interval until `QUIET_MAX_WAIT_MINUTES`
+(40), and then the run starts nothing. `--json` prints the samples and whether the partner excused
+a rise. `--force`, or `--items` naming an item somebody forced with `/harness … --force`, skips the
+wait, and so does `QUIET_ENABLED=false`. It always exits 0 and stores its verdict in the ledger,
+where `harness status` shows it as `quiet check:`.
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

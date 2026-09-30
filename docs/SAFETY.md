@@ -95,6 +95,11 @@ operator's `~/.claude` and this repository's `.claude/` from widening what a sta
 list closes the credential path and is not a sandbox: the CLI's rule syntax cannot express "nothing
 outside this directory", and a stage can still read an unrelated checkout on the same disk.
 
+The quiet check's ping (D93, `ClaudeCliRunner.ping`) is the one call built from another template,
+`PING_FLAGS`: `--print --output-format stream-json --verbose --model haiku --max-turns 1
+--strict-mcp-config`, with no bypass either, run in an empty temporary directory so no
+repository's `CLAUDE.md` is read, and asked only to reply `ok`.
+
 **Verify:** `grep -rn "dangerously-skip-permissions" harness/` returns nothing.
 `python -m pytest tests/test_runner_cli.py -k B218` pins the flags and the rule form.
 
@@ -142,6 +147,9 @@ directory, `state/` (the ledger), `proposals/`, the `HUMAN.md` setup report, `.e
 (`.harness/PIN`, B143) or kill switch (`.harness/HALT`); each of those is a human commit reviewed
 under `CODEOWNERS`. Every write routes through a guard that resolves the destination and compares it
 with the allowed roots; anything else raises `WriteOutsideAllowedRoots` before a byte is written.
+One directory is made elsewhere: the quiet check's ping runs in an empty directory under the
+system's temporary directory, which the harness writes nothing into and removes when the call
+returns (D93).
 
 **Verify:** the invariant test monkeypatches `open` and asserts nothing escapes. By hand,
 `grep -n "state\|proposals" harness/context.py` shows the roots, and no `.harness`.

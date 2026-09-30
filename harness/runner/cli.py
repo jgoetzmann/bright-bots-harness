@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from harness.config import environ_snapshot
@@ -48,6 +50,26 @@ EXIT_ARGV_TOO_LONG = 126
 #: non-zero, which reads like a model failure.
 ARGV_LIMIT_WINDOWS = 8191
 ARGV_LIMIT_POSIX = 131072
+
+#: The quiet check's usage sample (D93): the smallest call that still carries a
+#: `rate_limit_event`. The argv and the prompt are a contract shared with the partner bot.
+PING_STAGE = "ping"
+PING_PROMPT = "Reply with the word ok."
+PING_FLAGS: tuple[str, ...] = (
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--max-turns",
+    "1",
+    "--strict-mcp-config",
+)
+#: Seconds one ping may take before it counts as a sample with no reading.
+PING_TIMEOUT_S = 120
+#: The name the ping's empty working directory starts with.
+PING_DIR_PREFIX = "harness-ping-"
 
 _ISO_TIMESTAMP = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
@@ -429,6 +451,56 @@ class ClaudeCliRunner:
                 )
 
         return self._from_json(request, data, stderr, exit_code, usage=usage)
+
+    def ping(self, timeout_s: int = PING_TIMEOUT_S) -> RunResult:
+        """One usage sample for the quiet check (D93): :data:`PING_FLAGS`, the prompt on stdin,
+        and :meth:`build_env`'s environment, in an empty temporary directory so no repository's
+        CLAUDE.md is read. ``usage`` is the last `rate_limit_event` whatever the exit, a timeout
+        included; the directory is the one the harness makes outside its write roots, and it is
+        removed on return.
+        """
+        argv = [self.claude_bin, *PING_FLAGS]
+        request = RunRequest(
+            stage=PING_STAGE,
+            prompt=PING_PROMPT,
+            system_prompt=None,
+            allowed_tools=(),
+            disallowed_tools=(),
+            max_turns=1,
+            cwd=Path(tempfile.gettempdir()),
+            timeout_s=int(timeout_s),
+        )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=PING_DIR_PREFIX, ignore_cleanup_errors=True
+            ) as empty:
+                proc = self.spawn(
+                    argv,
+                    cwd=empty,
+                    env=self.build_env(),
+                    input=PING_PROMPT,
+                    timeout=request.timeout_s,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+        except subprocess.TimeoutExpired as exc:
+            # The event precedes the result line, so a ping cut short can still carry it.
+            _, usage = parse_stream(_as_text(getattr(exc, "stdout", None)))
+            error = f"claude timed out after {timeout_s}s"
+            return self._failure(request, EXIT_TIMEOUT, error, usage=usage)
+        except OSError as exc:
+            return self._failure(request, EXIT_NOT_EXECUTABLE, f"{self.claude_bin}: {exc}")
+        stderr = _as_text(getattr(proc, "stderr", ""))
+        exit_code = int(getattr(proc, "returncode", 0) or 0)
+        data, usage = parse_stream(_as_text(getattr(proc, "stdout", "")))
+        if isinstance(data, dict):
+            return self._from_json(request, data, stderr, exit_code, usage=usage)
+        return self._failure(
+            request, exit_code, stderr or "claude produced unparseable stdout", usage=usage
+        )
 
     # -- parsing -------------------------------------------------------------
 

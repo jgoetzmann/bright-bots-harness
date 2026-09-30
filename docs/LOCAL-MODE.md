@@ -74,6 +74,12 @@ variable naming `GITHUB`; `load_config` reads everything else from `/work/.env`.
 | write `runs/`, `packages/`, `state/`, `proposals/`, `harness.db` | change its own pin, gates, redaction or prompts |
 | stop itself at a unit boundary when `STOP` appears | reach the host: there is no Docker socket inside |
 
+The loop does not wait for a quiet subscription the way the scheduled workflows do, and nothing it
+spends appears in a workflow, so the JackiOh night bot counts a local run as a person using the
+subscription (OPERATIONS.md §13.8, D93). The `.env` it reads needs `QUIET_ENABLED`,
+`QUIET_INTERVAL_MINUTES` and `QUIET_MAX_WAIT_MINUTES` all the same, like every key `.env.example`
+calls required.
+
 ## The startup gate
 
 `local/entrypoint.sh` runs these steps in order on every start, restarts included. Each one fails

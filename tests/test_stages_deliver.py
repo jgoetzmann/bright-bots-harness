@@ -99,6 +99,9 @@ BASE_ENV = {
     "COMMENT_UPSTREAM": "true",
     "ASK_MAX_PER_DAY": "20",
     "MAX_SELF_AUDIT_CYCLES": "3",
+    "QUIET_ENABLED": "true",
+    "QUIET_INTERVAL_MINUTES": "10",
+    "QUIET_MAX_WAIT_MINUTES": "120",
     # The five D3 keys are required in every .env. The run
     # window is left empty (= always open) so the D2 behaviour above is unchanged.
     "SESSION_USAGE_STOP_PCT": "70",

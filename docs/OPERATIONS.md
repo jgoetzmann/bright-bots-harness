@@ -446,7 +446,8 @@ gh workflow run discover.yml -R jgoetzmann/bright-bots-harness -f mode=assigned
 # triage without the harness-ok allowlist label; the other filters still apply
 gh workflow run discover.yml -R jgoetzmann/bright-bots-harness \
   -f mode=triage -f ignore_allowlist=true
-# one item now, by harness issue number; bypasses the run window, not the usage stop
+# one item now, by harness issue number; bypasses the run window and the quiet check, not the
+# usage stop
 gh workflow run implement.yml -R jgoetzmann/bright-bots-harness -f issue=4
 gh workflow run feedback.yml  -R jgoetzmann/bright-bots-harness   # act on upstream comments now
 gh run list -R jgoetzmann/bright-bots-harness -w implement -L 5    # what happened
@@ -457,7 +458,9 @@ filter: the allowlist, the excluded labels, the assignee check and the in-flight
 `mode: assigned` applies no label filter, so it queues every open issue assigned to the machine
 account, including ones labelled `intern-starter`, `large` or `architecture` that triage would
 exclude; it only queues, and the next `discover` run proposes. `implement`'s `issue` is the harness
-issue number, the item must already be `stage:ready`, and blank takes the dispatcher's plan. From a
+issue number, the item must already be `stage:ready`, and blank takes the dispatcher's plan. A
+dispatch with an `issue`, or of `discover` in any mode but `triage`, starts without waiting for a
+quiet subscription (§13.8); a blank `issue` or a `triage` dispatch waits like the schedule. From a
 checkout the equivalents are `harness discover --mode directed --target 633` then
 `harness propose <id>`, `harness run --item 4`, and `harness sweep`.
 
@@ -655,3 +658,69 @@ Items start again on their own as pull requests merge or close. To change the bo
 in a pull request here; `0` or an empty value removes it. A delivery a person runs by hand with
 `harness deliver <id>` waits the same way; nothing retries it, so the item stays `packaged` and
 the command is run again once fewer are open (D90).
+
+### 13.8 Starting only while the subscription is quiet
+
+The subscription is shared three ways: this harness, the JackiOh night bot (`bot-night.yml` in
+`jgoetzmann/JackiOh`, 21:00 to 07:00 America/Chicago) and you. `implement.yml` and `discover.yml`
+each start with a `quiet` job: it checks the halt, approves merged proposals (implement) and asks
+the dispatcher as the spending job does, then runs the step
+`Wait until the subscription is quiet (harness quiet)` and commits what it read. The spending job
+`needs` it, and its `Run planned items` or `Discover and propose` step runs only when the `quiet`
+job's output is `true` (D93):
+
+1. It pings: `claude --print --output-format stream-json --verbose --model haiku --max-turns 1
+   --strict-mcp-config`, with `Reply with the word ok.` on stdin, in an empty temporary directory
+   so no repository's `CLAUDE.md` is read. It reads the `five_hour` and `seven_day` utilization
+   from the last `rate_limit_event` and saves the reading as `window.usage`, as a stage does.
+2. It waits `QUIET_INTERVAL_MINUTES` (10) and pings again.
+3. When neither window rose, the run goes ahead. After a rise it pings again every interval, and
+   once `QUIET_MAX_WAIT_MINUTES` (120) have passed, pings included, without a quiet pair, the run
+   starts nothing and ends green, logging `not quiet after 120 minutes: …`. A pair whose five-hour
+   `resets_at` changed is inconclusive and takes another interval, and so does a later ping that
+   reports no usage. A refused ping is a usage stop and is recorded as `rate_limited_until`, as any
+   refusal is (D71). A first ping that reports no usage lets the run go ahead, because no decision
+   may depend on the signal (B114).
+4. The spending job then starts with its own `.harness/HALT` check and its own plan, so a halt
+   committed during the wait stops it, and so does a run window that closed meanwhile. In
+   `implement.yml` the check itself also answers not quiet once the window it began in has closed
+   (`--window`).
+
+**The partner.** A rise is excused while the partner bot was spending: a step of one of its
+`bot-night.yml` runs whose name starts with `Build, check and review`, which had started by the
+second ping and had not finished before the first. The check lists
+`/repos/jgoetzmann/JackiOh/actions/workflows/bot-night.yml/runs?per_page=10` and reads the jobs of
+each run still going or updated since the first ping, with the machine account's token and, after
+a 401, 403 or 404, once more without it, which is why the partner's repository must be public. A
+step GitHub skipped does not count. A failure to read counts as the partner not spending. The
+JackiOh bot applies the same rule the other way round and counts this harness's
+`Run planned items`, `Discover and propose`, `Sweep keywords` and `Reconcile stale` steps as
+spending, so those names stay as they are, and this step's own name never starts with
+`Build, check and review`. `QUIET_PARTNER_REPO`, `QUIET_PARTNER_WORKFLOW` and
+`QUIET_PARTNER_STEPS` (prefixes separated by `|`) name the partner, and an empty
+`QUIET_PARTNER_REPO` excuses no rise.
+
+**What skips it.** `implement.yml`'s `issue` input, which passes `--force`, and a planned item
+somebody forced with `/harness … --force`, which `--items` finds in the ledger, are you asking for
+the run now; one forced item lifts the check for the whole run. So is a `discover.yml` dispatch in
+any mode but `triage`. An `implement.yml` run with nothing to start does not ping; a
+`discover.yml` run that proceeds always does, since whether triage calls the model is not known
+beforehand. `feedback.yml`, `ack.yml`, `heartbeat.yml`, `ops.yml` and `watchdog.yml` never wait: a
+person commanding the harness is using it on purpose. `QUIET_ENABLED=false` turns the check off.
+
+**Known limits.**
+
+- While the partner is in a spending step, you spending at the same moment look like the partner,
+  so the rise is excused.
+- A local-mode run of either bot (the `bb` container) shows in no workflow, so the other bot takes
+  it for a person, and local mode itself never waits.
+- `feedback.yml`'s 12:41 and 15:41 UTC weekday sweeps build what is approved through
+  `Reconcile stale` without a check.
+- The `quiet` job may run for 140 minutes, the one job allowed past the 120 of B125, which is why
+  `QUIET_MAX_WAIT_MINUTES` stops at 120. The whole run holds the `harness-ledger` lock, so a
+  `feedback.yml` run your comment started queues behind the wait and the build after it, and a
+  newer run can replace it while it is pending.
+- Every checked run waits at least one interval, and its pings are small model calls of their own.
+
+`harness status` shows the last check as `quiet check: quiet at <time>: <reason>`, and
+`runs/quiet.json` in the run's artifact holds the samples.

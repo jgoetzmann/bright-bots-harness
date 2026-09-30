@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "text": "ok",
+  "turns": 1,
+  "duration_ms": 1180,
+  "session_id": "fake-ping-0001",
+  "exit_code": 0,
+  "transcript": [],
+  "error": null,
+  "usage": {
+    "five_hour": {
+      "utilization": 0.12,
+      "resets_at": "2026-09-01T15:00:00Z"
+    },
+    "status": "allowed"
+  }
+}

@@ -99,11 +99,24 @@ FIELD_KEYS: tuple[str, ...] = (
     "CO_AUTHOR",
     # D88: how many delivery pull requests may be open upstream at once.
     "MAX_OPEN_DELIVERIES",
+    # D93: start spending only while the subscription is quiet, and the bot that shares it.
+    "QUIET_ENABLED",
+    "QUIET_INTERVAL_MINUTES",
+    "QUIET_MAX_WAIT_MINUTES",
+    "QUIET_PARTNER_REPO",
+    "QUIET_PARTNER_WORKFLOW",
+    "QUIET_PARTNER_STEPS",
 )
 
 #: The only field keys that may be absent from `.env` or empty (RUN-DECISIONS-D2 §2).
 OPTIONAL_KEYS: tuple[str, ...] = (
-    "FORK_REPO", "TRACKING_ISSUE", "CO_AUTHOR", "MAX_OPEN_DELIVERIES"
+    "FORK_REPO",
+    "TRACKING_ISSUE",
+    "CO_AUTHOR",
+    "MAX_OPEN_DELIVERIES",
+    "QUIET_PARTNER_REPO",
+    "QUIET_PARTNER_WORKFLOW",
+    "QUIET_PARTNER_STEPS",
 )
 
 KNOWN_KEYS: tuple[str, ...] = FIELD_KEYS + SECRET_KEYS + PASSTHROUGH_KEYS
@@ -127,7 +140,24 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "MAX_SELF_AUDIT_CYCLES",
     "CO_AUTHOR",
     "MAX_OPEN_DELIVERIES",
+    "QUIET_ENABLED",
+    "QUIET_INTERVAL_MINUTES",
+    "QUIET_MAX_WAIT_MINUTES",
+    "QUIET_PARTNER_REPO",
+    "QUIET_PARTNER_WORKFLOW",
+    "QUIET_PARTNER_STEPS",
 )
+
+#: The ranges the quiet check's two durations must fall in, in minutes. The wait runs in a job of
+#: its own whose timeout is 140, which is the longest wait plus one more pair and the setup (D93).
+QUIET_INTERVAL_RANGE: tuple[int, int] = (1, 60)
+QUIET_MAX_WAIT_LIMIT = 120
+
+#: What `QUIET_PARTNER_STEPS` separates its step-name prefixes with; a prefix may hold a comma.
+QUIET_STEP_SEPARATOR = "|"
+
+#: A workflow file name, as `/actions/workflows/{file}` takes it.
+WORKFLOW_FILE_SHAPE: re.Pattern[str] = re.compile(r"[\w.-]+\.ya?ml")
 
 #: Keys D74 and D89 removed. Accepted wherever a key is accepted and ignored, so an existing
 #: `.env` or `.harness/config.json` keeps loading; `harness doctor` names them as a warning
@@ -241,6 +271,14 @@ class Config:
     co_author: str
     #: D88: open delivery pull requests upstream at which no new item starts; 0 is no cap.
     max_open_deliveries: int
+    #: D93: the quiet check before a spending run, its two durations, and the bot sharing the
+    #: subscription whose spending excuses a rise; an empty partner repository excuses none.
+    quiet_enabled: bool
+    quiet_interval_minutes: int
+    quiet_max_wait_minutes: int
+    quiet_partner_repo: str
+    quiet_partner_workflow: str
+    quiet_partner_steps: tuple[str, ...]
 
 
 #: The :class:`Config` most recently returned by :func:`load_config`. ``None`` until a load
@@ -637,6 +675,21 @@ def load_config(
             f"MAX_OPEN_DELIVERIES must be 0 or more; got {max_open_deliveries}"
         )
 
+    quiet_enabled = _require_bool(values, "QUIET_ENABLED")
+    quiet_interval_minutes = _require_int(values, "QUIET_INTERVAL_MINUTES")
+    low, high = QUIET_INTERVAL_RANGE
+    if not low <= quiet_interval_minutes <= high:
+        raise ConfigError(
+            f"QUIET_INTERVAL_MINUTES must be in {low}..{high}; got {quiet_interval_minutes}"
+        )
+    quiet_max_wait_minutes = _require_int(values, "QUIET_MAX_WAIT_MINUTES")
+    if not quiet_interval_minutes <= quiet_max_wait_minutes <= QUIET_MAX_WAIT_LIMIT:
+        raise ConfigError(
+            f"QUIET_MAX_WAIT_MINUTES must be in QUIET_INTERVAL_MINUTES..{QUIET_MAX_WAIT_LIMIT}"
+            f" ({quiet_interval_minutes}..{QUIET_MAX_WAIT_LIMIT}); got {quiet_max_wait_minutes}"
+        )
+    partner_repo, partner_workflow, partner_steps = _quiet_partner(values)
+
     # I-18 (D61): the harness never works on its own repository. A system that can rewrite the
     # rules it is governed by has no rules -- a change to gh.py or prompts/implement.md could
     # propose its way out of the kill switch, the credential door and the pin, and the
@@ -688,9 +741,42 @@ def load_config(
         max_self_audit_cycles=max_self_audit_cycles,
         co_author=co_author,
         max_open_deliveries=max_open_deliveries,
+        quiet_enabled=quiet_enabled,
+        quiet_interval_minutes=quiet_interval_minutes,
+        quiet_max_wait_minutes=quiet_max_wait_minutes,
+        quiet_partner_repo=partner_repo,
+        quiet_partner_workflow=partner_workflow,
+        quiet_partner_steps=partner_steps,
     )
     _LAST_CONFIG = config
     return config
+
+
+def _quiet_partner(values: Mapping[str, str]) -> tuple[str, str, tuple[str, ...]]:
+    """``(repo, workflow file, step-name prefixes)`` of the quiet check's partner (D93).
+
+    An empty repository is no partner, and then the other two are ignored; with one, the
+    workflow must be a file name and at least one prefix must be given.
+    """
+    repo = values.get("QUIET_PARTNER_REPO", "").strip()
+    if not repo:
+        return "", "", ()
+    if not _repo_shaped(repo):
+        raise ConfigError(f"QUIET_PARTNER_REPO must be owner/name or empty; got {repo!r}")
+    workflow = values.get("QUIET_PARTNER_WORKFLOW", "").strip()
+    if WORKFLOW_FILE_SHAPE.fullmatch(workflow) is None:
+        raise ConfigError(
+            "QUIET_PARTNER_WORKFLOW must be the partner's workflow file name, such as "
+            f"bot-night.yml, while QUIET_PARTNER_REPO is set; got {workflow!r}"
+        )
+    raw = values.get("QUIET_PARTNER_STEPS", "")
+    steps = tuple(part.strip() for part in raw.split(QUIET_STEP_SEPARATOR) if part.strip())
+    if not steps:
+        raise ConfigError(
+            "QUIET_PARTNER_STEPS must name at least one step-name prefix, separated by "
+            f"{QUIET_STEP_SEPARATOR!r}, while QUIET_PARTNER_REPO is set"
+        )
+    return repo, workflow, steps
 
 
 def _window_minute(point: str) -> tuple[int, bool] | None:

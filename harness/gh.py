@@ -245,7 +245,7 @@ class GitHubReadOnly:
                     "are capped at 60/hour per address"
                 )
         tail = (body or "").strip().replace("\n", " ")[:200]
-        raise GitHubError(f"github returned {status} for {url}: {tail}")
+        raise GitHubError(f"github returned {status} for {url}: {tail}", status=status)
 
     # ------------------------------------------------------------------ public
 
@@ -345,6 +345,27 @@ class GitHubReadOnly:
         rows = data.get("workflow_runs")
         if not isinstance(rows, list):
             raise GitHubError(f"no workflow_runs in the run listing for {repo}")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def workflow_file_runs(self, repo: str, workflow: str, *, per_page: int) -> list[dict]:
+        """``/repos/{repo}/actions/workflows/{workflow}/runs``: one workflow's newest runs, one
+        page, for the quiet check's partner (D93)."""
+        pairs = [("per_page", str(int(per_page)))]
+        name = urllib.parse.quote(str(workflow), safe="")
+        data = self.get(f"/repos/{repo}/actions/workflows/{name}/runs?{_query(pairs)}")
+        rows = data.get("workflow_runs") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise GitHubError(f"no workflow_runs in the {workflow} run listing for {repo}")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        """``/repos/{repo}/actions/runs/{run_id}/jobs``: each job of one run with its ``steps``,
+        one page of the largest size (D93)."""
+        pairs = [("per_page", str(PER_PAGE))]
+        data = self.get(f"/repos/{repo}/actions/runs/{int(run_id)}/jobs?{_query(pairs)}")
+        rows = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise GitHubError(f"no jobs in the listing for run {run_id} of {repo}")
         return [row for row in rows if isinstance(row, dict)]
 
 

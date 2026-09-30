@@ -65,6 +65,8 @@ SPEC_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
+    # D93: the quiet check before a spending run starts anything.
+    "harness/quiet.py",
 ]
 
 # Test modules that must exist.
@@ -551,6 +553,8 @@ D2_PACKAGE_FILES = [
     "harness/priority.py",
     "harness/stages/ask.py",
     "harness/stages/audit.py",
+    # D93: the quiet check before a spending run starts anything.
+    "harness/quiet.py",
 ]
 
 # Test modules and fixtures that must exist.
@@ -602,6 +606,9 @@ D2_REQUIRED_FILES = [
     "bb-configure.py",
     "bb-config.json",
 ]
+
+#: The one job allowed past B125's 120 minutes: the wait for a quiet subscription (D93).
+QUIET_JOB_TIMEOUT = 140
 
 # The first seven .harness/config.json knob keys (B112).
 D2_CONFIG_JSON_KEYS = (
@@ -1847,15 +1854,23 @@ def test_b493_each_spending_workflow_schedules_more_than_one_firing(name):
 
 @pytest.mark.parametrize("name", ALL_WORKFLOWS)
 def test_b125_every_job_sets_a_timeout_of_at_most_120_minutes(name):
-    """B125: `timeout-minutes` on every `jobs.<id>`, <= 120."""
+    """B125: `timeout-minutes` on every `jobs.<id>`, <= 120. The one exception is the `quiet`
+    job, which only waits for a quiet subscription and may run to 140 (D93, B535)."""
     text = _d2_workflow(name)
     jobs = _workflow_jobs(text)
     assert jobs, f"{name}: no jobs found under `jobs:`"
     for job, block in jobs.items():
         match = re.search(r"^    timeout-minutes:\s*(\d+)\s*(#.*)?$", block, re.M)
         assert match, f"{name}: job {job!r} has no job-level timeout-minutes (B125)"
-        assert int(match.group(1)) <= 120, f"{name}: job {job!r} timeout exceeds 120 (B125)"
+        waits = job == "quiet" and "harness --json quiet" in block
+        limit = QUIET_JOB_TIMEOUT if waits else 120
+        assert int(match.group(1)) <= limit, f"{name}: job {job!r} timeout exceeds {limit} (B125)"
         assert int(match.group(1)) > 0
+        if job == "quiet":
+            assert not re.search(r"harness\s+(run|discover|propose|sweep|revise)\b", block), (
+                f"{name}: the quiet job may wait past 120 minutes only because it spends nothing "
+                "but its pings (D93)"
+            )
 
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
@@ -1981,6 +1996,7 @@ def test_b146_ops_never_retries_a_step_that_could_have_spent():
     )
     # Every step that runs a model call, a gate, or anything after the spend.
     for step in (
+        "Wait until the subscription is quiet",
         "Discover and propose",
         "Run planned items",
         "Sweep keywords",
@@ -2047,8 +2063,9 @@ def test_b105_no_workflow_pushes_a_workflow_file_to_the_fork():
 
 
 def test_b127_implement_yml_orders_halt_doctor_sync_fork_dispatch_then_work():
-    """B127 / B150: HALT check → doctor → sync-fork → dispatch → run, in that order."""
-    text = _d2_workflow("implement.yml")
+    """B127 / B150: HALT check → doctor → sync-fork → dispatch → run, in that order, inside the
+    job that builds; the `quiet` job before it has its own HALT check (D93)."""
+    text = _workflow_jobs(_d2_workflow("implement.yml"))["implement"]
     order = [
         ("halt", _first_line_index(text, r"\.harness/HALT")),
         ("doctor", _first_line_index(text, r"harness\s+doctor\b")),
@@ -2087,14 +2104,23 @@ def _halt_step_block(text: str) -> str | None:
     return blocks[0] if len(blocks) == 1 else None
 
 
-@pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
-def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatch(name):
-    """B149 / B150 / A43: the .harness/HALT check precedes doctor and the dispatcher, logs why,
-    and exits 0.
+def _spending_jobs(name: str) -> list[tuple[str, str]]:
+    """Each job of a spending workflow with the text of that job alone; the `quiet` job counts,
+    since its pings are model calls (D93)."""
+    return list(_workflow_jobs(_d2_workflow(name)).items())
+
+
+@pytest.mark.parametrize(
+    ("name", "job"),
+    [(name, job) for name in SPENDING_WORKFLOWS for job, _ in _spending_jobs(name)],
+)
+def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatch(name, job):
+    """B149 / B150 / A43: in every job of a spending workflow the .harness/HALT check precedes
+    doctor and the dispatcher, logs why, and exits 0.
 
     The exit-code check reads only the halt step's own lines after the log line, and that step
     may exit no other way."""
-    text = _d2_workflow(name)
+    text = dict(_spending_jobs(name))[job]
     halt = _first_line_index(text, r"\.harness/HALT")
     assert halt is not None, f"{name}: no .harness/HALT check (B149)"
     assert "halted by .harness/HALT" in text, f"{name}: the halt step must log why (B149)"
@@ -2119,7 +2145,7 @@ def test_b149_every_spending_workflow_checks_repo_halt_before_doctor_and_dispatc
         if index is not None:
             assert halt < index, f"{name}: HALT must be checked before {later!r} (B150)"
     spend = _first_line_index(
-        text, r"harness\s+(run|discover|propose|sweep|revise|deliver|decompose)\b"
+        text, r"harness\s+(--json\s+)?(run|discover|propose|sweep|revise|deliver|decompose|quiet)\b"
     )
     assert spend is not None, f"{name}: no spending command found"
     assert halt < spend, f"{name}: HALT must be checked before any spending command (B150)"
@@ -2505,15 +2531,17 @@ def test_discover_yml_spend_gate_stops_on_every_usage_reason():
     """Every must-stop reason sets proceed=false in discover.yml's `case "$reason"`, evaluated
     the way sh evaluates it: the first matching clause wins (D33)."""
     reasons = _dispatcher_reasons()
-    blocks = _case_blocks(_d2_workflow("discover.yml"))
-    assert len(blocks) == 1, 'discover.yml must gate spend on exactly one `case "$reason"`'
-    block = blocks[0]
-    for prefix in sorted(MUST_STOP_REASON_PREFIXES):
-        body = _case_body_for(block, reasons[prefix])
-        assert "proceed=false" in body, (
-            f"discover.yml proceeds on {reasons[prefix]!r}; a usage stop must stop the job"
-        )
-        assert "proceed=true" not in body, f"discover.yml's clause for {prefix!r} is ambiguous"
+    for job, text in _spending_jobs("discover.yml"):
+        blocks = _case_blocks(text)
+        assert len(blocks) == 1, f'discover.yml {job} must gate on exactly one `case "$reason"`'
+        for prefix in sorted(MUST_STOP_REASON_PREFIXES):
+            body = _case_body_for(blocks[0], reasons[prefix])
+            assert "proceed=false" in body, (
+                f"discover.yml proceeds on {reasons[prefix]!r}; a usage stop must stop the job"
+            )
+            assert "proceed=true" not in body, (
+                f"discover.yml's clause for {prefix!r} is ambiguous"
+            )
 
 
 def test_discover_yml_spend_gate_does_not_stop_on_the_run_window():
@@ -2811,6 +2839,8 @@ def test_the_fake_backend_has_a_fixture_for_every_stage_that_calls_a_model():
     reachable = {
         "discover", "propose", "implement", "package", "revise", "decompose",
         "diagnose_gate_failure", "ask", "audit",
+        # The quiet check's sample (D93).
+        "ping",
     }
     present = {path.stem for path in DEFAULT_FIXTURES_DIR.glob("*.json")}
 
@@ -2898,7 +2928,7 @@ def test_B429_the_shipped_config_files_carry_no_retired_key():
 
     assert "ANTHROPIC_API_KEY=" not in env_example
     keys = re.findall(r"^([A-Z_]+)=", env_example, re.M)
-    assert len(keys) == 39, f".env.example carries {len(keys)} keys: {keys}"
+    assert len(keys) == 45, f".env.example carries {len(keys)} keys: {keys}"
     assert len(shipped) == 13, f".harness/config.json carries {len(shipped)} keys"
     assert "ANTHROPIC_API_KEY" in config_mod.SECRET_KEYS
     assert "ANTHROPIC_API_KEY" in runner_cli.STRIPPED_ENV_KEYS

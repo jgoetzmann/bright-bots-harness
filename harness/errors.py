@@ -63,6 +63,11 @@ class RateCeilingReached(HarnessError):
 class GitHubError(HarnessError):
     """An unauthenticated GitHub read failed or returned an unusable response."""
 
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        #: The HTTP status GitHub answered with, when the failure was an answer; else ``None``.
+        self.status: int | None = status
+
 
 class CloneError(HarnessError):
     """A disposable clone could not be created, branched, or released."""

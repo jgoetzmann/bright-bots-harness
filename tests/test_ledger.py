@@ -901,3 +901,18 @@ def test_B200_the_ledger_and_the_runner_name_the_same_two_windows():
     from harness.runner.cli import USAGE_WINDOWS as runner_windows
 
     assert ledger_windows == runner_windows == ("five_hour", "seven_day")
+
+
+def test_B525_a_held_thread_survives_a_save_and_unmarks_its_comment(tmp_path):
+    """B525 (D92): the retry list is part of the ledger's schema, so the next run sees it."""
+    ledger = Ledger.empty("2026-09-01T00:00:00Z")
+    ledger.mark_seen("IC_a")
+    ledger.hold_for_retry("IC_a", "o/r", "delivery_pr", 929)
+    ledger.hold_for_retry("IC_a", "o/r", "delivery_pr", 929)
+    path = tmp_path / "ledger.json"
+    path.write_text(ledger.to_json(), encoding="utf-8")
+
+    again = load(path)
+
+    assert not again.seen("IC_a")
+    assert again.retry_threads() == [{"repo": "o/r", "surface": "delivery_pr", "number": 929}]

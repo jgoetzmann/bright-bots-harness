@@ -571,6 +571,11 @@ def sweep(
 
     if inbox_issue:
         read(self_repo, "inbox", int(inbox_issue))
+    # Threads a rate limit left commands on are read whole, however old those commands are,
+    # and then forgotten; a command stopped again is held again (D92).
+    for held in ledger.retry_threads():
+        read(str(held.get("repo", "")), str(held.get("surface", "")), int(held.get("number", 0)))
+    ledger.clear_retry_threads()
     if thread and int(thread) != int(inbox_issue or 0):
         try:
             data = gh.get(f"/repos/{self_repo}/issues/{int(thread)}")

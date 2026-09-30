@@ -409,6 +409,25 @@ class Ledger:
         if str(comment_id) not in ids:
             ids.append(str(comment_id))
 
+    def hold_for_retry(self, comment_id: str, repo: str, surface: str, number: int) -> None:
+        """Forget that ``comment_id`` was seen and name its thread for the next sweep to read
+        whole, so a command a rate limit stopped runs after the reset (D92)."""
+        ids = self.cursors.setdefault("seen_comment_ids", [])
+        if str(comment_id) in ids:
+            ids.remove(str(comment_id))
+        thread = {"repo": str(repo), "surface": str(surface), "number": int(number)}
+        held = self.cursors.setdefault("retry_threads", [])
+        if thread not in held:
+            held.append(thread)
+
+    def retry_threads(self) -> list[dict]:
+        """The threads a rate limit left commands on, oldest first (D92)."""
+        held = self.cursors.get("retry_threads")
+        return [dict(t) for t in held] if isinstance(held, list) else []
+
+    def clear_retry_threads(self) -> None:
+        self.cursors.pop("retry_threads", None)
+
     def count_denied(self, handle: str) -> None:
         denied = self.cursors.setdefault("keyword_denied", {})
         denied[handle] = int(denied.get(handle, 0)) + 1
@@ -490,6 +509,13 @@ class Ledger:
         pruned = self.pruned_at()
         if pruned:
             cursors["pruned_at"] = pruned
+        held = self.retry_threads()
+        if held:
+            cursors["retry_threads"] = [
+                {"repo": str(t.get("repo", "")), "surface": str(t.get("surface", "")),
+                 "number": int(t.get("number", 0) or 0)}
+                for t in held
+            ]
         history = [
             {
                 "ts": entry.get("ts", ""),

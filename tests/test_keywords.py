@@ -1140,3 +1140,24 @@ def test_B506_feedback_hands_the_comment_event_thread_to_the_sweep():
 
     assert "github.event.issue.number || github.event.pull_request.number" in step
     assert 'harness sweep ${THREAD:+--thread "$THREAD"}' in step
+
+
+# --------------------------------------------------------------------------------------------
+# B525 (D92) - a thread a rate limit left a command on is read whole on the next sweep
+# --------------------------------------------------------------------------------------------
+
+
+def test_B525_a_held_thread_is_read_whole_then_forgotten():
+    """B525: the held command is hours older than the sweep's window by the time the limit
+    resets, and the feed may not name its thread at all; the sweep reads it anyway."""
+    ledger = fresh_ledger(CURSOR)
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=5,
+                       node_id="IC_held", created_at="2026-08-20T00:00:00Z")
+    gh = FakeGh(threads=[], comments={(SELF_REPO, 12): [stranded]})
+    ledger.hold_for_retry("IC_held", SELF_REPO, "issue", 12)
+
+    cmds = run_sweep(gh, ledger)
+
+    assert [(c.verb, c.number, c.comment_id) for c in cmds] == [("go", 12, "IC_held")]
+    assert ledger.retry_threads() == []
+    assert run_sweep(gh, ledger) == [], "answered once"

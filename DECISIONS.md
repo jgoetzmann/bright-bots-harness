@@ -1593,3 +1593,27 @@ so a person's push during the revise is overwritten, and which runs in the clone
 the model can edit to point the token elsewhere.
 
 Allocates B524.
+
+## D92 / B525 - a command a rate limit stopped runs after the reset
+
+Decision:
+- When the subscription's rate limit, or GitHub's rate ceiling, stops a command, and nothing in
+  its comment ran yet, `run_comment` unmarks that comment as seen and names its thread in the
+  ledger's `retry_threads` cursor (`Ledger.hold_for_retry`). The reply says "Not now", names the
+  reset, and says the command runs on the first sweep after it.
+- Comments the same sweep collected after the stop never ran either, so each is held the same
+  way, without a reply.
+- `keywords.sweep` reads every held thread whole, however old the command on it, then forgets
+  the list; a command stopped again is held again. Seen ids still answer each comment once.
+- A comment whose earlier command already ran is not held, since replaying it would run that
+  command twice; its reply says the rest was not run and must be said again.
+
+Why. Every command is marked seen when a sweep collects it, and a rate limit stopped the batch
+with no reply. The command was consumed and never retried, while the item's own note said
+"revise is retried after the reset". The maintainer's Spanish-localization request on #929 was
+lost this way on 09-29. After the reset, D85's window no longer reached the comment either.
+
+Rejected: leaving the comment unseen without naming its thread, which the next sweep's window
+does not reach hours later; holding a partly run comment, which repeats the part that ran.
+
+Allocates B525.

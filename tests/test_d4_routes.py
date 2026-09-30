@@ -2130,3 +2130,65 @@ def test_B517_a_pull_request_somebody_else_opened_is_no_delivery():
 
 def test_B517_the_machine_accounts_own_pull_request_still_resolves():
     assert _delivery_route("JGoetzmann-Bot") == 66
+
+
+# --------------------------------------------------------------------------------------
+# B525 (D92) - a command a rate limit stopped runs after the reset, not never
+# --------------------------------------------------------------------------------------
+def _limited(main_mod, *, after: int = 0):
+    """`_act_on_command` that raises RateLimited once `after` commands have run."""
+    from harness.errors import RateLimited
+
+    real = main_mod._act_on_command
+    calls = {"n": 0}
+
+    def act(ctx, config, cmd):
+        calls["n"] += 1
+        if calls["n"] > after:
+            raise RateLimited("session", reset_at="2026-09-09T12:00:00Z")
+        return real(ctx, config, cmd)
+
+    return real, act
+
+
+def test_B525_a_comment_the_limit_stopped_first_is_held_for_the_next_sweep(tmp_path):
+    """B525: nothing in the comment ran, so it is unseen again, its thread is named for the next
+    sweep, and the person is told it runs after the reset rather than hearing nothing."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    rig.ctx.ledger.mark_seen("IC_x")
+    real, main_mod._act_on_command = _limited(main_mod)
+    try:
+        _records, keep_going = main_mod.run_comment(
+            rig.ctx, rig.config, [_cmd("revise", surface="delivery_pr", number=929, args="es")]
+        )
+    finally:
+        main_mod._act_on_command = real
+
+    assert keep_going is False
+    assert not rig.ctx.ledger.seen("IC_x")
+    assert rig.ctx.ledger.retry_threads() == [
+        {"repo": rig.config.upstream_repo, "surface": "delivery_pr", "number": 929}
+    ]
+    (reply,) = [body for *_where, body in rig.gh.comments_posted]
+    assert "Not now — rate limited until 2026-09-09T12:00:00Z" in reply
+
+
+def test_B525_a_comment_partly_run_is_not_replayed(tmp_path):
+    """B525: the first command did its work, so replaying the comment would do it twice; the
+    rest is reported as not run, and the comment stays seen."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    rig.ctx.ledger.mark_seen("IC_x")
+    real, main_mod._act_on_command = _limited(main_mod, after=1)
+    try:
+        cmds = [dataclasses.replace(_cmd("status"), comment_id="IC_x") for _ in range(2)]
+        main_mod.run_comment(rig.ctx, rig.config, cmds)
+    finally:
+        main_mod._act_on_command = real
+
+    assert rig.ctx.ledger.seen("IC_x")
+    assert rig.ctx.ledger.retry_threads() == []
+    assert "not run — rate limited" in rig.gh.comments_posted[-1][2]

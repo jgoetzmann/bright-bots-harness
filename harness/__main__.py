@@ -2413,9 +2413,17 @@ def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
     records: list[dict] = []
     parts: list[str] = []
     keep_going = True
-    for cmd in cmds:
+    for index, cmd in enumerate(cmds):
         record, answer, keep_going = _outcome(ctx, config, cmd)
         records.append(record)
+        if not keep_going and not answer:
+            # A limit stopped this command. When nothing in the comment ran yet, the whole
+            # comment runs again after the reset; otherwise the rest must be said again (D92).
+            if index == 0:
+                _hold_for_retry(ctx, config, cmd)
+                answer = f"Not now — {record['result']}; this runs on the first sweep after that."
+            else:
+                answer = f"not run — {record['result']}; say it again after that."
         if answer:
             said = getattr(cmd, "typed", "") or cmd.verb
             # Labelled only when the comment carried more than one command.
@@ -2425,6 +2433,13 @@ def run_comment(ctx, config, cmds) -> tuple[list[dict], bool]:
     if parts:
         _reply(ctx, config, cmds[0], "\n\n".join(parts))
     return records, keep_going
+
+
+def _hold_for_retry(ctx, config, cmd) -> None:
+    """Unmark the command's comment and name its thread for the next sweep (D92)."""
+    here = cmd.surface in ("issue", "inbox", "proposal_pr")
+    repo = str(config.self_repo if here else config.upstream_repo)
+    ctx.ledger.hold_for_retry(cmd.comment_id, repo, cmd.surface, int(cmd.number))
 
 
 def _outcome(ctx, config, cmd) -> tuple[dict, str, bool]:
@@ -2685,11 +2700,15 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             machine=discover_stage.machine_account(config),
             thread=int(getattr(args, "thread", 0) or 0),
         )
-        for group in _by_comment(commands):
+        groups = list(_by_comment(commands))
+        for index, group in enumerate(groups):
             records, keep_going = run_comment(ctx, config, group)
             for record in records:
                 print(json.dumps(record, sort_keys=False))
             if not keep_going:
+                # Collected means marked seen; these never ran, so they run after the reset.
+                for rest in groups[index + 1:]:
+                    _hold_for_retry(ctx, config, rest[0])
                 break
     finally:
         _save_ledger(ctx)

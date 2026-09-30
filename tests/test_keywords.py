@@ -1140,3 +1140,116 @@ def test_B506_feedback_hands_the_comment_event_thread_to_the_sweep():
 
     assert "github.event.issue.number || github.event.pull_request.number" in step
     assert 'harness sweep ${THREAD:+--thread "$THREAD"}' in step
+
+
+# --------------------------------------------------------------------------------------------
+# B525 (D92) - a thread a rate limit left a command on is read whole on the next sweep
+# --------------------------------------------------------------------------------------------
+
+
+def _held(ledger, cid="IC_held", number=12, since="2026-08-20T00:00:00Z"):
+    """A comment a rate limit stopped: seen when collected, then held."""
+    ledger.mark_seen(cid)
+    ledger.hold_for_retry(cid, SELF_REPO, "issue", number, since)
+
+
+def test_B525_a_held_thread_is_read_whole_then_forgotten():
+    """B525: the held command is hours older than the sweep's window by the time the limit
+    resets, and the feed may not name its thread at all; the sweep reads it anyway."""
+    ledger = fresh_ledger(CURSOR)
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=5,
+                       node_id="IC_held", created_at="2026-08-20T00:00:00Z")
+    gh = FakeGh(threads=[], comments={(SELF_REPO, 12): [stranded]})
+    _held(ledger)
+
+    cmds = run_sweep(gh, ledger)
+
+    assert [(c.verb, c.number, c.comment_id) for c in cmds] == [("go", 12, "IC_held")]
+    assert cmds[0].posted == "2026-08-20T00:00:00Z", "a second hold reads from the same place"
+    assert ledger.retry_threads() == []
+    assert run_sweep(gh, ledger) == [], "answered once"
+
+
+def test_B525_a_held_comment_waits_out_the_stored_limit():
+    """B525: read before the reset, it would be refused and answered again on every sweep, so
+    it stays held and seen until the limit has lifted."""
+    ledger = fresh_ledger(CURSOR)
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=5,
+                       node_id="IC_held", created_at="2026-09-02T11:50:00Z")
+    gh = FakeGh(threads=[], comments={(SELF_REPO, 7): [stranded], (SELF_REPO, 12): [stranded]})
+    _held(ledger, since="2026-09-02T11:50:00Z")
+    ledger.set_rate_limited("2026-09-02T13:00:00Z")
+
+    cmds = sweep(gh, ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
+                 upstream_repo=UPSTREAM, inbox_issue=7)
+
+    assert cmds == []
+    assert [t["comment_id"] for t in ledger.retry_threads()] == ["IC_held"]
+    assert ledger.seen("IC_held")
+
+
+def test_B525_a_held_thread_is_read_from_the_held_comment_on():
+    """B525: an older command on the thread that no seen id covers, as after a lost ledger,
+    is not replayed by the hold."""
+    ledger = fresh_ledger(CURSOR)
+    old = comment(login="jgoetzmann", association="OWNER", body="/harness stop", id=4,
+                  node_id="IC_old", created_at="2026-08-01T00:00:00Z")
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=5,
+                       node_id="IC_held", created_at="2026-08-20T00:00:00Z")
+    gh = FakeGh(threads=[], comments={(SELF_REPO, 12): [old, stranded]})
+    _held(ledger)
+
+    assert [c.comment_id for c in run_sweep(gh, ledger)] == ["IC_held"]
+
+
+def test_B525_an_unreadable_held_thread_is_dropped_and_the_sweep_goes_on():
+    """B525: a deleted issue answers 404 on every read, so it is dropped rather than raised on
+    every sweep after."""
+    from harness.errors import GitHubError
+
+    class Gone(FakeGh):
+        def issue_comments(self, repo, number):
+            if int(number) == 12:
+                raise GitHubError("404 Not Found")
+            return super().issue_comments(repo, number)
+
+    ledger = fresh_ledger(CURSOR)
+    inbox = comment(login="jgoetzmann", association="OWNER", body="/harness status", id=6,
+                    node_id="IC_inbox")
+    gh = Gone(threads=[], comments={(SELF_REPO, 7): [inbox]})
+    _held(ledger)
+
+    cmds = sweep(gh, ledger=ledger, trusted=TRUSTED, now_iso=NOW_ISO, self_repo=SELF_REPO,
+                 upstream_repo=UPSTREAM, inbox_issue=7)
+
+    assert [c.comment_id for c in cmds] == ["IC_inbox"]
+    assert ledger.retry_threads() == []
+
+
+def test_B525_a_sweep_that_raises_keeps_the_hold():
+    """B525: nothing collected by a sweep that raised has run, so the held comment is read
+    again by the next one."""
+    from harness.errors import GitHubError
+
+    class Flaky(FakeGh):
+        fail = True
+
+        def issue_comments(self, repo, number):
+            if int(number) == 30 and self.fail:
+                raise GitHubError("502 Bad Gateway")
+            return super().issue_comments(repo, number)
+
+    ledger = fresh_ledger(CURSOR)
+    stranded = comment(login="jgoetzmann", association="OWNER", body="/harness go", id=5,
+                       node_id="IC_held", created_at="2026-08-20T00:00:00Z")
+    feed = [thread(SELF_REPO, 30, "Issue", "T30")]
+    gh = Flaky(threads=feed, comments={(SELF_REPO, 12): [stranded]})
+    _held(ledger)
+
+    with pytest.raises(GitHubError):
+        run_sweep(gh, ledger)
+    assert [t["comment_id"] for t in ledger.retry_threads()] == ["IC_held"]
+
+    gh.fail = False
+    assert [c.comment_id for c in run_sweep(gh, ledger)] == ["IC_held"]
+    assert ledger.retry_threads() == []

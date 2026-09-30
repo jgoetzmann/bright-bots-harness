@@ -345,8 +345,6 @@ def _revise_leased(
             "stopping the loop before another model call (B138)",
         )
         return None
-    if signature:
-        _remember_signature(ctx, item_id, signature)
 
     spec_text = implement_mod._read_spec(ctx, item)
     pkg = parse_work_package(spec_text)
@@ -374,6 +372,9 @@ def _revise_leased(
         add_dirs=(lease.path,),
         entry_state=entry_state,
     )
+    # Remembered once the call ran: a rate limit or halt raises out of run_model first, and the
+    # command replayed after the reset must not look like the loop repeating itself (D92).
+    _remember_signature(ctx, item_id, signature)
     if not result.ok:
         implement_mod._block(
             ctx, item_id, lease, f"revise call failed: {result.error or 'unknown'}"

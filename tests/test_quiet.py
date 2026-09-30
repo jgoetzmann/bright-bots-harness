@@ -894,8 +894,8 @@ def test_B533_the_fake_backend_replays_ping_json():
 # --------------------------------------------------------------------------------------
 
 
-def test_B534_the_committed_defaults_are_the_partner_and_ten_of_forty(tmp_path):
-    """B534: `.env.example` ships the check on, 10 and 40 minutes, and the JackiOh night bot."""
+def test_B534_the_committed_defaults_are_the_partner_and_ten_of_a_hundred_and_twenty(tmp_path):
+    """B534: `.env.example` ships the check on, 10 and 120 minutes, and the JackiOh night bot."""
     example = tmp_path / ".env"
     example.write_text(
         (REPO_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8"
@@ -904,7 +904,7 @@ def test_B534_the_committed_defaults_are_the_partner_and_ten_of_forty(tmp_path):
     config = load_config(env_path=example, environ={})
 
     assert config.quiet_enabled is True
-    assert (config.quiet_interval_minutes, config.quiet_max_wait_minutes) == (10, 40)
+    assert (config.quiet_interval_minutes, config.quiet_max_wait_minutes) == (10, 120)
     assert config.quiet_partner_repo == "jgoetzmann/JackiOh"
     assert config.quiet_partner_workflow == "bot-night.yml"
     assert config.quiet_partner_steps == ("Build, check and review",)
@@ -939,7 +939,7 @@ def half_partner(workflow: str, steps: str) -> dict[str, str]:
         {"QUIET_INTERVAL_MINUTES": "0"},
         {"QUIET_INTERVAL_MINUTES": "61"},
         {"QUIET_MAX_WAIT_MINUTES": "5"},
-        {"QUIET_MAX_WAIT_MINUTES": "61"},
+        {"QUIET_MAX_WAIT_MINUTES": "121"},
         {"QUIET_ENABLED": "sometimes"},
         {"QUIET_PARTNER_REPO": "JackiOh"},
         half_partner("", "x"),
@@ -998,66 +998,89 @@ def test_B534_doctor_prints_the_prefixes_as_they_are_written(tmp_path, monkeypat
 # --------------------------------------------------------------------------------------
 
 
-def step_names(name: str) -> list[str]:
+def jobs_of(name: str) -> dict[str, str]:
+    """Each `jobs.<id>` of a workflow with its own text, in file order."""
     text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    body = text.split("\njobs:\n", 1)[1]
+    found = list(re.finditer(r"^  ([A-Za-z_][\w-]*):\s*$", body, re.M))
+    return {
+        match.group(1): body[match.start():found[i + 1].start() if i + 1 < len(found) else None]
+        for i, match in enumerate(found)
+    }
+
+
+def step_names(name: str, job: str | None = None) -> list[str]:
+    text = (WORKFLOWS / name).read_text(encoding="utf-8") if job is None else jobs_of(name)[job]
     return [label.strip() for label in re.findall(r"^      - name: (.+)$", text, re.M)]
 
 
-def step_block(name: str, label: str) -> str:
-    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+def step_block(name: str, label: str, job: str | None = None) -> str:
+    text = (WORKFLOWS / name).read_text(encoding="utf-8") if job is None else jobs_of(name)[job]
     start = text.index(f"      - name: {label}\n")
     end = text.find("\n      - name: ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-@pytest.mark.parametrize(
-    ("name", "spender"),
-    [
-        ("implement.yml", "Run planned items (harness run --item)"),
-        ("discover.yml", "Discover and propose (harness discover, harness propose)"),
-    ],
-)
-def test_B535_the_check_is_the_step_right_before_the_spending_step(name, spender):
-    """B535: after dispatch, immediately before the spending step, which waits on its output."""
-    names = step_names(name)
+SPENDERS = [
+    ("implement.yml", "implement", "Run planned items (harness run --item)"),
+    ("discover.yml", "discover", "Discover and propose (harness discover, harness propose)"),
+]
 
-    assert names.count(QUIET_STEP) == 1
-    assert names.index(QUIET_STEP) + 1 == names.index(spender)
-    assert names.index("harness dispatch") < names.index(QUIET_STEP)
-    check = step_block(name, QUIET_STEP)
+
+@pytest.mark.parametrize(("name", "job", "spender"), SPENDERS)
+def test_B535_the_check_is_a_job_of_its_own_that_the_spending_job_waits_for(name, job, spender):
+    """B535: the wait can outlast the 120 minutes a spending job may run, so it is the `quiet`
+    job: it plans, then waits, and the spending job needs it and spends only on its output."""
+    jobs = jobs_of(name)
+    assert list(jobs) == ["quiet", job], "the quiet job comes first, and there are two"
+    quiet_names = step_names(name, "quiet")
+    assert quiet_names.count(QUIET_STEP) == 1 and QUIET_STEP not in step_names(name, job)
+    assert quiet_names.index("harness dispatch") < quiet_names.index(QUIET_STEP)
+    assert quiet_names[0] == "HALT check (.harness/HALT on the default branch)"
+    assert spender in step_names(name, job) and spender not in quiet_names
+
+    quiet_job = jobs["quiet"]
+    assert re.search(r"^    timeout-minutes: 140\b", quiet_job, re.M)
+    assert "      quiet: ${{ steps.quiet.outputs.quiet }}" in quiet_job
+    assert "Commit state/ledger.json" in quiet_names, "what the check read is committed"
+    assert f"name: {job}-quiet-${{{{ github.run_id }}}}" in quiet_job
+
+    check = step_block(name, QUIET_STEP, "quiet")
     assert "id: quiet" in check
     assert re.search(r"harness --json quiet\b", check)
     assert '"quiet=true" >> "$GITHUB_OUTPUT"' in check
     assert '"quiet=false" >> "$GITHUB_OUTPUT"' in check
-    assert "steps.quiet.outputs.quiet == 'true'" in step_block(name, spender).splitlines()[1]
+
+    spending_job = jobs[job]
+    assert re.search(r"^    needs: quiet$", spending_job, re.M)
+    assert re.search(r"^    timeout-minutes: 120\b", spending_job, re.M)
+    gate = step_block(name, spender, job).splitlines()[1]
+    assert "needs.quiet.outputs.quiet == 'true'" in gate
+
+
+@pytest.mark.parametrize(("name", "job", "spender"), SPENDERS)
+def test_B535_the_spending_job_reads_the_halt_after_the_wait(name, job, spender):
+    """B535: the spending job starts after the wait, with its own `.harness/HALT` check first,
+    so a halt committed during the wait stops it."""
+    names = step_names(name, job)
+    assert names[0] == "HALT check (.harness/HALT on the default branch)"
+    assert "halted by .harness/HALT" in step_block(name, names[0], job)
+    assert "steps.halt.outputs.halted != 'true'" in step_block(name, spender, job)
 
 
 def test_B535_an_issue_input_or_a_named_mode_is_the_operator_asking_now():
     """B535: implement passes `--force` for an `issue` input and the plan's items otherwise;
     discover passes it for any dispatched mode but triage."""
-    implement = step_block("implement.yml", QUIET_STEP)
+    implement = step_block("implement.yml", QUIET_STEP, "quiet")
     assert 'if [ -n "${INPUT_ISSUE// }" ]; then\n            args=(--force)' in implement
     assert "args=(--window --items ${items})" in implement
     assert 'echo "quiet=true" >> "$GITHUB_OUTPUT"\n            exit 0' in implement
 
-    discover = step_block("discover.yml", QUIET_STEP)
+    discover = step_block("discover.yml", QUIET_STEP, "quiet")
     assert "--window" not in discover, "discover is not held by the run window (D32)"
     assert 'mode="${INPUT_MODE:-triage}"' in discover
     assert '[ "${mode}" != "triage" ]' in discover
     assert 'force="--force"' in discover
-
-
-@pytest.mark.parametrize("name", ["implement.yml", "discover.yml"])
-def test_B535_the_committed_halt_is_read_again_before_a_quiet_run_starts(name):
-    """B535: the wait can be long, so `.harness/HALT` on the default branch is read once more
-    after the check says quiet, and its presence turns the answer to not quiet."""
-    check = step_block(name, QUIET_STEP)
-    reread = check.index("contents/.harness/HALT?ref=${REF}")
-    assert check.index("harness --json quiet") < reread
-    assert 'if [ "${code}" = "200" ]; then\n              quiet="false"' in check
-    assert "halted by .harness/HALT" not in check, "B149 keeps that line to the first step"
-    for key in ("GH_TOKEN: ${{ github.token }}", "REPO: ${{ github.repository }}"):
-        assert key in check
 
 
 @pytest.mark.parametrize(

@@ -148,10 +148,10 @@ CONFIG_JSON_KEYS: tuple[str, ...] = (
     "QUIET_PARTNER_STEPS",
 )
 
-#: The ranges the quiet check's two durations must fall in, in minutes. The wait stops at an
-#: hour, so a run that waits the longest keeps about an hour of its 120 for the work (D93).
+#: The ranges the quiet check's two durations must fall in, in minutes. The wait runs in a job of
+#: its own whose timeout is 140, which is the longest wait plus one more pair and the setup (D93).
 QUIET_INTERVAL_RANGE: tuple[int, int] = (1, 60)
-QUIET_MAX_WAIT_LIMIT = 60
+QUIET_MAX_WAIT_LIMIT = 120
 
 #: What `QUIET_PARTNER_STEPS` separates its step-name prefixes with; a prefix may hold a comma.
 QUIET_STEP_SEPARATOR = "|"

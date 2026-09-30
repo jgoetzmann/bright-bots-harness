@@ -90,7 +90,7 @@ DEFAULT_ENV: dict[str, str] = {
     "MAX_SELF_AUDIT_CYCLES": "3",
     "QUIET_ENABLED": "true",
     "QUIET_INTERVAL_MINUTES": "10",
-    "QUIET_MAX_WAIT_MINUTES": "40",
+    "QUIET_MAX_WAIT_MINUTES": "120",
     "HARNESS_GITHUB_TOKEN": "",
     "ANTHROPIC_API_KEY": "",
 }

@@ -662,10 +662,12 @@ the command is run again once fewer are open (D90).
 ### 13.8 Starting only while the subscription is quiet
 
 The subscription is shared three ways: this harness, the JackiOh night bot (`bot-night.yml` in
-`jgoetzmann/JackiOh`, 21:00 to 07:00 America/Chicago) and you. The step
-`Wait until the subscription is quiet (harness quiet)` runs just before `implement.yml` runs its
-planned items and just before `discover.yml` discovers and proposes, and lets the run start only
-while nobody else is spending (D93):
+`jgoetzmann/JackiOh`, 21:00 to 07:00 America/Chicago) and you. `implement.yml` and `discover.yml`
+each start with a `quiet` job: it checks the halt, approves merged proposals (implement) and asks
+the dispatcher as the spending job does, then runs the step
+`Wait until the subscription is quiet (harness quiet)` and commits what it read. The spending job
+`needs` it, and its `Run planned items` or `Discover and propose` step runs only when the `quiet`
+job's output is `true` (D93):
 
 1. It pings: `claude --print --output-format stream-json --verbose --model haiku --max-turns 1
    --strict-mcp-config`, with `Reply with the word ok.` on stdin, in an empty temporary directory
@@ -673,15 +675,16 @@ while nobody else is spending (D93):
    from the last `rate_limit_event` and saves the reading as `window.usage`, as a stage does.
 2. It waits `QUIET_INTERVAL_MINUTES` (10) and pings again.
 3. When neither window rose, the run goes ahead. After a rise it pings again every interval, and
-   once `QUIET_MAX_WAIT_MINUTES` (40) have passed, pings included, without a quiet pair, the run
-   starts nothing and ends green, logging `not quiet after 40 minutes: …`. A pair whose five-hour
+   once `QUIET_MAX_WAIT_MINUTES` (120) have passed, pings included, without a quiet pair, the run
+   starts nothing and ends green, logging `not quiet after 120 minutes: …`. A pair whose five-hour
    `resets_at` changed is inconclusive and takes another interval, and so does a later ping that
    reports no usage. A refused ping is a usage stop and is recorded as `rate_limited_until`, as any
    refusal is (D71). A first ping that reports no usage lets the run go ahead, because no decision
    may depend on the signal (B114).
-4. Before it lets the run go ahead, the step reads `.harness/HALT` on the default branch again,
-   since the wait can be long. In `implement.yml` a run window that closed during the wait also
-   starts nothing, because the window bounds when work starts.
+4. The spending job then starts with its own `.harness/HALT` check and its own plan, so a halt
+   committed during the wait stops it, and so does a run window that closed meanwhile. In
+   `implement.yml` the check itself also answers not quiet once the window it began in has closed
+   (`--window`).
 
 **The partner.** A rise is excused while the partner bot was spending: a step of one of its
 `bot-night.yml` runs whose name starts with `Build, check and review`, which had started by the
@@ -713,9 +716,10 @@ person commanding the harness is using it on purpose. `QUIET_ENABLED=false` turn
   it for a person, and local mode itself never waits.
 - `feedback.yml`'s 12:41 and 15:41 UTC weekday sweeps build what is approved through
   `Reconcile stale` without a check.
-- The wait counts against the job's 120 minutes, which is why `QUIET_MAX_WAIT_MINUTES` stops at
-  60. While it waits, the job holds the `harness-ledger` lock, so a `feedback.yml` run your
-  comment started queues behind it, and a newer run can replace it while it is pending.
+- The `quiet` job may run for 140 minutes, the one job allowed past the 120 of B125, which is why
+  `QUIET_MAX_WAIT_MINUTES` stops at 120. The whole run holds the `harness-ledger` lock, so a
+  `feedback.yml` run your comment started queues behind the wait and the build after it, and a
+  newer run can replace it while it is pending.
 - Every checked run waits at least one interval, and its pings are small model calls of their own.
 
 `harness status` shows the last check as `quiet check: quiet at <time>: <reason>`, and

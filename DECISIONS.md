@@ -1646,7 +1646,7 @@ Decision:
   excused when the partner was spending during the interval: a step of a run of the partner's
   workflow whose name starts with one of its prefixes, with `started_at <= t2` and
   `completed_at` null or `>= t1`. Not quiet, it samples again every interval until
-  `QUIET_MAX_WAIT_MINUTES` (40) have passed on the clock, pings included, or that many minutes'
+  `QUIET_MAX_WAIT_MINUTES` (120) have passed on the clock, pings included, or that many minutes'
   worth of pairs are done. It then prints `quiet: false` and one reason and exits 0; the workflow
   starts nothing and ends green.
 - A `rejected` reading is not quiet at once. The reason is a usage stop, and
@@ -1659,19 +1659,25 @@ Decision:
   (`GitHubReadOnly.workflow_file_runs`, `run_jobs`). It reads with the harness's client, and once
   more with `public_reader` after a 401, 403 or 404, which `GitHubError.status` carries. Any
   failure to read counts as the partner not spending.
-- `implement.yml` runs `Wait until the subscription is quiet (harness quiet)` immediately before
-  `Run planned items (harness run --item)`, and `discover.yml` immediately before
-  `Discover and propose (harness discover, harness propose)`. The step writes `quiet=true|false`
-  to `$GITHUB_OUTPUT` from `harness --json quiet`, reading `.harness/HALT` on the default branch
-  again before it writes `true`, and the spending step runs only on `true`. The JackiOh bot counts
-  `Run planned items`, `Discover and propose`, `Sweep keywords` and `Reconcile stale` as this
-  harness's spending, so those names stay. `feedback.yml`, `ack.yml`, `heartbeat.yml`, `ops.yml`
-  and `watchdog.yml` do not wait, and `ops.yml` does not re-run a job that failed at the check,
-  whose pings are model calls.
+- `implement.yml` and `discover.yml` each start with a job `quiet`: the HALT check, the setup,
+  `harness doctor`, `harness approve --merged` (implement), `harness dispatch`, then the step
+  `Wait until the subscription is quiet (harness quiet)`, a ledger commit and an artifact. The step
+  writes `quiet=true|false` to `$GITHUB_OUTPUT` from `harness --json quiet`, and the job passes it
+  on as its output. The spending job `needs: quiet` and runs its
+  `Run planned items (harness run --item)` or
+  `Discover and propose (harness discover, harness propose)` step only on `true`; it starts with
+  its own HALT check and its own plan, so a halt committed during the wait stops it. The JackiOh
+  bot counts `Run planned items`, `Discover and propose`, `Sweep keywords` and `Reconcile stale` as
+  this harness's spending, so those names stay. `feedback.yml`, `ack.yml`, `heartbeat.yml`,
+  `ops.yml` and `watchdog.yml` do not wait, and `ops.yml` does not re-run a job that failed at the
+  check, whose pings are model calls.
+- The `quiet` job's timeout is 140 minutes, the one exception to B125's 120: the longest wait,
+  one more pair with its ping, and the setup. It runs no stage, so nothing but pings can spend in
+  it past 120 minutes, and the job that spends keeps B125's bound.
 - `implement.yml` passes `--window`: a check that began inside the run window, or a block, and
   would say quiet after it closed says not quiet, since the window bounds when work starts (D72).
 - `QUIET_ENABLED`, `QUIET_INTERVAL_MINUTES` (1 to 60) and `QUIET_MAX_WAIT_MINUTES` (the interval
-  to 60) are required keys, and the three partner keys optional. All six join
+  to 120) are required keys, and the three partner keys optional. All six join
   `CONFIG_JSON_KEYS`, which holds twenty-three keys; `.env.example` carries the committed values
   and `.harness/config.json` does not repeat them.
 - The ledger keeps the last verdict under `window.quiet`, and `harness status` prints it as
@@ -1697,7 +1703,8 @@ Decided here, since the request left them open:
   shared contract does not say so; the JackiOh side should skip them too.
 - A halt, the session usage stop and a stored rate limit answer `not quiet` without a ping, and
   `.harness/HALT` answers in JSON with exit 0, since a workflow feeds the output to jq.
-- The wait stops at 60 minutes because it counts against the job's 120 (B125).
+- The wait may last two hours, since the JackiOh bot's check waits as long; its gate job's
+  timeout is 150.
 - The ping's argv and prompt live in `harness/runner/cli.py` rather than `prompts/`, so the pin
   does not move; the ping asks for `ok` and its answer is never read.
 
@@ -1709,9 +1716,10 @@ is checking out or committing does not explain a rise.
 
 Rejected: gating `feedback.yml`, which answers a person who is using the harness on purpose;
 counting an unreadable partner as spending, which would excuse a person whenever GitHub is down;
-counting any step of a partner run in progress; a separate job for the check to escape the
-120-minute timeout, since the ledger lock and the step order are per job; a threshold on one
-reading; adding `--setting-sources ""` to the ping, which would change the argv both bots share.
+counting any step of a partner run in progress; raising the spending jobs' timeout past B125's
+120 minutes to fit the wait; a lock on the spending job alone, so that the next run's check
+could read this run's build as somebody else; a threshold on one reading; adding
+`--setting-sources ""` to the ping, which would change the argv both bots share.
 
 Accepted gaps:
 - A person spending while the partner is inside a spending step reads as the partner, so the
@@ -1720,9 +1728,10 @@ Accepted gaps:
   and the `bb` container never waits.
 - `feedback.yml` stays ungated, and its 12:41 and 15:41 UTC weekday sweeps build what is approved
   through `Reconcile stale` without a check.
-- The job holds the `harness-ledger` lock while it waits, so a `feedback.yml` run a comment
-  started queues behind it, and GitHub keeps one pending run per group, so a newer run can
-  replace it.
+- The whole run holds the `harness-ledger` lock, the wait included, so a `feedback.yml` run a
+  comment started queues behind the wait and the build after it, and GitHub keeps one pending run
+  per group, so a newer run can replace it. The lock stays on the whole run because the next run's
+  check would otherwise read this run's own build as somebody else.
 - The ping runs with the operator's own `~/.claude` settings, which on Actions do not exist.
 - The partner reads through the harness's client have no socket timeout, like every read that
   client makes. The tokenless retry runs from a hosted runner's address, whose anonymous limit

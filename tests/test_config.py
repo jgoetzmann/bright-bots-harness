@@ -459,7 +459,7 @@ D2_ENV: dict[str, str] = {
     "MAX_SELF_AUDIT_CYCLES": "3",
     "QUIET_ENABLED": "true",
     "QUIET_INTERVAL_MINUTES": "10",
-    "QUIET_MAX_WAIT_MINUTES": "40",
+    "QUIET_MAX_WAIT_MINUTES": "120",
 }
 # Every new key is required except the two that may be empty.
 D2_REQUIRED_KEYS = tuple(key for key in D2_ENV if key not in ("FORK_REPO", "TRACKING_ISSUE"))

@@ -262,7 +262,8 @@ def test_B477_implement_approves_on_every_run_and_reads_no_push_diff():
     with the cancelled runs. Its position is pinned too — sync-fork, then approve, then dispatch
     (B127/B150).
     """
-    text = _wf("implement.yml")
+    # The job that builds; the `quiet` job before it approves and plans too (D93).
+    text = _wf("implement.yml").split("\n  implement:\n", 1)[1]
 
     assert "github.event.before" not in text, "the push diff is what could not survive the run"
     assert "harness approve --merged" in text
@@ -277,7 +278,7 @@ def test_B477_implement_approves_on_every_run_and_reads_no_push_diff():
 
     assert at(r"harness sync-fork") < at(re.escape(APPROVE_STEP)) < at(r"harness dispatch")
     # The trigger itself is unchanged: a merged proposal still starts a run (B127).
-    assert "proposals/**" in text
+    assert "proposals/**" in _wf("implement.yml")
 
 
 def test_B478_the_sweep_reconciles_too_and_ops_classifies_both_steps():

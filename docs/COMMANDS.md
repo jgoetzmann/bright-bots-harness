@@ -465,16 +465,17 @@ harness local-loop           # the container loop: dispatch, run, sleep
 harness ack --body-file comment.txt --actor jgoetzmann --association OWNER
 ```
 
-`quiet` is what `implement.yml` and `discover.yml` run just before they start work (D93). It pings
-the subscription with the smallest model call there is, waits `QUIET_INTERVAL_MINUTES` (10),
-pings again, and prints `quiet` when neither usage window rose in between. A rise while the JackiOh
-night bot, which shares the subscription, was inside a `Build, check and review` step is that bot
-and does not count. Anything else keeps it sampling every interval until `QUIET_MAX_WAIT_MINUTES`
-(40), and then the run starts nothing. `--json` prints the samples and whether the partner excused
-a rise. `--force`, or `--items` naming an item somebody forced with `/harness … --force`, skips the
-wait, and so does `QUIET_ENABLED=false`. `--window`, which `implement.yml` passes, answers not
-quiet when the run window closes while it waits. It exits 0 whether or not the subscription is
-quiet and stores its verdict in the ledger, where `harness status` shows it as `quiet check:`.
+`quiet` is what the `quiet` job of `implement.yml` and `discover.yml` runs before the job that
+starts work (D93). It pings the subscription with the smallest model call there is, waits
+`QUIET_INTERVAL_MINUTES` (10), pings again, and prints `quiet` when neither usage window rose in
+between. A rise while the JackiOh night bot, which shares the subscription, was inside a
+`Build, check and review` step counts as that bot. Anything else keeps it sampling every interval
+until `QUIET_MAX_WAIT_MINUTES` (120), and then the run starts nothing. `--json` prints the samples
+and whether the partner excused a rise. `--force`, or `--items` naming an item somebody forced with
+`/harness … --force`, skips the wait, and so does `QUIET_ENABLED=false`. `--window`, which
+`implement.yml` passes, answers not quiet when the run window closes while it waits. It exits 0
+whether or not the subscription is quiet and stores its verdict in the ledger, where
+`harness status` shows it as `quiet check:`.
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

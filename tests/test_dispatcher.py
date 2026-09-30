@@ -62,7 +62,7 @@ BASE_ENV: tuple[tuple[str, str], ...] = (
     ("MAX_SELF_AUDIT_CYCLES", "3"),
     ("QUIET_ENABLED", "true"),
     ("QUIET_INTERVAL_MINUTES", "10"),
-    ("QUIET_MAX_WAIT_MINUTES", "40"),
+    ("QUIET_MAX_WAIT_MINUTES", "120"),
     ("SESSION_USAGE_STOP_PCT", "70"),
     ("RUN_WINDOW_START", ""),
     ("RUN_WINDOW_END", ""),

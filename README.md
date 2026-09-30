@@ -61,8 +61,8 @@ while two of its delivery pull requests are open upstream. A run of `implement.y
 - **It waits for a quiet subscription.** Before `implement.yml` or `discover.yml` starts
   anything, `harness quiet` reads the subscription's usage twice, ten minutes apart, and starts
   nothing unless it held still. The JackiOh night bot shares the subscription, so a rise during
-  one of its builds counts as that bot. Otherwise it keeps sampling for up to 40 minutes and then
-  gives up for that run (D93).
+  one of its builds counts as that bot. Otherwise it keeps sampling for up to two hours, in a job
+  of its own before the one that spends, and then gives up for that run (D93).
 
 It will not push to the product repository, file an issue there other than a delivery's tracking
 issue, change a thread there that somebody else opened, publish a change under `.github/`

@@ -1122,6 +1122,24 @@ def test_B120_rate_limited_revise_from_needs_human_returns_to_needs_human(tmp_pa
     assert pushes(s.gh) == []
 
 
+def test_B525_a_revise_the_limit_stopped_is_no_repeat_after_the_reset(tmp_path, monkeypatch,
+                                                                       quiet_implement):
+    """B525 (D92): the limit lands before the model saw the feedback, so the same feedback after
+    the reset is the first attempt at it, not the loop going nowhere (B138)."""
+    s = setup_revise(tmp_path, monkeypatch, rate_limited=True)
+    with pytest.raises(RateLimited):
+        revise(s.ctx, ITEM, source="ci")
+    assert not any("revise signature" in str(e.get("message") or "")
+                   for e in s.store.events(ITEM))
+
+    write_fixtures(tmp_path / "fixtures")
+    s.ctx.ledger.set_rate_limited(None)
+    revise(s.ctx, ITEM, source="ci")
+
+    assert [r.stage for r in s.runner.requests].count("revise") == 2
+    assert s.gh.state_labels(ITEM) == ["stage:needs-review"]
+
+
 # --------------------------------------------------------------------------------------
 # Entry states
 # --------------------------------------------------------------------------------------

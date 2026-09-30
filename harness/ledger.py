@@ -419,6 +419,39 @@ class Ledger:
         if str(comment_id) not in ids:
             ids.append(str(comment_id))
 
+    def unsee(self, comment_id: str) -> None:
+        ids = self.cursors.setdefault("seen_comment_ids", [])
+        if str(comment_id) in ids:
+            ids.remove(str(comment_id))
+
+    def hold_for_retry(
+        self, comment_id: str, repo: str, surface: str, number: int, since: str = ""
+    ) -> None:
+        """Name the comment's thread for the first sweep after the reset to read from
+        ``since``, when the comment was posted. It stays seen until then (D92)."""
+        held = self.cursors.setdefault("retry_threads", [])
+        if any(str(t.get("comment_id")) == str(comment_id) for t in held):
+            return
+        held.append({
+            "repo": str(repo), "surface": str(surface), "number": int(number),
+            "comment_id": str(comment_id), "since": str(since),
+        })
+
+    def retry_threads(self) -> list[dict]:
+        """The held comments' threads, earliest comment first (D92)."""
+        held = self.cursors.get("retry_threads")
+        rows = [dict(t) for t in held] if isinstance(held, list) else []
+        return sorted(rows, key=lambda t: str(t.get("since") or ""))
+
+    def release_retry_threads(self, released: list[dict]) -> None:
+        """Drop the held entries a sweep has read (D92)."""
+        gone = {str(t.get("comment_id")) for t in released}
+        held = [t for t in self.retry_threads() if str(t.get("comment_id")) not in gone]
+        if held:
+            self.cursors["retry_threads"] = held
+        else:
+            self.cursors.pop("retry_threads", None)
+
     def count_denied(self, handle: str) -> None:
         denied = self.cursors.setdefault("keyword_denied", {})
         denied[handle] = int(denied.get(handle, 0)) + 1
@@ -508,6 +541,14 @@ class Ledger:
         pruned = self.pruned_at()
         if pruned:
             cursors["pruned_at"] = pruned
+        held = self.retry_threads()
+        if held:
+            cursors["retry_threads"] = [
+                {"repo": str(t.get("repo", "")), "surface": str(t.get("surface", "")),
+                 "number": int(t.get("number", 0) or 0),
+                 "comment_id": str(t.get("comment_id", "")), "since": str(t.get("since", ""))}
+                for t in held
+            ]
         history = [
             {
                 "ts": entry.get("ts", ""),

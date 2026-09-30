@@ -1594,6 +1594,38 @@ the model can edit to point the token elsewhere.
 
 Allocates B524.
 
+## D92 / B525 - a command a rate limit stopped runs after the reset
+
+Decision:
+- When the model's rate limit stops a command, whether the call hit it or the governor refused
+  the call on the stored limit, and nothing in its comment ran yet, `run_comment` names the
+  comment in the ledger's `retry_threads` cursor (`Ledger.hold_for_retry`) with its thread and
+  the time it was posted. The reply says "Not now", names the reset, and says the comment runs
+  on the first sweep after it.
+- Comments the same sweep collected after a stop that ended the batch never ran, so each is held
+  the same way, without a reply.
+- A held comment stays seen while the stored limit stands, so no read collects it early. The
+  first sweep after the reset unsees it and reads its thread from the time it was posted,
+  however old that is. Entries are released when the sweep returns, so a sweep that raises
+  reads them again; a thread that answers with an error is dropped.
+- `revise` records a feedback signature only once its model call ran, so the replayed revise
+  is not taken for the loop repeating itself (B138).
+- A comment whose earlier command already ran is not held, since replaying it would run that
+  command twice; its reply says the rest was not run and must be said again. GitHub's rate
+  ceiling can arrive after a command's first write, so a command it stopped is never held.
+
+Why. Every command is marked seen when a sweep collects it, and a rate limit stopped the batch
+with no reply. The command was consumed and never retried, while the item's own note said
+"revise is retried after the reset". The maintainer's Spanish-localization request on #929 was
+lost this way on 09-29. After the reset, D85's window no longer reached the comment either.
+
+Rejected: leaving the comment unseen without naming its thread, which the next sweep's window
+does not reach hours later and which a read during the limit answers again every sweep;
+reading the held thread whole, which replays any older command a lost ledger forgot; holding a
+partly run comment, which repeats the part that ran.
+
+Allocates B525.
+
 ## D93 / B526-B536 - start only while the subscription is quiet
 
 Decision:

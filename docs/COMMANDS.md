@@ -274,7 +274,10 @@ Closes the pull request and stands the item down. How final it is depends on you
   (D68). After the merge `implement.yml` has already approved it.
 - On the **inbox**: answers with the queue, like `/harness status`.
 
-Already approved or already queued is a no-op that says so.
+Already approved or already queued changes no state, and the reply says so. On any item the
+harness suggested on its own, `go` also re-labels it `via:requested` (B537): a person has now
+asked for it, so it no longer waits for the queue to empty. The approval gates, the usage stop,
+the run window and the open-delivery cap still apply to it.
 
 ### `split` — break it up
 

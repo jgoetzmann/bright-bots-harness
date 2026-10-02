@@ -1624,6 +1624,53 @@ def test_go_twice_is_a_no_op_that_says_so(tmp_path):
     assert rig.store.get_work_item(item_id).state == "approved"
 
 
+def test_B537_go_on_an_approved_suggestion_stops_it_waiting_behind_other_work(tmp_path):
+    """B537: naming an approved suggestion makes it work somebody asked for. Left `suggested`
+    it waits for an empty queue, and a proposal awaiting gate 1 keeps the queue from emptying."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    waiting = rig.store.create_work_item(kind="issue", external_ref="issue:700", title="p")
+    rig.store.transition(waiting, "proposing", reason="t")
+    rig.store.transition(waiting, "proposed", reason="t")
+    item_id = rig.store.create_work_item(
+        kind="issue", external_ref="issue:633", title="t", via="suggested"
+    )
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+    rig.store.transition(item_id, "approved", reason="t")
+    assert priority.via_of(rig.store.get_work_item(item_id)) == "suggested"
+
+    out = main_mod._act_on_command(
+        rig.ctx, rig.config, _cmd("go", surface="issue", number=item_id)
+    )
+
+    assert "already approved" in out and "asked for" in out
+    item = rig.store.get_work_item(item_id)
+    assert item.state == "approved" and item.via == "requested"
+    assert priority.class_of("implement", via=priority.via_of(item)) == "directed"
+    # The other proposal still waits for its own gate 1; `go` does not approve it.
+    assert rig.store.get_work_item(waiting).state == "proposed"
+
+
+def test_B537_go_leaves_the_gates_in_place_and_ignores_work_that_is_not_a_suggestion(tmp_path):
+    """B537: `go` on a requested item changes no label, and on a requested proposal it still
+    refuses to stand in for the merge."""
+    import harness.__main__ as main_mod
+
+    rig = request_rig(tmp_path)
+    item_id = rig.store.create_work_item(kind="issue", external_ref="issue:633", title="t")
+    rig.store.transition(item_id, "proposing", reason="t")
+    rig.store.transition(item_id, "proposed", reason="t")
+
+    out = main_mod._act_on_command(
+        rig.ctx, rig.config, _cmd("go", surface="issue", number=item_id)
+    )
+
+    assert "gate 1" in out and "asked for" not in out
+    assert rig.store.get_work_item(item_id).state == "proposed"
+
+
 def test_go_at_a_dead_end_answers_instead_of_raising(tmp_path):
     """`needs-human` and the terminal states have no edge to `approved` or `discovered`. Letting
     the store raise would put an IllegalTransition traceback in a comment reply, which tells the

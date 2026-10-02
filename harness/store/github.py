@@ -440,6 +440,15 @@ class GitHubStore:
             self.gh.comment(self.self_repo, item_id, redact(_meta_marker(meta)))
         self.scratch._mirror_work_item(_item_from(issue, meta, state))
 
+    def set_via(self, item_id: int, via: str) -> None:
+        """Swap the `via:` label (B264); every other label stays."""
+        if via not in VIA_LABELS:
+            raise StoreError(f"unknown via {via!r} for work item {item_id}")
+        issue, _state = self._require(item_id)
+        own = set(VIA_LABELS.values())
+        kept = [name for name in _label_names(issue) if name not in own]
+        self.gh.set_labels(self.self_repo, item_id, kept + [VIA_LABELS[via]])
+
     # --------------------------------------------------------------- the store seam
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str:

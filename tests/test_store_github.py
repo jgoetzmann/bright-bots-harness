@@ -499,6 +499,24 @@ def test_B100_every_transition_in_a_full_lifecycle_leaves_exactly_one_state_labe
         assert store.get_work_item(n).state == state
 
 
+def test_B537_set_via_swaps_the_via_label_and_keeps_the_others(gh, store):
+    """B537: one label call; the state and kind labels stay, and the item reads back changed."""
+    n = store.create_work_item(
+        kind="issue", external_ref="issue:816", title="t", tier_required=0, via="suggested"
+    )
+    before = set(gh.repos[SELF_REPO][n]["labels"] and
+                 [lab["name"] if isinstance(lab, dict) else lab
+                  for lab in gh.repos[SELF_REPO][n]["labels"]])
+    assert "via:suggested" in before
+
+    store.set_via(n, "requested")
+
+    after = {lab["name"] if isinstance(lab, dict) else lab
+             for lab in gh.repos[SELF_REPO][n]["labels"]}
+    assert after == (before - {"via:suggested"}) | {"via:requested"}
+    assert store.get_work_item(n).via == "requested"
+
+
 def test_B100_two_state_labels_make_get_work_item_raise_store_error(gh, store):
     """B100: an item with two harness:* state labels raises StoreError instead of guessing."""
     gh.add_issue(7, "ambiguous", labels=["stage:ready", "stage:building"])

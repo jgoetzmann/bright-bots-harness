@@ -1745,3 +1745,22 @@ Accepted gaps:
   until they are added; `harness doctor` names them.
 
 Allocates B526-B536.
+
+## D94 / B537 - `go` on a suggestion makes it asked-for work
+
+Problem: `/harness go` on an approved `via:suggested` item replied "already approved and waiting
+for a runner" and changed nothing. The item stayed class `suggested`, which `priority.admit`
+refuses while any non-suggested item is outstanding, and `proposed` counts as outstanding. So
+with a proposal awaiting gate 1 the item never started, though the window was open and no
+delivery cap was reached.
+
+Decision: whenever `go` acts on an item whose `via` is `suggested` (queued, approved, proposed,
+or put back from blocked), it calls `store.set_via(id, "requested")`. The SQLite store updates the
+column and the GitHub store swaps the `via:` label. The reply says so. Gate 1 is untouched:
+`go` still approves only a suggestion's proposal, never another person's.
+
+Rejected: a `--force`-style exemption in the ledger, which would leave the label wrong in the
+queue and the pinned issue; relaxing `OUTSTANDING_STATES`, which would let suggestions run
+ahead of work people are waiting on.
+
+Allocates B537.

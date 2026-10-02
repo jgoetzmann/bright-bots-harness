@@ -2193,6 +2193,18 @@ def _via_for(cmd) -> str:
     return _VIA_BY_SURFACE.get(cmd.surface, "requested")
 
 
+def _claimed(ctx, item) -> str:
+    """Re-label a suggestion `requested` once a person names it with `go`.
+
+    Suggested work waits for an empty queue; work a person asked for does not. The approval,
+    usage and delivery-cap gates apply to the item either way.
+    """
+    if via_of(item) != "suggested":
+        return ""
+    ctx.store.set_via(int(item.id), "requested")
+    return "; now counted as work you asked for, so it no longer waits behind other work"
+
+
 def _forced(ctx, cmd, item_id: int | None) -> str:
     """Record `--force` on the item; the reply names what it lifts and what still applies."""
     if not getattr(cmd, "force", False) or item_id is None:
@@ -2427,6 +2439,7 @@ def _act_on_command(ctx, config, cmd) -> str:
     if cmd.verb == "go":
         # "Proceed with this", which depends on the item's state: a suggestion waiting for a
         # green light is approved (B262), and a stopped or blocked item goes back in the queue.
+        # Naming a suggestion re-labels it `requested`, since a person is now waiting on it.
         item = ctx.store.get_work_item(item_id)
         if item is None:
             return f"no work item {item_id}"
@@ -2437,16 +2450,25 @@ def _act_on_command(ctx, config, cmd) -> str:
             # was approved once. Sending it back to `discovered` would orphan the branch.
             if item.branch_name:
                 ctx.store.transition(item_id, "approved", reason=reason)
-                return f"item {item_id} back to approved" + _forced(ctx, cmd, item_id)
+                return (
+                    f"item {item_id} back to approved"
+                    + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
+                )
             ctx.store.transition(item_id, "discovered", reason=reason)
-            return f"item {item_id} back in the queue" + _forced(ctx, cmd, item_id)
+            return (
+                f"item {item_id} back in the queue"
+                + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
+            )
         if state == "approved":
             return (
                 f"item {item_id} is already approved and waiting for a runner"
-                + _forced(ctx, cmd, item_id)
+                + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
             )
         if state == "discovered":
-            return f"item {item_id} is already in the queue" + _forced(ctx, cmd, item_id)
+            return (
+                f"item {item_id} is already in the queue"
+                + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
+            )
         if state == "proposed":
             # Gate 1. `go` releases only work the harness suggested on its own (B262). Any
             # other proposal is approved by merging it, and `go` must not bypass that.
@@ -2457,7 +2479,9 @@ def _act_on_command(ctx, config, cmd) -> str:
                     "suggested on its own. `/harness stop` if you would rather it did not."
                 )
             ctx.store.transition(item_id, "approved", reason=reason)
-            return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
+            return (
+                f"item {item_id} approved" + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
+            )
         if "approved" not in TRANSITIONS.get(state, frozenset()):
             # Answered instead of raised: `needs-human` and the terminal states cannot reach
             # `approved`, and an IllegalTransition traceback in a reply is no answer.
@@ -2466,7 +2490,7 @@ def _act_on_command(ctx, config, cmd) -> str:
                 + _GO_DEAD_ENDS.get(state, "Say what you want to happen and I will say if I can.")
             )
         ctx.store.transition(item_id, "approved", reason=reason)
-        return f"item {item_id} approved" + _forced(ctx, cmd, item_id)
+        return f"item {item_id} approved" + _claimed(ctx, item) + _forced(ctx, cmd, item_id)
 
     if cmd.verb == "stop":
         item = ctx.store.get_work_item(item_id)

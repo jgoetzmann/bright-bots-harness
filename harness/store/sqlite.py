@@ -571,6 +571,20 @@ class SqliteStore:
         if cur.rowcount == 0:
             raise StoreError(f"no work item {item_id}")
 
+    def set_via(self, item_id: int, via: str) -> None:
+        """Re-label how the item arrived; the priority class follows it (B264)."""
+        if via not in VIA_LABELS:
+            raise StoreError(f"unknown via {via!r} for work item {item_id}")
+        try:
+            cur = self.conn.execute(
+                "UPDATE work_item SET via = ?, updated_at = ? WHERE id = ?",
+                (via, self._now(), item_id),
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"cannot update work item {item_id}: {exc}") from exc
+        if cur.rowcount == 0:
+            raise StoreError(f"no work item {item_id}")
+
     def _mirror_work_item(self, item: WorkItem) -> None:
         """Package-internal: upsert a row under an explicit id (the GitHub store's scratch copy).
 

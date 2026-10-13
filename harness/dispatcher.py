@@ -32,7 +32,7 @@ __all__ = [
 #: (D95).
 WAKE_MIN_GAP = timedelta(minutes=20)
 #: The wait after a quiet check said someone else was spending; the check itself waited up to
-#: two hours before saying so (D93, D95).
+#: two hours before saying so (D95).
 WAKE_AFTER_NOT_QUIET = timedelta(minutes=60)
 #: How recent a not-quiet verdict must be to stretch the wait.
 _NOT_QUIET_FRESH = timedelta(hours=3)
@@ -57,9 +57,6 @@ class Plan:
     start: tuple[int, ...]
     reason: str
     skipped: dict[str, str]
-    #: Nothing approved waits on the clock: every candidate started or is held by something
-    #: other than the window, the slots or a stop. Not part of the printed plan (D95).
-    drained: bool = False
 
     def to_json(self) -> str:
         payload = {
@@ -142,19 +139,22 @@ def plan(
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
     # A carried item resumes before anything else. It may run outside a weekly run window, but
-    # not a daily one: a daily window is the one subscription session a day, and a carry
-    # resuming outside it would run in the operator's own daytime session (B413).
+    # not a daily one unless the window owes it: a daily window is the one subscription session
+    # a day, and a carry resuming outside it would run in the operator's own session (B413).
     # A block is the operator lending the harness sessions they do not need, so it opens the
     # window and nothing else (D77). Everything downstream inherits it: the carry test, the
     # early return below and the per-candidate skip all read `window_open`. It sits after the
     # usage stop deliberately, so a block can never outlive one.
-    # Work a window opened stays startable past its end until the queue drains (D95).
-    window_open = in_run_window(config, now) or ledger.block_open(now) or ledger.owed_open(now)
+    window_open = in_run_window(config, now) or ledger.block_open(now)
+    # The items a window opened stay startable past its end, each until it starts (D95).
+    owed = ledger.owed_items(now)
     carry_id = ledger.carry_issue()
     stopped = usage_stop(ledger, config, now=now)
     if stopped is not None:
         return Plan(start=(), reason=stopped, skipped={})
-    carry_ok = carry_id is not None and (window_open or not is_daily_window(config))
+    carry_ok = carry_id is not None and (
+        window_open or not is_daily_window(config) or int(carry_id) in owed
+    )
 
     max_slots = int(config.max_concurrent_items)
     if config.store_backend != "github":
@@ -168,15 +168,14 @@ def plan(
         key=lambda c: (rank(c.cls), 0 if c.forced else 1, c.created_at, int(c.issue)),
     )
 
-    # Outside the window only the carry item and forced items may run (B210).
-    forced_ids = {int(c.issue) for c in candidates if c.forced}
-    if not window_open and not carry_ok and not forced_ids:
+    # Outside the window only the carry item, forced items and owed items may run (B210).
+    exempt = {int(c.issue) for c in candidates if c.forced or int(c.issue) in owed}
+    if not window_open and not carry_ok and not exempt:
         return Plan(start=(), reason=_window_reason(config), skipped={})
 
     held = {int(key): str(value) for key, value in (capped or {}).items()}
     start: list[int] = []
     skipped: dict[str, str] = {}
-    waiting = False
     if carry_ok and carry_id is not None:
         if int(carry_id) in held:
             skipped[str(carry_id)] = held[int(carry_id)]
@@ -186,9 +185,8 @@ def plan(
         key = str(candidate.issue)
         if carry_id is not None and int(candidate.issue) == carry_id and carry_ok:
             continue
-        if not window_open and not candidate.forced:
+        if not window_open and int(candidate.issue) not in exempt:
             skipped[key] = "outside run window"
-            waiting = True
             continue
         if suggested_refused and candidate.cls == "suggested":
             skipped[key] = suggested_refused
@@ -202,7 +200,6 @@ def plan(
             continue
         if len(start) >= max_slots:
             skipped[key] = "slots full"
-            waiting = True
             continue
         start.append(int(candidate.issue))
 
@@ -210,8 +207,7 @@ def plan(
     # f-string inlined into the Plan(...) call would be collected as a stop reason by
     # `tests/test_invariants.py` and then demand a classification it does not have.
     reason = f"{len(start)} of max {max_slots} slots{_usage_suffix(ledger)}"
-    drained = not start and not waiting
-    return Plan(start=tuple(start), reason=reason, skipped=skipped, drained=drained)
+    return Plan(start=tuple(start), reason=reason, skipped=skipped)
 
 
 def _instant(raw: object) -> datetime | None:

@@ -193,7 +193,7 @@ jobs:
           SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: |
           mkdir -p runs
-          plan="$(harness dispatch ${SCHEDULED:+--scheduled})"
+          plan="$(harness dispatch --owe ${SCHEDULED:+--scheduled})"
           printf '%s\n' "$plan" | tee runs/dispatch-plan.json
           if ! printf '%s' "$plan" | jq -e 'has("start")' >/dev/null 2>&1; then
             echo "dispatch produced no plan (output above); nothing to start"
@@ -462,7 +462,7 @@ jobs:
           SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: |
           mkdir -p runs
-          plan="$(harness dispatch ${SCHEDULED:+--scheduled})"
+          plan="$(harness dispatch --owe ${SCHEDULED:+--scheduled})"
           printf '%s\n' "$plan" | tee runs/dispatch-plan.json
           if ! printf '%s' "$plan" | jq -e 'has("start")' >/dev/null 2>&1; then
             echo "dispatch produced no plan (output above); nothing to start"
@@ -551,7 +551,7 @@ jobs:
           mkdir -p runs
           harness --json wake | tee runs/wake.json
           echo "at=$(jq -r '.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
-          echo "reason=$(jq -r '.reason // empty' runs/wake.json | head -c 200)" >> "$GITHUB_OUTPUT"
+          echo "reason=$(jq -r '(.reason // "")[0:200]' runs/wake.json)" >> "$GITHUB_OUTPUT"
 
         # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
@@ -577,8 +577,9 @@ jobs:
 
   # D95: arms resume.yml with the time `harness wake` gave, so a run the usage stop, a rate
   # limit, a busy subscription or the window's end held back is followed by one that starts once
-  # that clears. Holds no lock, no secret and no checkout; implement.yml checks everything again.
-  # Only after a green job: a run that keeps failing must not bring itself back every 20 minutes.
+  # that clears. Holds no secret and no checkout, and takes seconds inside the workflow's lock;
+  # implement.yml checks everything again. Only after a green job: a run that keeps failing must
+  # not bring itself back every 20 minutes.
   relay:
     name: relay
     needs: implement
@@ -586,7 +587,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write              # dispatch resume.yml
+      actions: write              # list pending alarms; dispatch resume.yml
     steps:
       - name: Arm the resume relay
         uses: actions/github-script@v7
@@ -597,6 +598,22 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const ref = (context.payload.repository || {}).default_branch || 'main';
+            const at = Date.parse(process.env.AT || '');
+            // An alarm already pending at or before this time covers it: its implement run
+            // arms the next one.
+            const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: 'resume.yml', per_page: 50,
+            });
+            const covered = (data.workflow_runs || []).some((run) => {
+              const title = /^resume at (\S+)/.exec(String(run.display_title || ''));
+              const other = title ? Date.parse(title[1]) : NaN;
+              return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
+            });
+            if (covered) {
+              core.info(`an alarm at or before ${process.env.AT} is already pending`);
+              return;
+            }
             await github.rest.actions.createWorkflowDispatch({
               owner, repo, workflow_id: 'resume.yml', ref,
               inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },

@@ -379,35 +379,62 @@ class Ledger:
 
     # -- the owed window ----------------------------------------------------------------------
 
-    def owe(self, *, since: str, until: str) -> None:
-        """Keep the work a run window opened startable until ``until``, its next opening (D95).
+    def owe(self, items: Iterable[int], *, since: str, until: str) -> None:
+        """Keep ``items``, which a run window opened, startable until its next opening (D95).
 
-        A later ``until`` replaces an earlier one; an earlier one never shortens a record.
+        Items owed until the same opening are added together; a later ``until`` starts a new
+        record, and an earlier one leaves the record alone. Nothing to owe records nothing.
         """
-        current = self.owed()
-        if current is not None and str(current.get("until", "")) >= str(until):
+        numbers = sorted({int(n) for n in items})
+        if not numbers:
             return
-        self.window["owed"] = {"since": str(since), "until": str(until)}
+        current = self.owed()
+        held = str(current.get("until", "")) if current is not None else ""
+        if held > str(until):
+            return
+        if held == str(until):
+            numbers = sorted(set(numbers) | set(self._owed_numbers(current)))
+            since = str(current.get("since", since))
+        self.window["owed"] = {"items": numbers, "since": str(since), "until": str(until)}
 
     def owed(self) -> dict | None:
         record = self.window.get("owed")
         return dict(record) if isinstance(record, dict) and record else None
 
-    def clear_owed(self) -> None:
-        self.window.pop("owed", None)
+    @staticmethod
+    def _owed_numbers(record: dict) -> list[int]:
+        rows = record.get("items")
+        numbers: list[int] = []
+        for row in rows if isinstance(rows, list) else []:
+            try:
+                numbers.append(int(row))
+            except (TypeError, ValueError):
+                continue
+        return numbers
 
-    def owed_open(self, now: datetime | str) -> bool:
-        """True from the record's ``since`` until its ``until``; unreadable reads shut (D95)."""
+    def keep_owed(self, still: Iterable[int]) -> None:
+        """Drop owed items not in ``still``, and the record once none is left (D95)."""
+        current = self.owed()
+        if current is None:
+            return
+        keep = sorted(set(self._owed_numbers(current)) & {int(n) for n in still})
+        if keep:
+            self.window["owed"] = {**current, "items": keep}
+        else:
+            self.window.pop("owed", None)
+
+    def owed_items(self, now: datetime | str) -> frozenset[int]:
+        """The items owed now: from ``since`` until ``until``; an unreadable record is none."""
         record = self.owed()
         if record is None:
-            return False
+            return frozenset()
         try:
             since = parse_iso(str(record.get("since", "")))
             until = parse_iso(str(record.get("until", "")))
             current = parse_iso(now) if isinstance(now, str) else as_utc(now)
         except ValueError:
-            return False
-        return since <= current < until
+            return frozenset()
+        return frozenset(self._owed_numbers(record)) if since <= current < until else frozenset()
 
     # -- force -------------------------------------------------------------------------------
 
@@ -547,6 +574,7 @@ class Ledger:
         owed = self.owed()
         if owed is not None:
             window["owed"] = {
+                "items": [int(n) for n in self._owed_numbers(owed)],
                 "since": str(owed.get("since", "")),
                 "until": str(owed.get("until", "")),
             }

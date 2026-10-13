@@ -3199,60 +3199,95 @@ def ledger_window(tmp_path: Path) -> dict:
     return json.loads((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))["window"]
 
 
-def test_B542_a_scheduled_dispatch_after_the_window_still_starts_the_windows_work(
+def write_owed(tmp_path: Path, items: list[int]) -> None:
+    path = tmp_path / "state" / "ledger.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["owed"] = {
+        "items": items, "since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def test_B542_a_late_scheduled_dispatch_owes_the_approved_items_and_starts_them(
     tmp_path, monkeypatch, capsys
 ):
-    """B542 (D95): GitHub delivered the 01:31 firing at 12:00; the run belongs to that window, so
-    `--scheduled` records the work as owed until the next opening and the plan starts it. The
-    same dispatch without the flag names the window and records nothing."""
+    """B542 (D95): GitHub delivered a 01:31 firing at 12:00, within six hours of the 06:30
+    close. The run belongs to that window, so `--scheduled` owes the approved item until the next
+    opening and the plan starts it. Plain `dispatch`, or `--owe` outside the window, owes nothing
+    and writes nothing."""
     at = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     item_id = night_repo(tmp_path, monkeypatch, at)
+    before = (tmp_path / "state" / "ledger.json").read_bytes()
     capsys.readouterr()
 
-    assert cli.main(["dispatch"]) == 0
-    plain = json.loads(capsys.readouterr().out)
-    assert plain["start"] == [] and plain["reason"] == "outside run window (daily 01:30-06:30 UTC)"
-    assert "owed" not in ledger_window(tmp_path)
+    for argv in (["dispatch"], ["dispatch", "--owe"]):
+        assert cli.main(argv) == 0
+        plain = json.loads(capsys.readouterr().out)
+        assert plain["start"] == []
+        assert plain["reason"] == "outside run window (daily 01:30-06:30 UTC)"
+    assert (tmp_path / "state" / "ledger.json").read_bytes() == before
 
     assert cli.main(["dispatch", "--scheduled"]) == 0
     scheduled = json.loads(capsys.readouterr().out)
     assert scheduled["start"] == [item_id]
-    assert scheduled["owed"] == {
-        "open": True,
-        "record": {"since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"},
-    }
-    assert ledger_window(tmp_path)["owed"]["until"] == "2026-09-03T01:30:00Z"
+    record = {"items": [item_id], "since": "2026-09-02T01:30:00Z",
+              "until": "2026-09-03T01:30:00Z"}
+    assert scheduled["owed"] == {"now": [item_id], "record": record}
+    assert ledger_window(tmp_path)["owed"] == record
 
 
-def test_B542_a_dispatch_inside_the_window_records_the_work_as_owed(tmp_path, monkeypatch, capsys):
-    """B542: any dispatch inside the window owes its work until the next opening, so a usage
-    stop or a busy subscription at 02:00 does not lose it at 06:30."""
-    at = datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)
+def test_B542_a_scheduled_run_more_than_six_hours_late_owes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """B542: past six hours after the close a scheduled run no longer speaks for the window, so
+    an item approved in the afternoon waits for the next opening."""
+    at = datetime(2026, 9, 2, 12, 31, tzinfo=timezone.utc)
     night_repo(tmp_path, monkeypatch, at)
     capsys.readouterr()
 
-    assert cli.main(["dispatch"]) == 0
+    assert cli.main(["dispatch", "--scheduled"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+
+    assert plan["start"] == [] and "owed" not in ledger_window(tmp_path)
+
+
+def test_B542_a_dispatch_inside_the_window_owes_its_approved_items_and_nothing_else(
+    tmp_path, monkeypatch, capsys
+):
+    """B542: `--owe` inside the window owes what is approved then, so a usage stop or a busy
+    subscription at 02:00 does not lose it at 06:30. With nothing approved it records nothing,
+    so a stopped night leaves no record behind."""
+    at = datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)
+    item_id = night_repo(tmp_path, monkeypatch, at)
     capsys.readouterr()
 
-    assert ledger_window(tmp_path)["owed"] == {
-        "since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"
-    }
+    assert cli.main(["dispatch", "--owe"]) == 0
+    capsys.readouterr()
+    assert ledger_window(tmp_path)["owed"]["items"] == [item_id]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    night_repo(empty, monkeypatch, at, approved=False)
+    capsys.readouterr()
+    assert cli.main(["dispatch", "--owe"]) == 0
+    capsys.readouterr()
+    assert "owed" not in ledger_window(empty)
 
 
-def test_B542_a_drained_dispatch_clears_the_owed_record(tmp_path, monkeypatch, capsys):
-    """B542: once nothing approved waits on the clock the record ends, so an approval later in
-    the day waits for the next opening."""
-    at = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
-    night_repo(tmp_path, monkeypatch, at, approved=False)
-    path = tmp_path / "state" / "ledger.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["window"]["owed"] = {"since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+def test_B542_an_afternoon_approval_waits_for_the_next_opening(tmp_path, monkeypatch, capsys):
+    """B542: the night owed #999, which has since been built. A proposal merged at 14:00 starts
+    an implement run through the push; its item is not owed, so it waits, and the record of the
+    built item is dropped."""
+    at = datetime(2026, 9, 2, 14, 0, tzinfo=timezone.utc)
+    night_repo(tmp_path, monkeypatch, at)
+    write_owed(tmp_path, [999])
     capsys.readouterr()
 
-    assert cli.main(["dispatch"]) == 0
-    capsys.readouterr()
+    assert cli.main(["dispatch", "--owe"]) == 0
+    plan = json.loads(capsys.readouterr().out)
 
+    assert plan["start"] == []
+    assert plan["reason"] == "outside run window (daily 01:30-06:30 UTC)"
     assert "owed" not in ledger_window(tmp_path)
 
 
@@ -3290,8 +3325,8 @@ def test_B543_wake_names_nothing_when_nothing_is_approved_or_the_repo_is_halted(
 
 
 def test_B547_the_window_line_names_owed_work(tmp_path):
-    """B547 (D95): while work is owed the status line says how long it may still start, and a
-    block reads as open, as the plan reads it."""
+    """B547 (D95): while items are owed the status line names them and how long they may still
+    start, and a block reads as open, as the plan reads it."""
     from types import SimpleNamespace
 
     from harness.ledger import Ledger
@@ -3299,11 +3334,11 @@ def test_B547_the_window_line_names_owed_work(tmp_path):
     at = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     config = SimpleNamespace(run_window_start="daily 01:30", run_window_end="daily 06:30")
     plain, owed = Ledger.empty("2026-08-31T00:00:00Z"), Ledger.empty("2026-08-31T00:00:00Z")
-    owed.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    owed.owe([52, 51], since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
 
     assert cli._window_state(config, plain, at) == "; closed now"
     assert cli._window_state(config, owed, at) == (
-        "; closed, but the work it opened may still start until 2026-09-03T01:30:00Z"
+        "; closed, but #51, #52 it opened may still start until 2026-09-03T01:30:00Z"
     )
     assert cli._window_state(config, plain, datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)) == (
         "; open now"

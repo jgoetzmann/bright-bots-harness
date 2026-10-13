@@ -2996,8 +2996,13 @@ def test_B544_the_relay_never_dispatches_over_a_pending_ledger_run_or_a_live_imp
     assert "LEDGER_WORKFLOWS = ['implement.yml', 'discover.yml', 'feedback.yml']" in job
     assert "PENDING.includes(run.status)" in job
     assert "workflow === 'implement.yml' && ACTIVE.includes(run.status)" in job
-    assert "other < at" in job, "only a strictly earlier alarm stops this one"
+    assert "other < at || (other === at && chain < origin)" in job, "the older chain breaks a tie"
     assert "STALE_MS" in job and "HORIZON_MS" in job
+    # feedback holds the lock at job level (B546), so its waiting job is read off the jobs list.
+    assert "listJobsForWorkflowRun" in job and "job.name === 'feedback'" in job
+    text = _d2_workflow("resume.yml")
+    assert "run-name: resume at ${{ inputs.at }} ${{ inputs.origin }}" in text
+    assert "origin: `${origin}`" in job, "a hop passes its chain on"
 
 
 @pytest.mark.parametrize(
@@ -3027,7 +3032,8 @@ def test_B545_each_spending_workflow_ends_with_a_relay_job_that_spends_nothing(n
     permissions = re.search(r"^    permissions:\n((?:      .*\n)+)", relay, re.M)
     assert permissions and permissions.group(1).split("#")[0].split() == ["actions:", "write"]
     assert "secrets." not in relay and "actions/checkout" not in relay
-    assert re.findall(r"workflow_id: '([^']+)'", relay) == ["resume.yml"]
+    assert set(re.findall(r"workflow_id: '([^']+)'", relay)) == {"resume.yml"}
+    assert "other <= at" in relay, "an alarm already pending at or before this time covers it"
     assert re.search(r"^    timeout-minutes: 10\b", relay, re.M)
 
 
@@ -3048,12 +3054,19 @@ def test_B546_feedback_takes_the_ledger_lock_at_job_level_so_a_skipped_comment_n
         assert re.search(r"^concurrency:\n  group: harness-ledger\n", _d2_workflow(name), re.M)
 
 
-def test_B548_only_a_scheduled_implement_run_dispatches_with_scheduled():
-    """B548 (D95): implement.yml passes `--scheduled` to both of its dispatches exactly when
-    the event is a schedule, since only a cron firing is known to sit inside the window."""
+def test_B548_every_workflow_dispatch_owes_and_only_a_scheduled_implement_run_is_late():
+    """B548 (D95): every dispatch in a spending workflow passes `--owe`, and implement.yml adds
+    `--scheduled` exactly when the event is a schedule, since only a cron firing is known to
+    sit inside the window."""
     text = _d2_workflow("implement.yml")
 
-    assert text.count("plan=\"$(harness dispatch ${SCHEDULED:+--scheduled})\"") == 2
+    assert text.count("plan=\"$(harness dispatch --owe ${SCHEDULED:+--scheduled})\"") == 2
     assert text.count("SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}") == 2
+    assert _d2_workflow("discover.yml").count("plan=\"$(harness dispatch --owe)\"") == 2
+    assert "harness dispatch --owe | tee" in _d2_workflow("feedback.yml")
+    for name in SPENDING_WORKFLOWS:
+        for line in _d2_workflow(name).splitlines():
+            if re.search(r"harness dispatch\b", line) and "name:" not in line:
+                assert "--owe" in line, f"{name}: {line.strip()}"
     assert "--scheduled" not in _d2_workflow("discover.yml")
     assert "--scheduled" not in _d2_workflow("feedback.yml")

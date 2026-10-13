@@ -929,40 +929,48 @@ def test_B525_a_held_comment_survives_a_save_and_stays_seen_until_released(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def test_B540_the_owed_record_opens_from_since_until_until_and_round_trips():
-    """B540 (D95): `owe` records the window's work as owed; it is open from `since` up to, not
-    including, `until`, survives a save, and `clear_owed` removes it."""
+def test_B540_owed_items_hold_from_since_until_until_and_round_trip():
+    """B540 (D95): `owe` records the items a window opened; they are owed from `since` up to,
+    not including, `until`, survive a save, and `keep_owed` drops the ones no longer waiting."""
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
-    ledger.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    ledger.owe([52, 51], since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
 
-    assert ledger.owed_open("2026-09-02T12:00:00Z")
-    assert ledger.owed_open("2026-09-02T01:30:00Z")
-    assert not ledger.owed_open("2026-09-03T01:30:00Z")
-    assert not ledger.owed_open("2026-09-02T01:29:00Z")
+    assert ledger.owed_items("2026-09-02T12:00:00Z") == {51, 52}
+    assert ledger.owed_items("2026-09-02T01:30:00Z") == {51, 52}
+    assert ledger.owed_items("2026-09-03T01:30:00Z") == frozenset()
+    assert ledger.owed_items("2026-09-02T01:29:00Z") == frozenset()
     again = Ledger.from_json(ledger.to_json())
-    assert again.owed() == {"since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"}
-    again.clear_owed()
-    assert again.owed() is None and not again.owed_open("2026-09-02T12:00:00Z")
+    assert again.owed() == {
+        "items": [51, 52], "since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"
+    }
+    again.keep_owed([52, 60])
+    assert again.owed_items("2026-09-02T12:00:00Z") == {52}
+    again.keep_owed([60])
+    assert again.owed() is None
 
 
-def test_B540_a_later_until_extends_the_record_and_an_earlier_one_never_shortens_it():
-    """B540: a dispatch in the next window moves the record on; a late run for an earlier
-    window leaves the current one alone."""
+def test_B540_items_owed_to_the_same_opening_add_up_and_a_later_one_starts_afresh():
+    """B540: a second dispatch in the same window adds its items; the next window's record
+    replaces the last one; a late run for an earlier window leaves the current one alone."""
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
-    ledger.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
-    ledger.owe(since="2026-09-01T01:30:00Z", until="2026-09-02T01:30:00Z")
-    assert ledger.owed()["until"] == "2026-09-03T01:30:00Z"
+    ledger.owe([51], since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    ledger.owe([52], since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    ledger.owe([40], since="2026-09-01T01:30:00Z", until="2026-09-02T01:30:00Z")
+    assert ledger.owed()["items"] == [51, 52]
 
-    ledger.owe(since="2026-09-03T01:30:00Z", until="2026-09-04T01:30:00Z")
-    assert ledger.owed() == {"since": "2026-09-03T01:30:00Z", "until": "2026-09-04T01:30:00Z"}
+    ledger.owe([53], since="2026-09-03T01:30:00Z", until="2026-09-04T01:30:00Z")
+    assert ledger.owed() == {
+        "items": [53], "since": "2026-09-03T01:30:00Z", "until": "2026-09-04T01:30:00Z"
+    }
 
 
-def test_B540_an_unreadable_record_is_shut_and_an_absent_one_is_never_written():
-    """B540: a record that lifts the window fails closed, and a ledger that never owed anything
-    is byte-identical to the file it was."""
+def test_B540_nothing_to_owe_records_nothing_and_an_unreadable_record_owes_nothing():
+    """B540: a dispatch with nothing approved writes no record, so a ledger that never owed
+    anything is byte-identical to the file it was; a record that cannot be read fails closed."""
     ledger = Ledger.empty("2026-08-31T00:00:00Z")
     before = ledger.to_json()
-    ledger.window["owed"] = {"since": "soon", "until": "later"}
+    ledger.owe([], since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    assert ledger.to_json() == before and "owed" not in json.loads(before)["window"]
 
-    assert not ledger.owed_open("2026-09-02T12:00:00Z")
-    assert "owed" not in json.loads(before)["window"]
+    ledger.window["owed"] = {"items": [51, "x"], "since": "soon", "until": "later"}
+    assert ledger.owed_items("2026-09-02T12:00:00Z") == frozenset()

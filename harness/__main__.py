@@ -241,9 +241,14 @@ def build_parser() -> argparse.ArgumentParser:
         "dispatch", help="ask the dispatcher what may start now; start nothing"
     )
     dispatch.add_argument(
+        "--owe",
+        action="store_true",
+        help="inside the run window, owe its approved items until the next opening",
+    )
+    dispatch.add_argument(
         "--scheduled",
         action="store_true",
-        help="a scheduled run: its firing sat inside the run window, however late it arrived",
+        help="--owe for a scheduled run, whose firing sat inside the window however late it came",
     )
 
     sub.add_parser("wake", help="when the resume relay should next start a run; start nothing")
@@ -1783,17 +1788,26 @@ def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -
     return plan_dispatch(now=ctx.clock.now(), **inputs)
 
 
-def _owe_window(ctx, config, now: datetime, *, scheduled: bool) -> None:
-    """Record the run window's work as owed until the window's next opening (D95).
+#: How long after the run window closes a scheduled run still counts as the window's: GitHub
+#: has delivered implement's firings up to about six hours late (D95).
+SCHEDULED_LATENESS = timedelta(hours=6)
 
-    Inside the window, and for a scheduled run however late GitHub delivered it, since every
-    scheduled firing sits inside the window (B412).
+
+def _owe_window(ctx, config, now: datetime, approved: list[int], *, scheduled: bool) -> None:
+    """Owe the approved items to the run window until its next opening (D95).
+
+    Inside the window, and for a scheduled run up to six hours after the window closed, since
+    every scheduled firing sits inside it (B412). Owed items no longer approved are dropped.
     """
+    ctx.ledger.keep_owed(approved)
     openings = config_mod.window_openings(config, now)
-    if openings is None or not (scheduled or in_run_window(config, now)):
+    length = config_mod.window_length(config)
+    if openings is None or length is None:
         return
     opened, following = openings
-    ctx.ledger.owe(since=iso(opened), until=iso(following))
+    late = scheduled and now < opened + length + SCHEDULED_LATENESS
+    if in_run_window(config, now) or late:
+        ctx.ledger.owe(approved, since=iso(opened), until=iso(following))
 
 
 #: What the head of the queue is waiting for, by the stage it is in. `approved` is absent
@@ -1833,18 +1847,20 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
     now = ctx.clock.now()
-    owed_before = ctx.ledger.owed()
-    _owe_window(ctx, config, now, scheduled=bool(getattr(args, "scheduled", False)))
     # Asked once: the plan skips suggested work with it and the payload reports it.
     blocked = priority.admit(
         "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now
     )
-    plan = _build_plan(ctx, config, args, suggested_refused=blocked)
-    # Owed work ends once nothing approved waits on the clock (D95).
-    if plan.drained:
-        ctx.ledger.clear_owed()
-    if ctx.ledger.owed() != owed_before:
-        _save_ledger(ctx)
+    inputs = _plan_inputs(ctx, config, args, suggested_refused=blocked)
+    scheduled = bool(getattr(args, "scheduled", False))
+    if scheduled or getattr(args, "owe", False):
+        # Recorded before the plan, which reads it; without the flag dispatch writes nothing.
+        owed_before = ctx.ledger.owed()
+        approved = [int(c.issue) for c in inputs["candidates"]]
+        _owe_window(ctx, config, now, approved, scheduled=scheduled)
+        if ctx.ledger.owed() != owed_before:
+            _save_ledger(ctx)
+    plan = plan_dispatch(now=now, **inputs)
     # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
     # the plan's JSON document, because workflows parse this stdout as a single document.
     payload = json.loads(plan.to_json())
@@ -1872,7 +1888,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         "open": ctx.ledger.block_open(ctx.clock.now()),
         "grant": ctx.ledger.block_grant(),
     }
-    payload["owed"] = {"open": ctx.ledger.owed_open(now), "record": ctx.ledger.owed()}
+    payload["owed"] = {"now": sorted(ctx.ledger.owed_items(now)), "record": ctx.ledger.owed()}
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 
@@ -1930,9 +1946,12 @@ def _quiet_sample(ctx) -> quiet_mod.Sample:
     return quiet_mod.Sample(at=iso(now), usage=reading, error=error)
 
 
-def _window_open(ctx, config, now) -> bool:
-    """The run window as the dispatcher reads it: open, opened by a block (D77), or owed (D95)."""
-    return in_run_window(config, now) or ctx.ledger.block_open(now) or ctx.ledger.owed_open(now)
+def _window_open(ctx, config, now, items=()) -> bool:
+    """The run window as the dispatcher reads it for ``items``: open, opened by a block (D77),
+    or owing one of them (D95)."""
+    if in_run_window(config, now) or ctx.ledger.block_open(now):
+        return True
+    return bool(ctx.ledger.owed_items(now) & {int(n) for n in items})
 
 
 def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
@@ -1963,7 +1982,8 @@ def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
         )
     # A read without the token is worth trying only after one that carried it.
     public = PUBLIC_READER if getattr(ctx.gh, "can_write", False) else None
-    window_was_open = _window_open(ctx, config, ctx.clock.now())
+    items = tuple(getattr(args, "items", None) or ())
+    window_was_open = _window_open(ctx, config, ctx.clock.now(), items)
     outcome = quiet_mod.wait_until_quiet(
         sample=lambda: _quiet_sample(ctx),
         sleep=SLEEP,
@@ -1978,7 +1998,7 @@ def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
         # A refusal is a rate limit that ends at its reset, as for any other call (D71).
         reset = exhausted_reset(outcome.refused.usage)
         ctx.ledger.set_rate_limited(resolve_reset(reset, ctx.clock.now()))
-    closed = not _window_open(ctx, config, ctx.clock.now())
+    closed = not _window_open(ctx, config, ctx.clock.now(), items)
     if outcome.quiet and getattr(args, "window", False) and window_was_open and closed:
         # The window bounds when work starts, and a plan made inside it expires with it (D72).
         outcome.quiet = False
@@ -2259,9 +2279,11 @@ def _window_state(config, led, now) -> str:
     """``; open now`` or ``; closed now``, naming the owed period when one stands (D95)."""
     if in_run_window(config, now) or led.block_open(now):
         return "; open now"
-    if led.owed_open(now):
+    owed = sorted(led.owed_items(now))
+    if owed:
         until = (led.owed() or {}).get("until", "")
-        return f"; closed, but the work it opened may still start until {until}"
+        items = ", ".join(f"#{n}" for n in owed)
+        return f"; closed, but {items} it opened may still start until {until}"
     return "; closed now"
 
 

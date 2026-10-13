@@ -58,7 +58,9 @@ and says so when that page comes back full, because a bound on what was read is 
 what exists. When the run list cannot be read the section says so in one line rather than
 reporting an empty queue as idle; in `ack`'s fast answer it is left out altogether.
 
-`harness dispatch` is pure: run twice against an unchanged ledger, it prints identical plans. Its
+`harness dispatch` plans without side effects: run twice against an unchanged ledger, it prints
+identical plans. Only `--owe` or `--scheduled`, which the workflows pass, writes anything: the
+owed items in the ledger (§13.3). Its
 `reason` string is the fastest diagnosis: `halted`, `rate limited until …`,
 `session usage 82% >= 80%`, `outside run window (daily 01:30-06:30 UTC)`, or `k of max n slots`
 (with `; session 7%` appended when subscription usage is known). The usage stop, the carry and the
@@ -295,9 +297,9 @@ harness halt          # local: writes HALT_FILE; `harness resume` removes it
 
 `discover`, `implement` and `feedback` check `.harness/HALT` as their first step, before checkout,
 `harness doctor` and the dispatcher. The job logs `halted by .harness/HALT` and exits 0: nothing
-spent, no label moved, no comment posted, no ops issue opened. `heartbeat`, `ack`, `watchdog`, `ops`
-and `selftest` do not check it; the heartbeat comment and the `ack` reply both say the harness is
-halted.
+spent, no label moved, no comment posted, no ops issue opened. `resume` checks it first too and
+drops its alarm. `heartbeat`, `ack`, `watchdog`, `ops` and `selftest` do not check it; the heartbeat
+comment and the `ack` reply both say the harness is halted.
 
 On the command line the two switches are checked in different places:
 
@@ -567,33 +569,37 @@ under CST, so the harness starts its build before the night bot is working at fu
 (D95). The session is shared with the night bot and with you, and opens with the first model call
 of the night: usually the first item a build starts, then discover's triage at 03:47.
 
-**Owed work.** GitHub delivers scheduled runs hours late and drops most of them, so a firing inside
-the window can arrive long after it closes. Every scheduled firing sits inside the window, so
-`implement.yml` passes `harness dispatch --scheduled`, and that run, and every dispatch made inside
-the window, records the window's work as owed in the ledger (`window.owed`) until the window's
-next opening. Owed work starts whenever a run gets to it; the record ends once a plan finds
-nothing approved waiting on the clock. `harness status` says `closed, but the work it opened may
-still start until …` while it stands. The quiet check still applies, so owed work never starts
-over somebody else's session. `feedback.yml`'s reconcile step does not build owed work outside the
-window, since it does not wait for a quiet subscription.
+**Owed items.** GitHub delivers scheduled runs hours late and drops most of them, so a firing
+inside the window can arrive long after it closes. Every dispatch in the spending workflows passes
+`--owe`: inside the window it records the items approved then as owed in the ledger
+(`window.owed`) until the window's next opening. `implement.yml` adds `--scheduled` on a
+scheduled run, which owes the same way up to six hours after the window closed, since its firing
+sat inside it. An owed item starts whenever a run gets to it, and leaves the record once it is no
+longer approved; an item approved after the window waits for the next opening. `harness status`
+says `closed, but #51 it opened may still start until …` while one is owed. The quiet check still
+applies, so an owed item never starts over somebody else's session. `feedback.yml`'s reconcile
+step does not build owed items outside the window, since it does not wait for a quiet
+subscription.
 
 **The resume relay.** `implement.yml`, `discover.yml` and `feedback.yml` end with
 `harness wake`, which names the soonest time a run could start something: the window's next
 opening, the end of a rate limit, the session's reset after the usage stop, an hour after a quiet
 check found somebody spending, or 20 minutes from now when more approved work waits. After a
-green run, their `relay` job hands that time to `resume.yml`, which sleeps until then in hops of at most 105
-minutes and dispatches `implement.yml`. That is what starts the 01:30 run on time, and what
-resumes a build after something else maxed the subscription. The earliest pending alarm stands
-and a later one stops itself; a `.harness/HALT` drops it; an alarm more than six hours past its
-time is dropped as stale. The relay holds no secret and no lock, and `implement.yml` applies every
-check again.
+green run, their `relay` job hands that time to `resume.yml`, unless an alarm at or before it is
+already pending. `resume.yml` sleeps until then in hops of at most 105 minutes and dispatches
+`implement.yml`. That is what starts the 01:30 run on time, and what resumes a build after
+something else maxed the subscription. The earliest alarm stands, the older of two at the same
+time, and any other stops itself at its next check. It waits while a `harness-ledger` run or a
+`feedback` job is queued, since a dispatch would replace it. A `.harness/HALT` drops it, and an
+alarm more than six hours past its time is dropped as stale. The relay holds no secret, and
+`implement.yml` applies every check again.
 
 The window bounds only what starts: a build started at the 05:31 pass can run up to 120 minutes,
 the 03:41 weekday sweep builds inside the window, and scheduled discover is not window-gated
 (D32). What bounds their calls is `SESSION_USAGE_STOP_PCT` (80 in Actions), per session. A
-carried item waits for the window or for owed work (B413). GitHub cron is always UTC, so the
-crons do not move when the clocks change; the head start over the night bot grows by an hour in
-winter.
+carried item waits for the window unless the window owes it (B413). GitHub cron is always UTC, so
+the crons do not move when the clocks change; the head start over the night bot grows by an hour
+in winter.
 
 `harness run --item N` and `implement.yml`'s `issue` input bypass the window. They do not bypass the
 usage stop.
@@ -740,8 +746,8 @@ person commanding the harness is using it on purpose. `QUIET_ENABLED=false` turn
   so the rise is excused.
 - A local-mode run of either bot (the `bb` container) shows in no workflow, so the other bot takes
   it for a person, and local mode itself never waits.
-- `feedback.yml`'s 12:41 and 15:41 UTC weekday sweeps build what is approved through
-  `Reconcile stale` without a check.
+- `feedback.yml`'s 03:41 UTC weekday sweep builds what is approved through `Reconcile stale`
+  without a check.
 - The `quiet` job may run for 140 minutes, the one job allowed past the 120 of B125, which is why
   `QUIET_MAX_WAIT_MINUTES` stops at 120. The whole run holds the `harness-ledger` lock, so a
   `feedback.yml` run your comment started queues behind the wait and the build after it, and a

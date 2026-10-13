@@ -707,6 +707,27 @@ def test_B532_a_run_window_that_closes_during_the_wait_starts_nothing(
         assert payload["reason"].startswith("the run window (daily 11:00-12:05 UTC) closed")
 
 
+@pytest.mark.parametrize(("items", "quiet_expected"), [(["7"], True), (["8"], False)])
+def test_B541_an_owed_item_keeps_the_window_open_through_the_wait(
+    repo, monkeypatch, capsys, items, quiet_expected
+):
+    """B541 (D95): `--window` treats an item the window owes as inside it, so the check that
+    began at 12:00 still says quiet after the 12:05 close for item 7, and not for item 8."""
+    write_d2_repo(
+        repo.path, QUIET_PARTNER_REPO="", RUN_WINDOW_START="daily 11:00",
+        RUN_WINDOW_END="daily 12:05",
+    )
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    ledger.owe([7], since="2026-09-01T11:00:00Z", until="2026-09-02T11:00:00Z")
+    (repo.path / "state").mkdir()
+    (repo.path / "state" / "ledger.json").write_text(ledger.to_json(), encoding="utf-8")
+    use_runner(monkeypatch, PingRunner(reading(0.2), reading(0.2)))
+
+    payload = quiet_json(capsys, "--window", "--items", *items)
+
+    assert payload["quiet"] is quiet_expected
+
+
 class Cancelled(Exception):
     """What a cancelled job looks like from inside the wait."""
 

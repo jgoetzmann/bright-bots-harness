@@ -5,7 +5,8 @@
 # window, the usage stop, the quiet check, the delivery cap and both gates again. Spends nothing,
 # holds no secret and writes no state.
 name: resume
-run-name: resume at ${{ inputs.at }}
+# The title carries the time and the chain, which is how one alarm sees another (below).
+run-name: resume at ${{ inputs.at }} ${{ inputs.origin }}
 
 on:
   workflow_dispatch:
@@ -17,10 +18,14 @@ on:
         description: "why this time, as `harness wake` said it"
         required: false
         default: ""
+      origin:
+        description: "the first hop's run id; blank for a new alarm"
+        required: false
+        default: ""
 
 # Outside the `harness-ledger` group: it writes no state, and a relay waiting in the group would
 # hold the lock it is waiting to hand over. Alarms do not cancel each other; the earliest one
-# stands and a later one stops itself (below).
+# stands, the oldest chain breaks a tie, and any other stops itself when it next checks.
 
 jobs:
   relay:
@@ -55,6 +60,7 @@ jobs:
         env:
           AT: ${{ inputs.at }}
           REASON: ${{ inputs.reason }}
+          ORIGIN: ${{ inputs.origin }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -69,6 +75,7 @@ jobs:
             const LEDGER_WORKFLOWS = ['implement.yml', 'discover.yml', 'feedback.yml'];
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
             const PENDING = ['queued', 'requested', 'waiting', 'pending'];
+            const origin = Number(process.env.ORIGIN) || context.runId;
             const started = Date.now();
             const left = () => HOP_MS - (Date.now() - started);
             const sleep = (ms) => new Promise((done) => setTimeout(done, Math.max(0, ms)));
@@ -86,25 +93,39 @@ jobs:
               return;
             }
 
-            // The earliest alarm stands. An equal one is left running: whichever comes due second
-            // finds the first one's implement run queued or running, and stops there.
+            // The earliest alarm stands, and of two at the same time the older chain. A chain's
+            // hops share their origin, so a hop never stops for the one that dispatched it.
             const earlierStands = async () => {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 owner, repo, workflow_id: 'resume.yml', per_page: 50,
               });
               return (data.workflow_runs || []).some((run) => {
                 if (run.id === context.runId || !ACTIVE.includes(run.status)) return false;
-                const title = String(run.display_title || '');
-                const other = Date.parse(title.replace(/^resume at /, ''));
-                return !Number.isNaN(other) && other < at;
+                const title = /^resume at (\S+)(?:\s+(\d+))?/.exec(String(run.display_title || ''));
+                const other = title ? Date.parse(title[1]) : NaN;
+                const chain = title && title[2] ? Number(title[2]) : run.id;
+                return !Number.isNaN(other) && (other < at || (other === at && chain < origin));
               });
             };
             const nextHop = async () => {
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo, workflow_id: 'resume.yml', ref,
-                inputs: { at: process.env.AT, reason: process.env.REASON || '' },
+                inputs: {
+                  at: process.env.AT, reason: process.env.REASON || '', origin: `${origin}`,
+                },
               });
               core.info(`not yet ${process.env.AT}; the next hop is dispatched`);
+            };
+            // A run that waits in `harness-ledger`. feedback takes the lock at job level, so its
+            // run reads in_progress while its job waits; that job is what a dispatch would replace.
+            const waiting = async (workflow, run) => {
+              if (PENDING.includes(run.status)) return true;
+              if (workflow !== 'feedback.yml' || run.status !== 'in_progress') return false;
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner, repo, run_id: run.id,
+              });
+              return (data.jobs || []).some((job) => job.name === 'feedback'
+                && PENDING.includes(job.status));
             };
 
             if (await earlierStands()) {
@@ -120,6 +141,10 @@ jobs:
             // Due. A dispatch would replace a run already pending in `harness-ledger`, so it waits
             // for that run to start; an implement run already queued or running plans for itself.
             for (;;) {
+              if (await earlierStands()) {
+                core.info('an earlier alarm stands; this one stops');
+                return;
+              }
               const runs = [];
               for (const workflow of LEDGER_WORKFLOWS) {
                 const { data } = await github.rest.actions.listWorkflowRuns({
@@ -132,7 +157,14 @@ jobs:
                 core.info('an implement run is already queued or running; it plans for itself');
                 return;
               }
-              if (!runs.some(({ run }) => PENDING.includes(run.status))) break;
+              let pending = false;
+              for (const { workflow, run } of runs) {
+                if (await waiting(workflow, run)) {
+                  pending = true;
+                  break;
+                }
+              }
+              if (!pending) break;
               if (left() < 5 * 60_000) {
                 await nextHop();
                 return;

@@ -1788,29 +1788,35 @@ Decision:
   longer waits for a quiet subscription, so a head start is the priority there is.
   `implement.yml` fires `31 1-5 * * *`; `discover.yml` fires `47 3,5 * * *`, after the first
   builds. `QUIET_PARTNER_REPO` is `jlore-studios/jackioh`, where the night bot now lives.
-- Owed work. `config.window_openings` gives the window's latest and next openings. A dispatch
-  inside the window, or `harness dispatch --scheduled`, which `implement.yml` passes on a
-  scheduled run, records `window.owed` in the ledger from the latest opening to the next one,
-  since every scheduled firing sits inside the window (B412). While owed, the dispatcher reads
-  the window as open, the carry included. A plan that finds nothing approved waiting on the
-  clock, the slots or a stop is drained, and a drained dispatch clears the record.
-  `harness run` without `--item`, which `feedback.yml` reconciles with, still keeps to the window
-  itself, since it does not wait for a quiet subscription.
+- Owed items. `config.window_openings` gives the window's latest and next openings. With
+  `--owe`, which every workflow dispatch passes, a dispatch inside the window records the items
+  approved then in `window.owed` (`items`, `since`, `until`) until the next opening; items owed
+  to the same opening add up, and nothing approved records nothing. `--scheduled`, which
+  `implement.yml` adds on a scheduled run, owes the same way up to six hours after the window
+  closed (`SCHEDULED_LATENESS`), since every scheduled firing sits inside the window (B412). The
+  dispatcher exempts an owed item from the window as it does a forced one, and an owed carry
+  resumes under a daily window. Each `--owe` dispatch drops owed items that are no longer
+  approved, and the record with the last of them. Without either flag `dispatch` writes
+  nothing. `harness run` without `--item`, which `feedback.yml` reconciles with, keeps to the
+  window itself, since it does not wait for a quiet subscription.
 - `harness wake` prints the soonest time a run could start something: the floor (20 minutes, or
   60 after a not-quiet verdict less than three hours old), the stored rate limit's end, the
   session's reset, and the window's next opening, earliest first, each kept only when
   `dispatcher.plan` at that time would start something, within 24 hours.
 - `implement.yml`, `discover.yml` and `feedback.yml` run it last (`continue-on-error`) and end
   with a `relay` job that runs after a green spending job only, holds `actions: write` alone, no
-  secret and no checkout, and dispatches `resume.yml` with that time. `resume.yml` checks `.harness/HALT`, sleeps in hops of at most 105
-  minutes, dispatches its next hop until the time, then dispatches `implement.yml`. The earliest
-  pending alarm stands and a later one stops itself. At the time it waits while a
-  `harness-ledger` run is pending, since a dispatch would replace it, and stops if an implement
-  run is already queued or running. An alarm more than 26 hours ahead fails, and one more than six
-  hours past is dropped.
+  secret and no checkout, and dispatches `resume.yml` with that time unless an alarm at or
+  before it is already pending.
+- `resume.yml` checks `.harness/HALT`, sleeps in hops of at most 105 minutes, dispatches its
+  next hop with the chain's `origin` until the time, then dispatches `implement.yml`. Its title
+  carries the time and the chain. The earliest alarm stands, the older chain breaks a tie, and
+  any other stops at its next check. At the time it waits while a `harness-ledger` run, or a
+  `feedback` job waiting on the job-level lock, is queued, since a dispatch would replace it; it
+  stops if an implement run is already queued or running. An alarm more than 26 hours ahead
+  fails, and one more than six hours past is dropped.
 - `feedback.yml`'s concurrency moves to its job, so a comment the job skips never enters the
   group. The group and `cancel-in-progress: false` are unchanged (B118).
-- The status lines say `closed, but the work it opened may still start until …` while owed.
+- The status lines say `closed, but #51 it opened may still start until …` while items are owed.
 
 Why. A late scheduled run belongs to the window its firing sat in; treating it as outside wasted
 the only run GitHub delivered. A relay on `workflow_dispatch` starts within seconds of its time,
@@ -1822,9 +1828,10 @@ session somebody else is using, which the window alone did before D93 existed.
 Rejected: denser crons, which GitHub coalesces and delays alike; waiting for the reset inside the
 quiet job, which holds `harness-ledger` and every comment behind it for hours; a `workflow_run`
 trigger for the relay, whose behaviour after a run dispatched with the workflow token is not
-certain; asking the night bot to yield `claude-1`, which is a change to another repository; an
-owed record that lasts until the next opening regardless, which would build a daytime approval in
-the daytime.
+certain; asking the night bot to yield `claude-1`, which is a change to another repository; one
+owed flag for the whole window, which a usage-stopped night left open and which then built an
+afternoon approval in the afternoon; owing without a flag, which made a diagnostic `dispatch`
+inside a weekly window owe its work for a week.
 
 Accepted gaps:
 - The relay is a runner asleep for up to 105 minutes at a time while an alarm is pending, on a
@@ -1834,10 +1841,12 @@ Accepted gaps:
 - A real `/harness` command can still replace a queued implement run; that feedback run's own
   relay arms the next one.
 - A failed run arms nothing, so a run that fails after its quiet job cannot bring itself back
-  every 20 minutes with two pings each time; the next scheduled run or sweep arms the relay.
-- An item approved during the day can start before the next opening when a scheduled run for an
-  earlier day arrives late and the record was drained in between.
+  every 20 minutes with two pings each time; the next scheduled run or sweep arms the relay. An
+  alarm that stopped for an earlier one whose implement run then failed is lost the same way.
+- An item approved in the six hours after the window closed is owed by a late scheduled run.
 - A not-quiet loop pings the subscription twice per interval for up to two hours, then comes back
-  an hour later, for as long as owed work waits and somebody is spending.
+  an hour later, for as long as an owed item waits and somebody is spending.
+- A forced item starts about 20 minutes after the sweep that read the command, through the
+  relay, rather than at the next implement run GitHub happens to deliver.
 
 Allocates B538-B548.

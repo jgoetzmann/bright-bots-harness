@@ -337,8 +337,9 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 
 Exempts the item from the run window (daily 01:30 → 06:30 UTC) and from the wait for a quiet
 subscription (D93), and says so on the item, in the ledger and in the reply. It is honoured by
-`implement`'s next run outside the window (a gate-1 merge or the operator's dispatch), not by the
-sweep (D68), and proposes nothing sooner. Level 3 only;
+`implement`'s next run outside the window, which the sweep that read the command starts through
+`resume.yml` about 20 minutes later (D95), not by the sweep itself (D68), and proposes nothing
+sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, the usage stop
 (80% of the session), the turn caps and both human gates still apply.
 
@@ -487,10 +488,13 @@ stored rate limit, the session's reset after the usage stop, an hour after a qui
 somebody else spending, or 20 minutes from now when more approved work is waiting. `null` means
 nothing would start in the next 24 hours, or the harness is halted. The workflow's `relay` job
 hands that time to `resume.yml`, which sleeps until then in hops of at most 105 minutes and
-dispatches `implement.yml`; every check runs again there. `dispatch --scheduled`, which
-`implement.yml` passes on a scheduled run, records the window's work as owed however late GitHub
-delivered the run, because every scheduled firing sits inside the window; owed work stays
-startable until the queue drains or the window opens again.
+dispatches `implement.yml`; every check runs again there.
+
+`dispatch --owe`, which every workflow passes, owes the approved items to the run window while it
+is open: each stays startable after the window until it starts or the window opens again.
+`dispatch --scheduled`, which `implement.yml` passes on a scheduled run, owes them the same way up
+to six hours after the window closed, because every scheduled firing sits inside the window.
+Without either flag `dispatch` writes nothing.
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

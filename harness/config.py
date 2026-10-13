@@ -36,6 +36,7 @@ __all__ = [
     "is_daily_window",
     "run_window_label",
     "window_openings",
+    "window_length",
     "EFFORT_LEVELS",
     "co_author_ok",
 ]
@@ -844,6 +845,16 @@ def window_openings(config: Config, now: datetime) -> tuple[datetime, datetime] 
     if moment < opening:
         opening -= period
     return opening, opening + period
+
+
+def window_length(config: Config) -> timedelta | None:
+    """How long the run window stays open each time, or ``None`` when it is always open (D95)."""
+    start = _window_minute(getattr(config, "run_window_start", ""))
+    end = _window_minute(getattr(config, "run_window_end", ""))
+    if start is None or end is None or start[1] != end[1]:
+        return None
+    period = _DAY_MINUTES if start[1] else 7 * _DAY_MINUTES
+    return timedelta(minutes=(end[0] - start[0]) % period)
 
 
 def run_window_label(config: Config) -> str:

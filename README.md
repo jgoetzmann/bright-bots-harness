@@ -114,8 +114,8 @@ makes a good request.
 
 The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 01:30
 to 06:30 UTC in `.harness/config.json`, half an hour before the JackiOh night bot's hours on the
-shared subscription), and `implement.yml`'s crons follow that window. Work the window opened stays
-startable after it until the queue drains, and `resume.yml` brings a run back once a usage stop,
+shared subscription), and `implement.yml`'s crons follow that window. An item the window opened
+stays startable after it until it starts, and `resume.yml` brings a run back once a usage stop,
 a rate limit or a busy subscription has cleared (D95).
 `harness run --item N` and `--force` start work outside it; neither bypasses the usage stop.
 `discover.yml` is not window-gated. A run of either then waits for a quiet subscription, which
@@ -135,7 +135,7 @@ gates still apply.
 | `harness/` | The package. `harness --help` lists the subcommands |
 | `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B548 is cited by a test that names it |
 | `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
-| `.github/workflows/` | `discover`, `implement`, `feedback`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
+| `.github/workflows/` | `discover`, `implement`, `feedback`, `resume`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
 | `proposals/` | Merged work packages. A merge into here is gate 1 |
 | `.harness/` | `HALT`, `PIN`, `trust.txt`, `config.json`; outside the harness's write roots ([README](.harness/README.md)) |
 | `local/` | The `bb` container for local mode |

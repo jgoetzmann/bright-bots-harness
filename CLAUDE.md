@@ -95,9 +95,10 @@ through interop). The system `python3` is 3.12, which is too old.
     starts nothing. `capped` holds each item `deliver.delivery_cap_refusals` refuses while
     `MAX_OPEN_DELIVERIES` of the fork's pull requests are open upstream; `harness run` asks the
     same before each clone (D88). The window is 01:30 to 06:30 UTC, half an hour before the
-    JackiOh night bot's hours on the shared subscription. Work it opened stays owed
-    (`window.owed`) until the queue drains, and a scheduled run counts as inside it however late
-    it arrives (`dispatch --scheduled`). `wake_at` gives the next time something could start;
+    JackiOh night bot's hours on the shared subscription. `dispatch --owe` owes the items
+    approved inside it (`window.owed`) until each starts or the next opening, and a scheduled
+    run up to six hours late counts as inside it (`--scheduled`). `wake_at` gives the next time
+    something could start;
     each spending workflow's `relay` job hands it to `resume.yml`, which sleeps and dispatches
     `implement.yml` (D95).
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch

@@ -197,7 +197,8 @@ jobs:
 
         # The same reconciliation implement.yml does, in the same position, so a burst of merges
         # landing outside the implement window is approved within three hours rather than
-        # waiting for 11:23 UTC. It spends nothing and only moves `proposed -> approved` (D78).
+        # waiting for the next implement run. It spends nothing and only moves `proposed ->
+        # approved` (D78).
         # `continue-on-error`, because the keyword sweep runs after it: one stuck item must never
         # be what stops `/harness halt` being read.
       - name: Approve merged proposals (every proposal on main)
@@ -207,12 +208,13 @@ jobs:
         run: harness approve --merged
 
         # Printed for the record; the sweep and the reconciler apply their own rules (B122).
+        # Inside the run window it also owes the approved items to the window (D95).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: |
           mkdir -p runs
-          harness dispatch | tee runs/dispatch-plan.json
+          harness dispatch --owe | tee runs/dispatch-plan.json
 
         # One notifications call since the ledger cursor; keywords are authorised before they are
         # parsed, and acted on at most once (B135). The sweep spends nothing itself; the revise
@@ -322,7 +324,7 @@ jobs:
           mkdir -p runs
           harness --json wake | tee runs/wake.json
           echo "at=$(jq -r '.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
-          echo "reason=$(jq -r '.reason // empty' runs/wake.json | head -c 200)" >> "$GITHUB_OUTPUT"
+          echo "reason=$(jq -r '(.reason // "")[0:200]' runs/wake.json)" >> "$GITHUB_OUTPUT"
 
         # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
@@ -354,7 +356,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write              # dispatch resume.yml
+      actions: write              # list pending alarms; dispatch resume.yml
     steps:
       - name: Arm the resume relay
         uses: actions/github-script@v7
@@ -365,6 +367,22 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const ref = (context.payload.repository || {}).default_branch || 'main';
+            const at = Date.parse(process.env.AT || '');
+            // An alarm already pending at or before this time covers it: its implement run
+            // arms the next one.
+            const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: 'resume.yml', per_page: 50,
+            });
+            const covered = (data.workflow_runs || []).some((run) => {
+              const title = /^resume at (\S+)/.exec(String(run.display_title || ''));
+              const other = title ? Date.parse(title[1]) : NaN;
+              return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
+            });
+            if (covered) {
+              core.info(`an alarm at or before ${process.env.AT} is already pending`);
+              return;
+            }
             await github.rest.actions.createWorkflowDispatch({
               owner, repo, workflow_id: 'resume.yml', ref,
               inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },

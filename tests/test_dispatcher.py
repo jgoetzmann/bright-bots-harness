@@ -959,16 +959,16 @@ NIGHT_WINDOW = {"RUN_WINDOW_START": "daily 01:30", "RUN_WINDOW_END": "daily 06:3
 NEXT_OPENING = datetime(2026, 9, 3, 1, 30, tzinfo=timezone.utc)
 
 
-def owed_ledger(since: str = "2026-09-02T01:30:00Z", until: str = "2026-09-03T01:30:00Z",
-                **kwargs) -> Ledger:
+def owed_ledger(items=(51,), since: str = "2026-09-02T01:30:00Z",
+                until: str = "2026-09-03T01:30:00Z", **kwargs) -> Ledger:
     ledger = usage_ledger(**kwargs)
-    ledger.owe(since=since, until=until)
+    ledger.owe(items, since=since, until=until)
     return ledger
 
 
-def test_B541_owed_work_starts_after_the_window_closes(tmp_path):
-    """B541 (D95): the window's work is owed until its next opening, so a run GitHub delivered
-    after 06:30 still starts it; without the record the same plan names the window."""
+def test_B541_an_owed_item_starts_after_the_window_closes(tmp_path):
+    """B541 (D95): the items the window opened are owed until its next opening, so a run GitHub
+    delivered after 06:30 still starts one; without the record the plan names the window."""
     config = d3_config(tmp_path, **NIGHT_WINDOW)
 
     owed = run_plan(config, owed_ledger(), cands(51), now=WED)
@@ -977,6 +977,19 @@ def test_B541_owed_work_starts_after_the_window_closes(tmp_path):
     assert owed.start == (51,)
     assert closed.start == ()
     assert closed.reason == "outside run window (daily 01:30-06:30 UTC)"
+
+
+def test_B541_only_the_owed_items_are_exempt(tmp_path):
+    """B541: an item approved after the window opened is not owed, so it waits for the next
+    opening while the owed one starts."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    result = run_plan(config, owed_ledger(items=(51,)), cands(60, 51), now=WED)
+
+    assert result.start == (51,)
+    assert result.skipped == {"60": "outside run window"}
+    alone = run_plan(config, owed_ledger(items=(51,)), cands(60), now=WED)
+    assert alone.start == () and alone.reason == "outside run window (daily 01:30-06:30 UTC)"
 
 
 def test_B541_an_expired_owed_record_opens_nothing(tmp_path):
@@ -990,13 +1003,15 @@ def test_B541_an_expired_owed_record_opens_nothing(tmp_path):
     assert result.reason == "outside run window (daily 01:30-06:30 UTC)"
 
 
-def test_B541_owed_work_resumes_the_carry_under_a_daily_window(tmp_path):
-    """B541 with B413: a carried item waits for a daily window, and owed work counts as one."""
+def test_B541_an_owed_carry_resumes_under_a_daily_window(tmp_path):
+    """B541 with B413: a carried item waits for a daily window unless the window owes it."""
     config = d3_config(tmp_path, **NIGHT_WINDOW)
 
-    result = run_plan(config, owed_ledger(carry=816), cands(810, 816), now=WED)
+    owed = run_plan(config, owed_ledger(items=(816,), carry=816), cands(810, 816), now=WED)
+    not_owed = run_plan(config, owed_ledger(items=(810,), carry=816), cands(810, 816), now=WED)
 
-    assert result.start == (816,)
+    assert owed.start == (816,)
+    assert not_owed.start == (810,), "the owed item starts, and the carry waits for the window"
 
 
 def test_B541_owed_work_never_outlives_a_stop(tmp_path):
@@ -1009,25 +1024,6 @@ def test_B541_owed_work_never_outlives_a_stop(tmp_path):
 
     assert stopped.start == () and stopped.reason == "session usage 72% >= 70%"
     assert limited.start == () and limited.reason == "rate limited until 2026-09-02T14:00:00Z"
-    assert not stopped.drained and not limited.drained
-
-
-def test_B541_a_plan_is_drained_only_when_nothing_waits_on_the_clock(tmp_path):
-    """B541: drained means nothing approved waits on the window, the slots or a stop: an empty
-    queue, or one whose every item is held by something else."""
-    config = d3_config(tmp_path, **NIGHT_WINDOW)
-
-    empty = run_plan(config, owed_ledger(), (), now=WED)
-    started = run_plan(config, owed_ledger(), cands(51), now=WED)
-    full = run_plan(config, owed_ledger(), cands(51, 52), now=WED)
-    waiting = run_plan(config, usage_ledger(), cands(51), now=WED)
-    held = run_plan(config, owed_ledger(), (Candidate(issue=51, depends_on=(50,)),), now=WED)
-
-    assert empty.drained and held.drained
-    assert not started.drained
-    assert full.skipped == {"52": "slots full"} and not full.drained
-    assert not waiting.drained
-    assert "drained" not in json.loads(started.to_json()), "the printed plan is unchanged"
 
 
 def _wake(config, ledger, candidates, *, now=WED, halted=False):
@@ -1099,7 +1095,7 @@ def test_B543_the_usage_stop_brings_the_run_back_after_the_session_resets(tmp_pa
          "status": "allowed", "observed_at": NOW_ISO},
         NOW_ISO,
     )
-    ledger.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    ledger.owe((51,), since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
 
     at, _ = _wake(config, ledger, cands(51))
 

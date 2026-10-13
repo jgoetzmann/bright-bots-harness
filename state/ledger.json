@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 99,
+    "calls": 101,
     "rate_limited_until": "2026-10-10T19:30:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.17,
+        "utilization": 0.28,
         "resets_at": "2026-10-13T21:40:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-10-13T18:15:47Z"
+      "observed_at": "2026-10-13T18:21:32Z"
     },
     "carry": {
       "issue": 51,
@@ -707,6 +707,18 @@
       "ts": "2026-10-13T11:18:02Z",
       "stage": "implement",
       "issue": 51,
+      "run": ""
+    },
+    {
+      "ts": "2026-10-13T18:16:39Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-10-13T18:21:32Z",
+      "stage": "propose",
+      "issue": 106,
       "run": ""
     }
   ]

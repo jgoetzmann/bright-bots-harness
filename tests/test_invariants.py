@@ -461,13 +461,14 @@ HANDOFF_WORKFLOWS = (
 ADDED_WORKFLOWS = {
     "ack.yml": "D65/B293 — say 'working on it' within seconds; spends nothing, takes no lock",
     "watchdog.yml": "D65/B294 — dispatch feedback when a scheduled run never started",
+    "resume.yml": "D95/B544 — start implement.yml at the time `harness wake` gave",
 }
 ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # The full expected cron list per scheduled workflow; the others carry none. discover and
-# implement fire inside the daily 11:00 -> 19:00 UTC run window (D72, widened by D80).
+# implement fire inside the daily 01:30 -> 06:30 UTC run window (D72, moved by D95).
 FROZEN_CRONS = {
-    "discover.yml": ["7 11,13 * * *"],
-    "implement.yml": ["23 11-15 * * *"],
+    "discover.yml": ["47 3,5 * * *"],
+    "implement.yml": ["31 1-5 * * *"],
     "feedback.yml": ["41 */3 * * 1-5"],
     "heartbeat.yml": ["5 9 * * 1"],
     # Offset from feedback's in both fields, so the watchdog never fires with what it watches
@@ -2104,10 +2105,17 @@ def _halt_step_block(text: str) -> str | None:
     return blocks[0] if len(blocks) == 1 else None
 
 
+#: The job each spending workflow ends with: it arms resume.yml and spends nothing (D95, B545).
+RELAY_JOB = "relay"
+
+
 def _spending_jobs(name: str) -> list[tuple[str, str]]:
     """Each job of a spending workflow with the text of that job alone; the `quiet` job counts,
-    since its pings are model calls (D93)."""
-    return list(_workflow_jobs(_d2_workflow(name)).items())
+    since its pings are model calls (D93), and the relay job does not (D95)."""
+    return [
+        (job, text) for job, text in _workflow_jobs(_d2_workflow(name)).items()
+        if job != RELAY_JOB
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2216,10 +2224,10 @@ def test_b149_the_repo_level_halt_file_is_committable_while_the_root_halt_stays_
 # The implement schedule and the knob set.
 # ======================================================================================
 
-# implement.yml runs hourly inside the daily 11:00 → 16:00 UTC window, the one five-hour session
-# discover opens at 11:07, with a second attempt at 13:07 (D89). feedback and heartbeat keep
-# their own schedules.
-D72_IMPLEMENT_CRONS = ["23 11-15 * * *"]
+# implement.yml runs hourly inside the daily 01:30 → 06:30 UTC window, which opens half an hour
+# before the JackiOh night bot's hours on the shared subscription, and discover follows it at
+# 03:47 and 05:47 (D95). feedback and heartbeat keep their own schedules.
+D72_IMPLEMENT_CRONS = ["31 1-5 * * *"]
 D72_UNCHANGED_CRONS = {
     "feedback.yml": "41 */3 * * 1-5",
     "heartbeat.yml": "5 9 * * 1",
@@ -2227,23 +2235,24 @@ D72_UNCHANGED_CRONS = {
 
 
 def test_b215_implement_yml_carries_exactly_the_d72_crons():
-    """B215: implement.yml is scheduled as five hourly passes, 11:23 to 15:23 UTC every day,
-    and nothing else; B209's run window and carry loop run on that schedule (D89)."""
+    """B215: implement.yml is scheduled as five hourly passes, 01:31 to 05:31 UTC every day,
+    and nothing else; B209's run window and carry loop run on that schedule (D95)."""
     crons = _cron_values(_d2_workflow("implement.yml"))
     assert crons == D72_IMPLEMENT_CRONS, f"implement.yml crons {crons} != {D72_IMPLEMENT_CRONS}"
 
 
-def test_B522_the_committed_window_starts_work_only_before_dawn_pacific():
-    """B522 (D89): the account has a five-hour session limit and no weekly one, so Actions
-    mode starts work only from 11:00 to 16:00 UTC, which is 03:00 to 08:00 PST, and the last
-    implement pass starts inside it."""
+def test_B522_B538_the_committed_window_opens_before_the_night_bots_hours():
+    """B522 (D89), B538 (D95): the session is the only allowance, and Actions mode starts work
+    from 01:30 to 06:30 UTC, which opens 30 minutes before the JackiOh night bot's 21:00 Central
+    on the shared subscription (an hour and a half under CST); the last implement pass starts
+    inside it, and discover follows the first passes."""
     committed = json.loads((REPO_ROOT / ".harness" / "config.json").read_text(encoding="utf-8"))
     assert (committed["RUN_WINDOW_START"], committed["RUN_WINDOW_END"]) == (
-        "daily 11:00", "daily 16:00"
+        "daily 01:30", "daily 06:30"
     )
     assert "WEEKLY_USAGE_STOP_PCT" not in committed and "OVERRUN_PCT" not in committed
-    assert _cron_values(_d2_workflow("implement.yml")) == ["23 11-15 * * *"]
-    assert _cron_values(_d2_workflow("discover.yml")) == ["7 11,13 * * *"]
+    assert _cron_values(_d2_workflow("implement.yml")) == ["31 1-5 * * *"]
+    assert _cron_values(_d2_workflow("discover.yml")) == ["47 3,5 * * *"]
 
 def test_b215_the_implement_crons_stay_inside_the_run_window():
     """Every scheduled implement run fires every day, and B412 checks each firing against the
@@ -2947,3 +2956,104 @@ def test_B434_the_suite_imports_the_harness_that_sits_beside_it():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["tool"]["pytest"]["ini_options"].get("pythonpath") == ["."]
     assert Path(harness.__file__).resolve().parent == HARNESS_DIR
+
+
+# ======================================================================================
+# D95: the resume relay, the relay jobs, feedback's job-level lock, and `--scheduled`.
+# ======================================================================================
+
+
+def test_B544_resume_yml_is_a_dispatch_only_relay_that_holds_no_lock_and_no_secret():
+    """B544 (D95): resume.yml runs only on `workflow_dispatch`, outside `harness-ledger`, with
+    no secret and no checkout; it checks `.harness/HALT` first, hops inside the job's 120
+    minutes, and dispatches only implement.yml or its own next hop."""
+    text = _d2_workflow("resume.yml")
+    jobs = _workflow_jobs(text)
+
+    assert re.search(r"^on:\n  workflow_dispatch:\n", text, re.M), "dispatch is its only trigger"
+    assert _cron_values(text) == []
+    assert not re.search(r"group:\s*['\"]?harness-ledger", text)
+    assert not re.search(r"^\s*concurrency:", text, re.M)
+    assert "secrets." not in text and "actions/checkout" not in text
+    assert list(jobs) == ["relay"]
+    job = jobs["relay"]
+    assert re.search(r"^    timeout-minutes: 120\b", job, re.M)
+    assert re.search(r"^      actions: write\b", job, re.M)
+    assert re.search(r"^      contents: read\b", job, re.M)
+    assert "HOP_MS = 105 * 60_000" in job, "a hop must end well inside the 120-minute job"
+    steps = re.findall(r"^      - name: (.+)$", job, re.M)
+    assert steps[0] == "HALT check (.harness/HALT on the default branch)"
+    assert set(re.findall(r"workflow_id: '([^']+)'", job)) == {"resume.yml", "implement.yml"}
+    assert "run-name: resume at ${{ inputs.at }}" in text, "the earliest-alarm check reads it"
+
+
+def test_B544_the_relay_never_dispatches_over_a_pending_ledger_run_or_a_live_implement_run():
+    """B544: at its time the relay waits while a `harness-ledger` run is pending, since a
+    dispatch would replace it, stops when an implement run is already queued or running, and
+    an earlier alarm makes a later one stop."""
+    job = _workflow_jobs(_d2_workflow("resume.yml"))["relay"]
+
+    assert "LEDGER_WORKFLOWS = ['implement.yml', 'discover.yml', 'feedback.yml']" in job
+    assert "PENDING.includes(run.status)" in job
+    assert "workflow === 'implement.yml' && ACTIVE.includes(run.status)" in job
+    assert "other < at" in job, "only a strictly earlier alarm stops this one"
+    assert "STALE_MS" in job and "HORIZON_MS" in job
+
+
+@pytest.mark.parametrize(
+    ("name", "spender"),
+    [("implement.yml", "implement"), ("discover.yml", "discover"), ("feedback.yml", "feedback")],
+)
+def test_B545_each_spending_workflow_ends_with_a_relay_job_that_spends_nothing(name, spender):
+    """B545 (D95): the spending job runs `harness wake` last without failing the run on it, and
+    a `relay` job after it holds `actions: write` alone, no secret and no checkout, and only
+    dispatches resume.yml with the time the spending job printed."""
+    jobs = _workflow_jobs(_d2_workflow(name))
+    assert list(jobs)[-1] == RELAY_JOB
+    spend, relay = jobs[spender], jobs[RELAY_JOB]
+
+    wake = next(block for block in _step_blocks(spend) if "harness --json wake" in block)
+    assert "continue-on-error: true" in wake and "id: wake" in wake
+    assert "always()" in wake
+    assert "      wake_at: ${{ steps.wake.outputs.at }}" in spend
+    steps = re.findall(r"^      - name: (.+)$", spend, re.M)
+    assert steps.index("When to come back (harness wake)") > steps.index(
+        "Commit state/ledger.json"
+    ), "wake reads the ledger the run is about to commit"
+
+    assert f"    needs: {spender}\n" in relay
+    # Only after a green job, so a run that keeps failing never brings itself back.
+    assert f"    if: success() && needs.{spender}.outputs.wake_at != ''\n" in relay
+    permissions = re.search(r"^    permissions:\n((?:      .*\n)+)", relay, re.M)
+    assert permissions and permissions.group(1).split("#")[0].split() == ["actions:", "write"]
+    assert "secrets." not in relay and "actions/checkout" not in relay
+    assert re.findall(r"workflow_id: '([^']+)'", relay) == ["resume.yml"]
+    assert re.search(r"^    timeout-minutes: 10\b", relay, re.M)
+
+
+def test_B546_feedback_takes_the_ledger_lock_at_job_level_so_a_skipped_comment_never_queues():
+    """B546 (D95): GitHub keeps one pending run per group, and a workflow-level group admits a
+    comment run before its job-level `if:` skips it, which replaced queued implement runs. The
+    group sits on the feedback job, beside that `if:`."""
+    text = _d2_workflow("feedback.yml")
+
+    assert not re.search(r"^concurrency:", text, re.M), "no workflow-level group"
+    job = _workflow_jobs(text)["feedback"]
+    assert re.search(
+        r"^    concurrency:\n      group: harness-ledger\n      cancel-in-progress: false\n",
+        job, re.M,
+    )
+    assert re.search(r"^    if: >-", job, re.M)
+    for name in ("implement.yml", "discover.yml"):
+        assert re.search(r"^concurrency:\n  group: harness-ledger\n", _d2_workflow(name), re.M)
+
+
+def test_B548_only_a_scheduled_implement_run_dispatches_with_scheduled():
+    """B548 (D95): implement.yml passes `--scheduled` to both of its dispatches exactly when
+    the event is a schedule, since only a cron firing is known to sit inside the window."""
+    text = _d2_workflow("implement.yml")
+
+    assert text.count("plan=\"$(harness dispatch ${SCHEDULED:+--scheduled})\"") == 2
+    assert text.count("SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}") == 2
+    assert "--scheduled" not in _d2_workflow("discover.yml")
+    assert "--scheduled" not in _d2_workflow("feedback.yml")

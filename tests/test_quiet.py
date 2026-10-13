@@ -905,7 +905,7 @@ def test_B534_the_committed_defaults_are_the_partner_and_ten_of_a_hundred_and_tw
 
     assert config.quiet_enabled is True
     assert (config.quiet_interval_minutes, config.quiet_max_wait_minutes) == (10, 120)
-    assert config.quiet_partner_repo == "jgoetzmann/JackiOh"
+    assert config.quiet_partner_repo == "jlore-studios/jackioh"
     assert config.quiet_partner_workflow == "bot-night.yml"
     assert config.quiet_partner_steps == ("Build, check and review",)
     for key in (
@@ -1032,7 +1032,8 @@ def test_B535_the_check_is_a_job_of_its_own_that_the_spending_job_waits_for(name
     """B535: the wait can outlast the 120 minutes a spending job may run, so it is the `quiet`
     job: it plans, then waits, and the spending job needs it and spends only on its output."""
     jobs = jobs_of(name)
-    assert list(jobs) == ["quiet", job], "the quiet job comes first, and there are two"
+    # The relay job that arms resume.yml comes last and spends nothing (D95).
+    assert list(jobs) == ["quiet", job, "relay"], "the quiet job comes first, then the spender"
     quiet_names = step_names(name, "quiet")
     assert quiet_names.count(QUIET_STEP) == 1 and QUIET_STEP not in step_names(name, job)
     assert quiet_names.index("harness dispatch") < quiet_names.index(QUIET_STEP)

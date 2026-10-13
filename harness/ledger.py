@@ -377,6 +377,38 @@ class Ledger:
             return False
         return current < until
 
+    # -- the owed window ----------------------------------------------------------------------
+
+    def owe(self, *, since: str, until: str) -> None:
+        """Keep the work a run window opened startable until ``until``, its next opening (D95).
+
+        A later ``until`` replaces an earlier one; an earlier one never shortens a record.
+        """
+        current = self.owed()
+        if current is not None and str(current.get("until", "")) >= str(until):
+            return
+        self.window["owed"] = {"since": str(since), "until": str(until)}
+
+    def owed(self) -> dict | None:
+        record = self.window.get("owed")
+        return dict(record) if isinstance(record, dict) and record else None
+
+    def clear_owed(self) -> None:
+        self.window.pop("owed", None)
+
+    def owed_open(self, now: datetime | str) -> bool:
+        """True from the record's ``since`` until its ``until``; unreadable reads shut (D95)."""
+        record = self.owed()
+        if record is None:
+            return False
+        try:
+            since = parse_iso(str(record.get("since", "")))
+            until = parse_iso(str(record.get("until", "")))
+            current = parse_iso(now) if isinstance(now, str) else as_utc(now)
+        except ValueError:
+            return False
+        return since <= current < until
+
     # -- force -------------------------------------------------------------------------------
 
     def force(self, item_id: int) -> None:
@@ -510,6 +542,13 @@ class Ledger:
                 "until": str(block.get("until", "")),
                 "anchor": str(block.get("anchor", "")),
                 "reason": str(block.get("reason", "")),
+            }
+        # Written only once a window's work is owed, like the four above (D95).
+        owed = self.owed()
+        if owed is not None:
+            window["owed"] = {
+                "since": str(owed.get("since", "")),
+                "until": str(owed.get("until", "")),
             }
         # Written only once a quiet check has run, like the four above (D93).
         quiet = self.quiet_check()

@@ -922,3 +922,47 @@ def test_B525_a_held_comment_survives_a_save_and_stays_seen_until_released(tmp_p
     again.release_retry_threads(held)
     assert again.retry_threads() == []
     assert "retry_threads" not in json.loads(again.to_json())["cursors"]
+
+
+# ---------------------------------------------------------------------------
+# D95 — the owed window
+# ---------------------------------------------------------------------------
+
+
+def test_B540_the_owed_record_opens_from_since_until_until_and_round_trips():
+    """B540 (D95): `owe` records the window's work as owed; it is open from `since` up to, not
+    including, `until`, survives a save, and `clear_owed` removes it."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    ledger.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+
+    assert ledger.owed_open("2026-09-02T12:00:00Z")
+    assert ledger.owed_open("2026-09-02T01:30:00Z")
+    assert not ledger.owed_open("2026-09-03T01:30:00Z")
+    assert not ledger.owed_open("2026-09-02T01:29:00Z")
+    again = Ledger.from_json(ledger.to_json())
+    assert again.owed() == {"since": "2026-09-02T01:30:00Z", "until": "2026-09-03T01:30:00Z"}
+    again.clear_owed()
+    assert again.owed() is None and not again.owed_open("2026-09-02T12:00:00Z")
+
+
+def test_B540_a_later_until_extends_the_record_and_an_earlier_one_never_shortens_it():
+    """B540: a dispatch in the next window moves the record on; a late run for an earlier
+    window leaves the current one alone."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    ledger.owe(since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+    ledger.owe(since="2026-09-01T01:30:00Z", until="2026-09-02T01:30:00Z")
+    assert ledger.owed()["until"] == "2026-09-03T01:30:00Z"
+
+    ledger.owe(since="2026-09-03T01:30:00Z", until="2026-09-04T01:30:00Z")
+    assert ledger.owed() == {"since": "2026-09-03T01:30:00Z", "until": "2026-09-04T01:30:00Z"}
+
+
+def test_B540_an_unreadable_record_is_shut_and_an_absent_one_is_never_written():
+    """B540: a record that lifts the window fails closed, and a ledger that never owed anything
+    is byte-identical to the file it was."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    before = ledger.to_json()
+    ledger.window["owed"] = {"since": "soon", "until": "later"}
+
+    assert not ledger.owed_open("2026-09-02T12:00:00Z")
+    assert "owed" not in json.loads(before)["window"]

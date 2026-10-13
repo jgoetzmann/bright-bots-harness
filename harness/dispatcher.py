@@ -4,14 +4,40 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Collection, Mapping, Sequence
+from datetime import datetime, timedelta
+from typing import Callable, Collection, Mapping, Sequence
 
-from harness.clock import iso
-from harness.config import Config, in_run_window, is_daily_window, run_window_label
+from harness.clock import as_utc, iso, parse_iso
+from harness.config import (
+    Config,
+    in_run_window,
+    is_daily_window,
+    run_window_label,
+    window_openings,
+)
 from harness.ledger import Ledger
 
-__all__ = ["Candidate", "Plan", "plan", "usage_stop"]
+__all__ = [
+    "Candidate",
+    "Plan",
+    "plan",
+    "usage_stop",
+    "wake_at",
+    "WAKE_MIN_GAP",
+    "WAKE_AFTER_NOT_QUIET",
+    "WAKE_HORIZON",
+]
+
+#: The soonest the resume relay brings a run back, so a run that fails at once cannot loop
+#: (D95).
+WAKE_MIN_GAP = timedelta(minutes=20)
+#: The wait after a quiet check said someone else was spending; the check itself waited up to
+#: two hours before saying so (D93, D95).
+WAKE_AFTER_NOT_QUIET = timedelta(minutes=60)
+#: How recent a not-quiet verdict must be to stretch the wait.
+_NOT_QUIET_FRESH = timedelta(hours=3)
+#: The furthest ahead the relay is armed: past the next opening of a daily window.
+WAKE_HORIZON = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -31,6 +57,9 @@ class Plan:
     start: tuple[int, ...]
     reason: str
     skipped: dict[str, str]
+    #: Nothing approved waits on the clock: every candidate started or is held by something
+    #: other than the window, the slots or a stop. Not part of the printed plan (D95).
+    drained: bool = False
 
     def to_json(self) -> str:
         payload = {
@@ -119,7 +148,8 @@ def plan(
     # window and nothing else (D77). Everything downstream inherits it: the carry test, the
     # early return below and the per-candidate skip all read `window_open`. It sits after the
     # usage stop deliberately, so a block can never outlive one.
-    window_open = in_run_window(config, now) or ledger.block_open(now)
+    # Work a window opened stays startable past its end until the queue drains (D95).
+    window_open = in_run_window(config, now) or ledger.block_open(now) or ledger.owed_open(now)
     carry_id = ledger.carry_issue()
     stopped = usage_stop(ledger, config, now=now)
     if stopped is not None:
@@ -146,6 +176,7 @@ def plan(
     held = {int(key): str(value) for key, value in (capped or {}).items()}
     start: list[int] = []
     skipped: dict[str, str] = {}
+    waiting = False
     if carry_ok and carry_id is not None:
         if int(carry_id) in held:
             skipped[str(carry_id)] = held[int(carry_id)]
@@ -157,6 +188,7 @@ def plan(
             continue
         if not window_open and not candidate.forced:
             skipped[key] = "outside run window"
+            waiting = True
             continue
         if suggested_refused and candidate.cls == "suggested":
             skipped[key] = suggested_refused
@@ -170,6 +202,7 @@ def plan(
             continue
         if len(start) >= max_slots:
             skipped[key] = "slots full"
+            waiting = True
             continue
         start.append(int(candidate.issue))
 
@@ -177,4 +210,47 @@ def plan(
     # f-string inlined into the Plan(...) call would be collected as a stop reason by
     # `tests/test_invariants.py` and then demand a classification it does not have.
     reason = f"{len(start)} of max {max_slots} slots{_usage_suffix(ledger)}"
-    return Plan(start=tuple(start), reason=reason, skipped=skipped)
+    drained = not start and not waiting
+    return Plan(start=tuple(start), reason=reason, skipped=skipped, drained=drained)
+
+
+def _instant(raw: object) -> datetime | None:
+    try:
+        return parse_iso(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def wake_at(
+    *, now: datetime, ledger: Ledger, config: Config, plan_at: Callable[[datetime], Plan]
+) -> tuple[datetime | None, str]:
+    """The soonest time a run could start something, or ``None``, for the resume relay (D95).
+
+    Tries the floor after now, the stored rate limit's end, the session's reset and the run
+    window's next opening, earliest first, and keeps the first at which ``plan_at`` starts
+    something. The floor is an hour after a fresh not-quiet verdict and 20 minutes otherwise.
+    """
+    moment = as_utc(now)
+    floor = WAKE_MIN_GAP
+    quiet = ledger.quiet_check()
+    checked = _instant(quiet.get("at")) if quiet else None
+    if quiet and not quiet.get("quiet") and checked and moment - checked <= _NOT_QUIET_FRESH:
+        floor = WAKE_AFTER_NOT_QUIET
+    earliest, latest = moment + floor, moment + WAKE_HORIZON
+    times = [earliest]
+    limited = _instant(ledger.window.get("rate_limited_until"))
+    if limited is not None:
+        times.append(limited + timedelta(minutes=1))
+    usage = ledger.window.get("usage") or {}
+    five_hour = usage.get("five_hour") if isinstance(usage, dict) else None
+    reset = _instant(five_hour.get("resets_at")) if isinstance(five_hour, dict) else None
+    if reset is not None:
+        times.append(reset + timedelta(minutes=1))
+    openings = window_openings(config, moment)
+    if openings is not None:
+        times.append(openings[1])
+    for at in sorted({max(t, earliest) for t in times if t <= latest}):
+        planned = plan_at(at)
+        if planned.start:
+            return at, f"{planned.reason} at {iso(at)}"
+    return None, f"nothing would start before {iso(latest)}"

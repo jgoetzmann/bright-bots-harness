@@ -22,7 +22,7 @@ from harness.clock import iso, parse_iso
 from harness.clone import Lease, sync_fork
 from harness.config import in_run_window, is_daily_window, load_config, run_window_label
 from harness.context import build_context, ledger_path_for
-from harness.dispatcher import Candidate, Plan, plan as plan_dispatch
+from harness.dispatcher import Candidate, Plan, plan as plan_dispatch, wake_at
 from harness.errors import (
     BudgetExhausted,
     ConfigError,
@@ -237,7 +237,16 @@ def build_parser() -> argparse.ArgumentParser:
     block.add_argument("sessions", nargs="?", default=None, metavar="N")
     block.add_argument("--reason", default="", metavar="TEXT")
 
-    sub.add_parser("dispatch", help="ask the dispatcher what may start now; start nothing")
+    dispatch = sub.add_parser(
+        "dispatch", help="ask the dispatcher what may start now; start nothing"
+    )
+    dispatch.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="a scheduled run: its firing sat inside the run window, however late it arrived",
+    )
+
+    sub.add_parser("wake", help="when the resume relay should next start a run; start nothing")
 
     quiet = sub.add_parser(
         "quiet", help="wait until nobody else is using the subscription; exit 0 either way"
@@ -1733,9 +1742,9 @@ def _depends_on(config, item) -> tuple[int, ...]:
 _ASK = object()
 
 
-def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -> Plan:
-    """The dispatcher's plan for the approved items; ``suggested_refused`` is passed in when the
-    caller has already asked ``priority.admit("suggested", ...)``."""
+def _plan_inputs(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -> dict:
+    """Everything the dispatcher's plan reads except the time; ``suggested_refused`` is passed
+    in when the caller has already asked ``priority.admit("suggested", ...)``."""
     items = ctx.store.list_work_items(state="approved")
     forced = set(ctx.ledger.forced())
     candidates = [
@@ -1748,23 +1757,43 @@ def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -
         )
         for item in items
     ]
-    now = ctx.clock.now()
     if suggested_refused is _ASK:
         suggested_refused = (
-            priority.admit("suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now)
+            priority.admit(
+                "suggested", store=ctx.store, ledger=ctx.ledger, config=config,
+                now=ctx.clock.now(),
+            )
             if any(c.cls == "suggested" for c in candidates)
             else None
         )
-    return plan_dispatch(
-        now=now,
-        ledger=ctx.ledger,
-        config=config,
-        candidates=candidates,
-        merged=ctx.store.merged_issues(),
-        halted=repo_halted(_repo_root(args, config)) or halted(config.halt_file),
-        suggested_refused=suggested_refused,
-        capped=deliver_stage.delivery_cap_refusals(ctx, items),
-    )
+    return {
+        "ledger": ctx.ledger,
+        "config": config,
+        "candidates": candidates,
+        "merged": ctx.store.merged_issues(),
+        "halted": repo_halted(_repo_root(args, config)) or halted(config.halt_file),
+        "suggested_refused": suggested_refused,
+        "capped": deliver_stage.delivery_cap_refusals(ctx, items),
+    }
+
+
+def _build_plan(ctx, config, args: argparse.Namespace, suggested_refused=_ASK) -> Plan:
+    """The dispatcher's plan for the approved items, now."""
+    inputs = _plan_inputs(ctx, config, args, suggested_refused=suggested_refused)
+    return plan_dispatch(now=ctx.clock.now(), **inputs)
+
+
+def _owe_window(ctx, config, now: datetime, *, scheduled: bool) -> None:
+    """Record the run window's work as owed until the window's next opening (D95).
+
+    Inside the window, and for a scheduled run however late GitHub delivered it, since every
+    scheduled firing sits inside the window (B412).
+    """
+    openings = config_mod.window_openings(config, now)
+    if openings is None or not (scheduled or in_run_window(config, now)):
+        return
+    opened, following = openings
+    ctx.ledger.owe(since=iso(opened), until=iso(following))
 
 
 #: What the head of the queue is waiting for, by the stage it is in. `approved` is absent
@@ -1803,11 +1832,19 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     check_repo_halt(_repo_root(args))
     config = _load(args)
     ctx = _context(config, args, run_id="dispatch")
+    now = ctx.clock.now()
+    owed_before = ctx.ledger.owed()
+    _owe_window(ctx, config, now, scheduled=bool(getattr(args, "scheduled", False)))
     # Asked once: the plan skips suggested work with it and the payload reports it.
     blocked = priority.admit(
-        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=now
     )
     plan = _build_plan(ctx, config, args, suggested_refused=blocked)
+    # Owed work ends once nothing approved waits on the clock (D95).
+    if plan.drained:
+        ctx.ledger.clear_owed()
+    if ctx.ledger.owed() != owed_before:
+        _save_ledger(ctx)
     # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
     # the plan's JSON document, because workflows parse this stdout as a single document.
     payload = json.loads(plan.to_json())
@@ -1835,7 +1872,36 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         "open": ctx.ledger.block_open(ctx.clock.now()),
         "grant": ctx.ledger.block_grant(),
     }
+    payload["owed"] = {"open": ctx.ledger.owed_open(now), "record": ctx.ledger.owed()}
     print(json.dumps(payload, indent=2, sort_keys=False))
+    return EXIT_OK
+
+
+def cmd_wake(args: argparse.Namespace) -> int:
+    """When the resume relay should next start implement.yml, or never; reads only (D95).
+
+    Prints ``at`` (UTC, or null) and one reason. A run that stopped on the usage stop, a rate
+    limit, a busy subscription or the window's end is followed by one that starts once that
+    clears; `resume.yml` sleeps until ``at`` and dispatches implement.yml, which applies every
+    check again. A halt answers null.
+    """
+    try:
+        check_repo_halt(_repo_root(args))
+    except RepoHalted as exc:
+        _emit({"at": None, "reason": f"halted: {exc}"}, f"no wake: halted: {exc}", args)
+        return EXIT_OK
+    config = _load(args)
+    ctx = _context(config, args, run_id="wake")
+    inputs = _plan_inputs(ctx, config, args)
+    at, reason = wake_at(
+        now=ctx.clock.now(),
+        ledger=ctx.ledger,
+        config=config,
+        plan_at=lambda moment: plan_dispatch(now=moment, **inputs),
+    )
+    stamp = iso(at) if at is not None else None
+    text = f"wake at {stamp}: {reason}" if stamp else f"no wake: {reason}"
+    _emit({"at": stamp, "reason": reason}, text, args)
     return EXIT_OK
 
 
@@ -1865,8 +1931,8 @@ def _quiet_sample(ctx) -> quiet_mod.Sample:
 
 
 def _window_open(ctx, config, now) -> bool:
-    """The run window as the dispatcher reads it: open, or opened by a block (D77)."""
-    return in_run_window(config, now) or ctx.ledger.block_open(now)
+    """The run window as the dispatcher reads it: open, opened by a block (D77), or owed (D95)."""
+    return in_run_window(config, now) or ctx.ledger.block_open(now) or ctx.ledger.owed_open(now)
 
 
 def _quiet_outcome(ctx, config, args: argparse.Namespace) -> quiet_mod.Outcome:
@@ -2180,13 +2246,23 @@ def _usage_report(ctx, config, now) -> str:
         )
         lines.append(
             f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
-            + ("; open now" if in_run_window(config, now) else "; closed now")
+            + _window_state(config, led, now)
         )
         cap_line = deliver_stage.delivery_cap_line(ctx)
         if cap_line:
             lines.append(cap_line)
         lines.append(f"- suggested work: {blocked or 'admitted'}")
     return "\n".join(lines)
+
+
+def _window_state(config, led, now) -> str:
+    """``; open now`` or ``; closed now``, naming the owed period when one stands (D95)."""
+    if in_run_window(config, now) or led.block_open(now):
+        return "; open now"
+    if led.owed_open(now):
+        until = (led.owed() or {}).get("until", "")
+        return f"; closed, but the work it opened may still start until {until}"
+    return "; closed now"
 
 
 def _via_for(cmd) -> str:
@@ -2730,10 +2806,9 @@ def _ack_fast_status(config, args: argparse.Namespace) -> str:
         led = ledger_mod.load(ledger_path_for(config))
         now = datetime.now(timezone.utc)
         # A block opens the window, so the line that reports the window has to say so (D77).
-        open_now = in_run_window(config, now) or led.block_open(now)
         window = (
             f"`{config.run_window_start}` → `{config.run_window_end}` UTC"
-            + ("; open now" if open_now else "; closed now")
+            + _window_state(config, led, now)
         )
         # What Actions is doing, read unauthenticated so `ack` stays tier 0, takes no lock and
         # carries no credential (B440). A failure here omits the section and nothing else.
@@ -2943,7 +3018,7 @@ def _queue_block_lines(ctx, config, now) -> list[str]:
     lines.append("**Next**")
     lines.append(
         f"- run window `{config.run_window_start}` → `{config.run_window_end}` UTC"
-        + ("; open now" if in_run_window(config, now) else "; closed now")
+        + _window_state(config, led, now)
     )
     cap_line = deliver_stage.delivery_cap_line(ctx)
     if cap_line:
@@ -3737,6 +3812,7 @@ COMMANDS = {
     "halt": cmd_halt,
     "resume": cmd_resume,
     "dispatch": cmd_dispatch,
+    "wake": cmd_wake,
     "quiet": cmd_quiet,
     "deliver": cmd_deliver,
     "revise": cmd_revise,

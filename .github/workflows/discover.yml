@@ -6,11 +6,10 @@ name: discover
 
 on:
   schedule:
-    # 11:07 and 13:07 UTC every day (04:07 and 06:07 PDT, 03:07 and 05:07 PST). The first
-    # triage call opens the five-hour subscription session the run window sits in (D72). The
-    # second is a second attempt: GitHub drops scheduled runs outright, and with one firing a
-    # dropped 11:07 cost the whole day's triage (D80).
-    - cron: "7 11,13 * * *"
+    # 03:47 and 05:47 UTC every day, inside the run window and after implement.yml's first
+    # passes, so approved work starts before triage spends the session (D95). The second firing
+    # is a second attempt: GitHub drops scheduled runs outright (D80).
+    - cron: "47 3,5 * * *"
   workflow_dispatch:
     # Steering from the Actions tab: `triage` ranks what is queued here, then the product repo's
     # allowlisted issues; `directed` aims the harness at one named product issue (B228).
@@ -304,6 +303,9 @@ jobs:
       contents: write             # read .harness/HALT; push the ledger commit. Issue/PR writes use the machine account's PAT via .env, never this token.
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: passed through to the claude CLI
+    outputs:
+      wake_at: ${{ steps.wake.outputs.at }}
+      wake_reason: ${{ steps.wake.outputs.reason }}
     steps:
         # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
@@ -594,6 +596,18 @@ jobs:
           echo "::error::could not push the ledger after 3 attempts"
           exit 1
 
+        # D95: when something could next start, for the relay job below. Reads only.
+      - name: When to come back (harness wake)
+        if: always() && steps.halt.outputs.halted != 'true'
+        id: wake
+        continue-on-error: true       # no alarm is a missed restart, not a failed run
+        shell: bash
+        run: |
+          mkdir -p runs
+          harness --json wake | tee runs/wake.json
+          echo "at=$(jq -r '.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
+          echo "reason=$(jq -r '.reason // empty' runs/wake.json | head -c 200)" >> "$GITHUB_OUTPUT"
+
         # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
         if: always()
@@ -616,3 +630,28 @@ jobs:
             !runs/**/.git/**
             !runs/**/clone/**
             !runs/**/workspace/**
+
+  # D95: arms resume.yml with the time `harness wake` gave; see implement.yml's relay job.
+  relay:
+    name: relay
+    needs: discover
+    if: success() && needs.discover.outputs.wake_at != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write              # dispatch resume.yml
+    steps:
+      - name: Arm the resume relay
+        uses: actions/github-script@v7
+        env:
+          AT: ${{ needs.discover.outputs.wake_at }}
+          REASON: ${{ needs.discover.outputs.wake_reason }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = (context.payload.repository || {}).default_branch || 'main';
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo, workflow_id: 'resume.yml', ref,
+              inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },
+            });
+            core.info(`resume.yml armed for ${process.env.AT}`);

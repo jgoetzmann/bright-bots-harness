@@ -2003,3 +2003,26 @@ def test_B520_a_weekly_usage_key_loads_from_either_file_and_is_ignored(
     assert key in config_module.RETIRED_KEYS
     assert key not in config_module.FIELD_KEYS
     assert key not in config_module.CONFIG_JSON_KEYS
+
+
+def test_B539_window_openings_names_the_latest_and_next_opening(window_config):
+    """B539 (D95): a daily window's latest opening at or before now and the next one after,
+    the opening minute itself included, and a weekly one's a week apart."""
+    from harness.config import window_openings
+
+    night = window_config("daily 01:30", "daily 06:30", name="night")
+    weekly = window_config("mon 08:00", "tue 20:00", name="weekly")
+
+    assert window_openings(night, utc(9, 12, 0)) == (utc(9, 1, 30), utc(10, 1, 30))
+    assert window_openings(night, utc(9, 1, 0)) == (utc(8, 1, 30), utc(9, 1, 30))
+    assert window_openings(night, utc(9, 1, 30)) == (utc(9, 1, 30), utc(10, 1, 30))
+    assert window_openings(weekly, utc(9, 12, 0)) == (utc(7, 8, 0), utc(14, 8, 0))
+    previous_monday = datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc)
+    assert window_openings(weekly, utc(7, 7, 59)) == (previous_monday, utc(7, 8, 0))
+
+
+def test_B539_an_always_open_window_has_no_openings(window_config):
+    """B539: both ends empty, or a mixed pair, is always open, so there is no opening to name."""
+    from harness.config import window_openings
+
+    assert window_openings(window_config("", "", name="open"), utc(9, 12, 0)) is None

@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
@@ -35,6 +35,8 @@ __all__ = [
     "in_run_window",
     "is_daily_window",
     "run_window_label",
+    "window_openings",
+    "window_length",
     "EFFORT_LEVELS",
     "co_author_ok",
 ]
@@ -822,6 +824,37 @@ def is_daily_window(config: Config) -> bool:
     start = _window_minute(getattr(config, "run_window_start", ""))
     end = _window_minute(getattr(config, "run_window_end", ""))
     return start is not None and end is not None and start[1] and end[1]
+
+
+def window_openings(config: Config, now: datetime) -> tuple[datetime, datetime] | None:
+    """The run window's latest opening at or before ``now`` and its next one after (D95).
+
+    ``None`` when the window is always open, under the same rules as :func:`in_run_window`.
+    """
+    start = _window_minute(getattr(config, "run_window_start", ""))
+    end = _window_minute(getattr(config, "run_window_end", ""))
+    if start is None or end is None or start[1] != end[1]:
+        return None
+    moment = as_utc(now)
+    midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    if start[1]:
+        opening, period = midnight + timedelta(minutes=start[0]), timedelta(days=1)
+    else:
+        monday = midnight - timedelta(days=moment.weekday())
+        opening, period = monday + timedelta(minutes=start[0]), timedelta(days=7)
+    if moment < opening:
+        opening -= period
+    return opening, opening + period
+
+
+def window_length(config: Config) -> timedelta | None:
+    """How long the run window stays open each time, or ``None`` when it is always open (D95)."""
+    start = _window_minute(getattr(config, "run_window_start", ""))
+    end = _window_minute(getattr(config, "run_window_end", ""))
+    if start is None or end is None or start[1] != end[1]:
+        return None
+    period = _DAY_MINUTES if start[1] else 7 * _DAY_MINUTES
+    return timedelta(minutes=(end[0] - start[0]) % period)
 
 
 def run_window_label(config: Config) -> str:

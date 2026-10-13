@@ -94,7 +94,13 @@ through interop). The system `python3` is 3.12, which is too old.
   - `dispatcher.py`: a pure plan built from the run window, dependencies and halt state. It
     starts nothing. `capped` holds each item `deliver.delivery_cap_refusals` refuses while
     `MAX_OPEN_DELIVERIES` of the fork's pull requests are open upstream; `harness run` asks the
-    same before each clone (D88).
+    same before each clone (D88). The window is 01:30 to 06:30 UTC, half an hour before the
+    JackiOh night bot's hours on the shared subscription. `dispatch --owe` owes the items
+    approved inside it (`window.owed`) until each starts or the next opening, and a scheduled
+    run up to six hours late counts as inside it (`--scheduled`). `wake_at` gives the next time
+    something could start;
+    each spending workflow's `relay` job hands it to `resume.yml`, which sleeps and dispatches
+    `implement.yml` (D95).
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
     (D28). It holds the last usage reading and the carry slot: an item `deliver.handoff` hands
     off resumes before anything else, under the same usage stop as any item.

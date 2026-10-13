@@ -839,7 +839,8 @@ def test_B420_the_dispatcher_holds_no_dollar_state(tmp_path):
 
     assert not hasattr(dispatcher_module, "STATIC_USD")
     assert not hasattr(dispatcher_module, "estimate_usd")
-    assert dispatcher_module.__all__ == ["Candidate", "Plan", "plan", "usage_stop"]
+    assert dispatcher_module.__all__[:4] == ["Candidate", "Plan", "plan", "usage_stop"]
+    assert not any("usd" in name.lower() for name in dispatcher_module.__all__)
     assert "stage" not in {f.name for f in dataclasses.fields(Candidate)}
     source = inspect.getsource(dispatcher_module.plan).lower()
     for token in ("usd", "reserve", "$"):
@@ -947,3 +948,167 @@ def test_B510_no_cap_changes_nothing(tmp_path):
                  merged=frozenset(), halted=False, capped={})
 
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# D95 — owed work and the resume relay's wake time
+# ---------------------------------------------------------------------------
+
+NIGHT_WINDOW = {"RUN_WINDOW_START": "daily 01:30", "RUN_WINDOW_END": "daily 06:30"}
+# Wednesday 2026-09-02 12:00 UTC: the night window closed at 06:30 and opens again at 01:30.
+NEXT_OPENING = datetime(2026, 9, 3, 1, 30, tzinfo=timezone.utc)
+
+
+def owed_ledger(items=(51,), since: str = "2026-09-02T01:30:00Z",
+                until: str = "2026-09-03T01:30:00Z", **kwargs) -> Ledger:
+    ledger = usage_ledger(**kwargs)
+    ledger.owe(items, since=since, until=until)
+    return ledger
+
+
+def test_B541_an_owed_item_starts_after_the_window_closes(tmp_path):
+    """B541 (D95): the items the window opened are owed until its next opening, so a run GitHub
+    delivered after 06:30 still starts one; without the record the plan names the window."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    owed = run_plan(config, owed_ledger(), cands(51), now=WED)
+    closed = run_plan(config, usage_ledger(), cands(51), now=WED)
+
+    assert owed.start == (51,)
+    assert closed.start == ()
+    assert closed.reason == "outside run window (daily 01:30-06:30 UTC)"
+
+
+def test_B541_only_the_owed_items_are_exempt(tmp_path):
+    """B541: an item approved after the window opened is not owed, so it waits for the next
+    opening while the owed one starts."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    result = run_plan(config, owed_ledger(items=(51,)), cands(60, 51), now=WED)
+
+    assert result.start == (51,)
+    assert result.skipped == {"60": "outside run window"}
+    alone = run_plan(config, owed_ledger(items=(51,)), cands(60), now=WED)
+    assert alone.start == () and alone.reason == "outside run window (daily 01:30-06:30 UTC)"
+
+
+def test_B541_an_expired_owed_record_opens_nothing(tmp_path):
+    """B541: the record ends at its `until`; past it the window is shut again."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    ledger = owed_ledger(since="2026-09-01T01:30:00Z", until="2026-09-02T01:30:00Z")
+
+    result = run_plan(config, ledger, cands(51), now=WED)
+
+    assert result.start == ()
+    assert result.reason == "outside run window (daily 01:30-06:30 UTC)"
+
+
+def test_B541_an_owed_carry_resumes_under_a_daily_window(tmp_path):
+    """B541 with B413: a carried item waits for a daily window unless the window owes it."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    owed = run_plan(config, owed_ledger(items=(816,), carry=816), cands(810, 816), now=WED)
+    not_owed = run_plan(config, owed_ledger(items=(810,), carry=816), cands(810, 816), now=WED)
+
+    assert owed.start == (816,)
+    assert not_owed.start == (810,), "the owed item starts, and the carry waits for the window"
+
+
+def test_B541_owed_work_never_outlives_a_stop(tmp_path):
+    """B541: the usage stop and a stored rate limit still come first while work is owed."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    stopped = run_plan(config, owed_ledger(session=0.72), cands(51), now=WED)
+    limited_ledger = owed_ledger()
+    limited_ledger.set_rate_limited("2026-09-02T14:00:00Z")
+    limited = run_plan(config, limited_ledger, cands(51), now=WED)
+
+    assert stopped.start == () and stopped.reason == "session usage 72% >= 70%"
+    assert limited.start == () and limited.reason == "rate limited until 2026-09-02T14:00:00Z"
+
+
+def _wake(config, ledger, candidates, *, now=WED, halted=False):
+    from harness.dispatcher import wake_at
+
+    return wake_at(
+        now=now, ledger=ledger, config=config,
+        plan_at=lambda at: run_plan(config, ledger, candidates, now=at, halted=halted),
+    )
+
+
+def test_B543_outside_the_window_the_relay_wakes_at_the_next_opening(tmp_path):
+    """B543 (D95): approved work and a closed window: the relay starts the run as the window
+    opens, which is the head start over the night bot."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    at, reason = _wake(config, usage_ledger(), cands(51))
+
+    assert at == NEXT_OPENING
+    assert reason.startswith("1 of max 1 slots") and reason.endswith("2026-09-03T01:30:00Z")
+
+
+def test_B543_waiting_owed_work_comes_back_after_the_floor(tmp_path):
+    """B543: owed work with nothing stopping it is picked up 20 minutes on, the floor that keeps
+    a run that fails at once from looping."""
+    from harness.dispatcher import WAKE_MIN_GAP
+
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+
+    at, _ = _wake(config, owed_ledger(), cands(51))
+
+    assert at == WED + WAKE_MIN_GAP
+
+
+def test_B543_a_fresh_not_quiet_verdict_waits_an_hour(tmp_path):
+    """B543: somebody else was spending, and the check already waited up to two hours, so the
+    next try is an hour off; a verdict older than three hours is not fresh."""
+    from datetime import timedelta
+
+    from harness.dispatcher import WAKE_AFTER_NOT_QUIET, WAKE_MIN_GAP
+
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    fresh, stale = owed_ledger(), owed_ledger()
+    fresh.record_quiet(at=iso(WED - timedelta(minutes=5)), quiet=False, reason="rose")
+    stale.record_quiet(at=iso(WED - timedelta(hours=4)), quiet=False, reason="rose")
+
+    assert _wake(config, fresh, cands(51))[0] == WED + WAKE_AFTER_NOT_QUIET
+    assert _wake(config, stale, cands(51))[0] == WED + WAKE_MIN_GAP
+
+
+def test_B543_a_rate_limit_brings_the_run_back_after_its_reset(tmp_path):
+    """B543: something else maxed the subscription; the relay comes back a minute after the
+    stored limit ends."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    ledger = owed_ledger()
+    ledger.set_rate_limited("2026-09-02T14:00:00Z")
+
+    at, _ = _wake(config, ledger, cands(51))
+
+    assert at == datetime(2026, 9, 2, 14, 1, tzinfo=timezone.utc)
+
+
+def test_B543_the_usage_stop_brings_the_run_back_after_the_session_resets(tmp_path):
+    """B543: past the session stop, the relay comes back a minute after the session resets."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    ledger = empty_ledger()
+    ledger.observe_usage(
+        {"five_hour": {"utilization": 0.85, "resets_at": "2026-09-02T15:00:00Z"},
+         "status": "allowed", "observed_at": NOW_ISO},
+        NOW_ISO,
+    )
+    ledger.owe((51,), since="2026-09-02T01:30:00Z", until="2026-09-03T01:30:00Z")
+
+    at, _ = _wake(config, ledger, cands(51))
+
+    assert at == datetime(2026, 9, 2, 15, 1, tzinfo=timezone.utc)
+
+
+def test_B543_nothing_to_start_or_a_halt_arms_nothing(tmp_path):
+    """B543: an empty queue, a halt, or an opening more than 24 hours away gives no time."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    weekly = d3_config(tmp_path / "weekly", RUN_WINDOW_START="mon 08:00",
+                       RUN_WINDOW_END="tue 20:00")
+
+    assert _wake(config, owed_ledger(), ())[0] is None
+    assert _wake(config, owed_ledger(), cands(51), halted=True)[0] is None
+    at, reason = _wake(weekly, usage_ledger(), cands(51))
+    assert at is None and reason == "nothing would start before 2026-09-03T12:00:00Z"

@@ -13,11 +13,6 @@ on:
   pull_request_review_comment:
     types: [created]
 
-# Every workflow that writes state/ledger.json shares one group and never cancels a run (B118).
-concurrency:
-  group: harness-ledger
-  cancel-in-progress: false
-
 env:
   PYTHONUTF8: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -39,12 +34,22 @@ jobs:
            || contains(github.event.comment.body, '@jgoetzmann-bot'))
           && (!contains(github.event.comment.body, '<!-- bright-bots-harness -->')
               || contains(github.event.comment.body, '> <!-- bright-bots-harness -->')))
+    # Every workflow that writes state/ledger.json shares one group and never cancels a run
+    # (B118). Here the group is the job's, so a comment the `if:` above skips never enters it:
+    # GitHub keeps one pending run per group, and a run that joined only to be skipped would
+    # replace a queued implement run (D95).
+    concurrency:
+      group: harness-ledger
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 120          # B125
     permissions:
       contents: write             # read .harness/HALT; push the ledger commit. Issue/PR writes use the machine account's PAT via .env, never this token.
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}   # B128: sweep actions (revise/propose) may call the model
+    outputs:
+      wake_at: ${{ steps.wake.outputs.at }}
+      wake_reason: ${{ steps.wake.outputs.reason }}
     steps:
         # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
@@ -192,7 +197,8 @@ jobs:
 
         # The same reconciliation implement.yml does, in the same position, so a burst of merges
         # landing outside the implement window is approved within three hours rather than
-        # waiting for 11:23 UTC. It spends nothing and only moves `proposed -> approved` (D78).
+        # waiting for the next implement run. It spends nothing and only moves `proposed ->
+        # approved` (D78).
         # `continue-on-error`, because the keyword sweep runs after it: one stuck item must never
         # be what stops `/harness halt` being read.
       - name: Approve merged proposals (every proposal on main)
@@ -202,12 +208,13 @@ jobs:
         run: harness approve --merged
 
         # Printed for the record; the sweep and the reconciler apply their own rules (B122).
+        # Inside the run window it also owes the approved items to the window (D95).
       - name: harness dispatch
         if: steps.halt.outputs.halted != 'true'
         shell: bash
         run: |
           mkdir -p runs
-          harness dispatch | tee runs/dispatch-plan.json
+          harness dispatch --owe | tee runs/dispatch-plan.json
 
         # One notifications call since the ledger cursor; keywords are authorised before they are
         # parsed, and acted on at most once (B135). The sweep spends nothing itself; the revise
@@ -307,6 +314,18 @@ jobs:
           echo "::error::could not push the ledger after 3 attempts"
           exit 1
 
+        # D95: when something could next start, for the relay job below. Reads only.
+      - name: When to come back (harness wake)
+        if: always() && steps.halt.outputs.halted != 'true'
+        id: wake
+        continue-on-error: true       # no alarm is a missed restart, not a failed run
+        shell: bash
+        run: |
+          mkdir -p runs
+          harness --json wake | tee runs/wake.json
+          echo "at=$(jq -r '.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
+          echo "reason=$(jq -r '(.reason // "")[0:200]' runs/wake.json)" >> "$GITHUB_OUTPUT"
+
         # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
         if: always()
@@ -328,3 +347,44 @@ jobs:
             !runs/**/.git/**
             !runs/**/clone/**
             !runs/**/workspace/**
+
+  # D95: arms resume.yml with the time `harness wake` gave; see implement.yml's relay job.
+  relay:
+    name: relay
+    needs: feedback
+    if: success() && needs.feedback.outputs.wake_at != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write              # list pending alarms; dispatch resume.yml
+    steps:
+      - name: Arm the resume relay
+        uses: actions/github-script@v7
+        env:
+          AT: ${{ needs.feedback.outputs.wake_at }}
+          REASON: ${{ needs.feedback.outputs.wake_reason }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = (context.payload.repository || {}).default_branch || 'main';
+            const at = Date.parse(process.env.AT || '');
+            // An alarm already pending at or before this time covers it: its implement run
+            // arms the next one.
+            const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: 'resume.yml', per_page: 50,
+            });
+            const covered = (data.workflow_runs || []).some((run) => {
+              const title = /^resume at (\S+)/.exec(String(run.display_title || ''));
+              const other = title ? Date.parse(title[1]) : NaN;
+              return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
+            });
+            if (covered) {
+              core.info(`an alarm at or before ${process.env.AT} is already pending`);
+              return;
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo, workflow_id: 'resume.yml', ref,
+              inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },
+            });
+            core.info(`resume.yml armed for ${process.env.AT}`);

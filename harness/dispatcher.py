@@ -4,14 +4,40 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Collection, Mapping, Sequence
+from datetime import datetime, timedelta
+from typing import Callable, Collection, Mapping, Sequence
 
-from harness.clock import iso
-from harness.config import Config, in_run_window, is_daily_window, run_window_label
+from harness.clock import as_utc, iso, parse_iso
+from harness.config import (
+    Config,
+    in_run_window,
+    is_daily_window,
+    run_window_label,
+    window_openings,
+)
 from harness.ledger import Ledger
 
-__all__ = ["Candidate", "Plan", "plan", "usage_stop"]
+__all__ = [
+    "Candidate",
+    "Plan",
+    "plan",
+    "usage_stop",
+    "wake_at",
+    "WAKE_MIN_GAP",
+    "WAKE_AFTER_NOT_QUIET",
+    "WAKE_HORIZON",
+]
+
+#: The soonest the resume relay brings a run back, so a run that fails at once cannot loop
+#: (D95).
+WAKE_MIN_GAP = timedelta(minutes=20)
+#: The wait after a quiet check said someone else was spending; the check itself waited up to
+#: two hours before saying so (D95).
+WAKE_AFTER_NOT_QUIET = timedelta(minutes=60)
+#: How recent a not-quiet verdict must be to stretch the wait.
+_NOT_QUIET_FRESH = timedelta(hours=3)
+#: The furthest ahead the relay is armed: past the next opening of a daily window.
+WAKE_HORIZON = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -113,18 +139,22 @@ def plan(
         return Plan(start=(), reason=f"halted by @{who}{why}", skipped={})
 
     # A carried item resumes before anything else. It may run outside a weekly run window, but
-    # not a daily one: a daily window is the one subscription session a day, and a carry
-    # resuming outside it would run in the operator's own daytime session (B413).
+    # not a daily one unless the window owes it: a daily window is the one subscription session
+    # a day, and a carry resuming outside it would run in the operator's own session (B413).
     # A block is the operator lending the harness sessions they do not need, so it opens the
     # window and nothing else (D77). Everything downstream inherits it: the carry test, the
     # early return below and the per-candidate skip all read `window_open`. It sits after the
     # usage stop deliberately, so a block can never outlive one.
     window_open = in_run_window(config, now) or ledger.block_open(now)
+    # The items a window opened stay startable past its end, each until it starts (D95).
+    owed = ledger.owed_items(now)
     carry_id = ledger.carry_issue()
     stopped = usage_stop(ledger, config, now=now)
     if stopped is not None:
         return Plan(start=(), reason=stopped, skipped={})
-    carry_ok = carry_id is not None and (window_open or not is_daily_window(config))
+    carry_ok = carry_id is not None and (
+        window_open or not is_daily_window(config) or int(carry_id) in owed
+    )
 
     max_slots = int(config.max_concurrent_items)
     if config.store_backend != "github":
@@ -138,9 +168,9 @@ def plan(
         key=lambda c: (rank(c.cls), 0 if c.forced else 1, c.created_at, int(c.issue)),
     )
 
-    # Outside the window only the carry item and forced items may run (B210).
-    forced_ids = {int(c.issue) for c in candidates if c.forced}
-    if not window_open and not carry_ok and not forced_ids:
+    # Outside the window only the carry item, forced items and owed items may run (B210).
+    exempt = {int(c.issue) for c in candidates if c.forced or int(c.issue) in owed}
+    if not window_open and not carry_ok and not exempt:
         return Plan(start=(), reason=_window_reason(config), skipped={})
 
     held = {int(key): str(value) for key, value in (capped or {}).items()}
@@ -155,7 +185,7 @@ def plan(
         key = str(candidate.issue)
         if carry_id is not None and int(candidate.issue) == carry_id and carry_ok:
             continue
-        if not window_open and not candidate.forced:
+        if not window_open and int(candidate.issue) not in exempt:
             skipped[key] = "outside run window"
             continue
         if suggested_refused and candidate.cls == "suggested":
@@ -178,3 +208,45 @@ def plan(
     # `tests/test_invariants.py` and then demand a classification it does not have.
     reason = f"{len(start)} of max {max_slots} slots{_usage_suffix(ledger)}"
     return Plan(start=tuple(start), reason=reason, skipped=skipped)
+
+
+def _instant(raw: object) -> datetime | None:
+    try:
+        return parse_iso(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def wake_at(
+    *, now: datetime, ledger: Ledger, config: Config, plan_at: Callable[[datetime], Plan]
+) -> tuple[datetime | None, str]:
+    """The soonest time a run could start something, or ``None``, for the resume relay (D95).
+
+    Tries the floor after now, the stored rate limit's end, the session's reset and the run
+    window's next opening, earliest first, and keeps the first at which ``plan_at`` starts
+    something. The floor is an hour after a fresh not-quiet verdict and 20 minutes otherwise.
+    """
+    moment = as_utc(now)
+    floor = WAKE_MIN_GAP
+    quiet = ledger.quiet_check()
+    checked = _instant(quiet.get("at")) if quiet else None
+    if quiet and not quiet.get("quiet") and checked and moment - checked <= _NOT_QUIET_FRESH:
+        floor = WAKE_AFTER_NOT_QUIET
+    earliest, latest = moment + floor, moment + WAKE_HORIZON
+    times = [earliest]
+    limited = _instant(ledger.window.get("rate_limited_until"))
+    if limited is not None:
+        times.append(limited + timedelta(minutes=1))
+    usage = ledger.window.get("usage") or {}
+    five_hour = usage.get("five_hour") if isinstance(usage, dict) else None
+    reset = _instant(five_hour.get("resets_at")) if isinstance(five_hour, dict) else None
+    if reset is not None:
+        times.append(reset + timedelta(minutes=1))
+    openings = window_openings(config, moment)
+    if openings is not None:
+        times.append(openings[1])
+    for at in sorted({max(t, earliest) for t in times if t <= latest}):
+        planned = plan_at(at)
+        if planned.start:
+            return at, f"{planned.reason} at {iso(at)}"
+    return None, f"nothing would start before {iso(latest)}"

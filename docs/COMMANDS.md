@@ -76,7 +76,7 @@ access to the repository or is already in the thread (D68), and the assigned swe
 an issue that already has a work item, as nearly every issue the bot has commented on does.
 `/harness work <link>` on the inbox is the route.
 
-**`via:suggested` is the only route the harness starts by itself.** On `discover`'s 11:07 UTC run it
+**`via:suggested` is the only route the harness starts by itself.** On `discover`'s 03:47 UTC run it
 suggests work only when nothing anybody asked for is outstanding (a delivery pull request awaiting
 review counts) and the issue carries `ALLOWLIST_LABEL` (`harness-ok`), the pool maintainers fill on
 brightboost. A pool issue is still skipped if it is assigned to someone other than the bot, claimed
@@ -154,7 +154,7 @@ block rather than cancel one. `/harness block 0` cancels.
 ```
 
 Opens a `stage:queued` issue in the harness repository and replies with a link. **It only queues.**
-The plan comes from the next `discover` run (11:07 UTC daily), and the code from the first
+The plan comes from the next `discover` run (03:47 UTC daily), and the code from the first
 run-window `implement` run after the proposal is merged; see
 [FOR-MAINTAINERS.md §9](FOR-MAINTAINERS.md#9-how-long-one-request-takes).
 
@@ -335,10 +335,11 @@ starts one immediately, otherwise `feedback.yml`'s three-hourly weekday sweep or
 /harness go --force
 ```
 
-Exempts the item from the run window (daily 11:00 → 16:00 UTC) and from the wait for a quiet
+Exempts the item from the run window (daily 01:30 → 06:30 UTC) and from the wait for a quiet
 subscription (D93), and says so on the item, in the ledger and in the reply. It is honoured by
-`implement`'s next run outside the window (a gate-1 merge or the operator's dispatch), not by the
-sweep (D68), and proposes nothing sooner. Level 3 only;
+`implement`'s next run outside the window, which the sweep that read the command starts through
+`resume.yml` about 20 minutes later (D95), not by the sweep itself (D68), and proposes nothing
+sooner. Level 3 only;
 below that the flag is dropped and the rest of the command runs. `.harness/HALT`, the usage stop
 (80% of the session), the turn caps and both human gates still apply.
 
@@ -388,7 +389,7 @@ harness ledger      # usage against the session stop, calls made, window state
 ```json
 {
   "start": [],
-  "reason": "outside run window (daily 11:00-16:00 UTC)",
+  "reason": "outside run window (daily 01:30-06:30 UTC)",
   "skipped": {},
   "queue": [{ "class": "directed", "rank": 2, "item": 4, "state": "discovered" }],
   "head": { "item": 4, "reason": "waiting to be proposed" },
@@ -461,6 +462,7 @@ harness tidy                 # mark merged deliveries done; rewrite the pinned q
 harness relabel              # migrate open issues from harness:* to stage:/kind:/via:
 harness sync-fork            # fast-forward the fork from upstream; loud on divergence
 harness quiet                # wait until nobody else is using the subscription; exit 0 either way
+harness wake                 # when the resume relay should next start a run; starts nothing
 harness init --labels        # create the nineteen labels
 harness setup --tier 2       # what a tier still needs and who must act (writes HUMAN.md)
 harness archive 4            # promote a review package from runs/ into packages/
@@ -479,6 +481,20 @@ and whether the partner excused a rise. `--force`, or `--items` naming an item s
 `implement.yml` passes, answers not quiet when the run window closes while it waits. It exits 0
 whether or not the subscription is quiet and stores its verdict in the ledger, where
 `harness status` shows it as `quiet check:`.
+
+`wake` is what `implement.yml`, `discover.yml` and `feedback.yml` run last (D95). It prints the
+soonest time a run could start something, and why: the run window's next opening, the end of a
+stored rate limit, the session's reset after the usage stop, an hour after a quiet check found
+somebody else spending, or 20 minutes from now when more approved work is waiting. `null` means
+nothing would start in the next 24 hours, or the harness is halted. The workflow's `relay` job
+hands that time to `resume.yml`, which sleeps until then in hops of at most 105 minutes and
+dispatches `implement.yml`; every check runs again there.
+
+`dispatch --owe`, which every workflow passes, owes the approved items to the run window while it
+is open: each stays startable after the window until it starts or the window opens again.
+`dispatch --scheduled`, which `implement.yml` passes on a scheduled run, owes them the same way up
+to six hours after the window closed, because every scheduled firing sits inside the window.
+Without either flag `dispatch` writes nothing.
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

@@ -2,20 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 101,
+    "calls": 102,
     "rate_limited_until": "2026-10-10T19:30:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.97,
-        "resets_at": "2026-10-14T02:40:00Z"
+        "utilization": 0.69,
+        "resets_at": "2026-10-14T07:40:00Z"
       },
-      "status": "allowed_warning",
-      "observed_at": "2026-10-14T01:40:48Z"
-    },
-    "carry": {
-      "issue": 51,
-      "since": "2026-10-13T11:22:05Z",
-      "reason": "session usage 84% >= 80%"
+      "status": "allowed",
+      "observed_at": "2026-10-14T05:32:21Z"
     },
     "owed": {
       "items": [
@@ -32,7 +27,7 @@
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-10-14T00:37:25Z",
+    "notifications_last_seen": "2026-10-14T05:25:21Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -72,7 +67,7 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 200
+      "github-actions[bot]": 202
     },
     "ask_calls": {
       "date": "2026-09-09",
@@ -727,6 +722,12 @@
       "ts": "2026-10-13T18:21:32Z",
       "stage": "propose",
       "issue": 106,
+      "run": ""
+    },
+    {
+      "ts": "2026-10-14T05:32:21Z",
+      "stage": "revise",
+      "issue": 51,
       "run": ""
     }
   ]

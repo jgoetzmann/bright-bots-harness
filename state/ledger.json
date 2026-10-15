@@ -28,7 +28,7 @@
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-10-15T05:12:36Z",
+    "notifications_last_seen": "2026-10-15T12:08:10Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -69,13 +69,13 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 212
+      "github-actions[bot]": 214
     },
     "ask_calls": {
       "date": "2026-09-09",
       "count": 1
     },
-    "pruned_at": "2026-10-08T10:56:36Z"
+    "pruned_at": "2026-10-15T12:08:22Z"
   },
   "history": [
     {

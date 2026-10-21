@@ -461,8 +461,9 @@ is mechanical, so this one is held to these limits:
 - **The credential exposure.** The deny rules bind the read tool only, and the machine credential
   sits in `$GITHUB_WORKSPACE/.env`, three directories above the clone, so every call holding `Bash`
   can reach it: `implement`, `revise`, `selfaudit` and `selfaudit_fix`. This is not mitigated.
-  The product's install scripts, gates and git calls run without any credential in their
-  environment and the checkout keeps no Actions token, but the file stays readable (D96).
+  The install scripts, gates and git calls the harness runs itself have no credential in their
+  environment and the checkout keeps no Actions token, but the file stays readable, and what
+  the model runs through `Bash` inherits `claude`'s environment, its OAuth token included (D96).
   Giving the auditor `ask.py`'s read-only tool tuples would take its shell away.
 - **The tree guard.** An auditor holding `Bash` can still write to the clone or move its branch.
   The change set against the audited commit, and the branch and HEAD commit, are read before and

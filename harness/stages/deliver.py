@@ -1058,7 +1058,9 @@ def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
             ["git", "remote", "add", "upstream", f"https://github.com/{upstream_repo}.git"],
             lease.path,
         )
-    code, _, err = gates.run_command(["git", "fetch", "upstream", default_branch], lease.path)
+    code, _, err = gates.run_command(
+        ["git", *HOOKS_OFF_ARGS, "fetch", "upstream", default_branch], lease.path
+    )
     if code != 0:
         raise HarnessError(f"git fetch upstream {default_branch} failed: {err.strip()[-2000:]}")
     code, out, err = gates.run_command(
@@ -1069,7 +1071,7 @@ def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
     conflicted = _conflicted_files(lease)
     if conflicted:
         return conflicted
-    gates.run_command(["git", "rebase", "--abort"], lease.path)
+    gates.run_command(["git", *HOOKS_OFF_ARGS, "rebase", "--abort"], lease.path)
     raise HarnessError(f"git rebase failed without conflicts: {(err or out).strip()[-2000:]}")
 
 

@@ -266,8 +266,8 @@ jobs:
           cp state/ledger.json ../harness-state/state/ledger.json
           cd ../harness-state
           git add state/ledger.json && git commit --quiet -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
-          # The checkout keeps no credential, so the model and the product's code never find this
-          # token in .git/config (D96); only this push carries it, on its command line.
+          # The checkout keeps no credential, so this token is never in .git/config for the model
+          # or the product's code to find; it reaches git on this push's command line only (D96).
           auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
           echo "::add-mask::${auth}"
           for attempt in 1 2 3; do
@@ -539,8 +539,8 @@ jobs:
           cp state/ledger.json ../harness-state/state/ledger.json
           cd ../harness-state
           git add state/ledger.json && git commit --quiet -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
-          # The checkout keeps no credential, so the model and the product's code never find this
-          # token in .git/config (D96); only this push carries it, on its command line.
+          # The checkout keeps no credential, so this token is never in .git/config for the model
+          # or the product's code to find; it reaches git on this push's command line only (D96).
           auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
           echo "::add-mask::${auth}"
           for attempt in 1 2 3; do

@@ -36,6 +36,8 @@ STATE_OF_LABEL: dict[str, str] = {
 
 META_PREFIX = "<!-- harness-meta "
 META_SUFFIX = " -->"
+#: How every transition comment the store writes begins (B101).
+TRANSITION_HEAD = "**harness** `"
 _META_RE = re.compile(r"<!--\s*harness-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 # A live-run marker: a plain comment (no harness-meta) naming a workflow run.
 _RUN_MARKER_RE = re.compile(r"actions/runs/\d+|<!--\s*harness-run\b")
@@ -90,15 +92,27 @@ def _origin_ref(issue: Mapping[str, Any]) -> str:
 
 
 def _parse_meta(body: str) -> dict[str, Any] | None:
-    found = None
-    for match in _META_RE.finditer(body):
-        try:
-            data = json.loads(match.group(1))
-        except ValueError:
-            continue
-        if isinstance(data, dict):
-            found = data
-    return found
+    """The meta marker of a comment the store wrote, or None (D96).
+
+    The store's comments are the marker alone or a transition (`TRANSITION_HEAD`) ending in it,
+    so a marker anywhere else is text another comment repeated.
+    """
+    from harness.gh import MACHINE_MARKER
+
+    text = body.rstrip()
+    if text.endswith(MACHINE_MARKER):
+        text = text[: -len(MACHINE_MARKER)].rstrip()
+    start = text.rfind("<!--")
+    if start < 0 or (start > 0 and not text.startswith(TRANSITION_HEAD)):
+        return None
+    match = _META_RE.fullmatch(text, start)
+    if match is None:
+        return None
+    try:
+        data = json.loads(match.group(1))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _author(comment: Mapping[str, Any]) -> str:
@@ -200,17 +214,15 @@ class GitHubStore:
         trusted: Iterable[str] = (),
         machine: str | None = None,
     ) -> None:
-        from harness.gh import machine_logins
-
         if not self_repo or "/" not in self_repo:
             raise StoreError(f"self_repo must be 'owner/name', got {self_repo!r}")
         if machine is None:
             # The machine account owns the fork it pushes to (B233).
             fork = str(getattr(config, "fork_repo", "") or "")
             machine = fork.split("/")[0] if "/" in fork else ""
-        # The only authors whose comments the store reads back: anybody can post a meta marker
-        # on a public issue, so one from anyone else is never the item's state (D96).
-        self._authors = machine_logins(machine)
+        # The one author whose comments the store reads back, the account it writes as: anybody
+        # can post a meta marker on a public issue, so one from anyone else is not state (D96).
+        self._authors = frozenset({machine.lower()}) if machine else frozenset()
         self.gh = gh
         self.self_repo = self_repo
         self.scratch = scratch
@@ -314,7 +326,7 @@ class GitHubStore:
         meta["ts"] = iso(self._clock.now())
         self._set_state_label(issue, to_state)
         stage = self._last_run.get(item_id, "-")
-        body = f"**harness** `{stage}` → `{to_state}`\nrun: {self.run_url}\n{reason}"
+        body = f"{TRANSITION_HEAD}{stage}` → `{to_state}`\nrun: {self.run_url}\n{reason}"
         self.gh.comment(self.self_repo, item_id, redact(body + "\n\n" + _meta_marker(meta)))
         item = _item_from(issue, meta, to_state)
         self.scratch._mirror_work_item(item)

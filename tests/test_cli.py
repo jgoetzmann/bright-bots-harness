@@ -2661,6 +2661,28 @@ def test_B427_run_no_longer_takes_session_pct(tmp_path, monkeypatch):
     assert "--session-pct" not in cli.build_parser().format_help()
 
 
+def test_B549_a_rebuild_reads_only_the_machine_account_s_comments():
+    """B549: a stranger's comment shaped like a transition is no record of a run (D96)."""
+    from types import SimpleNamespace
+
+    transition = "**harness** `implement` -> `packaged`\nrun: https://example/run/1"
+    comments = [
+        {"body": transition, "created_at": "2026-09-08T10:00:00Z",
+         "user": {"login": "Machine-Bot"}},
+        {"body": transition, "created_at": "2026-09-08T11:00:00Z",
+         "user": {"login": "a-stranger"}},
+    ]
+    gh = SimpleNamespace(
+        get=lambda path: [{"number": 4}],
+        issue_comments=lambda repo, number: comments,
+    )
+    config = SimpleNamespace(self_repo="o/harness", fork_repo="machine-bot/product")
+
+    found = cli._self_repo_comments(SimpleNamespace(gh=gh), config)
+
+    assert [c["created_at"] for c in found] == ["2026-09-08T10:00:00Z"]
+
+
 def test_B430_rebuild_replays_the_history_without_discarding_the_window(
     tmp_path, monkeypatch, capsys
 ):

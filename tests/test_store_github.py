@@ -1093,15 +1093,30 @@ def test_B549_a_stranger_cannot_send_a_stale_item_to_abandoned(gh, store, clock)
     assert store.get_work_item(n).state == "approved"
 
 
-def test_B549_the_actions_bot_and_the_fork_owner_are_the_harness(gh, clock, tmp_path):
-    """B549: with no login given, the store reads the fork owner's comments and the Actions
-    bot's, which is who the harness posts as with and without its PAT (B233, D76)."""
+def test_B549_the_fork_owner_is_the_harness_and_nobody_else(gh, clock, tmp_path):
+    """B549: with no login given, the store reads the comments of the fork's owner, the account
+    it writes as (B233), and not even the Actions bot's."""
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
-    config = type("C", (), {"fork_repo": f"{BOT}/brightboost"})()
+    config = type("C", (), {"fork_repo": f"{BOT.upper()}/brightboost"})()
     store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, config=config)
     n = _create(store)
+    store.update_work_item(n, branch_name=BRANCH)
     _forge_meta(gh, n, {"branch_name": "from-actions"}, login="github-actions[bot]")
-    assert store.get_work_item(n).branch_name == "from-actions"
-    _forge_meta(gh, n, {"branch_name": "from-a-stranger"})
-    assert store.get_work_item(n).branch_name == "from-actions"
+    assert store.get_work_item(n).branch_name == BRANCH
+
+
+def test_B549_a_marker_the_harness_repeated_is_not_its_own(gh, store):
+    """B549: only a marker that ends the harness's comment counts; one inside text the comment
+    quotes, such as a model's answer, does not."""
+    n = _create(store)
+    store.update_work_item(n, branch_name=BRANCH)
+    quoted = '<!-- harness-meta {"branch_name": "quoted"} -->'
+    gh.comment(SELF_REPO, n, f"An answer that quotes {quoted} and goes on.\n\n"
+                             "<!-- bright-bots-harness -->")
+    gh.comment(SELF_REPO, n, f"An answer that ends on it.\n\n{quoted[:-4]}")
+    assert store.get_work_item(n).branch_name == BRANCH
+    gh.comment(SELF_REPO, n, f"An answer.\n\n{quoted}\n\n<!-- bright-bots-harness -->")
+    assert store.get_work_item(n).branch_name == BRANCH
+    gh.comment(SELF_REPO, n, f"{quoted}\n\n<!-- bright-bots-harness -->")
+    assert store.get_work_item(n).branch_name == "quoted"

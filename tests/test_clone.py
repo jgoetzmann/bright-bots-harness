@@ -555,15 +555,17 @@ def test_B549_no_command_inherits_a_credential(monkeypatch, tmp_path):
 
 
 def test_B549_a_refusing_pre_commit_hook_does_not_stop_the_harness_commit(tmp_path):
-    """B549: `npm ci` points core.hooksPath at husky's hooks; `_commit` still runs none."""
+    """B549: `npm ci` points core.hooksPath at husky's hooks, and a relative hooks-off path would
+    be read from the clone's root; `_commit` runs neither."""
     from harness.stages.implement import _commit
 
     repo = _walk_repo(tmp_path)
-    hooks = repo / ".husky" / "_"
-    hooks.mkdir(parents=True)
-    hook = hooks / "pre-commit"
-    hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n", encoding="utf-8", newline="\n")
-    hook.chmod(0o755)
+    for where in (".husky/_", "no-hooks"):
+        hooks = repo / where
+        hooks.mkdir(parents=True)
+        hook = hooks / "pre-commit"
+        hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n", encoding="utf-8", newline="\n")
+        hook.chmod(0o755)
     _git_in(repo, "config", "core.hooksPath", ".husky/_")
     (repo / "a.txt").write_text("a", encoding="utf-8")
 

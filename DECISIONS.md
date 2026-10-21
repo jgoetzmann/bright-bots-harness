@@ -1902,3 +1902,23 @@ Accepted gaps:
   as a build does.
 
 Allocates B549-B557.
+
+## D97 / B558 - an item too large to plan in one call is parked
+
+Problem: #106's propose call has failed on every discover run since 10-04, ending in
+`error_max_turns` on 10-21. Each failure returned the item to `discovered`, so the next run spent
+the call again and ended red, which also kept discover's relay from arming anything.
+
+Decision: a propose call from `discovered` that spent its whole `MAX_TURNS_PROPOSE` cap
+(`error_max_turns`, or `turns` at the cap) moves the item to `blocked` with the reason `the
+propose call ran out of its 30 turns, …; /harness split breaks it into sub-issues, /harness go
+tries it again`. Any other failed call returns the item to `discovered` as before, and a re-run
+with revision notes returns to `proposed`.
+
+Why. The same item and the same cap give the same result; a person decides whether to split it
+or try again.
+
+Rejected: counting failures across runs, which needs a counter the GitHub store does not keep;
+raising the propose cap, which spends more on every item to fit one.
+
+Allocates B558.

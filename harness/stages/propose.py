@@ -530,7 +530,10 @@ def _propose_leased(
         )
         text = (result.text or "").strip()
         if not result.ok or not text:
-            _revert(ctx, item_id, entry_state, "propose call failed")
+            if entry_state == "discovered" and _out_of_turns(ctx, result):
+                _park_out_of_turns(ctx, item_id)
+            else:
+                _revert(ctx, item_id, entry_state, "propose call failed")
             raise RunnerError(
                 f"propose failed for item {item_id}: {result.error or 'runner returned no text'}"
             )
@@ -649,6 +652,28 @@ def _enter(ctx: Context, item: Any, notes: str) -> str:
         f"illegal transition {state} -> proposing for work item {item.id}: propose needs a "
         "discovered item, or a proposed one with revision notes"
     )
+
+
+def _out_of_turns(ctx: Context, result: Any) -> bool:
+    """The call spent its whole turn cap, which another try with the same item spends again."""
+    cap = int(ctx.config.max_turns["propose"])
+    return result.error == "error_max_turns" or (result.turns or 0) >= cap
+
+
+def _park_out_of_turns(ctx: Context, item_id: int) -> None:
+    """Block an item too large to plan in one call, rather than retry it every run (D97)."""
+    cap = int(ctx.config.max_turns["propose"])
+    reason = (
+        f"the propose call ran out of its {cap} turns, so the item is too large to plan in one "
+        "call; `/harness split` breaks it into sub-issues, `/harness go` tries it again"
+    )
+    ctx.record_decision(f"item {item_id} blocked: {reason}")
+    ctx.store.append_event(item_id, "error", reason)
+    try:
+        ctx.store.transition(item_id, "blocked", reason=reason)
+    except HarnessError as exc:
+        ctx.record_decision(f"could not transition item {item_id} to blocked: {exc}")
+        _revert(ctx, item_id, "discovered", "propose call failed")
 
 
 def _revert(ctx: Context, item_id: int, entry_state: str, why: str) -> None:

@@ -27,6 +27,7 @@ __all__ = [
     "WAKE_MIN_GAP",
     "WAKE_AFTER_NOT_QUIET",
     "WAKE_HORIZON",
+    "PLANNING_OWED_FOR",
 ]
 
 #: The soonest the resume relay brings a run back, so a run that fails at once cannot loop
@@ -39,6 +40,8 @@ WAKE_AFTER_NOT_QUIET = timedelta(minutes=60)
 _NOT_QUIET_FRESH = timedelta(hours=3)
 #: The furthest ahead the relay is armed: past the next opening of a daily window.
 WAKE_HORIZON = timedelta(hours=24)
+#: How long a held planning run's record brings discover back; the next one starts afresh (D96).
+PLANNING_OWED_FOR = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -272,16 +275,22 @@ def planning_wake_at(
     """The soonest time a planning run could propose the items it still owes, or ``None`` (D96).
 
     The times `wake_at` tries but the window's opening, since discovery is not window-gated,
-    keeping the first at which no halt, rate limit or usage stop holds.
+    before the record's ``until``, keeping the first at which no halt, rate limit or usage stop
+    holds.
     """
     if not owed:
         return None, "no proposal is owed"
     if halted or ledger.halt_request() is not None:
         return None, "halted"
+    until = _instant((ledger.planning_owed() or {}).get("until"))
+    if until is None or as_utc(now) >= until:
+        return None, "the held planning run's record has ended; the next run owes afresh"
     names = ", ".join(f"#{int(n)}" for n in sorted(owed))
     times, latest = _wake_times(now, ledger, config, opening=False)
     for at in times:
+        if at >= until:
+            break
         if ledger.rate_limited(iso(at)) or usage_stop(ledger, config, now=at) is not None:
             continue
         return at, f"{names} still owed a proposal at {iso(at)}"
-    return None, f"no planning run could start before {iso(latest)}"
+    return None, f"no planning run could start before {iso(min(latest, until))}"

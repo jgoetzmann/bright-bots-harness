@@ -2096,9 +2096,9 @@ def _propose_fails(rig, tmp_path, *, error, turns):
 
 
 def test_B558_a_propose_call_out_of_turns_blocks_the_item_with_what_to_do(tmp_path):
-    """B558 (D97): #106's propose call ran out of turns on every run for weeks, failing each
-    discover run that reached it. The first such call blocks the item, and the reason names
-    `/harness split` and `/harness go`."""
+    """B558 (D97): a propose call that spends its whole turn cap blocks the item rather than
+    returning it for the next run to spend again; the reason names `/harness split` and
+    `/harness go`."""
     for error, turns in (("error_max_turns", None), ("I have run out of turns.", 30)):
         root = tmp_path / f"case-{turns}"
         root.mkdir()
@@ -2122,3 +2122,46 @@ def test_B558_any_other_failed_call_returns_the_item_to_the_queue(tmp_path):
         propose(rig.ctx, item_id)
 
     assert rig.store.get_work_item(item_id).state == "discovered"
+
+
+# --------------------------------------------------------------------------------------
+# B553 - a refused propose waits in the queue, and triage never ranks a refused suggestion
+# --------------------------------------------------------------------------------------
+
+
+def test_B553_a_propose_refused_before_its_call_goes_back_to_the_queue(tmp_path):
+    """B553 (D96): the stored limit, the usage stop or a priority refusal stops propose before
+    its call ran; the item returns to `discovered`, where the planning retry finds it."""
+    from harness.errors import BudgetExhausted
+
+    (tmp_path / "limited").mkdir()
+    (tmp_path / "suggested").mkdir()
+    limited, item_id = proposable(tmp_path / "limited")
+    limited.ctx.ledger.set_rate_limited("2026-09-01T18:00:00Z")
+    with pytest.raises(BudgetExhausted):
+        propose(limited.ctx, item_id)
+    assert limited.store.get_work_item(item_id).state == "discovered"
+
+    suggested, item_id = proposable(tmp_path / "suggested", via="suggested")
+    suggested.store.create_work_item(
+        kind="issue", external_ref="issue:900", title="asked for", via="requested"
+    )
+    with pytest.raises(BudgetExhausted):
+        propose(suggested.ctx, item_id)
+    assert suggested.store.get_work_item(item_id).state == "discovered"
+    assert suggested.runner.requests == [], "no call was made"
+
+
+def test_B553_triage_leaves_out_a_suggestion_admission_refuses(tmp_path):
+    """B553: a refused suggestion ranked first would stop the propose loop before the asked-for
+    work behind it, so the ranking never returns one while asked-for work is outstanding."""
+    rig = make_rig(tmp_path, run_id="discover", gh=FakeGh(), discover_text="#2\n#1\n")
+    asked = rig.store.create_work_item(
+        kind="issue", external_ref="issue:900", title="asked for", via="requested"
+    )
+    idea = rig.store.create_work_item(
+        kind="issue", external_ref="issue:901", title="an idea", via="suggested"
+    )
+    assert (asked, idea) == (1, 2)
+
+    assert discover(rig.ctx, mode="triage", target=None, lens=None) == [asked]

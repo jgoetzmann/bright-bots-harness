@@ -3092,7 +3092,7 @@ def test_B548_every_workflow_dispatch_owes_and_only_a_scheduled_implement_run_is
 # ======================================================================================
 
 #: The relay jobs' shared reading of an alarm's title; one without a workflow is implement's.
-ALARM_TITLE = "const TITLE = /^resume (?:(\\S+\\.yml) )?at (\\S+)/;"
+ALARM_TITLE = "const TITLE = /^resume\\s+(?:(\\S+\\.yml)\\s+)?at\\s+(\\S+)/;"
 
 
 @pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
@@ -3108,8 +3108,19 @@ def test_B549_an_alarm_covers_only_alarms_for_its_own_workflow(name):
     assert re.findall(r"\{\s*workflow: '([^']+)'", relay) == expected
 
     resume = _workflow_jobs(_d2_workflow("resume.yml"))["relay"]
-    assert "const TITLE = /^resume (?:(\\S+\\.yml) )?at (\\S+)(?:\\s+(\\d+))?/;" in resume
+    title = "const TITLE = /^resume\\s+(?:(\\S+\\.yml)\\s+)?at\\s+(\\S+)(?:\\s+(\\d+))?/;"
+    assert title in resume
     assert "(title[1] || 'implement.yml') !== target) return false;" in resume
+
+
+def test_B549_a_due_planning_alarm_lets_a_due_build_alarm_go_first():
+    """B549: two alarms due together would race for `harness-ledger`, where a newer pending run
+    replaces an older one; a planning alarm waits while a build alarm due by now is active."""
+    resume = _workflow_jobs(_d2_workflow("resume.yml"))["relay"]
+    assert "if (target !== 'discover.yml') return false;" in resume
+    assert "(title[1] || 'implement.yml') !== 'implement.yml') return false;" in resume
+    assert "return !Number.isNaN(other) && other <= Date.now();" in resume
+    assert "let pending = await buildFirst();" in resume
 
 
 def test_B550_discover_owes_proposals_only_in_triage_and_arms_the_planning_alarm():
@@ -3148,9 +3159,12 @@ def test_B557_discover_says_whether_it_generated_a_proposal():
     for source in (
         "steps.dispatch.outputs.proceed", "needs.quiet.outputs.quiet",
         "steps.work.outputs.proposed", "steps.work.outputs.failed",
-        "steps.work.outputs.outcome", "steps.wake.outputs.planning_at",
+        "steps.work.outputs.outcome", "steps.wake.outputs.planning_at", "job.status",
     ):
         assert source in block, source
+    # The relay arms nothing after a red job, so the summary promises a retry only after a
+    # green one.
+    assert '[ -n "${RETRY}" ] && [ "${JOB_STATUS}" = "success" ]' in block
     assert 'title="Proposal generated"' in block and 'title="No proposal generated"' in block
     assert 'echo "::${level} title=${title}::${text}"' in block
     assert '>> "$GITHUB_STEP_SUMMARY"' in block
@@ -3162,3 +3176,6 @@ def test_B557_discover_says_whether_it_generated_a_proposal():
     for held in ("held: rate limited until", "held at #${n}: rate limited until",
                  "nothing to propose"):
         assert held in work, held
+    # Written once the loop ends, so a run cancelled inside it reports that it did not finish.
+    loop_end = work.index("          done\n")
+    assert work.index('outcome "${held:-reached every item}"') > loop_end

@@ -371,7 +371,7 @@ jobs:
             // the run it starts arms the next one. A title naming no workflow is an implement
             // alarm (D96).
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
-            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)/;
+            const TITLE = /^resume\s+(?:(\S+\.yml)\s+)?at\s+(\S+)/;
             const alarms = [
               { workflow: 'implement.yml', at: process.env.AT, reason: process.env.REASON },
             ];
@@ -387,7 +387,7 @@ jobs:
                 return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
               });
               if (covered) {
-                core.info(`a ${alarm.workflow} alarm at or before ${alarm.at} is already pending`);
+                core.info(`an alarm for ${alarm.workflow} at or before ${alarm.at} is pending`);
                 continue;
               }
               await github.rest.actions.createWorkflowDispatch({

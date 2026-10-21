@@ -3394,7 +3394,8 @@ def test_B552_a_triage_dispatch_owes_each_queued_item_a_propose_attempt(
 
     assert cli.main(["dispatch", "--owe", "--planning"]) == 0
     plan = json.loads(capsys.readouterr().out)
-    record = {"items": sorted([first, second]), "since": "2026-10-15T08:37:00Z"}
+    record = {"items": sorted([first, second]), "since": "2026-10-15T08:37:00Z",
+              "until": "2026-10-16T08:37:00Z"}
     assert plan["planning"] == record
     assert ledger_window(tmp_path)["planning"] == record
 
@@ -3444,9 +3445,9 @@ def test_B553_propose_settles_an_owed_item_once_it_is_attempted(tmp_path, monkey
 
 
 def test_B555_wake_names_the_planning_retry_after_a_rate_limit(tmp_path, monkeypatch, capsys):
-    """B555 (D96): the 10-15 run: a limit stored until 08:40 held the 08:37 triage run with #153
-    queued and nothing approved. The build's alarm stays empty, and `--planning` names a time
-    past the reset; it reads only, and without the flag there is no planning answer."""
+    """B555 (D96): a stored rate limit holds a triage run with one item queued and nothing
+    approved. The build's alarm stays empty and `--planning` names a time past the reset; wake
+    reads only, and without the flag gives no planning answer."""
     at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
     (item,) = planning_repo(tmp_path, monkeypatch, at, (791, "requested"))
     assert cli.main(["dispatch", "--owe", "--planning"]) == 0
@@ -3500,8 +3501,13 @@ def test_B556_status_tells_a_held_planning_run_from_a_proposal(tmp_path, monkeyp
     capsys.readouterr()
 
     assert cli.main(["status"]) == 0
-    line = f"planning: no proposal generated yet for #{item}: queued since 2026-10-15T08:37:00Z"
+    line = (
+        f"planning: no proposal generated yet for #{item}: a planning run was held before it "
+        "reached them (owed since 2026-10-15T08:37:00Z)"
+    )
     assert line in capsys.readouterr().out
+    assert cli.main(["--json", "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["planning"]["items"] == [item]
     ledger = Ledger.from_json((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
     assert f"- no proposal generated yet for #{item}" in links.fast_status(
         SimpleNamespace(self_repo=""), ledger
@@ -3512,5 +3518,31 @@ def test_B556_status_tells_a_held_planning_run_from_a_proposal(tmp_path, monkeyp
     store.close()
     assert cli.main(["status"]) == 0
     assert "planning:" not in capsys.readouterr().out
+    assert cli.main(["--json", "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["planning"] is None
     ledger.planned(item)
     assert "no proposal generated" not in links.fast_status(SimpleNamespace(self_repo=""), ledger)
+
+
+def test_B553_a_triage_run_settles_what_it_left_out_of_its_ranking(tmp_path, monkeypatch, capsys):
+    """B553: triage may leave a queued item out of its ranking; that was its turn, so it is owed
+    nothing more and discover is not brought back for it. A triage call refused before it ran
+    settles nothing."""
+    from harness.errors import BudgetExhausted
+
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    ranked, left_out = planning_repo(tmp_path, monkeypatch, at, (791, "requested"), (61, "audit"))
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    capsys.readouterr()
+
+    def refused(ctx, **kwargs):
+        raise BudgetExhausted("session usage 81% >= 80%")
+
+    monkeypatch.setitem(cli.STAGES, "discover", refused)
+    assert cli.main(["--json", "discover", "--mode", "triage"]) == cli.EXIT_BUDGET
+    assert ledger_window(tmp_path)["planning"]["items"] == sorted([ranked, left_out])
+
+    monkeypatch.setitem(cli.STAGES, "discover", lambda ctx, **kwargs: [ranked])
+    assert cli.main(["--json", "discover", "--mode", "triage"]) == 0
+    capsys.readouterr()
+    assert ledger_window(tmp_path)["planning"]["items"] == [ranked]

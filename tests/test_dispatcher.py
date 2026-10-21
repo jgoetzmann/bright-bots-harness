@@ -1119,6 +1119,13 @@ def test_B543_nothing_to_start_or_a_halt_arms_nothing(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def planning_ledger(*, since: str = "2026-09-02T11:00:00Z",
+                    until: str = "2026-09-03T11:00:00Z", **kwargs) -> Ledger:
+    ledger = usage_ledger(**kwargs)
+    ledger.owe_planning((153,), since=since, until=until)
+    return ledger
+
+
 def _planning_wake(config, ledger, owed=(153,), *, now=WED, halted=False):
     from harness.dispatcher import planning_wake_at
 
@@ -1126,34 +1133,27 @@ def _planning_wake(config, ledger, owed=(153,), *, now=WED, halted=False):
 
 
 def test_B554_a_rate_limited_planning_run_comes_back_after_the_reset(tmp_path):
-    """B554 (D96): the discover run that reached its dispatch at 08:37 under a limit stored until
-    08:40 came back for nothing; the planning alarm names the floor past the reset."""
-    from datetime import timedelta
-
+    """B554 (D96): a triage run held by a stored rate limit comes back at the floor past the
+    reset, or a minute after a limit that outlasts the floor, and never waits for the window."""
     from harness.dispatcher import WAKE_MIN_GAP
 
     config = d3_config(tmp_path, **NIGHT_WINDOW)
-    at_0837 = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
-    ledger = usage_ledger()
-    ledger.set_rate_limited("2026-10-15T08:40:00Z")
-    later = usage_ledger()
-    later.set_rate_limited("2026-10-15T10:00:00Z")
+    short, long = planning_ledger(), planning_ledger()
+    short.set_rate_limited("2026-09-02T12:03:00Z")
+    long.set_rate_limited("2026-09-02T14:00:00Z")
 
-    at, reason = _planning_wake(config, ledger, now=at_0837)
+    at, reason = _planning_wake(config, short)
 
-    assert at == at_0837 + WAKE_MIN_GAP
-    assert reason == "#153 still owed a proposal at 2026-10-15T08:57:00Z"
-    assert _planning_wake(config, later, now=at_0837)[0] == datetime(
-        2026, 10, 15, 10, 1, tzinfo=timezone.utc
-    ), "a minute after a limit that outlasts the floor"
-    assert at_0837 + timedelta(hours=1) > at, "and never waits for the run window"
+    assert at == WED + WAKE_MIN_GAP
+    assert reason == "#153 still owed a proposal at 2026-09-02T12:20:00Z"
+    assert _planning_wake(config, long)[0] == datetime(2026, 9, 2, 14, 1, tzinfo=timezone.utc)
 
 
 def test_B554_the_usage_stop_holds_planning_until_the_session_resets(tmp_path):
     """B554: past the session stop the planning alarm waits for the reset, so a retry never
-    spends past the stop the scheduled run would have honoured."""
+    spends past the stop the scheduled run honoured."""
     config = d3_config(tmp_path, **NIGHT_WINDOW)
-    ledger = empty_ledger()
+    ledger = planning_ledger()
     ledger.observe_usage(
         {"five_hour": {"utilization": 0.85, "resets_at": "2026-09-02T15:00:00Z"},
          "status": "allowed", "observed_at": NOW_ISO},
@@ -1172,18 +1172,30 @@ def test_B554_a_fresh_not_quiet_verdict_holds_planning_an_hour(tmp_path):
     from harness.dispatcher import WAKE_AFTER_NOT_QUIET
 
     config = d3_config(tmp_path, **NIGHT_WINDOW)
-    ledger = usage_ledger()
+    ledger = planning_ledger()
     ledger.record_quiet(at=iso(WED - timedelta(minutes=5)), quiet=False, reason="rose")
 
     assert _planning_wake(config, ledger)[0] == WED + WAKE_AFTER_NOT_QUIET
 
 
+def test_B554_the_record_bounds_how_long_planning_comes_back(tmp_path):
+    """B554: a held run's record ends a day after it began, so a subscription busy all day
+    stops bringing discover back; a retry past `until` is not armed."""
+    config = d3_config(tmp_path, **NIGHT_WINDOW)
+    ended = planning_ledger(since="2026-09-01T11:00:00Z", until="2026-09-02T11:00:00Z")
+    ending = planning_ledger(until="2026-09-02T12:10:00Z")
+
+    assert _planning_wake(config, ended)[0] is None
+    at, reason = _planning_wake(config, ending)
+    assert at is None and reason == "no planning run could start before 2026-09-02T12:10:00Z"
+
+
 def test_B554_nothing_owed_or_a_halt_arms_no_planning(tmp_path):
     """B554: no owed proposal, the file halt or a commanded halt gives no planning time."""
     config = d3_config(tmp_path, **NIGHT_WINDOW)
-    commanded = usage_ledger()
+    commanded = planning_ledger()
     commanded.request_halt("jgoetzmann", "testing", NOW_ISO)
 
-    assert _planning_wake(config, usage_ledger(), owed=()) == (None, "no proposal is owed")
-    assert _planning_wake(config, usage_ledger(), halted=True) == (None, "halted")
+    assert _planning_wake(config, planning_ledger(), owed=()) == (None, "no proposal is owed")
+    assert _planning_wake(config, planning_ledger(), halted=True) == (None, "halted")
     assert _planning_wake(config, commanded) == (None, "halted")

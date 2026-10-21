@@ -86,7 +86,7 @@ jobs:
             // What an alarm may start; a title without one is an implement alarm (D96).
             const TARGETS = ['implement.yml', 'discover.yml'];
             const target = process.env.WORKFLOW || 'implement.yml';
-            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)(?:\s+(\d+))?/;
+            const TITLE = /^resume\s+(?:(\S+\.yml)\s+)?at\s+(\S+)(?:\s+(\d+))?/;
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
             const PENDING = ['queued', 'requested', 'waiting', 'pending'];
             const origin = Number(process.env.ORIGIN) || context.runId;
@@ -149,6 +149,22 @@ jobs:
                 && PENDING.includes(job.status));
             };
 
+            // A planning alarm lets a build alarm due at or before it dispatch first, so the two
+            // never race for `harness-ledger` and the build keeps its head start (D96).
+            const buildFirst = async () => {
+              if (target !== 'discover.yml') return false;
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: 'resume.yml', per_page: 50,
+              });
+              return (data.workflow_runs || []).some((run) => {
+                if (run.id === context.runId || !ACTIVE.includes(run.status)) return false;
+                const title = TITLE.exec(String(run.display_title || ''));
+                if (!title || (title[1] || 'implement.yml') !== 'implement.yml') return false;
+                const other = Date.parse(title[2]);
+                return !Number.isNaN(other) && other <= Date.now();
+              });
+            };
+
             if (await earlierStands()) {
               core.info('an earlier alarm stands; this one stops');
               return;
@@ -179,19 +195,17 @@ jobs:
                 core.info(`a ${target} run is already queued or running; it plans for itself`);
                 return;
               }
-              let pending = false;
+              let pending = await buildFirst();
               for (const { workflow, run } of runs) {
-                if (await waiting(workflow, run)) {
-                  pending = true;
-                  break;
-                }
+                if (pending) break;
+                if (await waiting(workflow, run)) pending = true;
               }
               if (!pending) break;
               if (left() < 5 * 60_000) {
                 await nextHop();
                 return;
               }
-              core.info('a harness-ledger run is pending; waiting two minutes');
+              core.info('a ledger run or a due build alarm is ahead; waiting two minutes');
               await sleep(2 * 60_000);
             }
             // discover.yml starts in triage, its schedule's mode, so it waits for a quiet

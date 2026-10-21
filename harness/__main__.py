@@ -23,6 +23,7 @@ from harness.clone import Lease, sync_fork
 from harness.config import in_run_window, is_daily_window, load_config, run_window_label
 from harness.context import build_context, ledger_path_for
 from harness.dispatcher import (
+    PLANNING_OWED_FOR,
     Candidate,
     Plan,
     plan as plan_dispatch,
@@ -1269,9 +1270,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         "halt": halt,
         "block": ctx.ledger.block_grant(),
         "quiet": ctx.ledger.quiet_check(),
-        "planning": ctx.ledger.planning_owed(),
+        "planning": None,
         "actions": {"runs": runs, "error": actions_error or None, "truncated": actions_cut},
     }
+    queued = [int(item.id) for item in ctx.store.list_work_items(state="discovered")]
+    owed = sorted(ctx.ledger.planning_items() & set(queued))
+    if owed:
+        payload["planning"] = {**(ctx.ledger.planning_owed() or {}), "items": owed}
 
     # The halt comes first, so what follows is not read as a running harness.
     lines = _halt_lines(ctx.ledger)
@@ -1282,7 +1287,6 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.extend(_usage_lines(ctx.ledger, config, now))
     lines.extend(_quiet_lines(ctx.ledger))
-    queued = [int(item.id) for item in ctx.store.list_work_items(state="discovered")]
     planning = links.planning_line(ctx.ledger, still=queued)
     if planning:
         lines.append(f"planning: {planning}")
@@ -1314,6 +1318,9 @@ def cmd_discover(args: argparse.Namespace) -> int:
             lens=args.lens,
             ignore_allowlist=args.ignore_allowlist,
         )
+        if args.mode == "triage":
+            # What triage left out of its ranking had its turn, so it is owed nothing (D96).
+            ctx.ledger.keep_planning(ids)
     finally:
         _save_ledger(ctx)
     if _wants_json(args):
@@ -1858,7 +1865,7 @@ def _owe_planning(ctx, now: datetime, *, suggested_refused: str | None) -> None:
     """
     queued = _proposable(ctx, suggested_refused=suggested_refused)
     ctx.ledger.keep_planning(queued)
-    ctx.ledger.owe_planning(queued, since=iso(now))
+    ctx.ledger.owe_planning(queued, since=iso(now), until=iso(now + PLANNING_OWED_FOR))
 
 
 #: What the head of the queue is waiting for, by the stage it is in. `approved` is absent

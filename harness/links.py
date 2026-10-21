@@ -622,8 +622,8 @@ def planning_line(ledger: Any, *, still: "Iterable[int] | None" = None) -> str:
     since = str((ledger.planning_owed() or {}).get("since") or "unknown")
     items = ", ".join(f"#{n}" for n in sorted(owed))
     return (
-        f"no proposal generated yet for {items}: queued since {since}, and a planning run was "
-        "held before it reached them; discover comes back for them once nothing stops it"
+        f"no proposal generated yet for {items}: a planning run was held before it reached "
+        f"them (owed since {since})"
     )
 
 

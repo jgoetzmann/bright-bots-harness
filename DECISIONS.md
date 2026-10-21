@@ -1862,44 +1862,58 @@ Bright Boost #791, waited for the next day's run. The run ended green, which rea
 Decision:
 - A triage run owes each queued item one propose attempt. discover.yml's dispatch passes
   `--planning` when the mode is triage, and `dispatch --planning` records the `discovered` items
-  in `window.planning` (`items`, `since`), dropping owed items no longer queued. A suggestion
-  `priority.admit` refuses is not owed, since `propose` would refuse it without an attempt.
-- `harness propose` settles its item once the stage ran, whatever it produced, so an item whose
-  proposal keeps failing never brings discover back. A rate limit, the usage stop or a halt
-  leaves it owed.
+  in `window.planning` (`items`, `since`, `until` a day after `since`), dropping owed items no
+  longer queued. A record that has not ended gains items and keeps both ends. A suggestion
+  `priority.admit` refuses is not owed.
+- An item is settled when its turn came: `harness propose` once the stage ran, whatever it
+  produced, and a triage run for what it left out of its ranking. A propose refused before its
+  call (the stored limit, the usage stop, a priority refusal, a halt) returns the item from
+  `proposing` to where it came from, and it stays owed. Triage leaves out suggestions admission
+  refuses, which would otherwise stop the propose loop before the work behind them.
 - `harness wake --planning` adds `planning`: the floor, the stored limit's end or the session's
-  reset, earliest first, keeping the first at which no halt, rate limit or usage stop holds,
-  for the owed items still queued and admissible (`dispatcher.planning_wake_at`). The run
-  window is not tried, since discovery is not window-gated.
-- discover.yml's relay arms that time with `workflow: discover.yml` beside the build's alarm.
-  `resume.yml` takes a `workflow` input (`implement.yml`, the default, or `discover.yml`), puts
-  it in the title (`resume <workflow> at <at> <origin>`), compares an alarm only with alarms for
-  the same workflow, and dispatches that workflow. A title without a workflow reads as
-  implement's. A dispatched discover.yml runs in triage, so it waits for a quiet subscription.
+  reset, earliest first and before the record's `until`, keeping the first at which no halt,
+  rate limit or usage stop holds, for the owed items still queued and admissible
+  (`dispatcher.planning_wake_at`). The run window is not tried, since discovery is not
+  window-gated.
+- discover.yml's relay arms that time with `workflow: discover.yml` beside the build's alarm,
+  after a green job only. `resume.yml` takes a `workflow` input (`implement.yml`, the default,
+  or `discover.yml`), puts it in the title (`resume <workflow> at <at> <origin>`), compares an
+  alarm only with alarms for the same workflow, and dispatches that workflow. A title without a
+  workflow reads as implement's. A due planning alarm waits while a build alarm due by then is
+  active, so the two never race for `harness-ledger` and the build keeps its head start. A
+  dispatched discover.yml runs in triage, so it waits for a quiet subscription.
 - The discover job's `Say what this run proposed` step writes the run summary and one annotation:
-  `Proposal generated` with the items, or `No proposal generated` with the reason and the
-  planning retry's time. `harness status` and the `status` reply say `no proposal generated yet
-  for #153` while a held run owes one.
+  `Proposal generated` with the items, or `No proposal generated` with the reason, and the
+  planning retry's time when the job is green. `harness status` and the `status` reply say
+  `no proposal generated yet for #153` while a held run owes one.
 
 Why. A planning run a stop held is the case D95 fixed for builds. Only discover.yml arms the
-planning alarm, so a discover run that keeps failing never brings itself back, and every check
-runs again in the dispatched run: the halts, the usage stop, the quiet check and the governor.
-Proposing opens a pull request and nothing more, so both gates stay with people.
+planning alarm, and only after a green job, so a discover run that keeps failing never brings
+itself back, and every check runs again in the dispatched run: the halts, the usage stop, the
+quiet check and the governor. Proposing opens a pull request and nothing more, so both gates
+stay with people.
 
 Rejected: owing in every mode, which made a directed or audit run bring discover back for the rest
-of the queue; settling an item only when its proposal was published, which made #106, whose propose
-call has failed on every run since 10-04, bring discover back every 20 minutes; arming planning from
-implement and feedback too, which would bring a failing discover run back; one alarm for both
-workflows, which let a planning alarm displace the build's.
+of the queue; settling an item only when its proposal was published, which reported an item whose
+call failed as held and brought discover back for items triage chose to leave out; arming
+planning from implement and feedback too, which would bring a failing discover run back; one
+alarm for both workflows, which let a planning alarm displace the build's; a record with no end,
+which under a subscription busy all day brought discover back every hour indefinitely.
 
 Accepted gaps:
 - A directed, assigned or audit dispatch owes nothing; the operator asked for it and sees how it
   ended.
 - An item queued after a run's dispatch is owed by the next scheduled run, not this one.
+- A job that fails arms no retry, even when the only failure was a propose call that settled
+  its item; the next scheduled run tries what is still queued.
 - A dispatched discover run whose owed items were proposed meanwhile triages whatever is queued,
   or the product repository when nothing is.
 - A held planning run under a busy subscription comes back an hour after each not-quiet verdict,
-  as a build does.
+  as a build does, until the record ends.
+- `since` is when the record began, so an item added later reads as owed since then; the
+  `status` reply reads no store and names owed items until the next triage dispatch drops them.
+- `harness propose` exits 0 on `.harness/HALT` and the propose loop would count that as a
+  proposal; the HALT check that starts the job makes that unreachable.
 
 Allocates B549-B557.
 

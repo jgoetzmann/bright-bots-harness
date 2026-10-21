@@ -13,7 +13,9 @@ from harness import errors, redact
 from harness.clone import _slugify
 from harness.context import Context
 from harness.errors import (
+    BudgetExhausted,
     GitHubError,
+    Halted,
     HarnessError,
     IllegalTransition,
     PreflightFailed,
@@ -486,6 +488,10 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
             upstream_issue=upstream_issue,
             entry_state=entry_state,
         )
+    except (BudgetExhausted, Halted):
+        # Refused before the call ran, so the item goes back to wait for the next run (D96).
+        _revert(ctx, item_id, entry_state, "propose was refused before its call")
+        raise
     finally:
         # Read-only: implement acquires its own clone from the base the package pins.
         ctx.clones.release(lease, keep=False)

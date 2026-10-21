@@ -233,6 +233,17 @@ def _triage_queue(ctx: Context, queued: Sequence[Any]) -> list[int]:
             "falling back to the queue in store order"
         )
         ranked = [int(item.id) for item in queued]
+    # A suggestion admission refuses would stop the propose loop before the work behind it.
+    refused = priority.admit(
+        "suggested", store=ctx.store, ledger=ctx.ledger, config=ctx.config, now=ctx.clock.now()
+    )
+    if refused:
+        suggested = {int(i.id) for i in queued if priority.via_of(i) == "suggested"}
+        if suggested & set(ranked):
+            ctx.record_decision(
+                f"triage left out suggestions {sorted(suggested & set(ranked))}: {refused}"
+            )
+        ranked = [n for n in ranked if n not in suggested]
     for item_id in ranked:
         ctx.store.append_event(item_id, "info", "ranked by triage")
     ctx.record_decision(f"triage ranked queued work items {ranked}")

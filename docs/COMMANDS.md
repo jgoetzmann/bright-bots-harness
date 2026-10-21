@@ -499,10 +499,10 @@ is open: each stays startable after the window until it starts or the window ope
 `dispatch --scheduled`, which `implement.yml` passes on a scheduled run, owes them the same way up
 to six hours after the window closed, because every scheduled firing sits inside the window.
 Without either flag `dispatch` writes nothing. `dispatch --planning`, which `discover.yml` passes
-on a triage run, owes every item queued for a proposal one propose attempt (`window.planning`);
-`harness propose` settles the item once its call ran, whatever it produced, and a rate limit or
-the usage stop leaves it owed. While one is owed, `harness status` says
-`no proposal generated yet for #153` (D96).
+on a triage run, owes every item queued for a proposal one propose attempt (`window.planning`)
+for a day; `harness propose` settles the item once its call ran, whatever it produced, triage
+settles what it leaves out of its ranking, and a rate limit or the usage stop leaves it owed.
+While one is owed, `harness status` says `no proposal generated yet for #153` (D96).
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

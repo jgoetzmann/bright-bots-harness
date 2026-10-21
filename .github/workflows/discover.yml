@@ -521,7 +521,7 @@ jobs:
           fi
           if [ "${status}" -eq "${EXIT_BUDGET}" ]; then
             echo "budget exhausted during discover; nothing proposed this run"
-            outcome "held: the usage stop refused the triage call"
+            outcome "held: the triage call was refused before it started"
             exit 0
           fi
           if [ "${status}" -ne 0 ]; then
@@ -546,7 +546,7 @@ jobs:
           failed=0
           proposed=""
           failures=""
-          outcome "reached every item"
+          held=""
           for n in $ids; do
             echo "::group::harness propose ${n}"
             if harness propose "$n" | tee "runs/propose-${n}.txt"; then
@@ -560,14 +560,14 @@ jobs:
             limited="$(sed -n 's/^rate limited until //p' "runs/propose-${n}.txt" | tail -n 1)"
             if [ "${status}" -eq 0 ] && [ -n "${limited}" ]; then
               echo "rate limited at item ${n} until ${limited}; the rest stay discovered for the next run"
-              outcome "held at #${n}: rate limited until ${limited}"
+              held="held at #${n}: rate limited until ${limited}"
               break
             elif [ "${status}" -eq 0 ]; then
               echo "item ${n}: proposed"
               proposed="${proposed} ${n}"
             elif [ "${status}" -eq "${EXIT_BUDGET}" ]; then
               echo "budget exhausted at item ${n}; the rest stay discovered for the next run"
-              outcome "held at #${n}: the usage stop refused the call"
+              held="held at #${n}: the call was refused before it started"
               break
             else
               echo "::error::harness propose ${n} exited ${status}"
@@ -575,6 +575,7 @@ jobs:
               failures="${failures} ${n}"
             fi
           done
+          outcome "${held:-reached every item}"
           echo "proposed=${proposed# }" >> "$GITHUB_OUTPUT"
           echo "failed=${failures# }" >> "$GITHUB_OUTPUT"
           exit "$failed"
@@ -649,6 +650,7 @@ jobs:
           FAILED: ${{ steps.work.outputs.failed }}
           OUTCOME: ${{ steps.work.outputs.outcome }}
           RETRY: ${{ steps.wake.outputs.planning_at }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           items() { printf '#%s ' $1 | sed 's/ $//; s/ /, /g'; }
           title="No proposal generated"
@@ -668,15 +670,19 @@ jobs:
           if [ -n "${FAILED// }" ]; then
             text="${text}; the propose call failed for $(items "${FAILED}")"
           fi
-          if [ -n "${RETRY}" ]; then
+          # The relay arms the retry only after a green job (D95).
+          if [ -n "${RETRY}" ] && [ "${JOB_STATUS}" = "success" ]; then
             text="${text}; discover comes back at ${RETRY} for what is still owed"
+          elif [ "${JOB_STATUS}" != "success" ]; then
+            text="${text}; the job failed, so the next scheduled run is the next attempt"
           fi
           # A warning marks the run in the list: something is still owed or failed.
           level=warning
           if [ "${title}" = "Proposal generated" ] || [ "${OUTCOME}" = "nothing to propose" ]; then
             level=notice
           fi
-          if [ -n "${FAILED// }" ]; then level=warning; fi
+          case "${OUTCOME}" in held*) level=warning ;; esac
+          if [ -n "${FAILED// }" ] || [ "${JOB_STATUS}" != "success" ]; then level=warning; fi
           echo "::${level} title=${title}::${text}"
           printf '### %s\n\n%s\n' "${title}" "${text}" >> "$GITHUB_STEP_SUMMARY"
 
@@ -731,7 +737,7 @@ jobs:
             // the run it starts arms the next one. A title naming no workflow is an implement
             // alarm (D96).
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
-            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)/;
+            const TITLE = /^resume\s+(?:(\S+\.yml)\s+)?at\s+(\S+)/;
             // The build's alarm, and the planning alarm for proposals this run still owes.
             const alarms = [
               { workflow: 'implement.yml', at: process.env.AT, reason: process.env.REASON },
@@ -752,7 +758,7 @@ jobs:
                 return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
               });
               if (covered) {
-                core.info(`a ${alarm.workflow} alarm at or before ${alarm.at} is already pending`);
+                core.info(`an alarm for ${alarm.workflow} at or before ${alarm.at} is pending`);
                 continue;
               }
               await github.rest.actions.createWorkflowDispatch({

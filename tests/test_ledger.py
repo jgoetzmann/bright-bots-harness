@@ -974,3 +974,50 @@ def test_B540_nothing_to_owe_records_nothing_and_an_unreadable_record_owes_nothi
 
     ledger.window["owed"] = {"items": [51, "x"], "since": "soon", "until": "later"}
     assert ledger.owed_items("2026-09-02T12:00:00Z") == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# D96 — the owed proposals
+# ---------------------------------------------------------------------------
+
+
+def test_B551_owed_proposals_add_up_keep_their_since_and_round_trip():
+    """B551 (D96): `owe_planning` records the queued items a planning run owes an attempt; a
+    later run adds to them under the first `since`, and the record survives a save."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    ledger.owe_planning([153], since="2026-10-15T08:37:00Z")
+    ledger.owe_planning([106, 153], since="2026-10-16T08:42:00Z")
+
+    assert ledger.planning_items() == {106, 153}
+    again = Ledger.from_json(ledger.to_json())
+    assert again.planning_owed() == {"items": [106, 153], "since": "2026-10-15T08:37:00Z"}
+
+
+def test_B551_an_attempt_or_leaving_the_queue_drops_an_owed_proposal():
+    """B551: `planned` drops the item a propose call ran for, `keep_planning` the items no longer
+    queued, and the record goes with the last of them."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    ledger.owe_planning([106, 153, 160], since="2026-10-15T08:37:00Z")
+
+    ledger.planned(153)
+    assert ledger.planning_items() == {106, 160}
+    ledger.keep_planning([106, 999])
+    assert ledger.planning_owed() == {"items": [106], "since": "2026-10-15T08:37:00Z"}
+    ledger.planned(106)
+    assert ledger.planning_owed() is None
+    assert "planning" not in json.loads(ledger.to_json())["window"]
+
+
+def test_B551_nothing_to_owe_records_nothing_and_an_unreadable_record_owes_nothing():
+    """B551: an empty queue writes no record, so a ledger that never owed a proposal is the file
+    it was; unreadable rows are skipped."""
+    ledger = Ledger.empty("2026-08-31T00:00:00Z")
+    before = ledger.to_json()
+    ledger.owe_planning([], since="2026-10-15T08:37:00Z")
+    ledger.planned(153)
+    assert ledger.to_json() == before
+
+    ledger.window["planning"] = {"items": [153, "x"], "since": "2026-10-15T08:37:00Z"}
+    assert ledger.planning_items() == {153}
+    ledger.window["planning"] = "garbage"
+    assert ledger.planning_items() == frozenset()

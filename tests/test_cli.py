@@ -801,7 +801,7 @@ def test_A33_dispatch_prints_a_json_plan_with_start_reason_skipped_and_starts_no
     # D77 appends `block` after B292's three, for the same reason those were appended: the first
     # three are what the workflows read by name, and a new key must not disturb them. D95
     # appends `owed` the same way.
-    assert list(plan)[3:] == ["queue", "head", "suggested", "block", "owed"]
+    assert list(plan)[3:] == ["queue", "head", "suggested", "block", "owed", "planning"]
     assert plan["block"] == {"open": False, "grant": None}
     assert plan["start"] == [item_id]
     assert [row["item"] for row in plan["queue"]] == [item_id]
@@ -3346,3 +3346,171 @@ def test_B547_the_window_line_names_owed_work(tmp_path):
     blocked = Ledger.empty("2026-08-31T00:00:00Z")
     blocked.window["block"] = {"by": "jgoetzmann", "until": "2026-09-02T20:00:00Z"}
     assert cli._window_state(config, blocked, at) == "; open now"
+
+
+# --------------------------------------------------------------------------
+# D96 - a held planning run comes back, and status tells a run from a proposal
+# --------------------------------------------------------------------------
+
+
+def queue_items(tmp_path: Path, *specs: tuple[int, str]) -> list[int]:
+    """Discovered items, one per `(product issue, via)`, in the order given."""
+    store = open_store(tmp_path)
+    store.migrate()
+    ids = [
+        store.create_work_item(
+            kind="issue", external_ref=f"issue:{number}", title=f"issue {number}", via=via
+        )
+        for number, via in specs
+    ]
+    store.close()
+    return ids
+
+
+def planning_repo(tmp_path: Path, monkeypatch, at: datetime, *specs: tuple[int, str]):
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path, **NIGHT)
+    assert cli.main(["init"]) == 0
+    ids = queue_items(tmp_path, *specs)
+    write_carry_ledger(tmp_path)
+    align_ledger_window(tmp_path, at)
+    freeze_run_clock(monkeypatch, at)
+    forbid_everything(monkeypatch)
+    return ids
+
+
+def test_B552_a_triage_dispatch_owes_each_queued_item_a_propose_attempt(
+    tmp_path, monkeypatch, capsys
+):
+    """B552 (D96): discover.yml's dispatch for a triage run passes `--planning`, which owes every
+    queued item one attempt before anything can hold the run; plain `--owe` owes no proposal."""
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    first, second = planning_repo(tmp_path, monkeypatch, at, (791, "requested"), (61, "audit"))
+    capsys.readouterr()
+
+    assert cli.main(["dispatch", "--owe"]) == 0
+    capsys.readouterr()
+    assert "planning" not in ledger_window(tmp_path)
+
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    record = {"items": sorted([first, second]), "since": "2026-10-15T08:37:00Z"}
+    assert plan["planning"] == record
+    assert ledger_window(tmp_path)["planning"] == record
+
+
+def test_B552_a_suggestion_admission_refuses_is_never_owed(tmp_path, monkeypatch, capsys):
+    """B552: a suggestion waits while asked-for work is outstanding, and propose refuses it
+    without an attempt, so owing it would bring discover back for nothing, again and again."""
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    asked, suggested = planning_repo(
+        tmp_path, monkeypatch, at, (791, "requested"), (640, "suggested")
+    )
+    capsys.readouterr()
+
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    capsys.readouterr()
+
+    assert ledger_window(tmp_path)["planning"]["items"] == [asked]
+
+
+def test_B553_propose_settles_an_owed_item_once_it_is_attempted(tmp_path, monkeypatch, capsys):
+    """B553 (D96): a propose call that ran settles the item whatever it produced, so a failing
+    item never brings discover back; a rate limit or the usage stop leaves it owed."""
+    from harness.errors import BudgetExhausted, RateLimited, RunnerError
+
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    ids = planning_repo(
+        tmp_path, monkeypatch, at, (791, "requested"), (61, "audit"), (77, "requested"),
+        (78, "requested"),
+    )
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    capsys.readouterr()
+    outcomes = {
+        ids[0]: lambda: tmp_path / "runs" / "spec.md",
+        ids[1]: lambda: (_ for _ in ()).throw(RunnerError("error_max_turns")),
+        ids[2]: lambda: (_ for _ in ()).throw(RateLimited(reset_at="2026-10-15T10:00:00Z")),
+        ids[3]: lambda: (_ for _ in ()).throw(BudgetExhausted("session usage 81% >= 80%")),
+    }
+    monkeypatch.setitem(cli.STAGES, "propose", lambda ctx, item_id: outcomes[item_id]())
+
+    assert cli.main(["propose", str(ids[0])]) == 0
+    assert cli.main(["propose", str(ids[1])]) == 1
+    assert cli.main(["propose", str(ids[2])]) == 0
+    assert cli.main(["propose", str(ids[3])]) == cli.EXIT_BUDGET
+    capsys.readouterr()
+
+    assert ledger_window(tmp_path)["planning"]["items"] == [ids[2], ids[3]]
+
+
+def test_B555_wake_names_the_planning_retry_after_a_rate_limit(tmp_path, monkeypatch, capsys):
+    """B555 (D96): the 10-15 run: a limit stored until 08:40 held the 08:37 triage run with #153
+    queued and nothing approved. The build's alarm stays empty, and `--planning` names a time
+    past the reset; it reads only, and without the flag there is no planning answer."""
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    (item,) = planning_repo(tmp_path, monkeypatch, at, (791, "requested"))
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    path = tmp_path / "state" / "ledger.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["window"]["rate_limited_until"] = "2026-10-15T08:40:00Z"
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+    before = path.read_bytes()
+    capsys.readouterr()
+
+    assert cli.main(["--json", "wake"]) == 0
+    assert "planning" not in json.loads(capsys.readouterr().out)
+    assert cli.main(["--json", "wake", "--planning"]) == 0
+    woken = json.loads(capsys.readouterr().out)
+
+    assert woken["at"] is None
+    assert woken["planning"] == {
+        "at": "2026-10-15T08:57:00Z",
+        "reason": f"#{item} still owed a proposal at 2026-10-15T08:57:00Z",
+    }
+    assert path.read_bytes() == before, "wake writes nothing"
+
+
+def test_B555_an_owed_item_no_longer_queued_arms_no_planning(tmp_path, monkeypatch, capsys):
+    """B555: an owed item that has since been proposed elsewhere is not owed any more."""
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    (item,) = planning_repo(tmp_path, monkeypatch, at, (791, "requested"))
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    store = open_store(tmp_path)
+    store.transition(item, "proposed", reason="test setup")
+    store.close()
+    capsys.readouterr()
+
+    assert cli.main(["--json", "wake", "--planning"]) == 0
+    woken = json.loads(capsys.readouterr().out)
+
+    assert woken["planning"] == {"at": None, "reason": "no proposal is owed"}
+
+
+def test_B556_status_tells_a_held_planning_run_from_a_proposal(tmp_path, monkeypatch, capsys):
+    """B556 (D96): while a planning run owes a proposal, `harness status` and the `status`
+    reply say none was generated; once the item has one, both say nothing about planning."""
+    from types import SimpleNamespace
+
+    from harness import links
+    from harness.ledger import Ledger
+
+    at = datetime(2026, 10, 15, 8, 37, tzinfo=timezone.utc)
+    (item,) = planning_repo(tmp_path, monkeypatch, at, (791, "requested"))
+    assert cli.main(["dispatch", "--owe", "--planning"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["status"]) == 0
+    line = f"planning: no proposal generated yet for #{item}: queued since 2026-10-15T08:37:00Z"
+    assert line in capsys.readouterr().out
+    ledger = Ledger.from_json((tmp_path / "state" / "ledger.json").read_text(encoding="utf-8"))
+    assert f"- no proposal generated yet for #{item}" in links.fast_status(
+        SimpleNamespace(self_repo=""), ledger
+    )
+
+    store = open_store(tmp_path)
+    store.transition(item, "proposed", reason="test setup")
+    store.close()
+    assert cli.main(["status"]) == 0
+    assert "planning:" not in capsys.readouterr().out
+    ledger.planned(item)
+    assert "no proposal generated" not in links.fast_status(SimpleNamespace(self_repo=""), ledger)

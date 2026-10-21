@@ -187,9 +187,12 @@ jobs:
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
         shell: bash
+        env:
+          # A triage run proposes the whole queue, so it owes each queued item an attempt (D96).
+          PLANNING: ${{ (github.event.inputs.mode || 'triage') == 'triage' && '1' || '' }}
         run: |
           mkdir -p runs
-          plan="$(harness dispatch --owe)"
+          plan="$(harness dispatch --owe ${PLANNING:+--planning})"
           printf '%s\n' "$plan" | tee runs/dispatch-plan.json
           reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
@@ -306,6 +309,8 @@ jobs:
     outputs:
       wake_at: ${{ steps.wake.outputs.at }}
       wake_reason: ${{ steps.wake.outputs.reason }}
+      planning_at: ${{ steps.wake.outputs.planning_at }}
+      planning_reason: ${{ steps.wake.outputs.planning_reason }}
     steps:
         # The first step of every spending job, before checkout, doctor and the dispatcher (B149).
       - name: HALT check (.harness/HALT on the default branch)
@@ -442,9 +447,12 @@ jobs:
         if: steps.halt.outputs.halted != 'true'
         id: dispatch
         shell: bash
+        env:
+          # A triage run proposes the whole queue, so it owes each queued item an attempt (D96).
+          PLANNING: ${{ (github.event.inputs.mode || 'triage') == 'triage' && '1' || '' }}
         run: |
           mkdir -p runs
-          plan="$(harness dispatch --owe)"
+          plan="$(harness dispatch --owe ${PLANNING:+--planning})"
           printf '%s\n' "$plan" | tee runs/dispatch-plan.json
           reason="$(printf '%s' "$plan" | jq -r '.reason // empty' 2>/dev/null || true)"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
@@ -461,6 +469,7 @@ jobs:
 
       - name: Discover and propose (harness discover, harness propose)
         if: steps.halt.outputs.halted != 'true' && steps.dispatch.outputs.proceed == 'true' && needs.quiet.outputs.quiet == 'true'
+        id: work
         shell: bash
         env:
           INPUT_MODE: ${{ github.event.inputs.mode }}
@@ -475,6 +484,9 @@ jobs:
           # A budget stop is a normal outcome, so both commands below that can reach the
           # governor exit 0 on EXIT_BUDGET; a rate limit and .harness/HALT already exit 0 (B120).
           EXIT_BUDGET=4
+          # What the run produced, for the summary step (D96): `outcome` in words, `proposed` and
+          # `failed` the items whose propose call made a proposal or failed.
+          outcome() { echo "outcome=$1" >> "$GITHUB_OUTPUT"; }
           # The dispatch inputs, defaulted for the scheduled run. Conditionals use `if`, because
           # under `set -e` a false test in `[ ... ] && ...` would abort the job (B228).
           mode="${INPUT_MODE:-triage}"
@@ -509,6 +521,7 @@ jobs:
           fi
           if [ "${status}" -eq "${EXIT_BUDGET}" ]; then
             echo "budget exhausted during discover; nothing proposed this run"
+            outcome "held: the usage stop refused the triage call"
             exit 0
           fi
           if [ "${status}" -ne 0 ]; then
@@ -520,15 +533,20 @@ jobs:
           until="$(jq -r '.rate_limited_until // empty' runs/discover.out 2>/dev/null || true)"
           if [ -n "${until}" ]; then
             echo "rate limited until ${until}; nothing proposed this run"
+            outcome "held: rate limited until ${until}"
             exit 0
           fi
           ids="$(jq -r '[.created[]?] | map(tostring) | join(" ")' runs/discover.out)"
           if [ -z "${ids// }" ]; then
             echo "no discovered items to propose"
+            outcome "nothing to propose"
             exit 0
           fi
           echo "proposing: ${ids}"
           failed=0
+          proposed=""
+          failures=""
+          outcome "reached every item"
           for n in $ids; do
             echo "::group::harness propose ${n}"
             if harness propose "$n" | tee "runs/propose-${n}.txt"; then
@@ -542,17 +560,23 @@ jobs:
             limited="$(sed -n 's/^rate limited until //p' "runs/propose-${n}.txt" | tail -n 1)"
             if [ "${status}" -eq 0 ] && [ -n "${limited}" ]; then
               echo "rate limited at item ${n} until ${limited}; the rest stay discovered for the next run"
+              outcome "held at #${n}: rate limited until ${limited}"
               break
             elif [ "${status}" -eq 0 ]; then
               echo "item ${n}: proposed"
+              proposed="${proposed} ${n}"
             elif [ "${status}" -eq "${EXIT_BUDGET}" ]; then
               echo "budget exhausted at item ${n}; the rest stay discovered for the next run"
+              outcome "held at #${n}: the usage stop refused the call"
               break
             else
               echo "::error::harness propose ${n} exited ${status}"
               failed=1
+              failures="${failures} ${n}"
             fi
           done
+          echo "proposed=${proposed# }" >> "$GITHUB_OUTPUT"
+          echo "failed=${failures# }" >> "$GITHUB_OUTPUT"
           exit "$failed"
 
         # Commits the ledger with [skip ci]; runs even when a propose failed, never when halted.
@@ -604,9 +628,57 @@ jobs:
         shell: bash
         run: |
           mkdir -p runs
-          harness --json wake | tee runs/wake.json
+          harness --json wake --planning | tee runs/wake.json
           echo "at=$(jq -r '.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
           echo "reason=$(jq -r '(.reason // "")[0:200]' runs/wake.json)" >> "$GITHUB_OUTPUT"
+          echo "planning_at=$(jq -r '.planning.at // empty' runs/wake.json)" >> "$GITHUB_OUTPUT"
+          echo "planning_reason=$(jq -r '(.planning.reason // "")[0:200]' runs/wake.json)" \
+            >> "$GITHUB_OUTPUT"
+
+        # D96: a green run is not a proposal. The run's summary and one annotation say which
+        # items got one, or why none did and when planning comes back.
+      - name: Say what this run proposed
+        if: always() && steps.halt.outputs.halted != 'true'
+        continue-on-error: true       # a report, never a reason to fail the run
+        shell: bash
+        env:
+          PROCEED: ${{ steps.dispatch.outputs.proceed }}
+          REASON: ${{ steps.dispatch.outputs.reason }}
+          QUIET: ${{ needs.quiet.outputs.quiet }}
+          PROPOSED: ${{ steps.work.outputs.proposed }}
+          FAILED: ${{ steps.work.outputs.failed }}
+          OUTCOME: ${{ steps.work.outputs.outcome }}
+          RETRY: ${{ steps.wake.outputs.planning_at }}
+        run: |
+          items() { printf '#%s ' $1 | sed 's/ $//; s/ /, /g'; }
+          title="No proposal generated"
+          if [ "${PROCEED}" != "true" ]; then
+            text="planning held: ${REASON:-the dispatcher gave no plan}"
+          elif [ "${QUIET}" = "false" ]; then
+            text="planning held: somebody else was using the subscription (see the quiet job)"
+          elif [ "${QUIET}" != "true" ]; then
+            text="planning held: the quiet check did not run"
+          elif [ -n "${PROPOSED// }" ]; then
+            title="Proposal generated"
+            text="proposed $(items "${PROPOSED}"), each awaiting a person's merge (gate 1)"
+            case "${OUTCOME}" in held*) text="${text}; then ${OUTCOME}" ;; esac
+          else
+            text="${OUTCOME:-the discover step did not finish}"
+          fi
+          if [ -n "${FAILED// }" ]; then
+            text="${text}; the propose call failed for $(items "${FAILED}")"
+          fi
+          if [ -n "${RETRY}" ]; then
+            text="${text}; discover comes back at ${RETRY} for what is still owed"
+          fi
+          # A warning marks the run in the list: something is still owed or failed.
+          level=warning
+          if [ "${title}" = "Proposal generated" ] || [ "${OUTCOME}" = "nothing to propose" ]; then
+            level=notice
+          fi
+          if [ -n "${FAILED// }" ]; then level=warning; fi
+          echo "::${level} title=${title}::${text}"
+          printf '### %s\n\n%s\n' "${title}" "${text}" >> "$GITHUB_STEP_SUMMARY"
 
         # B126: evidence survives a cancelled or timed-out run.
       - name: Upload run artifacts
@@ -631,11 +703,14 @@ jobs:
             !runs/**/clone/**
             !runs/**/workspace/**
 
-  # D95: arms resume.yml with the time `harness wake` gave; see implement.yml's relay job.
+  # D95: arms resume.yml with the times `harness wake` gave; see implement.yml's relay job. The
+  # planning alarm starts discover.yml for proposals a held triage run still owes (D96).
   relay:
     name: relay
     needs: discover
-    if: success() && needs.discover.outputs.wake_at != ''
+    if: >-
+      success() && (needs.discover.outputs.wake_at != ''
+      || needs.discover.outputs.planning_at != '')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -646,28 +721,46 @@ jobs:
         env:
           AT: ${{ needs.discover.outputs.wake_at }}
           REASON: ${{ needs.discover.outputs.wake_reason }}
+          PLANNING_AT: ${{ needs.discover.outputs.planning_at }}
+          PLANNING_REASON: ${{ needs.discover.outputs.planning_reason }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const ref = (context.payload.repository || {}).default_branch || 'main';
-            const at = Date.parse(process.env.AT || '');
-            // An alarm already pending at or before this time covers it: its implement run
-            // arms the next one.
+            // An alarm for the same workflow already pending at or before this time covers it:
+            // the run it starts arms the next one. A title naming no workflow is an implement
+            // alarm (D96).
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
+            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)/;
+            // The build's alarm, and the planning alarm for proposals this run still owes.
+            const alarms = [
+              { workflow: 'implement.yml', at: process.env.AT, reason: process.env.REASON },
+              {
+                workflow: 'discover.yml', at: process.env.PLANNING_AT,
+                reason: process.env.PLANNING_REASON,
+              },
+            ].filter((alarm) => alarm.at);
             const { data } = await github.rest.actions.listWorkflowRuns({
               owner, repo, workflow_id: 'resume.yml', per_page: 50,
             });
-            const covered = (data.workflow_runs || []).some((run) => {
-              const title = /^resume at (\S+)/.exec(String(run.display_title || ''));
-              const other = title ? Date.parse(title[1]) : NaN;
-              return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
-            });
-            if (covered) {
-              core.info(`an alarm at or before ${process.env.AT} is already pending`);
-              return;
+            for (const alarm of alarms) {
+              const at = Date.parse(alarm.at);
+              const covered = (data.workflow_runs || []).some((run) => {
+                const title = TITLE.exec(String(run.display_title || ''));
+                if (!title || (title[1] || 'implement.yml') !== alarm.workflow) return false;
+                const other = Date.parse(title[2]);
+                return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
+              });
+              if (covered) {
+                core.info(`a ${alarm.workflow} alarm at or before ${alarm.at} is already pending`);
+                continue;
+              }
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo, workflow_id: 'resume.yml', ref,
+                inputs: {
+                  at: alarm.at, workflow: alarm.workflow,
+                  reason: (alarm.reason || '').slice(0, 200),
+                },
+              });
+              core.info(`resume.yml armed for ${alarm.workflow} at ${alarm.at}`);
             }
-            await github.rest.actions.createWorkflowDispatch({
-              owner, repo, workflow_id: 'resume.yml', ref,
-              inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },
-            });
-            core.info(`resume.yml armed for ${process.env.AT}`);

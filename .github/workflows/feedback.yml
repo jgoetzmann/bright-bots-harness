@@ -367,24 +367,35 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const ref = (context.payload.repository || {}).default_branch || 'main';
-            const at = Date.parse(process.env.AT || '');
-            // An alarm already pending at or before this time covers it: its implement run
-            // arms the next one.
+            // An alarm for the same workflow already pending at or before this time covers it:
+            // the run it starts arms the next one. A title naming no workflow is an implement
+            // alarm (D96).
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
+            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)/;
+            const alarms = [
+              { workflow: 'implement.yml', at: process.env.AT, reason: process.env.REASON },
+            ];
             const { data } = await github.rest.actions.listWorkflowRuns({
               owner, repo, workflow_id: 'resume.yml', per_page: 50,
             });
-            const covered = (data.workflow_runs || []).some((run) => {
-              const title = /^resume at (\S+)/.exec(String(run.display_title || ''));
-              const other = title ? Date.parse(title[1]) : NaN;
-              return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
-            });
-            if (covered) {
-              core.info(`an alarm at or before ${process.env.AT} is already pending`);
-              return;
+            for (const alarm of alarms) {
+              const at = Date.parse(alarm.at);
+              const covered = (data.workflow_runs || []).some((run) => {
+                const title = TITLE.exec(String(run.display_title || ''));
+                if (!title || (title[1] || 'implement.yml') !== alarm.workflow) return false;
+                const other = Date.parse(title[2]);
+                return ACTIVE.includes(run.status) && !Number.isNaN(other) && other <= at;
+              });
+              if (covered) {
+                core.info(`a ${alarm.workflow} alarm at or before ${alarm.at} is already pending`);
+                continue;
+              }
+              await github.rest.actions.createWorkflowDispatch({
+                owner, repo, workflow_id: 'resume.yml', ref,
+                inputs: {
+                  at: alarm.at, workflow: alarm.workflow,
+                  reason: (alarm.reason || '').slice(0, 200),
+                },
+              });
+              core.info(`resume.yml armed for ${alarm.workflow} at ${alarm.at}`);
             }
-            await github.rest.actions.createWorkflowDispatch({
-              owner, repo, workflow_id: 'resume.yml', ref,
-              inputs: { at: process.env.AT, reason: (process.env.REASON || '').slice(0, 200) },
-            });
-            core.info(`resume.yml armed for ${process.env.AT}`);

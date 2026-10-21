@@ -522,7 +522,8 @@ def test_b407_the_propose_loop_stops_at_a_refusal_instead_of_logging_a_proposal(
     proposed = lines.index('echo "item ${n}: proposed"')
     assert reader < guard < proposed
     assert '"${status}" -eq 0' in lines[guard]
-    handler = lines[guard + 1 : guard + 3]
+    # The log line, the outcome the summary step reads (D96), then the break.
+    handler = lines[guard + 1 : guard + 4]
     assert "break" in handler and not any("failed=1" in line for line in handler), handler
     assert "runs/**/*.txt" in _upload_paths(text), "the kept output is uploaded as evidence"
 

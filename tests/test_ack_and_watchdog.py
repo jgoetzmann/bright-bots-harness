@@ -507,6 +507,7 @@ def test_every_step_of_every_spending_workflow_is_classified():
         "Upload run artifacts",
         # Read-only and never failing, but after the spend like the two above (D95).
         "When to come back (harness wake)",
+        "Say what this run proposed",
         # The relay job's one step: a re-run would arm a second alarm for the same time (D95).
         "Arm the resume relay",
     }

@@ -463,6 +463,7 @@ harness relabel              # migrate open issues from harness:* to stage:/kind
 harness sync-fork            # fast-forward the fork from upstream; loud on divergence
 harness quiet                # wait until nobody else is using the subscription; exit 0 either way
 harness wake                 # when the resume relay should next start a run; starts nothing
+harness wake --planning      # also when discover.yml comes back for proposals a held run owes
 harness init --labels        # create the nineteen labels
 harness setup --tier 2       # what a tier still needs and who must act (writes HUMAN.md)
 harness archive 4            # promote a review package from runs/ into packages/
@@ -488,13 +489,20 @@ stored rate limit, the session's reset after the usage stop, an hour after a qui
 somebody else spending, or 20 minutes from now when more approved work is waiting. `null` means
 nothing would start in the next 24 hours, or the harness is halted. The workflow's `relay` job
 hands that time to `resume.yml`, which sleeps until then in hops of at most 105 minutes and
-dispatches `implement.yml`; every check runs again there.
+dispatches `implement.yml`; every check runs again there. `--planning`, which only `discover.yml`
+passes, adds `planning`: the same answer for the queued items a held triage run still owes a
+propose attempt, without the run window, since discovery is not window-gated. Its relay hands
+that time to `resume.yml` with `workflow: discover.yml` (D96).
 
 `dispatch --owe`, which every workflow passes, owes the approved items to the run window while it
 is open: each stays startable after the window until it starts or the window opens again.
 `dispatch --scheduled`, which `implement.yml` passes on a scheduled run, owes them the same way up
 to six hours after the window closed, because every scheduled firing sits inside the window.
-Without either flag `dispatch` writes nothing.
+Without either flag `dispatch` writes nothing. `dispatch --planning`, which `discover.yml` passes
+on a triage run, owes every item queued for a proposal one propose attempt (`window.planning`);
+`harness propose` settles the item once its call ran, whatever it produced, and a rate limit or
+the usage stop leaves it owed. While one is owed, `harness status` says
+`no proposal generated yet for #153` (D96).
 
 See [LOCAL-MODE.md](LOCAL-MODE.md) for `local-loop`. `ack` is what `ack.yml` calls: it runs a
 comment through the sweep's parser and trust gate and prints the "working on it" text, or nothing.

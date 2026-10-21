@@ -206,7 +206,7 @@ notifications on the way.
 | Step | When |
 |---|---|
 | 1. `/harness work` is heard | minutes on the inbox, up to three hours on brightboost; it opens a `stage:queued` item |
-| 2. The plan | the next `discover` run, **03:47 UTC every day**, unless Jack runs one sooner |
+| 2. The plan | the next `discover` run, **03:47 UTC every day**, unless Jack runs one sooner; a run held by a usage limit comes back once it clears |
 | 3. Gate 1 | whenever Jack merges the proposal |
 | 4. The code | from the run window, **daily 01:30 to 06:30 UTC** (20:30 to 01:30 Central in summer); a merge outside it starts at the next 01:30 UTC unless Jack starts it sooner |
 | 5. Gate 2 | the delivery pull request on brightboost is yours |
@@ -218,7 +218,9 @@ subscription session, which the harness stops using at 80%. The subscription is 
 and with the night bot, so the scheduled build and discovery runs first check that nobody else is
 using it, which takes ten minutes; while somebody is, they wait up to two hours. Work the window
 opened is not dropped when the window closes, a usage stop is hit or somebody else maxes the
-subscription: the harness comes back once that clears, and starts it then. The sweeps and your
+subscription: the harness comes back once that clears, and starts it then. A plan is not dropped
+either: a discover run held before it reached a queued item comes back for it, and its run page
+says `Proposal generated` or `No proposal generated` and why. The sweeps and your
 comments skip the check, though a comment can queue behind a run that is waiting. Worst case, with
 nothing halted or ahead of it, a request queued just after 03:47 UTC reaches a delivery pull
 request about a day after Jack merges its proposal.

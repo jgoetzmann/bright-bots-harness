@@ -436,6 +436,46 @@ class Ledger:
             return frozenset()
         return frozenset(self._owed_numbers(record)) if since <= current < until else frozenset()
 
+    # -- the owed proposals --------------------------------------------------------------------
+
+    def owe_planning(self, items: Iterable[int], *, since: str) -> None:
+        """Owe each of ``items``, queued here for a proposal, one propose attempt (D96).
+
+        Items owed already keep the record's ``since``. Nothing to owe records nothing.
+        """
+        numbers = {int(n) for n in items}
+        if not numbers:
+            return
+        current = self.planning_owed()
+        if current is not None:
+            numbers |= set(self._owed_numbers(current))
+            since = str(current.get("since") or since)
+        self.window["planning"] = {"items": sorted(numbers), "since": str(since)}
+
+    def planning_owed(self) -> dict | None:
+        record = self.window.get("planning")
+        return dict(record) if isinstance(record, dict) and record else None
+
+    def planning_items(self) -> frozenset[int]:
+        """The items a planning run owes a propose attempt; an unreadable record is none."""
+        record = self.planning_owed()
+        return frozenset(self._owed_numbers(record)) if record is not None else frozenset()
+
+    def keep_planning(self, still: Iterable[int]) -> None:
+        """Drop owed proposals not in ``still``, and the record once none is left (D96)."""
+        current = self.planning_owed()
+        if current is None:
+            return
+        keep = sorted(set(self._owed_numbers(current)) & {int(n) for n in still})
+        if keep:
+            self.window["planning"] = {**current, "items": keep}
+        else:
+            self.window.pop("planning", None)
+
+    def planned(self, item_id: int) -> None:
+        """A propose attempt ran for ``item_id``, whatever it produced, so nothing is owed."""
+        self.keep_planning(self.planning_items() - {int(item_id)})
+
     # -- force -------------------------------------------------------------------------------
 
     def force(self, item_id: int) -> None:
@@ -577,6 +617,13 @@ class Ledger:
                 "items": [int(n) for n in self._owed_numbers(owed)],
                 "since": str(owed.get("since", "")),
                 "until": str(owed.get("until", "")),
+            }
+        # Written only while a planning run owes a proposal, like the five above (D96).
+        planning = self.planning_owed()
+        if planning is not None:
+            window["planning"] = {
+                "items": [int(n) for n in self._owed_numbers(planning)],
+                "since": str(planning.get("since", "")),
             }
         # Written only once a quiet check has run, like the four above (D93).
         quiet = self.quiet_check()

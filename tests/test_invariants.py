@@ -461,7 +461,7 @@ HANDOFF_WORKFLOWS = (
 ADDED_WORKFLOWS = {
     "ack.yml": "D65/B293 — say 'working on it' within seconds; spends nothing, takes no lock",
     "watchdog.yml": "D65/B294 — dispatch feedback when a scheduled run never started",
-    "resume.yml": "D95/B544 — start implement.yml at the time `harness wake` gave",
+    "resume.yml": "D95/B544 — start implement.yml or discover.yml (D96) when `harness wake` says",
 }
 ALL_WORKFLOWS = HANDOFF_WORKFLOWS + tuple(ADDED_WORKFLOWS)
 # The full expected cron list per scheduled workflow; the others carry none. discover and
@@ -2966,7 +2966,7 @@ def test_B434_the_suite_imports_the_harness_that_sits_beside_it():
 def test_B544_resume_yml_is_a_dispatch_only_relay_that_holds_no_lock_and_no_secret():
     """B544 (D95): resume.yml runs only on `workflow_dispatch`, outside `harness-ledger`, with
     no secret and no checkout; it checks `.harness/HALT` first, hops inside the job's 120
-    minutes, and dispatches only implement.yml or its own next hop."""
+    minutes, and dispatches only implement.yml, discover.yml (B549) or its own next hop."""
     text = _d2_workflow("resume.yml")
     jobs = _workflow_jobs(text)
 
@@ -2983,26 +2983,33 @@ def test_B544_resume_yml_is_a_dispatch_only_relay_that_holds_no_lock_and_no_secr
     assert "HOP_MS = 105 * 60_000" in job, "a hop must end well inside the 120-minute job"
     steps = re.findall(r"^      - name: (.+)$", job, re.M)
     assert steps[0] == "HALT check (.harness/HALT on the default branch)"
-    assert set(re.findall(r"workflow_id: '([^']+)'", job)) == {"resume.yml", "implement.yml"}
-    assert "run-name: resume at ${{ inputs.at }}" in text, "the earliest-alarm check reads it"
+    assert set(re.findall(r"workflow_id: '([^']+)'", job)) == {"resume.yml"}
+    assert "const TARGETS = ['implement.yml', 'discover.yml'];" in job
+    assert "if (!TARGETS.includes(target)) {" in job, "nothing else may be started"
+    assert "owner, repo, workflow_id: target, ref," in job
+    assert "run-name: resume ${{ inputs.workflow }} at ${{ inputs.at }}" in text, (
+        "the earliest-alarm check reads it"
+    )
 
 
 def test_B544_the_relay_never_dispatches_over_a_pending_ledger_run_or_a_live_implement_run():
     """B544: at its time the relay waits while a `harness-ledger` run is pending, since a
-    dispatch would replace it, stops when an implement run is already queued or running, and
-    an earlier alarm makes a later one stop."""
+    dispatch would replace it, stops when a run of its workflow is already queued or running,
+    and an earlier alarm for that workflow makes a later one stop (B549)."""
     job = _workflow_jobs(_d2_workflow("resume.yml"))["relay"]
 
     assert "LEDGER_WORKFLOWS = ['implement.yml', 'discover.yml', 'feedback.yml']" in job
     assert "PENDING.includes(run.status)" in job
-    assert "workflow === 'implement.yml' && ACTIVE.includes(run.status)" in job
+    assert "workflow === target && ACTIVE.includes(run.status)" in job
     assert "other < at || (other === at && chain < origin)" in job, "the older chain breaks a tie"
     assert "STALE_MS" in job and "HORIZON_MS" in job
     # feedback holds the lock at job level (B546), so its waiting job is read off the jobs list.
     assert "listJobsForWorkflowRun" in job and "job.name === 'feedback'" in job
     text = _d2_workflow("resume.yml")
-    assert "run-name: resume at ${{ inputs.at }} ${{ inputs.origin }}" in text
+    title = "run-name: resume ${{ inputs.workflow }} at ${{ inputs.at }} ${{ inputs.origin }}"
+    assert title in text
     assert "origin: `${origin}`" in job, "a hop passes its chain on"
+    assert "at: process.env.AT, workflow: target," in job, "and its workflow"
 
 
 @pytest.mark.parametrize(
@@ -3027,8 +3034,15 @@ def test_B545_each_spending_workflow_ends_with_a_relay_job_that_spends_nothing(n
     ), "wake reads the ledger the run is about to commit"
 
     assert f"    needs: {spender}\n" in relay
-    # Only after a green job, so a run that keeps failing never brings itself back.
-    assert f"    if: success() && needs.{spender}.outputs.wake_at != ''\n" in relay
+    # Only after a green job, so a run that keeps failing never brings itself back. discover's
+    # relay also arms its planning alarm (B550).
+    if spender == "discover":
+        assert (
+            "    if: >-\n      success() && (needs.discover.outputs.wake_at != ''\n"
+            "      || needs.discover.outputs.planning_at != '')\n"
+        ) in relay
+    else:
+        assert f"    if: success() && needs.{spender}.outputs.wake_at != ''\n" in relay
     permissions = re.search(r"^    permissions:\n((?:      .*\n)+)", relay, re.M)
     assert permissions and permissions.group(1).split("#")[0].split() == ["actions:", "write"]
     assert "secrets." not in relay and "actions/checkout" not in relay
@@ -3062,7 +3076,8 @@ def test_B548_every_workflow_dispatch_owes_and_only_a_scheduled_implement_run_is
 
     assert text.count("plan=\"$(harness dispatch --owe ${SCHEDULED:+--scheduled})\"") == 2
     assert text.count("SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}") == 2
-    assert _d2_workflow("discover.yml").count("plan=\"$(harness dispatch --owe)\"") == 2
+    discover = _d2_workflow("discover.yml")
+    assert discover.count("plan=\"$(harness dispatch --owe ${PLANNING:+--planning})\"") == 2
     assert "harness dispatch --owe | tee" in _d2_workflow("feedback.yml")
     for name in SPENDING_WORKFLOWS:
         for line in _d2_workflow(name).splitlines():
@@ -3070,3 +3085,80 @@ def test_B548_every_workflow_dispatch_owes_and_only_a_scheduled_implement_run_is
                 assert "--owe" in line, f"{name}: {line.strip()}"
     assert "--scheduled" not in _d2_workflow("discover.yml")
     assert "--scheduled" not in _d2_workflow("feedback.yml")
+
+
+# ======================================================================================
+# D96: the planning alarm, and a run that says whether it proposed anything.
+# ======================================================================================
+
+#: The relay jobs' shared reading of an alarm's title; one without a workflow is implement's.
+ALARM_TITLE = "const TITLE = /^resume (?:(\\S+\\.yml) )?at (\\S+)/;"
+
+
+@pytest.mark.parametrize("name", SPENDING_WORKFLOWS)
+def test_B549_an_alarm_covers_only_alarms_for_its_own_workflow(name):
+    """B549 (D96): each relay job treats a pending alarm as covering its own only when both
+    start the same workflow, so a planning alarm never stands in for a build's, or the reverse,
+    and resume.yml's earliest-alarm check compares alarms the same way."""
+    relay = _workflow_jobs(_d2_workflow(name))[RELAY_JOB]
+    assert ALARM_TITLE in relay
+    assert "(title[1] || 'implement.yml') !== alarm.workflow" in relay
+    assert "at: alarm.at, workflow: alarm.workflow," in relay
+    expected = {"discover.yml": ["implement.yml", "discover.yml"]}.get(name, ["implement.yml"])
+    assert re.findall(r"\{\s*workflow: '([^']+)'", relay) == expected
+
+    resume = _workflow_jobs(_d2_workflow("resume.yml"))["relay"]
+    assert "const TITLE = /^resume (?:(\\S+\\.yml) )?at (\\S+)(?:\\s+(\\d+))?/;" in resume
+    assert "(title[1] || 'implement.yml') !== target) return false;" in resume
+
+
+def test_B550_discover_owes_proposals_only_in_triage_and_arms_the_planning_alarm():
+    """B550 (D96): discover.yml's dispatch passes `--planning` exactly when the run is a triage
+    run, the one mode that proposes the whole queue; its wake step asks for the planning time,
+    and the relay hands that time to resume.yml with discover.yml as the workflow."""
+    text = _d2_workflow("discover.yml")
+    assert text.count(
+        "PLANNING: ${{ (github.event.inputs.mode || 'triage') == 'triage' && '1' || '' }}"
+    ) == 2
+    for other in ("implement.yml", "feedback.yml"):
+        assert "--planning" not in _d2_workflow(other), f"{other} never owes or arms planning"
+
+    jobs = _workflow_jobs(text)
+    spend, relay = jobs["discover"], jobs[RELAY_JOB]
+    wake = next(block for block in _step_blocks(spend) if "harness --json wake" in block)
+    assert "harness --json wake --planning | tee runs/wake.json" in wake
+    assert "planning_at=$(jq -r '.planning.at // empty' runs/wake.json)" in wake
+    assert "      planning_at: ${{ steps.wake.outputs.planning_at }}" in spend
+    assert "PLANNING_AT: ${{ needs.discover.outputs.planning_at }}" in relay
+    assert ".filter((alarm) => alarm.at)" in relay, "an empty time arms nothing"
+
+
+def test_B557_discover_says_whether_it_generated_a_proposal():
+    """B557 (D96): a green discover run is not a proposal. After the wake step, a step that cannot
+    fail the run writes the summary and one annotation: `Proposal generated` naming the items,
+    or `No proposal generated` and why, with the planning retry when one is armed."""
+    spend = _workflow_jobs(_d2_workflow("discover.yml"))["discover"]
+    steps = re.findall(r"^      - name: (.+)$", spend, re.M)
+    assert steps.index("Say what this run proposed") > steps.index(
+        "When to come back (harness wake)"
+    )
+    block = next(b for b in _step_blocks(spend) if "- name: Say what this run proposed" in b)
+    assert "always() && steps.halt.outputs.halted != 'true'" in block
+    assert "continue-on-error: true" in block
+    for source in (
+        "steps.dispatch.outputs.proceed", "needs.quiet.outputs.quiet",
+        "steps.work.outputs.proposed", "steps.work.outputs.failed",
+        "steps.work.outputs.outcome", "steps.wake.outputs.planning_at",
+    ):
+        assert source in block, source
+    assert 'title="Proposal generated"' in block and 'title="No proposal generated"' in block
+    assert 'echo "::${level} title=${title}::${text}"' in block
+    assert '>> "$GITHUB_STEP_SUMMARY"' in block
+
+    work = next(b for b in _step_blocks(spend) if "harness --json discover" in b)
+    assert "id: work" in work
+    assert 'proposed="${proposed} ${n}"' in work, "only a call that exited 0 unheld counts"
+    assert 'echo "proposed=${proposed# }" >> "$GITHUB_OUTPUT"' in work
+    for held in ("held: rate limited until", "held at #${n}: rate limited until",
+                 "nothing to propose"):
+        assert held in work, held

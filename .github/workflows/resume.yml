@@ -1,19 +1,27 @@
-# resume.yml: the relay that starts implement.yml at a given time (D95). implement, discover and
-# feedback arm it with the time `harness wake` gives: the run window's next opening, the end of a
-# rate limit or of the session's usage stop, or an hour after a busy subscription. It sleeps in
-# hops that fit a job's 120 minutes, then dispatches implement.yml, which applies the halt, the
-# window, the usage stop, the quiet check, the delivery cap and both gates again. Spends nothing,
-# holds no secret and writes no state.
+# resume.yml: the relay that starts implement.yml or discover.yml at a given time (D95, D96).
+# implement, discover and feedback arm it with the time `harness wake` gives: the run window's
+# next opening, the end of a rate limit or of the session's usage stop, or an hour after a busy
+# subscription; discover also arms it for the proposals a held triage run still owes. It sleeps
+# in hops that fit a job's 120 minutes, then dispatches the workflow, which applies the halt, the
+# usage stop, the quiet check and both gates again, and implement the window and the delivery
+# cap too. Spends nothing, holds no secret and writes no state.
 name: resume
-# The title carries the time and the chain, which is how one alarm sees another (below).
-run-name: resume at ${{ inputs.at }} ${{ inputs.origin }}
+# The title carries the workflow, the time and the chain, which is how one alarm sees another
+# for the same workflow (below).
+run-name: resume ${{ inputs.workflow }} at ${{ inputs.at }} ${{ inputs.origin }}
 
 on:
   workflow_dispatch:
     inputs:
       at:
-        description: "UTC time to start implement.yml, e.g. 2026-10-14T01:30:00Z"
+        description: "UTC time to start the workflow, e.g. 2026-10-14T01:30:00Z"
         required: true
+      workflow:
+        description: "what to start: implement.yml builds, discover.yml proposes (D96)"
+        required: false
+        default: implement.yml
+        type: choice
+        options: [implement.yml, discover.yml]
       reason:
         description: "why this time, as `harness wake` said it"
         required: false
@@ -24,8 +32,9 @@ on:
         default: ""
 
 # Outside the `harness-ledger` group: it writes no state, and a relay waiting in the group would
-# hold the lock it is waiting to hand over. Alarms do not cancel each other; the earliest one
-# stands, the oldest chain breaks a tie, and any other stops itself when it next checks.
+# hold the lock it is waiting to hand over. Alarms do not cancel each other; of those for one
+# workflow the earliest stands, the oldest chain breaks a tie, and any other stops itself when it
+# next checks.
 
 jobs:
   relay:
@@ -33,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120          # B125: one hop sleeps at most 105 of them
     permissions:
-      actions: write              # read run history; dispatch implement.yml or the next hop
+      actions: write              # read run history; dispatch the workflow or the next hop
       contents: read              # read .harness/HALT
     steps:
       - name: HALT check (.harness/HALT on the default branch)
@@ -54,11 +63,12 @@ jobs:
             echo "halted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Sleep until the time, then start implement.yml or the next hop
+      - name: Sleep until the time, then start the workflow or the next hop
         if: steps.halt.outputs.halted != 'true'
         uses: actions/github-script@v7
         env:
           AT: ${{ inputs.at }}
+          WORKFLOW: ${{ inputs.workflow }}
           REASON: ${{ inputs.reason }}
           ORIGIN: ${{ inputs.origin }}
         with:
@@ -73,6 +83,10 @@ jobs:
             // An alarm this far past its time is stale: the next harness run arms a fresh one.
             const STALE_MS = 6 * 3_600_000;
             const LEDGER_WORKFLOWS = ['implement.yml', 'discover.yml', 'feedback.yml'];
+            // What an alarm may start; a title without one is an implement alarm (D96).
+            const TARGETS = ['implement.yml', 'discover.yml'];
+            const target = process.env.WORKFLOW || 'implement.yml';
+            const TITLE = /^resume (?:(\S+\.yml) )?at (\S+)(?:\s+(\d+))?/;
             const ACTIVE = ['queued', 'requested', 'waiting', 'pending', 'in_progress'];
             const PENDING = ['queued', 'requested', 'waiting', 'pending'];
             const origin = Number(process.env.ORIGIN) || context.runId;
@@ -80,6 +94,10 @@ jobs:
             const left = () => HOP_MS - (Date.now() - started);
             const sleep = (ms) => new Promise((done) => setTimeout(done, Math.max(0, ms)));
 
+            if (!TARGETS.includes(target)) {
+              core.setFailed(`not a workflow an alarm starts: ${JSON.stringify(target)}`);
+              return;
+            }
             if (Number.isNaN(at)) {
               core.setFailed(`not a time: ${JSON.stringify(process.env.AT)}`);
               return;
@@ -93,17 +111,19 @@ jobs:
               return;
             }
 
-            // The earliest alarm stands, and of two at the same time the older chain. A chain's
-            // hops share their origin, so a hop never stops for the one that dispatched it.
+            // Of the alarms for this workflow the earliest stands, and of two at the same time the
+            // older chain. A chain's hops share their origin, so a hop never stops for the one
+            // that dispatched it.
             const earlierStands = async () => {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 owner, repo, workflow_id: 'resume.yml', per_page: 50,
               });
               return (data.workflow_runs || []).some((run) => {
                 if (run.id === context.runId || !ACTIVE.includes(run.status)) return false;
-                const title = /^resume at (\S+)(?:\s+(\d+))?/.exec(String(run.display_title || ''));
-                const other = title ? Date.parse(title[1]) : NaN;
-                const chain = title && title[2] ? Number(title[2]) : run.id;
+                const title = TITLE.exec(String(run.display_title || ''));
+                if (!title || (title[1] || 'implement.yml') !== target) return false;
+                const other = Date.parse(title[2]);
+                const chain = title[3] ? Number(title[3]) : run.id;
                 return !Number.isNaN(other) && (other < at || (other === at && chain < origin));
               });
             };
@@ -111,7 +131,8 @@ jobs:
               await github.rest.actions.createWorkflowDispatch({
                 owner, repo, workflow_id: 'resume.yml', ref,
                 inputs: {
-                  at: process.env.AT, reason: process.env.REASON || '', origin: `${origin}`,
+                  at: process.env.AT, workflow: target, reason: process.env.REASON || '',
+                  origin: `${origin}`,
                 },
               });
               core.info(`not yet ${process.env.AT}; the next hop is dispatched`);
@@ -139,7 +160,8 @@ jobs:
             }
 
             // Due. A dispatch would replace a run already pending in `harness-ledger`, so it waits
-            // for that run to start; an implement run already queued or running plans for itself.
+            // for that run to start; a run of the workflow already queued or running plans for
+            // itself.
             for (;;) {
               if (await earlierStands()) {
                 core.info('an earlier alarm stands; this one stops');
@@ -153,8 +175,8 @@ jobs:
                 for (const run of data.workflow_runs || []) runs.push({ workflow, run });
               }
               if (runs.some(({ workflow, run }) =>
-                workflow === 'implement.yml' && ACTIVE.includes(run.status))) {
-                core.info('an implement run is already queued or running; it plans for itself');
+                workflow === target && ACTIVE.includes(run.status))) {
+                core.info(`a ${target} run is already queued or running; it plans for itself`);
                 return;
               }
               let pending = false;
@@ -172,11 +194,13 @@ jobs:
               core.info('a harness-ledger run is pending; waiting two minutes');
               await sleep(2 * 60_000);
             }
+            // discover.yml starts in triage, its schedule's mode, so it waits for a quiet
+            // subscription and proposes the queue (D96).
             await github.rest.actions.createWorkflowDispatch({
-              owner, repo, workflow_id: 'implement.yml', ref,
+              owner, repo, workflow_id: target, ref,
             });
-            core.info(`implement.yml dispatched (${process.env.REASON || 'no reason given'})`);
+            core.info(`${target} dispatched (${process.env.REASON || 'no reason given'})`);
             await core.summary
-              .addRaw(`Started \`implement.yml\` at ${new Date().toISOString()} `)
+              .addRaw(`Started \`${target}\` at ${new Date().toISOString()} `)
               .addRaw(`for the alarm set for ${process.env.AT}.\n`)
               .write();

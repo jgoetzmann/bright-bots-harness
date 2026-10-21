@@ -100,7 +100,9 @@ through interop). The system `python3` is 3.12, which is too old.
     run up to six hours late counts as inside it (`--scheduled`). `wake_at` gives the next time
     something could start;
     each spending workflow's `relay` job hands it to `resume.yml`, which sleeps and dispatches
-    `implement.yml` (D95).
+    `implement.yml` (D95). `wake --planning` does the same for the queued items a held triage
+    run owes a propose attempt (`window.planning`), and discover's relay has `resume.yml`
+    dispatch `discover.yml` (D96).
   - `ledger.py`: `state/ledger.json`, which the workflows commit to the `harness-state` branch
     (D28). It holds the last usage reading and the carry slot: an item `deliver.handoff` hands
     off resumes before anything else, under the same usage stop as any item.

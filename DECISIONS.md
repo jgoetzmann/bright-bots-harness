@@ -1850,3 +1850,55 @@ Accepted gaps:
   relay, rather than at the next implement run GitHub happens to deliver.
 
 Allocates B538-B548.
+
+## D96 / B549-B557 - a held planning run comes back, and says whether it proposed anything
+
+Problem: the 10-15 discover run (38706833514), a 03:47 firing GitHub delivered at 08:36, reached
+its dispatch at 08:37 under a rate limit stored until 08:40 and skipped planning. `harness wake`
+asks only whether `implement.yml` would start an approved item, and nothing was approved, so it
+armed nothing, and `resume.yml` could start only `implement.yml` anyway. #153, the request for
+Bright Boost #791, waited for the next day's run. The run ended green, which read as progress.
+
+Decision:
+- A triage run owes each queued item one propose attempt. discover.yml's dispatch passes
+  `--planning` when the mode is triage, and `dispatch --planning` records the `discovered` items
+  in `window.planning` (`items`, `since`), dropping owed items no longer queued. A suggestion
+  `priority.admit` refuses is not owed, since `propose` would refuse it without an attempt.
+- `harness propose` settles its item once the stage ran, whatever it produced, so an item whose
+  proposal keeps failing never brings discover back. A rate limit, the usage stop or a halt
+  leaves it owed.
+- `harness wake --planning` adds `planning`: the floor, the stored limit's end or the session's
+  reset, earliest first, keeping the first at which no halt, rate limit or usage stop holds,
+  for the owed items still queued and admissible (`dispatcher.planning_wake_at`). The run
+  window is not tried, since discovery is not window-gated.
+- discover.yml's relay arms that time with `workflow: discover.yml` beside the build's alarm.
+  `resume.yml` takes a `workflow` input (`implement.yml`, the default, or `discover.yml`), puts
+  it in the title (`resume <workflow> at <at> <origin>`), compares an alarm only with alarms for
+  the same workflow, and dispatches that workflow. A title without a workflow reads as
+  implement's. A dispatched discover.yml runs in triage, so it waits for a quiet subscription.
+- The discover job's `Say what this run proposed` step writes the run summary and one annotation:
+  `Proposal generated` with the items, or `No proposal generated` with the reason and the
+  planning retry's time. `harness status` and the `status` reply say `no proposal generated yet
+  for #153` while a held run owes one.
+
+Why. A planning run a stop held is the case D95 fixed for builds. Only discover.yml arms the
+planning alarm, so a discover run that keeps failing never brings itself back, and every check
+runs again in the dispatched run: the halts, the usage stop, the quiet check and the governor.
+Proposing opens a pull request and nothing more, so both gates stay with people.
+
+Rejected: owing in every mode, which made a directed or audit run bring discover back for the rest
+of the queue; settling an item only when its proposal was published, which made #106, whose propose
+call has failed on every run since 10-04, bring discover back every 20 minutes; arming planning from
+implement and feedback too, which would bring a failing discover run back; one alarm for both
+workflows, which let a planning alarm displace the build's.
+
+Accepted gaps:
+- A directed, assigned or audit dispatch owes nothing; the operator asked for it and sees how it
+  ended.
+- An item queued after a run's dispatch is owed by the next scheduled run, not this one.
+- A dispatched discover run whose owed items were proposed meanwhile triages whatever is queued,
+  or the product repository when nothing is.
+- A held planning run under a busy subscription comes back an hour after each not-quiet verdict,
+  as a build does.
+
+Allocates B549-B557.

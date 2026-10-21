@@ -22,7 +22,13 @@ from harness.clock import iso, parse_iso
 from harness.clone import Lease, sync_fork
 from harness.config import in_run_window, is_daily_window, load_config, run_window_label
 from harness.context import build_context, ledger_path_for
-from harness.dispatcher import Candidate, Plan, plan as plan_dispatch, wake_at
+from harness.dispatcher import (
+    Candidate,
+    Plan,
+    plan as plan_dispatch,
+    planning_wake_at,
+    wake_at,
+)
 from harness.errors import (
     BudgetExhausted,
     ConfigError,
@@ -250,8 +256,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="--owe for a scheduled run, whose firing sat inside the window however late it came",
     )
+    dispatch.add_argument(
+        "--planning",
+        action="store_true",
+        help="a triage run: owe every item queued for a proposal one propose attempt (D96)",
+    )
 
-    sub.add_parser("wake", help="when the resume relay should next start a run; start nothing")
+    wake = sub.add_parser(
+        "wake", help="when the resume relay should next start a run; start nothing"
+    )
+    wake.add_argument(
+        "--planning",
+        action="store_true",
+        help="also when discover.yml should come back for the proposals a held run still owes",
+    )
 
     quiet = sub.add_parser(
         "quiet", help="wait until nobody else is using the subscription; exit 0 either way"
@@ -1251,6 +1269,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "halt": halt,
         "block": ctx.ledger.block_grant(),
         "quiet": ctx.ledger.quiet_check(),
+        "planning": ctx.ledger.planning_owed(),
         "actions": {"runs": runs, "error": actions_error or None, "truncated": actions_cut},
     }
 
@@ -1263,6 +1282,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     lines.extend(f"  {state:<12} {queue[state]}" for state in STATES)
     lines.extend(_usage_lines(ctx.ledger, config, now))
     lines.extend(_quiet_lines(ctx.ledger))
+    queued = [int(item.id) for item in ctx.store.list_work_items(state="discovered")]
+    planning = links.planning_line(ctx.ledger, still=queued)
+    if planning:
+        lines.append(f"planning: {planning}")
     lines.extend(links.actions_lines(runs, now, error=actions_error, truncated=actions_cut))
     lines.append(f"in flight: {len(in_flight)}")
     for row in in_flight:
@@ -1308,6 +1331,14 @@ def cmd_propose(args: argparse.Namespace) -> int:
     _require_item(ctx, args.item_id)
     try:
         spec_path = STAGES["propose"](ctx, args.item_id)
+    except (BudgetExhausted, RateLimited, Halted):
+        # Held before the attempt: the item stays owed, and the relay comes back for it (D96).
+        raise
+    except Exception:
+        ctx.ledger.planned(args.item_id)
+        raise
+    else:
+        ctx.ledger.planned(args.item_id)
     finally:
         _save_ledger(ctx)
     _emit({"item_id": args.item_id, "spec_path": str(spec_path)}, str(spec_path), args)
@@ -1810,6 +1841,26 @@ def _owe_window(ctx, config, now: datetime, approved: list[int], *, scheduled: b
         ctx.ledger.owe(approved, since=iso(opened), until=iso(following))
 
 
+def _proposable(ctx, *, suggested_refused: str | None) -> list[int]:
+    """The items queued for a proposal that a propose call would be admitted for now (D96)."""
+    return [
+        int(item.id)
+        for item in ctx.store.list_work_items(state="discovered")
+        if not (suggested_refused and priority.via_of(item) == "suggested")
+    ]
+
+
+def _owe_planning(ctx, now: datetime, *, suggested_refused: str | None) -> None:
+    """Owe each item queued for a proposal one propose attempt, and drop the rest (D96).
+
+    A triage run proposes the whole queue, so whatever stops it before an item's attempt leaves
+    that item owed for the relay. A suggestion admission refuses is never owed.
+    """
+    queued = _proposable(ctx, suggested_refused=suggested_refused)
+    ctx.ledger.keep_planning(queued)
+    ctx.ledger.owe_planning(queued, since=iso(now))
+
+
 #: What the head of the queue is waiting for, by the stage it is in. `approved` is absent
 #: because the dispatcher's plan answers for that state.
 _HEAD_WAIT: dict[str, str] = {
@@ -1860,6 +1911,11 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         _owe_window(ctx, config, now, approved, scheduled=scheduled)
         if ctx.ledger.owed() != owed_before:
             _save_ledger(ctx)
+    if getattr(args, "planning", False):
+        planning_before = ctx.ledger.planning_owed()
+        _owe_planning(ctx, now, suggested_refused=blocked)
+        if ctx.ledger.planning_owed() != planning_before:
+            _save_ledger(ctx)
     plan = plan_dispatch(now=now, **inputs)
     # The plan says what starts; the queue says what waits behind it and why (B292). Both go in
     # the plan's JSON document, because workflows parse this stdout as a single document.
@@ -1889,6 +1945,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         "grant": ctx.ledger.block_grant(),
     }
     payload["owed"] = {"now": sorted(ctx.ledger.owed_items(now)), "record": ctx.ledger.owed()}
+    payload["planning"] = ctx.ledger.planning_owed()
     print(json.dumps(payload, indent=2, sort_keys=False))
     return EXIT_OK
 
@@ -1899,12 +1956,16 @@ def cmd_wake(args: argparse.Namespace) -> int:
     Prints ``at`` (UTC, or null) and one reason. A run that stopped on the usage stop, a rate
     limit, a busy subscription or the window's end is followed by one that starts once that
     clears; `resume.yml` sleeps until ``at`` and dispatches implement.yml, which applies every
-    check again. A halt answers null.
+    check again. A halt answers null. ``--planning`` adds ``planning``, the same answer for
+    discover.yml and the proposals a held triage run still owes (D96).
     """
     try:
         check_repo_halt(_repo_root(args))
     except RepoHalted as exc:
-        _emit({"at": None, "reason": f"halted: {exc}"}, f"no wake: halted: {exc}", args)
+        payload: dict = {"at": None, "reason": f"halted: {exc}"}
+        if getattr(args, "planning", False):
+            payload["planning"] = {"at": None, "reason": f"halted: {exc}"}
+        _emit(payload, f"no wake: halted: {exc}", args)
         return EXIT_OK
     config = _load(args)
     ctx = _context(config, args, run_id="wake")
@@ -1917,7 +1978,23 @@ def cmd_wake(args: argparse.Namespace) -> int:
     )
     stamp = iso(at) if at is not None else None
     text = f"wake at {stamp}: {reason}" if stamp else f"no wake: {reason}"
-    _emit({"at": stamp, "reason": reason}, text, args)
+    payload = {"at": stamp, "reason": reason}
+    if getattr(args, "planning", False):
+        refused = priority.admit(
+            "suggested", store=ctx.store, ledger=ctx.ledger, config=config, now=ctx.clock.now()
+        )
+        owed = ctx.ledger.planning_items() & set(_proposable(ctx, suggested_refused=refused))
+        p_at, p_reason = planning_wake_at(
+            now=ctx.clock.now(), ledger=ctx.ledger, config=config, owed=owed,
+            halted=bool(inputs["halted"]),
+        )
+        p_stamp = iso(p_at) if p_at is not None else None
+        payload["planning"] = {"at": p_stamp, "reason": p_reason}
+        text += (
+            f"\nplanning: wake at {p_stamp}: {p_reason}" if p_stamp
+            else f"\nplanning: no wake: {p_reason}"
+        )
+    _emit(payload, text, args)
     return EXIT_OK
 
 

@@ -423,9 +423,9 @@ Actions → pick the workflow → **Run workflow** → branch `main` → fill th
 
 | Workflow | Runs on its own | Inputs |
 |---|---|---|
-| `discover` | `47 3,5 * * *` | `mode`, `target`, `lens`, `ignore_allowlist` |
+| `discover` | `47 3,5 * * *`, and `resume` | `mode`, `target`, `lens`, `ignore_allowlist` |
 | `implement` | `31 1-5 * * *`, a push to `proposals/**` on `main`, and `resume` | `issue` |
-| `resume` | `implement`, `discover` and `feedback`, when `harness wake` names a time | `at`, `reason` |
+| `resume` | `implement`, `discover` and `feedback`, when `harness wake` names a time | `at`, `workflow`, `reason` |
 | `feedback` | `41 */3 * * 1-5`, and any `/harness` comment here | none |
 | `ack` | any `/harness` comment here | none |
 | `heartbeat` | `5 9 * * 1` | none |
@@ -593,6 +593,17 @@ time, and any other stops itself at its next check. It waits while a `harness-le
 `feedback` job is queued, since a dispatch would replace it. A `.harness/HALT` drops it, and an
 alarm more than six hours past its time is dropped as stale. The relay holds no secret, and
 `implement.yml` applies every check again.
+
+**The planning alarm.** A triage `discover.yml` run owes each queued item one propose attempt
+(`window.planning`). When a rate limit, the usage stop or a busy subscription holds the run before
+it reaches an item, `harness wake --planning` names when it could come back, and discover's relay
+arms `resume.yml` with `workflow: discover.yml`, after a green run only. The dispatched run is a
+triage run and waits for a quiet subscription like the schedule. Alarms for the two workflows
+stand independently, and a due planning alarm waits while a due build alarm is active, so the
+build keeps its head start. A propose call that ran settles its item even when it failed, and so
+does triage leaving an item out of its ranking. The record ends a day after it began. Every
+discover run ends with a summary and one annotation, `Proposal generated` or
+`No proposal generated` and why, and `harness status` names the items still owed (D96).
 
 The window bounds only what starts: a build started at the 05:31 pass can run up to 120 minutes,
 the 03:41 weekday sweep builds inside the window, and scheduled discover is not window-gated

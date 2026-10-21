@@ -23,9 +23,11 @@ __all__ = [
     "plan",
     "usage_stop",
     "wake_at",
+    "planning_wake_at",
     "WAKE_MIN_GAP",
     "WAKE_AFTER_NOT_QUIET",
     "WAKE_HORIZON",
+    "PLANNING_OWED_FOR",
 ]
 
 #: The soonest the resume relay brings a run back, so a run that fails at once cannot loop
@@ -38,6 +40,8 @@ WAKE_AFTER_NOT_QUIET = timedelta(minutes=60)
 _NOT_QUIET_FRESH = timedelta(hours=3)
 #: The furthest ahead the relay is armed: past the next opening of a daily window.
 WAKE_HORIZON = timedelta(hours=24)
+#: How long a held planning run's record brings discover back; the next one starts afresh (D96).
+PLANNING_OWED_FOR = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -217,14 +221,14 @@ def _instant(raw: object) -> datetime | None:
         return None
 
 
-def wake_at(
-    *, now: datetime, ledger: Ledger, config: Config, plan_at: Callable[[datetime], Plan]
-) -> tuple[datetime | None, str]:
-    """The soonest time a run could start something, or ``None``, for the resume relay (D95).
+def _wake_times(
+    now: datetime, ledger: Ledger, config: Config, *, opening: bool
+) -> tuple[list[datetime], datetime]:
+    """The candidate times after ``now``, earliest first, and the horizon past which none is.
 
-    Tries the floor after now, the stored rate limit's end, the session's reset and the run
-    window's next opening, earliest first, and keeps the first at which ``plan_at`` starts
-    something. The floor is an hour after a fresh not-quiet verdict and 20 minutes otherwise.
+    The floor after now, the stored rate limit's end, the session's reset and, with
+    ``opening``, the run window's next opening. The floor is an hour after a fresh not-quiet
+    verdict and 20 minutes otherwise.
     """
     moment = as_utc(now)
     floor = WAKE_MIN_GAP
@@ -242,11 +246,51 @@ def wake_at(
     reset = _instant(five_hour.get("resets_at")) if isinstance(five_hour, dict) else None
     if reset is not None:
         times.append(reset + timedelta(minutes=1))
-    openings = window_openings(config, moment)
+    openings = window_openings(config, moment) if opening else None
     if openings is not None:
         times.append(openings[1])
-    for at in sorted({max(t, earliest) for t in times if t <= latest}):
+    return sorted({max(t, earliest) for t in times if t <= latest}), latest
+
+
+def wake_at(
+    *, now: datetime, ledger: Ledger, config: Config, plan_at: Callable[[datetime], Plan]
+) -> tuple[datetime | None, str]:
+    """The soonest time a run could start something, or ``None``, for the resume relay (D95).
+
+    Tries the floor after now, the stored rate limit's end, the session's reset and the run
+    window's next opening, earliest first, and keeps the first at which ``plan_at`` starts
+    something. The floor is an hour after a fresh not-quiet verdict and 20 minutes otherwise.
+    """
+    times, latest = _wake_times(now, ledger, config, opening=True)
+    for at in times:
         planned = plan_at(at)
         if planned.start:
             return at, f"{planned.reason} at {iso(at)}"
     return None, f"nothing would start before {iso(latest)}"
+
+
+def planning_wake_at(
+    *, now: datetime, ledger: Ledger, config: Config, owed: Collection[int], halted: bool
+) -> tuple[datetime | None, str]:
+    """The soonest time a planning run could propose the items it still owes, or ``None`` (D96).
+
+    The times `wake_at` tries but the window's opening, since discovery is not window-gated,
+    before the record's ``until``, keeping the first at which no halt, rate limit or usage stop
+    holds.
+    """
+    if not owed:
+        return None, "no proposal is owed"
+    if halted or ledger.halt_request() is not None:
+        return None, "halted"
+    until = _instant((ledger.planning_owed() or {}).get("until"))
+    if until is None or as_utc(now) >= until:
+        return None, "the held planning run's record has ended; the next run owes afresh"
+    names = ", ".join(f"#{int(n)}" for n in sorted(owed))
+    times, latest = _wake_times(now, ledger, config, opening=False)
+    for at in times:
+        if at >= until:
+            break
+        if ledger.rate_limited(iso(at)) or usage_stop(ledger, config, now=at) is not None:
+            continue
+        return at, f"{names} still owed a proposal at {iso(at)}"
+    return None, f"no planning run could start before {iso(min(latest, until))}"

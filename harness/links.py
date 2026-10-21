@@ -606,6 +606,27 @@ def block_line(ledger: Any, now: Any = None) -> str:
     )
 
 
+def planning_line(ledger: Any, *, still: "Iterable[int] | None" = None) -> str:
+    """The proposals a held planning run still owes, as one line, or `""` when none is (D96).
+
+    A green discover run that proposed nothing leaves its items here, so the line is what tells
+    a finished run from a generated proposal. ``still`` keeps only items still queued.
+    """
+    if not hasattr(ledger, "planning_items"):
+        return ""
+    owed = set(ledger.planning_items())
+    if still is not None:
+        owed &= {int(n) for n in still}
+    if not owed:
+        return ""
+    since = str((ledger.planning_owed() or {}).get("since") or "unknown")
+    items = ", ".join(f"#{n}" for n in sorted(owed))
+    return (
+        f"no proposal generated yet for {items}: a planning run was held before it reached "
+        f"them (owed since {since})"
+    )
+
+
 def fast_status(
     config: Any,
     ledger: Any,
@@ -647,6 +668,9 @@ def fast_status(
     lines.append("**Next**")
     if window:
         lines.append(f"- run window {window}")
+    planning = planning_line(ledger)
+    if planning:
+        lines.append(f"- {planning}")
     if next_sweep:
         lines.append(f"- next scheduled sweep **{next_sweep}**")
     self_repo = str(getattr(config, "self_repo", "") or "")

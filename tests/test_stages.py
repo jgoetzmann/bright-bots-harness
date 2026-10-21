@@ -2078,3 +2078,90 @@ def test_B504_directed_discover_of_a_filed_issue_returns_its_work_item(tmp_path)
 
     assert ids == [66]
     assert rig.store.list_work_items() == []
+
+
+# --------------------------------------------------------------------------------------
+# B558 - an item too large to plan in one call is parked, not retried every run (D97)
+# --------------------------------------------------------------------------------------
+
+
+def _propose_fails(rig, tmp_path, *, error, turns):
+    payload = {
+        "ok": False, "text": "", "turns": turns, "duration_ms": 1234, "session_id": "sess",
+        "exit_code": 1, "transcript": [], "error": error,
+    }
+    (tmp_path / "runner-fixtures" / "propose.json").write_text(
+        json.dumps(payload), encoding="utf-8", newline="\n"
+    )
+
+
+def test_B558_a_propose_call_out_of_turns_blocks_the_item_with_what_to_do(tmp_path):
+    """B558 (D97): a propose call that spends its whole turn cap blocks the item rather than
+    returning it for the next run to spend again; the reason names `/harness split` and
+    `/harness go`."""
+    for error, turns in (("error_max_turns", None), ("I have run out of turns.", 30)):
+        root = tmp_path / f"case-{turns}"
+        root.mkdir()
+        rig, item_id = proposable(root)
+        _propose_fails(rig, root, error=error, turns=turns)
+
+        with pytest.raises(HarnessError):
+            propose(rig.ctx, item_id)
+
+        assert rig.store.get_work_item(item_id).state == "blocked"
+        events = " ".join(str(e["message"]) for e in rig.store.events(item_id))
+        assert "ran out of its 30 turns" in events and "/harness split" in events
+
+
+def test_B558_any_other_failed_call_returns_the_item_to_the_queue(tmp_path):
+    """B558: a call that failed short of its cap may succeed next run, so it is retried."""
+    rig, item_id = proposable(tmp_path)
+    _propose_fails(rig, tmp_path, error="claude exited 1: connection reset", turns=4)
+
+    with pytest.raises(HarnessError):
+        propose(rig.ctx, item_id)
+
+    assert rig.store.get_work_item(item_id).state == "discovered"
+
+
+# --------------------------------------------------------------------------------------
+# B553 - a refused propose waits in the queue, and triage never ranks a refused suggestion
+# --------------------------------------------------------------------------------------
+
+
+def test_B553_a_propose_refused_before_its_call_goes_back_to_the_queue(tmp_path):
+    """B553 (D96): the stored limit, the usage stop or a priority refusal stops propose before
+    its call ran; the item returns to `discovered`, where the planning retry finds it."""
+    from harness.errors import BudgetExhausted
+
+    (tmp_path / "limited").mkdir()
+    (tmp_path / "suggested").mkdir()
+    limited, item_id = proposable(tmp_path / "limited")
+    limited.ctx.ledger.set_rate_limited("2026-09-01T18:00:00Z")
+    with pytest.raises(BudgetExhausted):
+        propose(limited.ctx, item_id)
+    assert limited.store.get_work_item(item_id).state == "discovered"
+
+    suggested, item_id = proposable(tmp_path / "suggested", via="suggested")
+    suggested.store.create_work_item(
+        kind="issue", external_ref="issue:900", title="asked for", via="requested"
+    )
+    with pytest.raises(BudgetExhausted):
+        propose(suggested.ctx, item_id)
+    assert suggested.store.get_work_item(item_id).state == "discovered"
+    assert suggested.runner.requests == [], "no call was made"
+
+
+def test_B553_triage_leaves_out_a_suggestion_admission_refuses(tmp_path):
+    """B553: a refused suggestion ranked first would stop the propose loop before the asked-for
+    work behind it, so the ranking never returns one while asked-for work is outstanding."""
+    rig = make_rig(tmp_path, run_id="discover", gh=FakeGh(), discover_text="#2\n#1\n")
+    asked = rig.store.create_work_item(
+        kind="issue", external_ref="issue:900", title="asked for", via="requested"
+    )
+    idea = rig.store.create_work_item(
+        kind="issue", external_ref="issue:901", title="an idea", via="suggested"
+    )
+    assert (asked, idea) == (1, 2)
+
+    assert discover(rig.ctx, mode="triage", target=None, lens=None) == [asked]

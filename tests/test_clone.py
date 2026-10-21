@@ -527,6 +527,51 @@ def _git_in(cwd, *args):
     return proc.stdout
 
 
+# --------------------------------------------------------------------------------------
+# B549 - product code inherits no credential, and no commit runs the product's hooks (D96)
+# --------------------------------------------------------------------------------------
+
+
+def test_B549_no_command_inherits_a_credential(monkeypatch, tmp_path):
+    """B549: `npm ci`'s scripts, every gate and every git call run without the harness's tokens,
+    and with `HUSKY=0`."""
+    import json
+    import sys
+
+    from harness import gates
+
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "not-a-real-token")
+    monkeypatch.setenv("SOME_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("HARNESS_PLAIN", "kept")
+    code, out, err = gates.run_command(
+        [sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"], tmp_path
+    )
+    assert code == 0, err
+    env = json.loads(out)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert "SOME_API_KEY" not in env
+    assert env["HARNESS_PLAIN"] == "kept"
+    assert env["HUSKY"] == "0"
+
+
+def test_B549_a_refusing_pre_commit_hook_does_not_stop_the_harness_commit(tmp_path):
+    """B549: `npm ci` points core.hooksPath at husky's hooks; `_commit` still runs none."""
+    from harness.stages.implement import _commit
+
+    repo = _walk_repo(tmp_path)
+    hooks = repo / ".husky" / "_"
+    hooks.mkdir(parents=True)
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    _git_in(repo, "config", "core.hooksPath", ".husky/_")
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+
+    _commit(repo, "fix: a\n")
+
+    assert _git_in(repo, "log", "-1", "--format=%s").strip() == "fix: a"
+
+
 # --- D67 / B312-B314: reading history the way a push sends it ------------------------------
 
 

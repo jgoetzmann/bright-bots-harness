@@ -689,7 +689,8 @@ def _continue_rebase(ctx: Context, item_id: int, lease: Lease) -> None:
     if code != 0:
         raise HarnessError(f"git add failed in {lease.path}: {err.strip()[-2000:]}")
     code, out, err = gates.run_command(
-        ["git", "-c", "core.editor=true", *deliver_mod.GIT_IDENTITY, "rebase", "--continue"],
+        ["git", "-c", "core.editor=true", *deliver_mod.GIT_IDENTITY, *deliver_mod.HOOKS_OFF_ARGS,
+         "rebase", "--continue"],
         lease.path,
     )
     if code != 0:

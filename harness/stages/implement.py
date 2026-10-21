@@ -134,6 +134,9 @@ def _commit(clone: Path, message: str) -> None:
             "user.name=Bright Bots Harness",
             "-c",
             "user.email=harness@localhost",
+            # Hooks off on the command line: `npm ci` points `core.hooksPath` at husky (B229).
+            "-c",
+            f"core.hooksPath={HOOKS_OFF}",
             "commit",
             "-F",
             str(msg_path),

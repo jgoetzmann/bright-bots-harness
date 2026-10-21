@@ -812,7 +812,9 @@ def setup_deliver(tmp_path: Path, *, state="packaged", can_write=True,
     gh = FakeGh(clock=clock, can_write=can_write)
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
-    store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL)
+    store = GitHubStore(
+        gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL, machine=BOT
+    )
     repo, base, tip = make_work_repo(tmp_path, config.runs_dir, ITEM, tip_email=HARNESS_EMAIL)
     gh.add_issue(ITEM, TITLE, body=ref, labels=[LABELS[state]])
     run_dir = config.runs_dir / f"item-{ITEM}"

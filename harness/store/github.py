@@ -101,6 +101,11 @@ def _parse_meta(body: str) -> dict[str, Any] | None:
     return found
 
 
+def _author(comment: Mapping[str, Any]) -> str:
+    user = comment.get("user")
+    return str(user.get("login") or "").lower() if isinstance(user, Mapping) else ""
+
+
 def _latest_meta(comments: list[dict]) -> dict[str, Any]:
     meta: dict[str, Any] = {}
     for comment in comments:
@@ -193,9 +198,19 @@ class GitHubStore:
         run_url: str = "",
         config: Any = None,
         trusted: Iterable[str] = (),
+        machine: str | None = None,
     ) -> None:
+        from harness.gh import machine_logins
+
         if not self_repo or "/" not in self_repo:
             raise StoreError(f"self_repo must be 'owner/name', got {self_repo!r}")
+        if machine is None:
+            # The machine account owns the fork it pushes to (B233).
+            fork = str(getattr(config, "fork_repo", "") or "")
+            machine = fork.split("/")[0] if "/" in fork else ""
+        # The only authors whose comments the store reads back: anybody can post a meta marker
+        # on a public issue, so one from anyone else is never the item's state (D96).
+        self._authors = machine_logins(machine)
         self.gh = gh
         self.self_repo = self_repo
         self.scratch = scratch
@@ -260,9 +275,11 @@ class GitHubStore:
         return dict(data)
 
     def _comments(self, number: int) -> list[dict]:
-        return self._pages(
+        """The comments the harness itself wrote on issue `number`, oldest first (D96)."""
+        comments = self._pages(
             f"/repos/{self.self_repo}/issues/{int(number)}/comments?per_page={PER_PAGE}"
         )
+        return [c for c in comments if _author(c) in self._authors]
 
     def _meta(self, number: int) -> dict[str, Any]:
         return _latest_meta(self._comments(number))

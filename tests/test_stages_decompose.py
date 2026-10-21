@@ -503,7 +503,9 @@ def setup_decompose(tmp_path: Path, *, parent_body: str = PARENT_BODY,
     gh = FakeGh(clock=clock)
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
-    store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL)
+    store = GitHubStore(
+        gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL, machine=BOT
+    )
     gh.add_issue(PARENT, PARENT_TITLE, body=parent_body, labels=list(parent_labels))
     gh.calls.clear()
     gh.sent.clear()

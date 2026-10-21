@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+
+from harness.config import environ_snapshot
 
 log = logging.getLogger("harness")
 
@@ -72,12 +75,29 @@ def _tail(text: str) -> str:
     return text[-TAIL_CHARS:]
 
 
+#: Every variable named like a credential, which no command run here inherits: the product's
+#: install scripts, tests and builds run in this environment (D96).
+_CREDENTIAL_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PRIVATE_KEY", re.I)
+
+
+def command_env() -> dict[str, str]:
+    """The harness's environment without its credentials, and with ``HUSKY=0``.
+
+    ``HUSKY=0`` stops ``npm ci``'s husky from pointing ``core.hooksPath`` back at the product's
+    hooks, and stops a husky hook from running if one is reached anyway (D96).
+    """
+    env = {k: v for k, v in environ_snapshot().items() if not _CREDENTIAL_NAME.search(k)}
+    env["HUSKY"] = "0"
+    return env
+
+
 def run_command(argv: list[str], cwd: Path) -> tuple[int, str, str]:
-    """``(exit_code, stdout, stderr)`` of one subprocess. No shell, ever."""
+    """``(exit_code, stdout, stderr)`` of one subprocess. No shell, ever; no credentials."""
     try:
         proc = subprocess.run(
             argv,
             cwd=str(cwd),
+            env=command_env(),
             shell=False,
             capture_output=True,
             text=True,

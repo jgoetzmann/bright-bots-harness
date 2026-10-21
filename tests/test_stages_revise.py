@@ -678,7 +678,9 @@ def setup_revise(tmp_path: Path, monkeypatch, *, state="shipped", tip_email=HARN
     gh = TimelineGh(timeline, clock=clock) if timeline is not None else FakeGh(clock=clock)
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
-    store = GitHubStore(gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL)
+    store = GitHubStore(
+        gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL, machine=BOT
+    )
     repo, base, tip = make_work_repo(tmp_path, config.runs_dir, ITEM, tip_email=tip_email)
     # A clone taken from the fork records the fork's tip as `origin/<branch>` (D91).
     _git("update-ref", f"refs/remotes/origin/{BRANCH}", tip, cwd=repo)

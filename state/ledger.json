@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 113,
+    "calls": 115,
     "rate_limited_until": "2026-10-20T10:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.61,
+        "utilization": 0.64,
         "resets_at": "2026-10-21T11:00:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-10-21T09:04:00Z"
+      "observed_at": "2026-10-21T09:08:24Z"
     },
     "owed": {
       "items": [
@@ -792,6 +792,18 @@
     },
     {
       "ts": "2026-10-19T09:34:33Z",
+      "stage": "propose",
+      "issue": 106,
+      "run": ""
+    },
+    {
+      "ts": "2026-10-21T09:05:02Z",
+      "stage": "discover",
+      "issue": 0,
+      "run": ""
+    },
+    {
+      "ts": "2026-10-21T09:08:24Z",
       "stage": "propose",
       "issue": 106,
       "run": ""

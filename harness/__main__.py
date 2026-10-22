@@ -3292,7 +3292,9 @@ def cmd_tidy(args: argparse.Namespace) -> int:
 
 
 def _self_repo_comments(ctx, config) -> list[dict]:
-    """Every comment on every issue of SELF_REPO, shaped for `ledger.rebuild`."""
+    """Every comment the machine account wrote on an issue of SELF_REPO, shaped for
+    `ledger.rebuild`: a stranger's comment is no record of a run (D98)."""
+    machine = discover_stage.machine_account(config).lower()
     listing = ctx.gh.get(f"/repos/{config.self_repo}/issues?state=all&per_page=100")
     comments: list[dict] = []
     for issue in listing if isinstance(listing, list) else []:
@@ -3302,6 +3304,8 @@ def _self_repo_comments(ctx, config) -> list[dict]:
         if number <= 0:
             continue
         for comment in ctx.gh.issue_comments(config.self_repo, number):
+            if str((comment.get("user") or {}).get("login") or "").lower() != machine:
+                continue
             comments.append(
                 {
                     "body": str(comment.get("body", "") or ""),

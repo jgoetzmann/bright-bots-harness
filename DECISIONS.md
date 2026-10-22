@@ -1936,3 +1936,63 @@ Rejected: counting failures across runs, which needs a counter the GitHub store 
 raising the propose cap, which spends more on every item to fit one.
 
 Allocates B558.
+
+## D98 / B559 - the store reads only its own comments, and product code inherits no credential
+
+Problem: an audit from an outsider's side found three ways untrusted input reaches the harness's
+state or its credentials.
+
+- `GitHubStore` read an item's state from the newest `<!-- harness-meta {...} -->` marker on its
+  issue, whoever posted it. The issues are public, so anyone could point an item at another
+  product issue (which propose then read in place of the allowlisted one), another branch or a
+  dependency, reset its attempts, or set the `previous_state` the stale reset sends it to,
+  `abandoned` included. The marker renders as nothing, so the owner saw an empty comment.
+  `harness ledger --rebuild` read every author's transition comments the same way.
+- Every process `gates.run_command` starts inherited the harness's environment, so `npm ci`'s
+  lifecycle scripts, every gate and every git call ran with `CLAUDE_CODE_OAUTH_TOKEN` in reach.
+  A dependency that dumps its environment, the commonest npm compromise, would have taken it.
+- `npm ci` runs husky, which points `core.hooksPath` back at `.husky/_`, and only the push turned
+  hooks off on its command line (B229): `_commit` and the rebases ran the product's hooks. And
+  `HOOKS_OFF` was `no-hooks`, a relative path git reads from the clone's root, so a `no-hooks/`
+  directory in the product's tree, or written by its code, ran hooks during the push too, where
+  `GIT_CONFIG_PARAMETERS` carries the PAT's header. Every `actions/checkout` in `implement.yml`,
+  `feedback.yml` and `discover.yml` also kept the job's `contents: write` token in the harness
+  checkout's `.git/config`, three directories above the clone.
+
+Decision:
+- `GitHubStore` reads back only comments by `machine`, the account it writes as: the owner of
+  `FORK_REPO` (B233) unless a caller names one. Of those, a comment counts as the item's state
+  only when it is the marker alone or a transition (`TRANSITION_HEAD`) ending in it, since the
+  machine account's other comments repeat model and proposal text. Every meta marker, live-run
+  marker and transition comment the store reads goes through `_comments`. The ledger rebuild
+  keeps the machine account's comments only.
+- `gates.run_command` gives every command `gates.command_env()`: the environment without any
+  variable whose name holds `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `API_KEY` or
+  `PRIVATE_KEY`, and with `HUSKY=0`, so husky neither installs nor runs a hook. The runner's
+  environment for `claude` is unchanged (B26).
+- `HOOKS_OFF` is `os.devnull`, outside every worktree. `_commit`, the delivery rebase's fetch,
+  rebase and abort, and revise's `rebase --continue` pass it on the command line as the push
+  does (`deliver.HOOKS_OFF_ARGS`).
+- Those checkouts set `persist-credentials: false`. The ledger commit step takes the job's token
+  as `GH_TOKEN` and gives it to its `git push` as an `http.extraheader`, masked; its fetches are
+  anonymous, since the repository is public.
+
+Rejected: a list of the harness's own secret names instead of a name pattern, which misses the
+next secret somebody adds; scrubbing in each caller, which `run_command`'s many callers would
+drift from; trusting meta markers from anyone on `trust.txt`, or from `github-actions[bot]`,
+neither of which writes them; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` on the runner, untested here
+and reported to stop `claude` at startup on Linux without bubblewrap.
+
+Accepted gaps:
+- The machine account's PAT is still in `.env` on disk, readable by any process the job runs.
+  Only a job split, where the model and the gates run without it and a separate job pushes,
+  closes that.
+- What the model runs through `Bash` inherits `claude`'s environment, `CLAUDE_CODE_OAUTH_TOKEN`
+  included. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is the setting to try in a real run.
+- The ledger step runs after the model in the same job, so hooks, git config or a process the
+  model left behind on the runner can still reach the job's token there.
+- Product code can still edit the clone's own `.git/config`, which every later git call in the
+  clone reads; the command-line keys above win only for the keys they name.
+- A product command that needs a credential from the environment now fails. No gate needs one.
+
+Allocates B559.

@@ -94,6 +94,9 @@ GIT_IDENTITY = (
     "-c",
     "user.email=harness@brightboost-harness",
 )
+#: Hooks off for a git call that writes in the clone: `npm ci` points `core.hooksPath` at
+#: husky, and the command line is the one place nothing in the clone can override (B229).
+HOOKS_OFF_ARGS = ("-c", f"core.hooksPath={clone_mod.HOOKS_OFF}")
 
 # The one module-level injectable, replaced by tests so none reaches the network. The push
 # goes through ``ctx.gh``, which every test already fakes. Every git command in this module
@@ -1055,16 +1058,20 @@ def _rebase(lease: Lease, upstream_repo: str, default_branch: str) -> list[str]:
             ["git", "remote", "add", "upstream", f"https://github.com/{upstream_repo}.git"],
             lease.path,
         )
-    code, _, err = gates.run_command(["git", "fetch", "upstream", default_branch], lease.path)
+    code, _, err = gates.run_command(
+        ["git", *HOOKS_OFF_ARGS, "fetch", "upstream", default_branch], lease.path
+    )
     if code != 0:
         raise HarnessError(f"git fetch upstream {default_branch} failed: {err.strip()[-2000:]}")
-    code, out, err = gates.run_command(["git", *GIT_IDENTITY, "rebase", "FETCH_HEAD"], lease.path)
+    code, out, err = gates.run_command(
+        ["git", *GIT_IDENTITY, *HOOKS_OFF_ARGS, "rebase", "FETCH_HEAD"], lease.path
+    )
     if code == 0:
         return []
     conflicted = _conflicted_files(lease)
     if conflicted:
         return conflicted
-    gates.run_command(["git", "rebase", "--abort"], lease.path)
+    gates.run_command(["git", *HOOKS_OFF_ARGS, "rebase", "--abort"], lease.path)
     raise HarnessError(f"git rebase failed without conflicts: {(err or out).strip()[-2000:]}")
 
 

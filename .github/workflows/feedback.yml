@@ -82,6 +82,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
 
         # The ledger lives on the unprotected `harness-state` branch, because main requires a
         # reviewed PR and the Actions token commits directly (D28).
@@ -281,6 +282,7 @@ jobs:
           WORKFLOW: ${{ github.workflow }}
           RUN_ID: ${{ github.run_id }}
           BRANCH: harness-state
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ ! -f state/ledger.json ]; then echo "no ledger file; nothing to commit"; exit 0; fi
@@ -301,8 +303,15 @@ jobs:
           cp state/ledger.json ../harness-state/state/ledger.json
           cd ../harness-state
           git add state/ledger.json && git commit --quiet -m "ledger: ${WORKFLOW} run ${RUN_ID} [skip ci]"
+          # The checkout keeps no credential, so this token is never in .git/config for the model
+          # or the product's code to find; it reaches git on this push's command line only (D98).
+          auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
+          echo "::add-mask::${auth}"
           for attempt in 1 2 3; do
-            if git push --quiet origin "HEAD:refs/heads/${BRANCH}"; then echo "ledger pushed to ${BRANCH}"; exit 0; fi
+            if git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+                push --quiet origin "HEAD:refs/heads/${BRANCH}"; then
+              echo "ledger pushed to ${BRANCH}"; exit 0
+            fi
             echo "push rejected (attempt ${attempt}); rebasing onto origin/${BRANCH}"
             git fetch --quiet origin "${BRANCH}"
             if ! git rebase --quiet "origin/${BRANCH}"; then

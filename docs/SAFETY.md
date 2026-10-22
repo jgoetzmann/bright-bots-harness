@@ -316,8 +316,10 @@ account alongside a personal account. The account:
   the machine account is listed with the Triage role and nothing higher.
 
 The token is classic because a fine-grained token cannot open a pull request from a fork into an
-upstream repository. On an account that owns nothing but the fork, its blast radius is the fork and
-the pull requests it opens.
+upstream repository. A classic token reaches every repository its account can write, and the
+account is also a write collaborator on this repository and on `Jlore-Studios/JackiOh`, where it
+is that project's night bot. A leaked token therefore reaches the fork, the pull requests it opens
+and both of those repositories, workflows included (D98).
 
 | Scope | Granted | Why |
 |---|---|---|
@@ -459,6 +461,9 @@ is mechanical, so this one is held to these limits:
 - **The credential exposure.** The deny rules bind the read tool only, and the machine credential
   sits in `$GITHUB_WORKSPACE/.env`, three directories above the clone, so every call holding `Bash`
   can reach it: `implement`, `revise`, `selfaudit` and `selfaudit_fix`. This is not mitigated.
+  The install scripts, gates and git calls the harness runs itself have no credential in their
+  environment and the checkout keeps no Actions token, but the file stays readable, and what
+  the model runs through `Bash` inherits `claude`'s environment, its OAuth token included (D98).
   Giving the auditor `ask.py`'s read-only tool tuples would take its shell away.
 - **The tree guard.** An auditor holding `Bash` can still write to the clone or move its branch.
   The change set against the audited commit, and the branch and HEAD commit, are read before and

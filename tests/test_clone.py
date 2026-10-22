@@ -528,12 +528,12 @@ def _git_in(cwd, *args):
 
 
 # --------------------------------------------------------------------------------------
-# B549 - product code inherits no credential, and no commit runs the product's hooks (D96)
+# B559 - product code inherits no credential, and no commit runs the product's hooks (D98)
 # --------------------------------------------------------------------------------------
 
 
-def test_B549_no_command_inherits_a_credential(monkeypatch, tmp_path):
-    """B549: `npm ci`'s scripts, every gate and every git call run without the harness's tokens,
+def test_B559_no_command_inherits_a_credential(monkeypatch, tmp_path):
+    """B559: `npm ci`'s scripts, every gate and every git call run without the harness's tokens,
     and with `HUSKY=0`."""
     import json
     import sys
@@ -554,8 +554,8 @@ def test_B549_no_command_inherits_a_credential(monkeypatch, tmp_path):
     assert env["HUSKY"] == "0"
 
 
-def test_B549_a_refusing_pre_commit_hook_does_not_stop_the_harness_commit(tmp_path):
-    """B549: `npm ci` points core.hooksPath at husky's hooks, and a relative hooks-off path would
+def test_B559_a_refusing_pre_commit_hook_does_not_stop_the_harness_commit(tmp_path):
+    """B559: `npm ci` points core.hooksPath at husky's hooks, and a relative hooks-off path would
     be read from the clone's root; `_commit` runs neither."""
     from harness.stages.implement import _commit
 

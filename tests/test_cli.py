@@ -2661,8 +2661,8 @@ def test_B427_run_no_longer_takes_session_pct(tmp_path, monkeypatch):
     assert "--session-pct" not in cli.build_parser().format_help()
 
 
-def test_B549_a_rebuild_reads_only_the_machine_account_s_comments():
-    """B549: a stranger's comment shaped like a transition is no record of a run (D96)."""
+def test_B559_a_rebuild_reads_only_the_machine_account_s_comments():
+    """B559: a stranger's comment shaped like a transition is no record of a run (D98)."""
     from types import SimpleNamespace
 
     transition = "**harness** `implement` -> `packaged`\nrun: https://example/run/1"

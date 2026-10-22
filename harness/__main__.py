@@ -3293,7 +3293,7 @@ def cmd_tidy(args: argparse.Namespace) -> int:
 
 def _self_repo_comments(ctx, config) -> list[dict]:
     """Every comment the machine account wrote on an issue of SELF_REPO, shaped for
-    `ledger.rebuild`: a stranger's comment is no record of a run (D96)."""
+    `ledger.rebuild`: a stranger's comment is no record of a run (D98)."""
     machine = discover_stage.machine_account(config).lower()
     listing = ctx.gh.get(f"/repos/{config.self_repo}/issues?state=all&per_page=100")
     comments: list[dict] = []

@@ -95,7 +95,7 @@ def long_path(path: Path | str) -> str:
 
 #: `core.hooksPath` for a harness clone: a path that holds no hooks, so none can fire (B229).
 #: The null device, since a relative path is read from the clone's root, where the product's own
-#: tree or code could put a hook (D96).
+#: tree or code could put a hook (D98).
 HOOKS_OFF = os.devnull
 
 

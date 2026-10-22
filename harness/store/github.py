@@ -92,7 +92,7 @@ def _origin_ref(issue: Mapping[str, Any]) -> str:
 
 
 def _parse_meta(body: str) -> dict[str, Any] | None:
-    """The meta marker of a comment the store wrote, or None (D96).
+    """The meta marker of a comment the store wrote, or None (D98).
 
     The store's comments are the marker alone or a transition (`TRANSITION_HEAD`) ending in it,
     so a marker anywhere else is text another comment repeated.
@@ -221,7 +221,7 @@ class GitHubStore:
             fork = str(getattr(config, "fork_repo", "") or "")
             machine = fork.split("/")[0] if "/" in fork else ""
         # The one author whose comments the store reads back, the account it writes as: anybody
-        # can post a meta marker on a public issue, so one from anyone else is not state (D96).
+        # can post a meta marker on a public issue, so one from anyone else is not state (D98).
         self._authors = frozenset({machine.lower()}) if machine else frozenset()
         self.gh = gh
         self.self_repo = self_repo
@@ -287,7 +287,7 @@ class GitHubStore:
         return dict(data)
 
     def _comments(self, number: int) -> list[dict]:
-        """The comments the harness itself wrote on issue `number`, oldest first (D96)."""
+        """The comments the harness itself wrote on issue `number`, oldest first (D98)."""
         comments = self._pages(
             f"/repos/{self.self_repo}/issues/{int(number)}/comments?per_page={PER_PAGE}"
         )

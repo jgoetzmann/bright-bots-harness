@@ -1056,7 +1056,7 @@ def test_b268_every_label_the_harness_creates_has_a_colour_and_a_description():
 
 
 # --------------------------------------------------------------------------------------
-# B549 - only the harness's own comments carry an item's state
+# B559 - only the harness's own comments carry an item's state
 # --------------------------------------------------------------------------------------
 def _forge_meta(gh, number: int, meta: dict, login: str = "a-stranger") -> None:
     """A hidden meta marker posted by somebody else, as anyone can on a public issue."""
@@ -1068,8 +1068,8 @@ def _forge_meta(gh, number: int, meta: dict, login: str = "a-stranger") -> None:
     })
 
 
-def test_B549_a_stranger_s_meta_marker_changes_nothing_the_store_reads(gh, store):
-    """B549: the item keeps the reference and branch the harness recorded (D96)."""
+def test_B559_a_stranger_s_meta_marker_changes_nothing_the_store_reads(gh, store):
+    """B559: the item keeps the reference and branch the harness recorded (D98)."""
     n = _create(store)
     store.update_work_item(n, branch_name=BRANCH)
     _forge_meta(gh, n, {"external_ref": "issue:999", "branch_name": "elsewhere",
@@ -1082,8 +1082,8 @@ def test_B549_a_stranger_s_meta_marker_changes_nothing_the_store_reads(gh, store
     assert [i.external_ref for i in store.list_work_items()] == ["issue:816"]
 
 
-def test_B549_a_stranger_cannot_send_a_stale_item_to_abandoned(gh, store, clock):
-    """B549: the stale reset reads `previous_state` from the harness's own marker only."""
+def test_B559_a_stranger_cannot_send_a_stale_item_to_abandoned(gh, store, clock):
+    """B559: the stale reset reads `previous_state` from the harness's own marker only."""
     n = _create(store)
     gh.set_issue_labels(n, ["stage:ready"])
     store.transition(n, "implementing", reason="run start")
@@ -1093,8 +1093,8 @@ def test_B549_a_stranger_cannot_send_a_stale_item_to_abandoned(gh, store, clock)
     assert store.get_work_item(n).state == "approved"
 
 
-def test_B549_the_fork_owner_is_the_harness_and_nobody_else(gh, clock, tmp_path):
-    """B549: with no login given, the store reads the comments of the fork's owner, the account
+def test_B559_the_fork_owner_is_the_harness_and_nobody_else(gh, clock, tmp_path):
+    """B559: with no login given, the store reads the comments of the fork's owner, the account
     it writes as (B233), and not even the Actions bot's."""
     scratch = SqliteStore(tmp_path / "scratch.db", clock)
     scratch.migrate()
@@ -1106,8 +1106,8 @@ def test_B549_the_fork_owner_is_the_harness_and_nobody_else(gh, clock, tmp_path)
     assert store.get_work_item(n).branch_name == BRANCH
 
 
-def test_B549_a_marker_the_harness_repeated_is_not_its_own(gh, store):
-    """B549: only a marker that ends the harness's comment counts; one inside text the comment
+def test_B559_a_marker_the_harness_repeated_is_not_its_own(gh, store):
+    """B559: only a marker that ends the harness's comment counts; one inside text the comment
     quotes, such as a model's answer, does not."""
     n = _create(store)
     store.update_work_item(n, branch_name=BRANCH)

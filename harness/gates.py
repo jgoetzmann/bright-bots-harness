@@ -76,7 +76,7 @@ def _tail(text: str) -> str:
 
 
 #: Every variable named like a credential, which no command run here inherits: the product's
-#: install scripts, tests and builds run in this environment (D96).
+#: install scripts, tests and builds run in this environment (D98).
 _CREDENTIAL_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PRIVATE_KEY", re.I)
 
 
@@ -84,7 +84,7 @@ def command_env() -> dict[str, str]:
     """The harness's environment without its credentials, and with ``HUSKY=0``.
 
     ``HUSKY=0`` stops ``npm ci``'s husky from pointing ``core.hooksPath`` back at the product's
-    hooks, and stops a husky hook from running if one is reached anyway (D96).
+    hooks, and stops a husky hook from running if one is reached anyway (D98).
     """
     env = {k: v for k, v in environ_snapshot().items() if not _CREDENTIAL_NAME.search(k)}
     env["HUSKY"] = "0"

@@ -6,11 +6,11 @@
     "rate_limited_until": "2026-10-20T10:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.31,
-        "resets_at": "2026-10-25T13:20:00Z"
+        "utilization": 0.04,
+        "resets_at": "2026-10-26T14:30:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-10-25T08:54:20Z"
+      "observed_at": "2026-10-26T09:42:59Z"
     },
     "owed": {
       "items": [
@@ -20,9 +20,9 @@
       "until": "2026-10-27T01:30:00Z"
     },
     "quiet": {
-      "at": "2026-10-25T08:54:22Z",
+      "at": "2026-10-26T09:42:59Z",
       "quiet": true,
-      "reason": "five_hour 26% -> 31% from 2026-10-25T08:44:18Z to 2026-10-25T08:54:20Z while the partner was spending, which excuses it"
+      "reason": "no window rose from 2026-10-26T09:32:57Z to 2026-10-26T09:42:59Z"
     }
   },
   "cursors": {

@@ -12,13 +12,6 @@
       "status": "allowed",
       "observed_at": "2026-10-28T17:42:38Z"
     },
-    "owed": {
-      "items": [
-        52
-      ],
-      "since": "2026-10-28T01:30:00Z",
-      "until": "2026-10-29T01:30:00Z"
-    },
     "quiet": {
       "at": "2026-10-28T17:19:42Z",
       "quiet": true,
@@ -26,7 +19,7 @@
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-10-28T16:48:07Z",
+    "notifications_last_seen": "2026-10-28T18:30:11Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -68,7 +61,7 @@
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 300
+      "github-actions[bot]": 302
     },
     "ask_calls": {
       "date": "2026-09-09",

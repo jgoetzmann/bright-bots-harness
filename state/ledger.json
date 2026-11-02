@@ -3,19 +3,21 @@
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
     "calls": 122,
-    "rate_limited_until": "2026-10-20T10:00:00Z",
+    "rate_limited_until": "2026-11-02T13:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.22,
-        "resets_at": "2026-11-01T11:50:00Z"
+        "utilization": 1.0,
+        "resets_at": "2026-11-02T13:00:00Z"
       },
-      "status": "allowed",
-      "observed_at": "2026-11-01T10:59:15Z"
+      "status": "rejected",
+      "rejected_resets_at": "2026-11-02T13:00:00Z",
+      "rate_limit_type": "five_hour",
+      "observed_at": "2026-11-02T11:41:58Z"
     },
     "quiet": {
-      "at": "2026-11-01T10:59:15Z",
-      "quiet": true,
-      "reason": "no window rose from 2026-11-01T10:49:14Z to 2026-11-01T10:59:15Z"
+      "at": "2026-11-02T11:41:58Z",
+      "quiet": false,
+      "reason": "usage stop: the subscription refused the ping at 2026-11-02T11:41:58Z until 2026-11-02T13:00:00Z"
     }
   },
   "cursors": {

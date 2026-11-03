@@ -6,18 +6,16 @@
     "rate_limited_until": "2026-11-02T13:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 1.0,
-        "resets_at": "2026-11-02T13:00:00Z"
+        "utilization": 0.63,
+        "resets_at": "2026-11-03T14:00:00Z"
       },
-      "status": "rejected",
-      "rejected_resets_at": "2026-11-02T13:00:00Z",
-      "rate_limit_type": "five_hour",
-      "observed_at": "2026-11-02T11:41:58Z"
+      "status": "allowed",
+      "observed_at": "2026-11-03T11:31:45Z"
     },
     "quiet": {
-      "at": "2026-11-02T11:41:58Z",
-      "quiet": false,
-      "reason": "usage stop: the subscription refused the ping at 2026-11-02T11:41:58Z until 2026-11-02T13:00:00Z"
+      "at": "2026-11-03T11:31:49Z",
+      "quiet": true,
+      "reason": "five_hour 61% -> 63% from 2026-11-03T11:21:43Z to 2026-11-03T11:31:45Z while the partner was spending, which excuses it"
     }
   },
   "cursors": {

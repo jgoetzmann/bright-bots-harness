@@ -2013,39 +2013,50 @@ Problem: `/harness revise` on proposal #130 (item #90, a two-file test change) e
   inlines the plan (B227), would have kept the old one.
 
 Decision:
-- Propose makes the move into `proposing` itself. `_enter` returns `proposed` as the state a
-  failed or refused call goes back to whenever a proposal is open for review: from `proposed`,
-  and from `discovered`, `proposing` or `blocked` when the store reports an open proposal. A
-  revision out of turns, refused, rate-limited or invalid after its retry leaves the plan under
-  review unchanged and the item `proposed`. `/harness revise` passes its reason through, so the
-  transition still names the command and its author, and a bare `/harness revise` still counts
-  as notes.
-- Revision notes also restart a plan parked before gate 1: a `blocked` item with no branch goes
-  `blocked -> discovered -> proposing`. An item with a branch was approved once and is refused.
+- Propose makes the move into `proposing` itself, and `_enter` names the state a failed call
+  goes back to: `proposed` for a revision of a `proposed` item, `discovered` for a queued item,
+  `blocked` for a restart. A revision out of turns, refused, rate-limited, invalid after its
+  retry or unable to publish leaves the plan under review unchanged and the item `proposed`.
+  `/harness revise` passes its reason through, so the transition still names the command and
+  its author, and a bare `/harness revise` still counts as notes.
+- Revision notes restart a plan parked before gate 1: a `blocked` item with no branch and no
+  `proposals/<id>-*.md` on main goes `blocked -> discovered -> proposing`, and a restart that
+  fails or is refused is parked again. An item with a branch, or whose proposal merged, was
+  approved once and is refused, since the file on main would approve it again.
 - `store.current_proposal(item_id)` returns the proposal open for review. The GitHub store
-  reads the `proposals/<id>-*.md` that the open pull request on `harness/propose-<id>` adds,
-  from that branch; with no open pull request there is none. The SQLite store returns the
-  newest `<id>-*.md` in its proposals directory, only while the item is `proposed`, since that
-  directory is the checkout's and holds the GitHub store's proposals too.
-- The propose prompt carries that proposal as a data block (`$current_proposal`, version 3) and
-  tells the call to start from it: re-read what it cites, keep what holds, apply the notes, and
-  still emit the whole package. A first proposal is told there is none.
-- `GitHubStore.publish_proposal` reuses the open pull request on the item's branch: the file
-  goes to the path that pull request already adds, and the new `gh.edit_pull` rewrites its title
-  and body. With none open it creates one as before. `edit_pull` checks `_require_own_thread`
-  first, like `close_pull` (D88).
+  reads the `proposals/<id>-*.md` on `harness/propose-<id>` while the machine account has a pull
+  request open from that branch into main; a pull request anyone else opens there is ignored.
+  The SQLite store reads the item's `spec_path` while it is `proposed`, because its proposals
+  directory is the checkout's and holds the GitHub store's files under colliding ids.
+- The propose prompt (`$current_proposal`, version 3) carries that work package without its
+  front matter as a data block and tells the call to start from it: check what it cites, keep
+  what holds, apply the notes, and still emit the whole package. The YAML front matter is not
+  the output format, so a revision that emits no proposal block fails validation and is asked
+  again. A first proposal is told there is none.
+- `GitHubStore.publish_proposal` keeps the file at the path the branch already holds, and
+  rewrites the open pull request's title and body through the new `gh.edit_pull` instead of
+  opening a second one; with none open it opens one as before. A revision whose pull request
+  closed while it ran publishes nothing. A description over GitHub's 65,536 characters stops
+  before any write. When the description cannot follow the file, the previous file is put back,
+  or the item is blocked when that fails too, so no merge approves a plan its reader was not
+  shown. `edit_pull` checks `_require_own_thread` first, like `close_pull` (D88).
 - The `revise` acknowledgement names both meanings, since `ack` cannot tell a proposal thread
   from a delivery thread.
 
 Rejected: raising `MAX_TURNS_PROPOSE` for revisions, which spends more without giving the call
 the plan it is revising; closing the old proposal pull request and opening a new one, which
 breaks the link a reviewer already has and the thread the notes are in; a separate revision
-prompt, which would duplicate the output contract the parser depends on.
+prompt, which would duplicate the output contract the parser depends on; showing the published
+file with its front matter, which reads as an example of the output and is not one.
 
 Accepted gaps:
 - A revision of a proposal whose pull request was opened before this change still has the old
   `harness/propose-<id>` base. The pull request adds one file, so it merges cleanly.
 - The SQLite store keeps writing a revised proposal under its new name, and B226's newest-file
   rule picks it.
+- Between the file write and the description edit a reader can see the new file under the old
+  description; the window is one API call.
+- A revision still re-reads what the plan cites within `MAX_TURNS_PROPOSE`; one that runs out
+  leaves the plan under review as it was.
 
 Allocates B560-B564.

@@ -2727,13 +2727,10 @@ def _act_on_command(ctx, config, cmd) -> str:
                 ctx, item_id, source="review", notes=cmd.args or "/harness revise"
             )
             return f"item {item_id} re-implemented: {'revised' if lease else 'not revised'}"
-        # Propose makes the move itself, so it knows to return a failed revision to the open
-        # proposal rather than to the queue (D99).
+        # Propose makes the move itself, since only it knows where a failed revision goes back
+        # to (D99).
         STAGES["propose"](ctx, item_id, notes=cmd.args or "/harness revise", reason=reason)
-        return (
-            f"item {item_id} re-proposed: the revised plan replaces the one on its proposal "
-            "pull request, which is waiting for gate 1 again"
-        )
+        return f"item {item_id} re-proposed: the revised plan is published and waits for gate 1"
 
     if cmd.verb == "rebase":
         notes = cmd.args or "/harness rebase"

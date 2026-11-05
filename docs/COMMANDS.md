@@ -220,8 +220,9 @@ item. `all` takes every unticked finding, up to `SUGGEST_MAX_PER_RUN` (5).
 
 On a proposal pull request the revised plan replaces the file and the description of that same
 pull request, which waits for gate 1 again. If the call fails or is refused, the item goes back
-to `stage:needs-approval` with the plan under review unchanged. It also works on a plan parked
-before gate 1, such as one whose propose call ran out of turns (D99).
+to `stage:needs-approval` with the plan under review unchanged. It also restarts a plan parked
+before gate 1, such as one whose propose call ran out of turns; a restart that fails stays
+parked, and a plan already merged is not restarted (D99).
 
 On a delivery pull request it force-pushes to the fork only if the branch is under `harness/` and
 its tip on the fork is still a commit the harness authored, and only while the fork still points

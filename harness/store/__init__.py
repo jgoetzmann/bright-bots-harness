@@ -87,7 +87,9 @@ class StoreProtocol(Protocol):
 
     # Proposals, merged items and reconciliation
 
-    def publish_proposal(self, item_id: int, filename: str, text: str) -> str: ...
+    def publish_proposal(
+        self, item_id: int, filename: str, text: str, *, revision: bool = False
+    ) -> str: ...
 
     def current_proposal(self, item_id: int) -> str | None: ...
 

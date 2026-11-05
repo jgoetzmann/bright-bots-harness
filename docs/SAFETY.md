@@ -22,8 +22,8 @@ Below is every guarantee, how it is enforced, and a command that checks it.
 - **Tier 1** (comment and file issues, no push) is not implemented.
 - **Tier 2**, Actions mode: everything in tier 0, plus push branches to a fork the machine account
   owns, open PRs from that fork into the product repository, comment on issues in this repository
-  and on PRs it opened, and create issues in this repository only. It requires
-  `STORE_BACKEND=github` and a non-empty `FORK_REPO`.
+  and on PRs it opened, rewrite the description of a proposal PR it opened, and create issues in
+  this repository only. It requires `STORE_BACKEND=github` and a non-empty `FORK_REPO`.
 
 At tier 2 exactly one module, `harness/gh.py`, may send an `Authorization` header, and it obtains
 the token from one function, `config.github_token()`, which returns an empty string at any other
@@ -340,6 +340,7 @@ shows exactly one token with those three scopes.
 | Push a branch to the fork | yes | `deliver.py`, `revise.py` |
 | Open a PR fork → product repo | yes | `deliver.py` |
 | Comment on a PR it opened | yes | `deliver.py`, `revise.py` |
+| Rewrite the description of a proposal PR it opened | yes | `store/github.py` (D99) |
 | Create issues in **this** repository | yes | `decompose.py`, `ops.yml` |
 | Create issues in the product repository | one per delivery, for an item with none | I-14 |
 | Label or request review on a product thread | only on one the machine account opened | I-14, D88 |

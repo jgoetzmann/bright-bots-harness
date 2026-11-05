@@ -634,7 +634,9 @@ class SqliteStore:
 
     # --------------------------------------------------------------- the store seam
 
-    def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
+    def publish_proposal(
+        self, item_id: int, filename: str, text: str, *, revision: bool = False
+    ) -> str:
         """Write ``<proposals_dir>/<filename>`` redacted and move the item to ``proposed``.
 
         Returns the path written, as a string (the GitHub store returns a PR URL instead).
@@ -649,18 +651,16 @@ class SqliteStore:
         return str(path)
 
     def current_proposal(self, item_id: int) -> str | None:
-        """While the item is ``proposed``, its newest ``<proposals_dir>/<id>-*.md``; else None.
-
-        Bounded by the state because the directory also holds other stores' proposals (D99).
-        """
+        """While the item is ``proposed``, the work package its proposal was published from;
+        else None. Read from ``spec_path``, since the proposals directory also holds other
+        stores' files under colliding ids (D99)."""
         item = self.get_work_item(item_id)
-        if item is None or item.state != "proposed" or not self.proposals_dir.is_dir():
+        if item is None or item.state != "proposed" or not item.spec_path:
             return None
-        matches = sorted(
-            self.proposals_dir.glob(f"{int(item_id)}-*.md"),
-            key=lambda p: (p.stat().st_mtime, p.name),
-        )
-        return matches[-1].read_text(encoding="utf-8") if matches else None
+        try:
+            return Path(item.spec_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise StoreError(f"item {item_id}'s work package is unreadable: {exc}") from exc
 
     def merged_issues(self) -> set[int]:
         """Ids of every item in state ``merged``."""

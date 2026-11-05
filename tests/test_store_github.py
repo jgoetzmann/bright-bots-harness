@@ -249,10 +249,15 @@ class FakeGh:
             if rest[:1] == ["contents"] and len(rest) >= 2:
                 name = urllib.parse.unquote("/".join(rest[1:]))
                 files = self.branch_files.get((repo, q.get("ref", "main")), {})
-                if name not in files:
+                if name in files:
+                    encoded = base64.b64encode(files[name].encode("utf-8")).decode("ascii")
+                    return {"path": name, "type": "file", "encoding": "base64",
+                            "content": encoded}
+                listed = [{"name": f.rsplit("/", 1)[-1], "path": f, "type": "file"}
+                          for f in sorted(files) if f.startswith(name + "/")]
+                if not listed:
                     raise GitHubError(f"github returned 404 for {path}", status=404)
-                encoded = base64.b64encode(files[name].encode("utf-8")).decode("ascii")
-                return {"path": name, "encoding": "base64", "content": encoded}
+                return listed
             if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "reviews":
                 return copy.deepcopy(self.reviews.get((repo, int(rest[1])), []))
             if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "comments":
@@ -888,6 +893,117 @@ def test_B563_the_open_proposal_is_read_from_its_pull_request(gh, store):
     store.transition(n, "proposing", reason="propose")
     store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT)
     assert len(gh.calls_named("create_pull")) == 2 and gh.calls_named("edit_pull") == []
+
+
+def _published(gh, store) -> tuple[int, dict]:
+    """An item with its proposal pull request open, back in `proposing` for a revision."""
+    n = _create(store)
+    store.transition(n, "proposing", reason="propose")
+    store.publish_proposal(n, f"{n}-dashboard-crashes-on-first-render.md", PROPOSAL_TEXT)
+    store.transition(n, "proposing", reason="/harness revise by x: notes")
+    (pull,) = gh.prs[SELF_REPO].values()
+    return n, pull
+
+
+def test_B563_a_pull_request_somebody_else_opened_on_the_branch_is_not_the_proposal(gh, store):
+    """B563: anyone who can read the repository can open a pull request from the proposal
+    branch; only the machine account's, from this repository into main, is the proposal."""
+    n, pull = _published(gh, store)
+    pull["user"] = {"login": "someone-else"}
+    assert store.current_proposal(n) is None
+    pull["user"] = {"login": BOT}
+    pull["base"]["ref"] = "harness/propose-999"
+    assert store.current_proposal(n) is None
+
+
+def test_B563_a_revision_whose_pull_request_closed_publishes_nothing(gh, store):
+    """B563: a revision that finds its pull request merged or closed meanwhile writes nothing,
+    since a new pull request would sit beside a plan that may already be approved."""
+    n, pull = _published(gh, store)
+    pull["state"] = "closed"
+    writes = len(gh.sent)
+
+    with pytest.raises(StoreError, match="closed while it was being revised"):
+        store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT, revision=True)
+
+    assert len(gh.sent) == writes
+    assert store.get_work_item(n).state == "proposing"
+
+
+def test_B563_a_description_github_would_refuse_stops_before_any_write(gh, store, monkeypatch):
+    """B563: GitHub caps a pull request description, and a refusal after the file write would
+    leave the new plan under the old description."""
+    import harness.store.github as github_mod
+
+    n, _pull = _published(gh, store)
+    monkeypatch.setattr(github_mod, "MAX_PULL_BODY", 100)
+    writes = len(gh.sent)
+
+    with pytest.raises(StoreError, match="at most 100"):
+        store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT, revision=True)
+
+    assert len(gh.sent) == writes
+
+
+def test_B563_a_description_that_cannot_follow_puts_the_previous_file_back(gh, store):
+    """B563: the file lands before the description; when the description cannot follow, the
+    previous file goes back, or the item is blocked so no merge approves an unseen plan."""
+    n, pull = _published(gh, store)
+    branch = f"harness/propose-{n}"
+    path = f"proposals/{n}-dashboard-crashes-on-first-render.md"
+
+    def refuse(*_a, **_k):
+        raise GitHubError("github returned 502", status=502)
+
+    gh.edit_pull = refuse
+    with pytest.raises(StoreError, match="previous file is restored"):
+        store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT, revision=True)
+    assert gh.branch_files[(SELF_REPO, branch)][path] == PROPOSAL_TEXT
+    assert store.get_work_item(n).state == "proposing"
+
+    real = gh.create_branch_file
+    calls = {"n": 0}
+
+    def write_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise GitHubError("github returned 502", status=502)
+        return real(*a, **k)
+
+    gh.create_branch_file = write_once
+    with pytest.raises(StoreError, match="the item is blocked"):
+        store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT, revision=True)
+    assert store.get_work_item(n).state == "blocked"
+
+
+def test_B563_a_new_pull_request_reuses_the_file_already_on_its_branch(gh, store):
+    """B563: after a stop closed the pull request, a fresh one on the same branch rewrites the
+    file there rather than adding a second `proposals/<id>-*.md` beside it."""
+    n, pull = _published(gh, store)
+    pull["state"] = "closed"
+
+    store.publish_proposal(n, f"{n}-a-different-title.md", REVISED_TEXT)
+
+    assert sorted(gh.branch_files[(SELF_REPO, f"harness/propose-{n}")]) == [
+        f"proposals/{n}-dashboard-crashes-on-first-render.md"
+    ]
+    assert len(gh.calls_named("create_pull")) == 2
+
+
+def test_B563_a_file_served_without_content_is_an_error(gh, store):
+    """B563: GitHub serves a file over 1 MB with no content, which must not read as no plan."""
+    n, _pull = _published(gh, store)
+    real = gh.get
+
+    def no_content(path):
+        data = real(path)
+        if isinstance(data, dict) and data.get("type") == "file":
+            return {**data, "encoding": "none", "content": ""}
+        return data
+
+    gh.get = no_content
+    with pytest.raises(StoreError, match="without its content"):
+        store.current_proposal(n)
 
 
 # --------------------------------------------------------------------------------------

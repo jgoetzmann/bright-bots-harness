@@ -2343,6 +2343,56 @@ def test_B561_only_a_proposed_item_falls_back_to_proposed():
         _enter(ctx, SimpleNamespace(id=9, state="blocked", branch_name="harness/x"), "notes")
 
 
+def test_B563_revise_on_a_parked_item_rewrites_its_open_proposal_pull_request(
+    tmp_path, monkeypatch
+):
+    """B563 (D99): item #90's path on the GitHub store. A `blocked` item whose proposal pull
+    request is still open is revised from that pull request: the call sees the published plan,
+    and the revision lands in the same pull request and file, which waits for gate 1 again."""
+    import harness.__main__ as main_mod
+    import harness.stages.propose as propose_mod
+    from harness.keywords import Command
+    from harness.store import GitHubStore, SqliteStore
+    from tests.test_store_github import BOT, RUN_URL, SELF_REPO, UPSTREAM
+    from tests.test_store_github import FakeGh as StoreGh
+
+    clock = FrozenClock(FROZEN_AT)
+    gh = StoreGh(clock=clock)
+    gh.add_issue(816, "bundle size check misreports esm", body="the reporter", repo=UPSTREAM)
+    scratch = SqliteStore(tmp_path / "scratch.db", clock)
+    scratch.migrate()
+    store = GitHubStore(
+        gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL, machine=BOT
+    )
+    item_id = store.create_work_item(kind="issue", external_ref="issue:816", title="t")
+    store.transition(item_id, "proposing", reason="propose started")
+    old = "---\nissue: 1\n---\n\n# test(a11y): the published plan\n"
+    store.publish_proposal(item_id, f"{item_id}-the-published-plan.md", old)
+    store.transition(item_id, "blocked", reason="the propose call ran out of its 30 turns")
+    (pull,) = gh.prs[SELF_REPO].values()
+
+    config = load_config(write_env(tmp_path), environ={})
+    fixtures = write_runner_fixtures(
+        tmp_path / "runner-fixtures", propose_text=_with_block(item_id)
+    )
+    runner = CountingRunner(FakeRunner(fixtures), [])
+    ctx = build_context(config, run_id="sweep", runner=runner, gh=gh, clock=clock, store=store,
+                        clones=FakeClones(config.runs_dir))
+    monkeypatch.setattr(propose_mod, "_path_checker", lambda *a, **k: (lambda path: True))
+    cmd = Command(verb="revise", args="keep it to the two suites", surface="proposal_pr",
+                  number=pull["number"], comment_id="IC_x", actor="BrightBoost-Tech", level=2)
+
+    _record, answer, _more, _limit = main_mod._outcome(ctx, config, cmd)
+
+    assert "re-proposed" in answer, answer
+    assert "# test(a11y): the published plan" in runner.requests[-1].prompt
+    assert store.get_work_item(item_id).state == "proposed"
+    assert len(gh.prs[SELF_REPO]) == 1 and len(gh.calls_named("edit_pull")) == 1
+    assert "bundle size check misreports esm output" in gh.prs[SELF_REPO][pull["number"]]["body"]
+    files = gh.branch_files[(SELF_REPO, f"harness/propose-{item_id}")]
+    assert sorted(files) == [f"proposals/{item_id}-the-published-plan.md"]
+
+
 def test_B562_a_revision_is_shown_the_proposal_under_review(tmp_path):
     """B562 (D99): the revision call gets the published work package as data, so it re-checks
     a plan rather than re-deriving one; a first proposal is told there is none."""

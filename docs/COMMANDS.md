@@ -215,8 +215,13 @@ item. `all` takes every unticked finding, up to `SUGGEST_MAX_PER_RUN` (5).
 
 | Where you say it | What happens |
 |---|---|
-| the **proposal** PR (gate 1) | back to `stage:planning`; a fresh `propose` call with your note as the brief |
+| the **proposal** PR (gate 1) | back to `stage:planning`; `propose` redoes the open plan with your note |
 | the **delivery** PR (gate 2) | one more implementation pass, then the complete gate sequence again |
+
+On a proposal pull request the revised plan replaces the file and the description of that same
+pull request, which waits for gate 1 again. If the call fails or is refused, the item goes back
+to `stage:needs-approval` with the plan under review unchanged. It also works on a plan parked
+before gate 1, such as one whose propose call ran out of turns (D99).
 
 On a delivery pull request it force-pushes to the fork only if the branch is under `harness/` and
 its tip on the fork is still a commit the harness authored, and only while the fork still points

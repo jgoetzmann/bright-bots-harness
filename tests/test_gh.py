@@ -1062,6 +1062,7 @@ OWN_THREAD_WRITES = [
     ("label_product_issue", lambda c: c.label_product_issue(931, ["harness-tracking"])),
     ("edit_product_issue", lambda c: c.edit_product_issue(931, body="b")),
     ("close_pull", lambda c: c.close_pull(REPO, 931)),
+    ("edit_pull", lambda c: c.edit_pull(REPO, 931, title="t", body="b")),
     ("request_reviewers", lambda c: c.request_reviewers(REPO, 931, ["BrightBoost-Tech"])),
 ]
 

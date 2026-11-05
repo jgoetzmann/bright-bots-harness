@@ -7,6 +7,7 @@ Every fixture is inline. Nothing here touches the network or the wall clock.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import re
@@ -47,13 +48,13 @@ PROPOSAL_TEXT = (
 GH_SURFACE = frozenset({
     "get", "issue", "issues", "pulls", "branches", "rate_budget_remaining",
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
-    "create_branch_file", "push_branch", "push_ref",
+    "edit_pull", "create_branch_file", "push_branch", "push_ref",
     "notifications", "issue_comments", "pull", "pull_reviews", "pull_review_comments",
     "check_runs", "user",
 })
 WRITE_METHODS = frozenset({
     "comment", "set_labels", "create_issue", "create_pull", "request_reviewers", "close_pull",
-    "create_branch_file", "push_branch", "push_ref",
+    "edit_pull", "create_branch_file", "push_branch", "push_ref",
 })
 
 
@@ -88,6 +89,8 @@ class FakeGh:
         self.review_comments: dict[tuple[str, int], list[dict]] = {}
         self.check_runs_by_ref: dict[str | None, list[dict]] = {}
         self.branch_names: dict[str, list[str]] = {repo: ["main"], self_repo: ["main"]}
+        # (repo, branch) -> {path: content}: what `create_branch_file` left on each branch.
+        self.branch_files: dict[tuple[str, str], dict[str, str]] = {}
         self._next_number: dict[str, int] = {repo: 1000, self_repo: 1}
         self._next_comment_id = 5000
 
@@ -239,6 +242,17 @@ class FakeGh:
                         if state == "all" or p["state"] == state]
             if rest[:1] == ["pulls"] and len(rest) == 2:
                 return copy.deepcopy(self._pr(repo, int(rest[1])))
+            if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "files":
+                head = self._pr(repo, int(rest[1]))["head"]["ref"]
+                return [{"filename": name, "status": "added"}
+                        for name in sorted(self.branch_files.get((repo, head), {}))]
+            if rest[:1] == ["contents"] and len(rest) >= 2:
+                name = urllib.parse.unquote("/".join(rest[1:]))
+                files = self.branch_files.get((repo, q.get("ref", "main")), {})
+                if name not in files:
+                    raise GitHubError(f"github returned 404 for {path}", status=404)
+                encoded = base64.b64encode(files[name].encode("utf-8")).decode("ascii")
+                return {"path": name, "encoding": "base64", "content": encoded}
             if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "reviews":
                 return copy.deepcopy(self.reviews.get((repo, int(rest[1])), []))
             if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "comments":
@@ -354,11 +368,18 @@ class FakeGh:
 
     def create_pull(self, repo, *, head, base, title, body) -> dict:
         self._record("create_pull", repo=repo, head=head, base=base, title=title, body=body)
+        head_ref = head.split(":")[-1]
+        if any(p["state"] == "open" and p["head"]["ref"] == head_ref
+               for p in self.prs.get(repo, {}).values()):
+            # What GitHub answers for a second open pull request on one head.
+            raise GitHubError(
+                f"github returned 422 for /repos/{repo}/pulls: A pull request already exists "
+                f"for {head}.", status=422,
+            )
         self._write("POST", f"/repos/{repo}/pulls",
                     {"head": head, "base": base, "title": title, "body": body})
         number = self._next_number.get(repo, 1000)
         self._next_number[repo] = number + 1
-        head_ref = head.split(":")[-1]
         head_owner = head.split(":")[0] if ":" in head else repo.split("/")[0]
         pr = {
             "number": number, "node_id": f"PR_{number}", "state": "open", "title": title,
@@ -388,12 +409,21 @@ class FakeGh:
         pr["state"] = "closed"
         return copy.deepcopy(pr)
 
+    def edit_pull(self, repo, number, *, title, body) -> dict:
+        self._record("edit_pull", repo=repo, number=number, title=title, body=body)
+        self._write("PATCH", f"/repos/{repo}/pulls/{number}", {"title": title, "body": body})
+        pr = self._pr(repo, number)
+        pr["title"], pr["body"] = title, body
+        return copy.deepcopy(pr)
+
     def create_branch_file(self, repo, *, branch, path, content, message, base="main") -> dict:
         self._record("create_branch_file", repo=repo, branch=branch, path=path,
                      content=content, message=message, base=base)
         self._write("PUT", f"/repos/{repo}/contents/{path}",
                     {"branch": branch, "message": message, "content": content, "base": base})
-        self.branch_names.setdefault(repo, []).append(branch)
+        if branch not in self.branch_names.setdefault(repo, []):
+            self.branch_names[repo].append(branch)
+        self.branch_files.setdefault((repo, branch), {})[path] = content
         return {"content": {"path": path}, "commit": {"sha": "c" * 40}}
 
     def push_branch(self, clone, branch, *, remote_repo, force=False, lease=None,
@@ -816,6 +846,48 @@ def test_publish_proposal_from_a_wrong_state_raises_and_keeps_the_label(gh, stor
     with pytest.raises(IllegalTransition):
         store.publish_proposal(n, f"{n}-x.md", PROPOSAL_TEXT)
     assert gh.state_labels(n) == ["stage:ready"]
+
+
+REVISED_TEXT = PROPOSAL_TEXT.replace("guard null user", "guard a missing user")
+
+
+def test_B563_a_revision_rewrites_the_open_proposal_pull_request_in_place(gh, store):
+    """B563 (D99): GitHub refuses a second open pull request on one head, so a revision
+    rewrites the file the open one adds and that pull request's description."""
+    n = _create(store)
+    store.transition(n, "proposing", reason="propose")
+    url = store.publish_proposal(n, f"{n}-dashboard-crashes-on-first-render.md", PROPOSAL_TEXT)
+    store.transition(n, "proposing", reason="/harness revise by x: notes")
+
+    again = store.publish_proposal(n, f"{n}-a-different-title.md", REVISED_TEXT)
+
+    assert again == url
+    assert len(gh.calls_named("create_pull")) == 1
+    (edit,) = gh.calls_named("edit_pull")
+    assert edit["repo"] == SELF_REPO and f"/pull/{edit['number']}" in url
+    paths = [c["path"] for c in gh.calls_named("create_branch_file")]
+    assert paths == [f"proposals/{n}-dashboard-crashes-on-first-render.md"] * 2
+    (pull,) = gh.prs[SELF_REPO].values()
+    assert "guard a missing user" in pull["body"] and "guard null user" not in pull["body"]
+    assert store.get_work_item(n).state == "proposed"
+
+
+def test_B563_the_open_proposal_is_read_from_its_pull_request(gh, store):
+    """B563: the text a revision starts from is the file on the open pull request; with none
+    open there is none, and a fresh proposal opens a new pull request."""
+    n = _create(store)
+    assert store.current_proposal(n) is None
+    store.transition(n, "proposing", reason="propose")
+    store.publish_proposal(n, f"{n}-x.md", PROPOSAL_TEXT)
+
+    assert store.current_proposal(n) == PROPOSAL_TEXT
+
+    (pull,) = gh.prs[SELF_REPO].values()
+    pull["state"] = "closed"
+    assert store.current_proposal(n) is None
+    store.transition(n, "proposing", reason="propose")
+    store.publish_proposal(n, f"{n}-x.md", REVISED_TEXT)
+    assert len(gh.calls_named("create_pull")) == 2 and gh.calls_named("edit_pull") == []
 
 
 # --------------------------------------------------------------------------------------

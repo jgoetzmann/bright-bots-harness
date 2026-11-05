@@ -1720,8 +1720,8 @@ def test_revise_runs_propose_on_a_proposal_pr_and_the_revise_cycle_on_a_delivery
         on_proposal = main_mod._act_on_command(
             rig.ctx, rig.config, _cmd("revise", surface="proposal_pr", number=501, args="notes")
         )
-        # The stubbed propose left it at `proposing`; walk it to where a delivery PR exists.
-        for state in ("proposed", "approved", "implementing", "packaged", "shipped"):
+        # The stubbed propose left it at `proposed`; walk it to where a delivery PR exists.
+        for state in ("approved", "implementing", "packaged", "shipped"):
             rig.store.transition(item_id, state, reason="t")
         on_delivery = main_mod._act_on_command(
             rig.ctx, rig.config, _cmd("revise", surface="delivery_pr", number=77, args="notes")

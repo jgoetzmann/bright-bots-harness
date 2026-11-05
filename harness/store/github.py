@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
@@ -42,6 +45,14 @@ _META_RE = re.compile(r"<!--\s*harness-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 # A live-run marker: a plain comment (no harness-meta) naming a workflow run.
 _RUN_MARKER_RE = re.compile(r"actions/runs/\d+|<!--\s*harness-run\b")
 _PARENT_RE = re.compile(r"Parent:\s*#(\d+)")
+_PROPOSAL_PATH_RE = re.compile(r"^proposals/([0-9]+)-[^/]+\.md$")
+
+
+def _proposal_branch(item_id: int) -> str:
+    """The branch a work item's proposal is published on."""
+    return f"harness/propose-{int(item_id)}"
+
+
 def _ref_number(external_ref: str) -> int | None:
     """The product-repository issue number in an ``issue:<n>`` reference (B227)."""
     match = re.search(r"[0-9]+", str(external_ref or ""))
@@ -481,13 +492,19 @@ class GitHubStore:
     # --------------------------------------------------------------- the store seam
 
     def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
-        """Branch + file + PR in ``self_repo`` (gate 1); ``proposing -> proposed``; the PR URL."""
+        """Branch + file + PR in ``self_repo`` (gate 1); ``proposing -> proposed``; the PR URL.
+
+        A revision rewrites the file and the description of the pull request already open on
+        the branch, so one pull request always shows one plan (D99).
+        """
         name = bare_filename(filename)
         item = self.get_work_item(item_id)
         if item is None:
             raise StoreError(f"no work item {item_id}")
-        branch = f"harness/propose-{item_id}"
-        path = f"proposals/{name}"
+        branch = _proposal_branch(item_id)
+        open_pull = self._open_proposal_pull(item_id)
+        open_path = self._proposal_path(open_pull, item_id) if open_pull is not None else None
+        path = open_path or f"proposals/{name}"
         self.gh.create_branch_file(
             self.self_repo,
             branch=branch,
@@ -495,27 +512,32 @@ class GitHubStore:
             content=redact(text),
             message=f"harness: proposal for #{item_id}",
         )
-        pull = self.gh.create_pull(
-            self.self_repo,
-            head=branch,
-            base="main",
-            title=f"proposal: {item.title} (#{item_id})",
-            # The proposal is inlined as well as linked (B227): gate 1 is a judgement about a
-            # plan, and the person making it should not have to open a file in a diff.
-            body=redact(
-                links.proposal_pr_body(
-                    self.config,
-                    item_id=item_id,
-                    path=path,
-                    proposal_text=text,
-                    upstream_number=_ref_number(item.external_ref),
-                    trusted=self.trusted,
-                )
-            ),
+        title = f"proposal: {item.title} (#{item_id})"
+        # The proposal is inlined as well as linked (B227): gate 1 is a judgement about a plan,
+        # and the person making it should not have to open a file in a diff.
+        body = redact(
+            links.proposal_pr_body(
+                self.config,
+                item_id=item_id,
+                path=path,
+                proposal_text=text,
+                upstream_number=_ref_number(item.external_ref),
+                trusted=self.trusted,
+            )
         )
+        if open_pull is not None:
+            pull = self.gh.edit_pull(
+                self.self_repo, int(open_pull["number"]), title=title, body=body
+            )
+        else:
+            pull = self.gh.create_pull(
+                self.self_repo, head=branch, base="main", title=title, body=body
+            )
         url = ""
         if isinstance(pull, Mapping):
             url = str(pull.get("html_url") or pull.get("url") or "")
+        if not url and open_pull is not None:
+            url = str(open_pull.get("html_url") or "")
         self._transition(
             item_id,
             "proposed",
@@ -523,6 +545,49 @@ class GitHubStore:
             extra_meta={"proposal_url": url, "proposal_path": path},
         )
         return url
+
+    def current_proposal(self, item_id: int) -> str | None:
+        """The proposal file on the open pull request for this item, or None (D99)."""
+        pull = self._open_proposal_pull(item_id)
+        path = self._proposal_path(pull, item_id) if pull is not None else None
+        if path is None:
+            return None
+        quoted = urllib.parse.quote(path)
+        ref = urllib.parse.quote(_proposal_branch(item_id), safe="")
+        data = self.gh.get(f"/repos/{self.self_repo}/contents/{quoted}?ref={ref}")
+        if not isinstance(data, Mapping):
+            return None
+        try:
+            return base64.b64decode(str(data.get("content") or "")).decode("utf-8")
+        except (binascii.Error, ValueError) as exc:
+            raise StoreError(f"{path} on {_proposal_branch(item_id)} is unreadable: {exc}")
+
+    def _open_proposal_pull(self, item_id: int) -> dict | None:
+        """The open pull request whose head is this item's proposal branch, or None."""
+        branch = _proposal_branch(item_id)
+        owner = self.self_repo.split("/")[0]
+        head = urllib.parse.quote(f"{owner}:{branch}", safe="")
+        rows = self._pages(
+            f"/repos/{self.self_repo}/pulls?state=open&head={head}&per_page={PER_PAGE}"
+        )
+        for row in rows:
+            ref = row.get("head")
+            if isinstance(ref, Mapping) and ref.get("ref") == branch:
+                if str(row.get("state") or "open") == "open":
+                    return row
+        return None
+
+    def _proposal_path(self, pull: Mapping[str, Any], item_id: int) -> str | None:
+        """The ``proposals/<id>-*.md`` the pull request adds, the last by name if several."""
+        number = int(pull["number"])
+        rows = self._pages(f"/repos/{self.self_repo}/pulls/{number}/files?per_page={PER_PAGE}")
+        names: list[str] = []
+        for row in rows:
+            name = str(row.get("filename") or "")
+            match = _PROPOSAL_PATH_RE.match(name)
+            if match and int(match.group(1)) == int(item_id) and row.get("status") != "removed":
+                names.append(name)
+        return max(names) if names else None
 
     def merged_issues(self) -> set[int]:
         """Numbers of every issue labelled ``stage:done``."""

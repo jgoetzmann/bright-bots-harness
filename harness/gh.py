@@ -710,6 +710,21 @@ class GitHubClient(GitHubReadOnly):
         )
         return data if isinstance(data, dict) else {}
 
+    def edit_pull(self, repo: str, number: int, *, title: str, body: str) -> dict:
+        """Rewrite the title and body of a pull request this account opened: a revised
+        proposal replaces the plan it shows (D99)."""
+        self._require_write("edit_pull")
+        n = int(number)
+        self._require_own_thread(repo, n, "edit_pull")
+        payload = redact.redact_json({"title": str(title), "body": str(body)})
+        data = self._write(
+            "PATCH",
+            f"/repos/{repo}/pulls/{n}",
+            payload,
+            {"number": n, "html_url": f"https://github.com/{repo}/pull/{n}", **payload},
+        )
+        return data if isinstance(data, dict) else {}
+
     def create_branch_file(
         self,
         repo: str,

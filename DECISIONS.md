@@ -1996,3 +1996,56 @@ Accepted gaps:
 - A product command that needs a credential from the environment now fails. No gate needs one.
 
 Allocates B559.
+
+## D99 / B560-B564 - a proposal revision starts from the open plan and fails back to it
+
+Problem: `/harness revise` on proposal #130 (item #90, a two-file test change) ended with item #90
+`blocked` as "too large to plan in one call", and no revised plan. Three faults lined up.
+
+- The command handler moved the item to `proposing` before it called propose, so propose found
+  an item already `proposing` and treated `discovered` as its way back. A revision out of turns
+  was parked under D97, a rate-limited one went back to the queue, and a failed one did too.
+- The revision call got the issue and the notes but not the plan under review. It planned from
+  nothing, and then also had to do the re-checking the notes asked for, inside 30 turns.
+- Had the call fitted, publishing would have pushed the file to `harness/propose-<id>` and asked
+  for a second pull request on that head, which GitHub refuses with 422. A changed title would
+  also have left a second `proposals/<id>-*.md` on the branch, and the pull request body, which
+  inlines the plan (B227), would have kept the old one.
+
+Decision:
+- Propose makes the move into `proposing` itself. `_enter` returns `proposed` as the state a
+  failed or refused call goes back to whenever a proposal is open for review: from `proposed`,
+  and from `discovered`, `proposing` or `blocked` when the store reports an open proposal. A
+  revision out of turns, refused, rate-limited or invalid after its retry leaves the plan under
+  review unchanged and the item `proposed`. `/harness revise` passes its reason through, so the
+  transition still names the command and its author, and a bare `/harness revise` still counts
+  as notes.
+- Revision notes also restart a plan parked before gate 1: a `blocked` item with no branch goes
+  `blocked -> discovered -> proposing`. An item with a branch was approved once and is refused.
+- `store.current_proposal(item_id)` returns the proposal open for review. The GitHub store
+  reads the `proposals/<id>-*.md` that the open pull request on `harness/propose-<id>` adds,
+  from that branch; with no open pull request there is none. The SQLite store returns the
+  newest `<id>-*.md` in its proposals directory, only while the item is `proposed`, since that
+  directory is the checkout's and holds the GitHub store's proposals too.
+- The propose prompt carries that proposal as a data block (`$current_proposal`, version 3) and
+  tells the call to start from it: re-read what it cites, keep what holds, apply the notes, and
+  still emit the whole package. A first proposal is told there is none.
+- `GitHubStore.publish_proposal` reuses the open pull request on the item's branch: the file
+  goes to the path that pull request already adds, and the new `gh.edit_pull` rewrites its title
+  and body. With none open it creates one as before. `edit_pull` checks `_require_own_thread`
+  first, like `close_pull` (D88).
+- The `revise` acknowledgement names both meanings, since `ack` cannot tell a proposal thread
+  from a delivery thread.
+
+Rejected: raising `MAX_TURNS_PROPOSE` for revisions, which spends more without giving the call
+the plan it is revising; closing the old proposal pull request and opening a new one, which
+breaks the link a reviewer already has and the thread the notes are in; a separate revision
+prompt, which would duplicate the output contract the parser depends on.
+
+Accepted gaps:
+- A revision of a proposal whose pull request was opened before this change still has the old
+  `harness/propose-<id>` base. The pull request adds one file, so it merges cleanly.
+- The SQLite store keeps writing a revised proposal under its new name, and B226's newest-file
+  rule picks it.
+
+Allocates B560-B564.

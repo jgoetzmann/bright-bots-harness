@@ -170,7 +170,10 @@ VERB_WAIT: dict[str, tuple[str, str]] = {
     "rebase": ("a few minutes", "rebasing onto the product repository and re-running the gates"),
     "split": ("a minute or two", "reading the item and deciding how it divides"),
     "ask": ("a couple of minutes", "cloning the product repository and reading it"),
-    "revise": ("several minutes", "another implementation pass, then the complete gate sequence"),
+    "revise": (
+        "several minutes",
+        "redoing it with your notes: the plan on a proposal, the code and every gate on a delivery",
+    ),
     "audit": ("up to twenty minutes", "reading the product repository through your lens"),
 }
 

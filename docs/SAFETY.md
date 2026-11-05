@@ -212,9 +212,9 @@ marker on a later delivery, so the pull request has an issue to close (D83).
 the client reads, and has no other caller. `COMMENT_UPSTREAM=false` turns it off.
 
 The machine account holds Triage on the product repository, which would let it label or close
-anybody's thread there. So `close_pull`, `request_reviewers`, `edit_product_issue` and
-`label_product_issue`, the `gh.py` writes that can reach a product thread's state, first read who
-opened the thread and refuse one this account did not open. `label_product_issue` takes no
+anybody's thread there. So `close_pull`, `edit_pull`, `request_reviewers`, `edit_product_issue`
+and `label_product_issue`, the `gh.py` writes that can reach a product thread's state, first read
+who opened the thread and refuse one this account did not open. `label_product_issue` takes no
 repository argument, and only `deliver` names it. The queue's own `set_labels`,
 `update_issue_body` and `create_label` name `SELF_REPO` at every call site (D88).
 

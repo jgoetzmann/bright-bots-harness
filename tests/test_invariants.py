@@ -494,6 +494,8 @@ GH_WRITE_METHODS = (
     "create_pull",
     "request_reviewers",
     "close_pull",
+    # D99: a revised proposal's pull request description.
+    "edit_pull",
     # D86: a done item's harness issue, in this repository only.
     "close_issue",
     "create_branch_file",
@@ -1135,6 +1137,7 @@ def test_i14_the_one_product_issue_targets_the_client_repo_and_only_deliver_file
 #: The gh.py writes that can change a product-repository thread's state (D88).
 OWN_THREAD_WRITES = (
     "close_pull",
+    "edit_pull",
     "request_reviewers",
     "edit_product_issue",
     "label_product_issue",

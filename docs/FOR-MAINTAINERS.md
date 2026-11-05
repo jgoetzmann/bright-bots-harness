@@ -70,7 +70,8 @@ how a reviewer will know it worked. No code has been written.
 
 - **The merge is Jack's.** You have no access to the harness repository (D30, D68), so you cannot
   merge or close the pull request. If the plan is right, say so in a plain comment; Jack reads it.
-- `/harness revise <what is wrong>` rewrites the plan with your note as the brief.
+- `/harness revise <what is wrong>` rewrites the plan with your note as the brief, in the same
+  pull request.
 - `/harness stop` closes the pull request and parks the item; `/harness go` puts it back.
 - On a proposal nobody asked for (`via:suggested`), answer as §5 says.
 

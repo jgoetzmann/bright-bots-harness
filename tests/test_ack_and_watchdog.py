@@ -58,6 +58,15 @@ def test_the_verbs_that_clone_or_call_a_model_are_the_slow_ones():
         assert not links.is_slow(verb), f"{verb} only touches the store; it must not be slow"
 
 
+def test_B564_the_revise_acknowledgement_fits_a_proposal_and_a_delivery():
+    """B564 (D99): `ack` cannot tell a proposal thread from a delivery thread, so the `revise`
+    line says what happens on each."""
+    text = links.acknowledgement(["revise"])
+
+    assert "the plan on a proposal" in text
+    assert "the code and every gate on a delivery" in text
+
+
 # --------------------------------------------------------------------------------------
 # What it says, and when it says nothing
 # --------------------------------------------------------------------------------------

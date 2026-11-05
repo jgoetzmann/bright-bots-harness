@@ -49,7 +49,8 @@ Two mechanisms, both required:
   substituted, so it must contain no bare dollar sign.
 - `discover_triage.md` — `discover()`, once per triage run. `$candidates`
 - `propose.md` — `propose()`, once per work item, plus at most one retry. `$issue_number`,
-  `$harness_issue`, `$issue_title`, `$issue_body`, `$repo`, `$notes`, `$previous_errors`
+  `$harness_issue`, `$issue_title`, `$issue_body`, `$repo`, `$notes`, `$current_proposal`,
+  `$previous_errors`
 - `implement.md` — `implement()`, the single-agent path. `$spec_text`, `$repo`, `$branch`
 - `implement_fullsend.md` — `implement()`, when the fitness gate passes on all five of F1–F5.
   `$spec_text`, `$repo`, `$branch`
@@ -82,6 +83,9 @@ Two mechanisms, both required:
   proposal block's `issue` key must carry.
 - `$repo` — `config.repo`, for example `Bright-Bots-Initiative/brightboost`.
 - `$notes` — the text of a trusted `/harness revise <notes>` command as a data block, or `(none)`.
+- `$current_proposal` — the work package of the proposal open for review for this item, without
+  its front matter, as a data block; otherwise `(none — no proposal for this item is open for
+  review)`.
 - `$previous_errors` — on the one retry allowed by B103, the schema validator's errors from the
   first attempt as a bulleted list; otherwise `(none — this is the first attempt)`.
 - `$branch` — the clone's branch, `harness/<type>-<issue>-<slug>`.

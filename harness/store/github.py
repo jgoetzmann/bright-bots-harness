@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
 from harness.clock import Clock, iso, parse_iso
-from harness.errors import DuplicateWorkItem, GitHubError, IllegalTransition, StoreError
+from harness.errors import (
+    DuplicateWorkItem,
+    GitHubError,
+    HarnessError,
+    IllegalTransition,
+    StoreError,
+)
 from harness import links
 from harness.redact import redact
 from harness.trust import Trust
@@ -42,6 +51,16 @@ _META_RE = re.compile(r"<!--\s*harness-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 # A live-run marker: a plain comment (no harness-meta) naming a workflow run.
 _RUN_MARKER_RE = re.compile(r"actions/runs/\d+|<!--\s*harness-run\b")
 _PARENT_RE = re.compile(r"Parent:\s*#(\d+)")
+_PROPOSAL_PATH_RE = re.compile(r"^proposals/([0-9]+)-[^/]+\.md$")
+#: GitHub's limit on a pull request description, in characters.
+MAX_PULL_BODY = 65536
+
+
+def _proposal_branch(item_id: int) -> str:
+    """The branch a work item's proposal is published on."""
+    return f"harness/propose-{int(item_id)}"
+
+
 def _ref_number(external_ref: str) -> int | None:
     """The product-repository issue number in an ``issue:<n>`` reference (B227)."""
     match = re.search(r"[0-9]+", str(external_ref or ""))
@@ -480,14 +499,47 @@ class GitHubStore:
 
     # --------------------------------------------------------------- the store seam
 
-    def publish_proposal(self, item_id: int, filename: str, text: str) -> str:
-        """Branch + file + PR in ``self_repo`` (gate 1); ``proposing -> proposed``; the PR URL."""
+    def publish_proposal(
+        self, item_id: int, filename: str, text: str, *, revision: bool = False
+    ) -> str:
+        """Branch + file + PR in ``self_repo`` (gate 1); ``proposing -> proposed``; the PR URL.
+
+        The file keeps the path the branch already holds, and an open pull request on the
+        branch is rewritten rather than duplicated. A ``revision`` whose pull request has closed
+        publishes nothing, and a description GitHub would refuse stops before any write (D99).
+        """
         name = bare_filename(filename)
         item = self.get_work_item(item_id)
         if item is None:
             raise StoreError(f"no work item {item_id}")
-        branch = f"harness/propose-{item_id}"
-        path = f"proposals/{name}"
+        branch = _proposal_branch(item_id)
+        open_pull = self._open_proposal_pull(item_id)
+        if revision and open_pull is None:
+            raise StoreError(
+                f"the proposal pull request for item {item_id} closed while it was being "
+                "revised; nothing was published"
+            )
+        held = self._branch_proposal_path(item_id)
+        path = held or f"proposals/{name}"
+        title = f"proposal: {item.title} (#{item_id})"
+        # The proposal is inlined as well as linked (B227): gate 1 is a judgement about a plan,
+        # and the person making it should not have to open a file in a diff.
+        body = redact(
+            links.proposal_pr_body(
+                self.config,
+                item_id=item_id,
+                path=path,
+                proposal_text=text,
+                upstream_number=_ref_number(item.external_ref),
+                trusted=self.trusted,
+            )
+        )
+        if len(body) > MAX_PULL_BODY:
+            raise StoreError(
+                f"the proposal for item {item_id} makes a {len(body)}-character pull request "
+                f"description; GitHub takes at most {MAX_PULL_BODY}"
+            )
+        previous = self._branch_file(path) if open_pull is not None and held else None
         self.gh.create_branch_file(
             self.self_repo,
             branch=branch,
@@ -495,27 +547,21 @@ class GitHubStore:
             content=redact(text),
             message=f"harness: proposal for #{item_id}",
         )
-        pull = self.gh.create_pull(
-            self.self_repo,
-            head=branch,
-            base="main",
-            title=f"proposal: {item.title} (#{item_id})",
-            # The proposal is inlined as well as linked (B227): gate 1 is a judgement about a
-            # plan, and the person making it should not have to open a file in a diff.
-            body=redact(
-                links.proposal_pr_body(
-                    self.config,
-                    item_id=item_id,
-                    path=path,
-                    proposal_text=text,
-                    upstream_number=_ref_number(item.external_ref),
-                    trusted=self.trusted,
-                )
-            ),
-        )
+        if open_pull is not None:
+            number = int(open_pull["number"])
+            try:
+                pull = self.gh.edit_pull(self.self_repo, number, title=title, body=body)
+            except HarnessError as exc:
+                self._unpublish(item_id, number, path, previous, exc)
+        else:
+            pull = self.gh.create_pull(
+                self.self_repo, head=branch, base="main", title=title, body=body
+            )
         url = ""
         if isinstance(pull, Mapping):
             url = str(pull.get("html_url") or pull.get("url") or "")
+        if not url and open_pull is not None:
+            url = str(open_pull.get("html_url") or "")
         self._transition(
             item_id,
             "proposed",
@@ -523,6 +569,101 @@ class GitHubStore:
             extra_meta={"proposal_url": url, "proposal_path": path},
         )
         return url
+
+    def _unpublish(
+        self, item_id: int, number: int, path: str, previous: str | None, exc: Exception
+    ) -> None:
+        """Put the previous file back after the description could not follow it, or block the
+        item when that fails too, so a merge never approves a plan nobody was shown; raises."""
+        restored = False
+        if previous is not None:
+            try:
+                self.gh.create_branch_file(
+                    self.self_repo,
+                    branch=_proposal_branch(item_id),
+                    path=path,
+                    content=previous,
+                    message=f"harness: restore the proposal for #{item_id}",
+                )
+                restored = True
+            except HarnessError:
+                restored = False
+        if not restored:
+            reason = (
+                f"pull request #{number} holds the revised proposal under the previous "
+                "description; `/harness revise` publishes it again"
+            )
+            try:
+                self._transition(item_id, "blocked", reason=reason)
+            except HarnessError:
+                pass
+        outcome = "the previous file is restored" if restored else "the item is blocked"
+        raise StoreError(f"could not update pull request #{number}: {exc}; {outcome}") from exc
+
+    def current_proposal(self, item_id: int) -> str | None:
+        """The proposal file on the open pull request for this item, or None (D99)."""
+        if self._open_proposal_pull(item_id) is None:
+            return None
+        path = self._branch_proposal_path(item_id)
+        return self._branch_file(path) if path is not None else None
+
+    def _open_proposal_pull(self, item_id: int) -> dict | None:
+        """The open pull request the machine account opened from this item's proposal branch
+        into main, or None."""
+        branch = _proposal_branch(item_id)
+        owner = self.self_repo.split("/")[0]
+        head = urllib.parse.quote(f"{owner}:{branch}", safe="")
+        rows = self._pages(
+            f"/repos/{self.self_repo}/pulls?state=open&head={head}&per_page={PER_PAGE}"
+        )
+        for row in rows:
+            ref = row.get("head") if isinstance(row.get("head"), Mapping) else {}
+            base = row.get("base") if isinstance(row.get("base"), Mapping) else {}
+            repo = ref.get("repo") if isinstance(ref.get("repo"), Mapping) else {}
+            if (
+                ref.get("ref") == branch
+                and str(repo.get("full_name") or "").lower() == self.self_repo.lower()
+                and base.get("ref") == "main"
+                and str(row.get("state") or "open") == "open"
+                and (not self._authors or _author(row) in self._authors)
+            ):
+                return row
+        return None
+
+    def _branch_proposal_path(self, item_id: int) -> str | None:
+        """The ``proposals/<id>-*.md`` on this item's proposal branch, the last by name if
+        several; None when the branch or the file does not exist."""
+        ref = urllib.parse.quote(_proposal_branch(item_id), safe="")
+        try:
+            rows = self.gh.get(f"/repos/{self.self_repo}/contents/proposals?ref={ref}")
+        except GitHubError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        names: list[str] = []
+        for row in rows if isinstance(rows, list) else []:
+            name = str(row.get("path") or "") if isinstance(row, Mapping) else ""
+            match = _PROPOSAL_PATH_RE.match(name)
+            if match and int(match.group(1)) == int(item_id) and row.get("type") == "file":
+                names.append(name)
+        return max(names) if names else None
+
+    def _branch_file(self, path: str) -> str:
+        """The text of ``path`` on the proposal branch it belongs to."""
+        match = _PROPOSAL_PATH_RE.match(path)
+        if match is None:
+            raise StoreError(f"{path} is not a proposal file")
+        branch = _proposal_branch(int(match.group(1)))
+        quoted = urllib.parse.quote(path)
+        ref = urllib.parse.quote(branch, safe="")
+        data = self.gh.get(f"/repos/{self.self_repo}/contents/{quoted}?ref={ref}")
+        if not isinstance(data, Mapping) or data.get("encoding") != "base64":
+            # GitHub serves a file over 1 MB with no content at all.
+            raise StoreError(f"{path} on {branch} came back without its content")
+        try:
+            return base64.b64decode(str(data.get("content") or "")).decode("utf-8")
+        except (binascii.Error, ValueError) as exc:
+            raise StoreError(f"{path} on {branch} is unreadable: {exc}") from exc
 
     def merged_issues(self) -> set[int]:
         """Numbers of every issue labelled ``stage:done``."""

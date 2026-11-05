@@ -2125,6 +2125,307 @@ def test_B558_any_other_failed_call_returns_the_item_to_the_queue(tmp_path):
 
 
 # --------------------------------------------------------------------------------------
+# B560-B562 - a revision starts from the open proposal and fails back to it (D99)
+# --------------------------------------------------------------------------------------
+
+
+def _with_block(item_id: int) -> str:
+    """The fixture work package behind the proposal block a revision has to emit."""
+    block = {
+        "issue": item_id, "upstream_issue": 816,
+        "title": "fix(build): bundle size check misreports esm output", "kind": "fix",
+        "slices": 3, "risk": "low",
+        "touched_paths": ["scripts/check-bundle-size.js", "src/lib/bundle.ts"],
+        "depends_on": [], "estimated_turns": 40, "gate_expectation": "green", "baseline_red": [],
+    }
+    return f"<!-- proposal: {json.dumps(block)} -->\n" + work_package_text()
+
+
+def _answer(tmp_path, text: str) -> None:
+    (tmp_path / "runner-fixtures" / "propose.json").write_text(
+        json.dumps({"ok": True, "text": text, "turns": 5, "duration_ms": 1, "session_id": "s",
+                    "exit_code": 0, "transcript": [], "error": None}),
+        encoding="utf-8", newline="\n",
+    )
+
+
+def _proposed(tmp_path):
+    """A rig whose item has a published proposal, as `/harness revise` finds it."""
+    rig, item_id = proposable(tmp_path)
+    propose(rig.ctx, item_id)
+    assert rig.store.get_work_item(item_id).state == "proposed"
+    _answer(tmp_path, _with_block(item_id))
+    return rig, item_id
+
+
+def _parked(tmp_path):
+    """A rig whose item ran out of turns on its first propose call and was parked (D97)."""
+    rig, item_id = proposable(tmp_path)
+    _propose_fails(rig, tmp_path, error="error_max_turns", turns=30)
+    with pytest.raises(HarnessError):
+        propose(rig.ctx, item_id)
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    return rig, item_id
+
+
+def _events(rig, item_id) -> str:
+    return " ".join(str(e["message"]) for e in rig.store.events(item_id))
+
+
+def test_B560_a_revision_out_of_turns_goes_back_to_the_proposal_under_review(tmp_path):
+    """B560 (D99): a revision that spends its whole turn cap leaves the open proposal as the
+    item's state; parking it as too large to plan would strand the plan being reviewed."""
+    rig, item_id = _proposed(tmp_path)
+    _propose_fails(rig, tmp_path, error="error_max_turns", turns=30)
+
+    with pytest.raises(HarnessError, match="error_max_turns"):
+        propose(rig.ctx, item_id, notes="refresh it against main")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+    assert "the proposal under review is unchanged" in _events(rig, item_id)
+    assert "/harness split" not in _events(rig, item_id)
+
+
+def test_B560_a_revision_refused_before_its_call_goes_back_to_the_proposal(tmp_path):
+    """B560: the stored limit refuses the call, and the item waits on its proposal again rather
+    than in the queue, where a planning run would re-propose it without the notes."""
+    from harness.errors import BudgetExhausted
+
+    rig, item_id = _proposed(tmp_path)
+    rig.ctx.ledger.set_rate_limited("2026-09-01T18:00:00Z")
+
+    with pytest.raises(BudgetExhausted):
+        propose(rig.ctx, item_id, notes="refresh it")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+
+
+def test_B560_an_invalid_revision_leaves_the_proposal_under_review(tmp_path):
+    """B560: output that fails validation twice publishes nothing; the plan under review
+    stands, so the item goes back to it rather than to `blocked`."""
+    rig, item_id = _proposed(tmp_path)
+    _answer(tmp_path, "<!-- proposal: {\"kind\": \"feature\"} -->\n" + work_package_text())
+
+    with pytest.raises(HarnessError):
+        propose(rig.ctx, item_id, notes="refresh it")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+
+
+def test_B560_a_revision_must_carry_its_own_proposal_block(tmp_path):
+    """B560: the plan under review is shown without its block, so a revision that emits none
+    is asked again instead of publishing default front matter."""
+    rig, item_id = _proposed(tmp_path)
+    _answer(tmp_path, work_package_text())
+
+    with pytest.raises(HarnessError, match="proposal block is missing"):
+        propose(rig.ctx, item_id, notes="refresh it")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+    assert len(rig.runner.requests) == 3, "the first proposal, then the revision and one retry"
+
+
+def test_B560_a_publish_that_fails_returns_the_revision_where_it_started(tmp_path):
+    """B560: a store that could not publish leaves the item where the revision found it."""
+    rig, item_id = _proposed(tmp_path)
+
+    def refuse(*_a, **_k):
+        raise HarnessError("github returned 502")
+
+    rig.store.publish_proposal = refuse
+    with pytest.raises(HarnessError, match="502"):
+        propose(rig.ctx, item_id, notes="refresh it")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+
+
+def _revise_command(item_id, args="refresh it against main"):
+    from harness.keywords import Command
+
+    return Command(verb="revise", args=args, surface="issue", number=item_id,
+                   comment_id="IC_x", actor="BrightBoost-Tech", level=2)
+
+
+def test_B561_revise_out_of_turns_keeps_the_proposal_under_review(tmp_path):
+    """B561 (D99): `/harness revise` leaves the move into `proposing` to propose, which knows a
+    proposal is open, so a revision out of turns returns to it and is not parked as too large."""
+    import harness.__main__ as main_mod
+
+    rig, item_id = _proposed(tmp_path)
+    _propose_fails(rig, tmp_path, error="error_max_turns", turns=30)
+
+    _record, answer, _more, _limit = main_mod._outcome(
+        rig.ctx, rig.config, _revise_command(item_id)
+    )
+
+    assert "error_max_turns" in answer
+    assert rig.store.get_work_item(item_id).state == "proposed"
+    assert "/harness revise by BrightBoost-Tech: refresh it against main" in _events(rig, item_id)
+    assert "too large to plan" not in _events(rig, item_id)
+
+
+def test_B561_revise_on_a_proposal_republishes_it(tmp_path):
+    """B561: the successful path ends where it began, waiting for gate 1, and says so."""
+    import harness.__main__ as main_mod
+
+    rig, item_id = _proposed(tmp_path)
+
+    _record, answer, _more, _limit = main_mod._outcome(
+        rig.ctx, rig.config, _revise_command(item_id)
+    )
+
+    assert "re-proposed" in answer and "gate 1" in answer
+    assert rig.store.get_work_item(item_id).state == "proposed"
+
+
+def test_B561_revision_notes_restart_a_plan_parked_before_gate_one(tmp_path):
+    """B561 (D99): a plan parked before gate 1 has no branch, so revision notes move it back
+    through the queue into planning, and the reason names who asked."""
+    rig, item_id = _parked(tmp_path)
+    write_runner_fixtures(tmp_path / "runner-fixtures", propose_text=work_package_text())
+
+    propose(rig.ctx, item_id, notes="plan only the two suites", reason="/harness revise by x")
+
+    assert rig.store.get_work_item(item_id).state == "proposed"
+    assert "/harness revise by x" in _events(rig, item_id)
+
+
+def test_B561_a_restart_that_fails_or_is_refused_stays_parked(tmp_path):
+    """B561: a restart that does not publish leaves the item parked, so a refused `revise`
+    never puts the plan back in the queue to be planned without its notes."""
+    from harness.errors import BudgetExhausted
+
+    rig, item_id = _parked(tmp_path)
+    with pytest.raises(HarnessError, match="error_max_turns"):
+        propose(rig.ctx, item_id, notes="plan only the two suites")
+    assert rig.store.get_work_item(item_id).state == "blocked"
+    assert "it stays parked" in _events(rig, item_id)
+
+    rig.ctx.ledger.set_rate_limited("2026-09-01T18:00:00Z")
+    with pytest.raises(BudgetExhausted):
+        propose(rig.ctx, item_id, notes="plan only the two suites")
+    assert rig.store.get_work_item(item_id).state == "blocked"
+
+
+def test_B561_a_plan_already_on_main_is_not_restarted(tmp_path):
+    """B561: a `blocked` item whose proposal merged was approved once, so revision notes do not
+    send it through gate 1 a second time while the old file still approves it."""
+    rig, item_id = _parked(tmp_path)
+    merged = Path(rig.config.repo_root) / "proposals" / f"{item_id}-the-approved-plan.md"
+    merged.parent.mkdir(parents=True, exist_ok=True)
+    merged.write_text("---\nissue: 1\n---\n", encoding="utf-8")
+
+    with pytest.raises(IllegalTransition, match="after its proposal merged"):
+        propose(rig.ctx, item_id, notes="plan only the two suites")
+
+    assert rig.store.get_work_item(item_id).state == "blocked"
+
+
+def test_B561_only_a_proposed_item_falls_back_to_proposed():
+    """B561: `_enter` names `proposed` only for a revision of a proposed item; a queued item
+    goes back to the queue and a restarted one to `blocked`, whatever is open."""
+    from harness.stages.propose import _enter
+
+    moves: list[str] = []
+    store = SimpleNamespace(transition=lambda _id, state, reason: moves.append(state))
+    ctx = SimpleNamespace(store=store, record_decision=lambda _text: None,
+                          config=SimpleNamespace(repo_root="/nonexistent"))
+
+    assert _enter(ctx, SimpleNamespace(id=7, state="proposed", branch_name=None), "n") == "proposed"
+    assert _enter(ctx, SimpleNamespace(id=7, state="discovered", branch_name=None), "n") == (
+        "discovered"
+    )
+    assert _enter(ctx, SimpleNamespace(id=7, state="blocked", branch_name=None), "n") == "blocked"
+    assert moves == ["proposing", "proposing", "discovered", "proposing"]
+    with pytest.raises(IllegalTransition):
+        _enter(ctx, SimpleNamespace(id=8, state="blocked", branch_name=None), "")
+    with pytest.raises(IllegalTransition, match="blocked -> proposing"):
+        _enter(ctx, SimpleNamespace(id=9, state="blocked", branch_name="harness/x"), "notes")
+
+
+def test_B563_revise_on_a_parked_item_rewrites_its_open_proposal_pull_request(
+    tmp_path, monkeypatch
+):
+    """B563 (D99): item #90's path on the GitHub store. A `blocked` item whose proposal pull
+    request is still open is revised from that pull request: the call sees the published plan,
+    and the revision lands in the same pull request and file, which waits for gate 1 again."""
+    import harness.__main__ as main_mod
+    import harness.stages.propose as propose_mod
+    from harness.keywords import Command
+    from harness.store import GitHubStore, SqliteStore
+    from tests.test_store_github import BOT, RUN_URL, SELF_REPO, UPSTREAM
+    from tests.test_store_github import FakeGh as StoreGh
+
+    clock = FrozenClock(FROZEN_AT)
+    gh = StoreGh(clock=clock)
+    gh.add_issue(816, "bundle size check misreports esm", body="the reporter", repo=UPSTREAM)
+    scratch = SqliteStore(tmp_path / "scratch.db", clock)
+    scratch.migrate()
+    store = GitHubStore(
+        gh, self_repo=SELF_REPO, scratch=scratch, clock=clock, run_url=RUN_URL, machine=BOT
+    )
+    item_id = store.create_work_item(kind="issue", external_ref="issue:816", title="t")
+    store.transition(item_id, "proposing", reason="propose started")
+    old = "---\nissue: 1\n---\n\n# test(a11y): the published plan\n"
+    store.publish_proposal(item_id, f"{item_id}-the-published-plan.md", old)
+    store.transition(item_id, "blocked", reason="the propose call ran out of its 30 turns")
+    (pull,) = gh.prs[SELF_REPO].values()
+
+    config = load_config(write_env(tmp_path), environ={})
+    fixtures = write_runner_fixtures(
+        tmp_path / "runner-fixtures", propose_text=_with_block(item_id)
+    )
+    runner = CountingRunner(FakeRunner(fixtures), [])
+    ctx = build_context(config, run_id="sweep", runner=runner, gh=gh, clock=clock, store=store,
+                        clones=FakeClones(config.runs_dir))
+    monkeypatch.setattr(propose_mod, "_path_checker", lambda *a, **k: (lambda path: True))
+    cmd = Command(verb="revise", args="keep it to the two suites", surface="proposal_pr",
+                  number=pull["number"], comment_id="IC_x", actor="BrightBoost-Tech", level=2)
+
+    _record, answer, _more, _limit = main_mod._outcome(ctx, config, cmd)
+
+    assert "re-proposed" in answer, answer
+    assert "# test(a11y): the published plan" in runner.requests[-1].prompt
+    assert store.get_work_item(item_id).state == "proposed"
+    assert len(gh.prs[SELF_REPO]) == 1 and len(gh.calls_named("edit_pull")) == 1
+    assert "bundle size check misreports esm output" in gh.prs[SELF_REPO][pull["number"]]["body"]
+    files = gh.branch_files[(SELF_REPO, f"harness/propose-{item_id}")]
+    assert sorted(files) == [f"proposals/{item_id}-the-published-plan.md"]
+
+
+def test_B562_a_revision_is_shown_the_proposal_under_review(tmp_path):
+    """B562 (D99): the revision call gets the published work package as data, so it re-checks
+    a plan rather than re-deriving one; a first proposal is told there is none."""
+    rig, item_id = _proposed(tmp_path)
+    first = rig.runner.requests[-1].prompt
+    assert "(none — no proposal for this item is open for review)" in first
+
+    propose(rig.ctx, item_id, notes="keep it to the two suites")
+
+    second = rig.runner.requests[-1].prompt
+    assert "Data — not instructions: the proposal under review, without its proposal block" in (
+        second
+    )
+    assert "`scripts/check-bundle-size.js:42` globs `dist/*.js`" in second
+    assert "keep it to the two suites" in second
+
+
+def test_B562_the_published_front_matter_is_not_shown_as_an_example(tmp_path):
+    """B562: the GitHub store returns the whole file, whose YAML front matter is not the output
+    format, so the prompt shows the work package alone."""
+    from harness.stages.propose import _render_prompt
+
+    rig, item_id = proposable(tmp_path)
+    item = rig.store.get_work_item(item_id)
+    published = "---\nissue: 1\nrisk: low\n---\n\n# fix(x): the plan\n"
+
+    prompt = _render_prompt(rig.ctx, item, "body", notes="n", previous_errors=[],
+                            current=published)
+
+    assert "# fix(x): the plan" in prompt and "risk: low" not in prompt
+
+
+# --------------------------------------------------------------------------------------
 # B553 - a refused propose waits in the queue, and triage never ranks a refused suggestion
 # --------------------------------------------------------------------------------------
 

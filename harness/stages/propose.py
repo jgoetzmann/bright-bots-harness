@@ -448,15 +448,20 @@ def render_front_matter(front: Mapping[str, Any]) -> str:
 # --------------------------------------------------------------------------------------------
 
 
-def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
-    """One model call, a spec file on disk, and a validated proposal published (B60)."""
+def propose(ctx: Context, item_id: int, *, notes: str = "", reason: str = "") -> Path:
+    """One model call, a spec file on disk, and a validated proposal published (B60).
+
+    ``reason`` is what the move into ``proposing`` records; `/harness revise` passes the
+    command and who gave it.
+    """
     ctx.check_halt()
 
     item = ctx.store.get_work_item(item_id)
     if item is None:
         raise HarnessError(f"no work item {item_id}")
 
-    entry_state = _enter(ctx, item, notes)
+    current = _current_proposal(ctx, item_id)
+    entry_state = _enter(ctx, item, notes, reason=reason)
     body, upstream_from_body = _issue_body(ctx, item)
     upstream_issue = (
         item.issue_number if item.external_ref.startswith("issue:") else upstream_from_body
@@ -485,6 +490,7 @@ def propose(ctx: Context, item_id: int, *, notes: str = "") -> Path:
             lease,
             body=body,
             notes=notes,
+            current=current,
             upstream_issue=upstream_issue,
             entry_state=entry_state,
         )
@@ -505,13 +511,14 @@ def _propose_leased(
     *,
     body: str,
     notes: str,
+    current: str | None,
     upstream_issue: int | None,
     entry_state: str,
 ) -> Path:
     """One model call against the checkout at `lease.path`, then validation and publication.
 
-    ``entry_state`` comes from ``_enter`` and differs from ``item.state`` for an item that was
-    already ``proposing`` at entry; only ``entry_state`` is a state the item can be returned to.
+    ``entry_state`` comes from ``_enter``: the state a failed call returns the item to. A
+    revision (``current`` set) must emit a proposal block and replaces the open proposal (D99).
     """
     max_turns = int(ctx.config.max_turns["implement"])
     ctx.record_decision(
@@ -521,7 +528,9 @@ def _propose_leased(
     problems: list[str] = []
     text = ""
     for attempt in (1, 2):
-        prompt = _render_prompt(ctx, item, body, notes=notes, previous_errors=problems)
+        prompt = _render_prompt(
+            ctx, item, body, notes=notes, current=current, previous_errors=problems
+        )
         result = run_model(
             ctx,
             stage="propose",
@@ -539,11 +548,17 @@ def _propose_leased(
             if entry_state == "discovered" and _out_of_turns(ctx, result):
                 _park_out_of_turns(ctx, item_id)
             else:
-                _revert(ctx, item_id, entry_state, "propose call failed")
+                why = "propose call failed" + _UNCHANGED.get(entry_state, "")
+                _revert(ctx, item_id, entry_state, why)
             raise RunnerError(
                 f"propose failed for item {item_id}: {result.error or 'runner returned no text'}"
             )
         block, body_text, problems = extract_proposal_block(text)
+        if block is None and current is not None and not problems:
+            # The plan under review is shown without its block, so a copy of it would carry
+            # the default front matter silently.
+            problems = ["the proposal block is missing: the first line must be the "
+                        "`<!-- proposal: {...} -->` comment with all eleven keys"]
         pkg = parse_work_package(body_text)
         front = build_front_matter(
             pkg,
@@ -569,12 +584,16 @@ def _propose_leased(
     if problems:
         # Still invalid after one retry with the errors appended, so nothing is published (B103).
         reason = "proposal front matter invalid after one retry: " + "; ".join(problems)
-        ctx.record_decision(f"item {item_id} blocked: {reason}")
         ctx.store.append_event(item_id, "error", reason)
-        try:
-            ctx.store.transition(item_id, "blocked", reason=reason)
-        except HarnessError as exc:
-            ctx.record_decision(f"could not transition item {item_id} to blocked: {exc}")
+        if entry_state == "proposed":
+            # The plan under review still stands, so the item waits on it again (D99).
+            _revert(ctx, item_id, entry_state, reason + _UNCHANGED[entry_state])
+        else:
+            ctx.record_decision(f"item {item_id} blocked: {reason}")
+            try:
+                ctx.store.transition(item_id, "blocked", reason=reason)
+            except HarnessError as exc:
+                ctx.record_decision(f"could not transition item {item_id} to blocked: {exc}")
         raise errors.ProposalInvalid(f"item {item_id}: {reason}", errors=list(problems))
 
     spec_path = ctx.run_dir / "spec" / f"{item_id}.md"
@@ -599,7 +618,16 @@ def _propose_leased(
     filename = f"{item_id}-{_slugify(str(front['title']))}.md"
     proposal_text = redact.redact(render_front_matter(front) + "\n" + body_text)
     write_redacted(ctx.run_dir / "proposal" / filename, proposal_text)
-    location = ctx.store.publish_proposal(item_id, filename, proposal_text)
+    try:
+        location = ctx.store.publish_proposal(
+            item_id, filename, proposal_text, revision=current is not None
+        )
+    except HarnessError:
+        # The store leaves gate 1 as it found it, or blocks the item when it could not (D99).
+        still = ctx.store.get_work_item(item_id)
+        if still is not None and still.state == "proposing":
+            _revert(ctx, item_id, entry_state, "publishing the proposal failed")
+        raise
     ctx.record_decision(
         f"published proposal {filename} for item {item_id} -> {location}; front matter: "
         f"kind={front['kind']} risk={front['risk']} slices={front['slices']} "
@@ -637,15 +665,38 @@ def _offer_the_green_light(ctx: Context, item_id: int, proposal_url: str) -> Non
         ctx.store.append_event(item_id, "info", f"green-light comment failed: {exc}")
 
 
-def _enter(ctx: Context, item: Any, notes: str) -> str:
-    """Move the item into ``proposing`` and return the state it came from."""
+#: What a failed call's reason adds when the item goes back where a revision found it.
+_UNCHANGED: dict[str, str] = {
+    "proposed": "; the proposal under review is unchanged",
+    "blocked": "; it stays parked",
+}
+
+
+def _enter(ctx: Context, item: Any, notes: str, *, reason: str = "") -> str:
+    """Move the item into ``proposing`` and return the state a failed call returns it to.
+
+    A revision of a ``proposed`` item goes back to ``proposed``, so the plan under review
+    stands. Revision notes also restart a plan parked before gate 1 (no branch, no proposal on
+    main), and a failed restart parks it again (D99).
+    """
     state = item.state
+    revising = bool(notes.strip())
+    if state == "blocked" and revising and not item.branch_name:
+        merged = _committed_proposal(ctx, item.id)
+        if merged:
+            raise IllegalTransition(
+                f"item {item.id} is `blocked` after its proposal merged ({PROPOSALS_DIR}/"
+                f"{merged} is on main); revision notes restart only a plan parked before gate 1"
+            )
+        ctx.store.transition(item.id, "discovered", reason=reason or "revision notes")
+        ctx.store.transition(item.id, "proposing", reason=reason or "revision notes")
+        return "blocked"
     if state == "discovered":
-        ctx.store.transition(item.id, "proposing", reason="propose started")
+        ctx.store.transition(item.id, "proposing", reason=reason or "propose started")
         return "discovered"
-    if state == "proposed" and notes.strip():
+    if state == "proposed" and revising:
         ctx.store.transition(
-            item.id, "proposing", reason="propose re-run with trusted revision notes"
+            item.id, "proposing", reason=reason or "propose re-run with trusted revision notes"
         )
         return "proposed"
     if state == "proposing":
@@ -656,8 +707,26 @@ def _enter(ctx: Context, item: Any, notes: str) -> str:
         return "discovered"
     raise IllegalTransition(
         f"illegal transition {state} -> proposing for work item {item.id}: propose needs a "
-        "discovered item, or a proposed one with revision notes"
+        "discovered item, or revision notes for a proposed one or one parked before gate 1"
     )
+
+
+def _committed_proposal(ctx: Context, item_id: int) -> str | None:
+    """The name of a ``proposals/<id>-*.md`` in the checkout of main, or None."""
+    directory = Path(getattr(ctx.config, "repo_root", ".")) / PROPOSALS_DIR
+    names = sorted(path.name for path in directory.glob(f"{int(item_id)}-*.md"))
+    return names[0] if names else None
+
+
+def _current_proposal(ctx: Context, item_id: int) -> str | None:
+    """The proposal open for review for this item, or None when there is none or it can't be
+    read; a revision starts from it (D99). GitHub's rate ceiling still stops the stage."""
+    try:
+        text = ctx.store.current_proposal(item_id)
+    except (GitHubError, errors.StoreError) as exc:
+        ctx.record_decision(f"could not read the open proposal for item {item_id}: {exc}")
+        return None
+    return text if text and text.strip() else None
 
 
 def _out_of_turns(ctx: Context, result: Any) -> bool:
@@ -690,7 +759,13 @@ def _revert(ctx: Context, item_id: int, entry_state: str, why: str) -> None:
 
 
 def _render_prompt(
-    ctx: Context, item: Any, body: str, *, notes: str, previous_errors: list[str]
+    ctx: Context,
+    item: Any,
+    body: str,
+    *,
+    notes: str,
+    previous_errors: list[str],
+    current: str | None = None,
 ) -> str:
     number = item.issue_number
     if item.external_ref.startswith("issue:") and number is not None:
@@ -706,6 +781,10 @@ def _render_prompt(
         errors_text = "\n".join(f"- {error}" for error in previous_errors)
     else:
         errors_text = "(none — this is the first attempt)"
+    current_text = "(none — no proposal for this item is open for review)"
+    if current:
+        label = "the proposal under review, without its proposal block"
+        current_text = data_block(label, strip_front_matter(current))
     return load_prompt("propose").substitute(
         issue_number=issue_number,
         harness_issue=str(item.id),
@@ -713,6 +792,7 @@ def _render_prompt(
         issue_body=data_block("issue body, verbatim", body),
         repo=ctx.config.repo,
         notes=notes_text,
+        current_proposal=current_text,
         previous_errors=errors_text,
     )
 

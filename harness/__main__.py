@@ -1370,9 +1370,9 @@ def _approve_merged(args: argparse.Namespace) -> int:
 
     Bounded by the queue rather than by `proposals/`, which only grows: one label query under
     the GitHub store, and only `proposed -> approved` is ever made. What keeps a stopped item
-    from being resurrected is the state machine together with the fact that nothing puts an
-    item back into `proposed`: an item stopped after its proposal merged is `blocked` or
-    `abandoned`, so it is not `proposed` and is left alone.
+    from being resurrected is the state machine together with the fact that only a revision of
+    a still-open proposal puts an item back into `proposed`: an item stopped after its proposal
+    merged is `blocked` or `abandoned`, so it is not `proposed` and is left alone.
     """
     config = _load(args)
     ctx = _context(config, args, run_id="approve")
@@ -2727,9 +2727,10 @@ def _act_on_command(ctx, config, cmd) -> str:
                 ctx, item_id, source="review", notes=cmd.args or "/harness revise"
             )
             return f"item {item_id} re-implemented: {'revised' if lease else 'not revised'}"
-        ctx.store.transition(item_id, "proposing", reason=reason)
-        spec_path = STAGES["propose"](ctx, item_id, notes=cmd.args)
-        return f"item {item_id} re-proposed: {spec_path}"
+        # Propose makes the move itself, since only it knows where a failed revision goes back
+        # to (D99).
+        STAGES["propose"](ctx, item_id, notes=cmd.args or "/harness revise", reason=reason)
+        return f"item {item_id} re-proposed: the revised plan is published and waits for gate 1"
 
     if cmd.verb == "rebase":
         notes = cmd.args or "/harness rebase"

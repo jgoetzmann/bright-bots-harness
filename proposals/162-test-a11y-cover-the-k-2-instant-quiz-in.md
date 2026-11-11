@@ -19,7 +19,7 @@ baseline_red: []
 
 ## Issue
 
-Harness issue #162 (https://github.com/jgoetzmann/bright-bots-harness/issues/162) is a `/harness work` request with no product issue. It follows up Bright Boost #952 and was the first open question in proposal #90. It asks for one narrowly scoped, page-level K-2 accessibility test for the ActivityPlayer quiz. With the grade band pinned to `k2` so `K2InstantFeedbackQuiz` mounts, the test checks four things:
+Harness issue #162 (https://github.com/jgoetzmann/bright-bots-harness/issues/162) is a `/harness work` request with no product issue. It follows up Bright Boost #952 and was the first open question in proposal #90. It asks for one narrowly scoped, page-level K-2 accessibility test for the ActivityPlayer quiz. The test stubs a K-2 course list so `K2InstantFeedbackQuiz` mounts, then checks four things:
 
 - The choices sit in a group labelled by the prompt.
 - Each choice is a button named by its text.
@@ -41,17 +41,17 @@ The K-2 quiz's accessibility contract is tested only at component level. No test
 - Page routing to the K-2 variant:
   - A `k2` band freezes the `"instant"` variant at quiz entry (`src/pages/ActivityPlayer.tsx:330-332,787-791`).
   - `"instant"` mounts `K2InstantFeedbackQuiz` (`ActivityPlayer.tsx:820-831`).
-  - A course list with no `g3_5` course resolves to `k2` (`src/hooks/useGradeBand.ts:48-54`).
+  - A course list with no `g3_5` course resolves to `k2` (`src/hooks/useGradeBand.ts:48-54`). So do the pending and failed states (`useGradeBand.ts:18,163`).
 - The contract under test:
-  - `QuestionScreen` renders the choices in `role="group"` with `aria-labelledby` pointing at the prompt (`src/components/activities/quiz/QuestionScreen.tsx:85-89`).
-  - Each choice is a `Button` whose text sits in nested spans, with no `aria-pressed` (`QuestionScreen.tsx:102-131`).
+  - `QuestionScreen` renders the choices in `role="group"` with `aria-labelledby` pointing at the prompt (`src/components/activities/quiz/QuestionScreen.tsx:85-89`). `resolveText` passes a plain-string prompt through unchanged.
+  - Each choice is a `Button` whose text sits in nested spans, with `aria-hidden` icons and no `aria-pressed` (`QuestionScreen.tsx:102-131`).
   - Choices are disabled outside the answering phase (`QuestionScreen.tsx:71,105`).
   - After an answer, `FeedbackPanel` renders a `role="status"` `aria-live="polite"` banner (`FeedbackPanel.tsx:34-36`) and an `autoFocus` button. That button reads "Next", or "See how I did!" on the last question (`FeedbackPanel.tsx:67-76`; `src/locales/en/common.json:1084,1098`).
 - Existing coverage, all at component level:
   - `QuestionScreen.test.tsx:52` (AC-3.1, labelled group) and `:135-148` (AC-3.3, no `aria-pressed`).
   - `FeedbackPanel.test.tsx:18` (AC-1.2, status region) and `:61` (AC-1.4, auto-focus).
   - `K2InstantFeedbackQuiz.test.tsx:409-421` (status region) and `:423-435` (focus).
-- At page level, `ActivityPlayerQuizGate.test.tsx:170-179,233-254,288-296` checks that a `k2` student gets the instant quiz, but only by `data-testid="instant-quiz"`, with no accessibility assertion.
+- At page level, `ActivityPlayerQuizGate.test.tsx:170-184,233-257,288-301` checks that a `k2` student gets the instant quiz, but only by `data-testid="instant-quiz"`, with no accessibility assertion.
 - `ActivityPlayerA11y.test.tsx` checks only the `g3_5` legacy list quiz, whose contract includes `aria-pressed` (`ActivityPlayerA11y.test.tsx:104-115`; `LegacyListQuiz.tsx:63-67,75-96`). After #952 its `beforeEach` pins `getStudentCourses` to `g3_5`.
 
 ## Approach
@@ -60,7 +60,7 @@ The K-2 quiz's accessibility contract is tested only at component level. No test
 - Add a second top-level `describe("ActivityPlayer Accessibility — K-2 instant quiz", ...)` beside the existing one. Leave the existing `describe` and its `it` byte-identical.
 - Give the new `describe` its own `beforeEach`, mirroring #952's:
   - call `vi.resetAllMocks()`, `__resetGradeBandCache()` and `localStorage.clear()`;
-  - resolve `api.getStudentCourses` to `[{ gradeBand: "k2" }]`;
+  - resolve `api.getStudentCourses` to `[{ gradeBand: "k2" }]`. That makes the K-2 intent explicit, though `k2` is also the fallback;
   - resolve `api.getModule` to a module whose activity `a-1` is a `story_quiz` with one slide and two questions. With two questions, the first feedback button reads "Next".
 - Add one `it` that:
   1. renders the same route as the existing case;
@@ -72,16 +72,20 @@ The K-2 quiz's accessibility contract is tested only at component level. No test
   7. asserts one `role="status"` element with `aria-live="polite"`, and that `getByRole("button", { name: "Next" })` has focus;
   8. asserts again that every choice in the group has no `aria-pressed`, now in the feedback phase.
 - Do not answer the last question or finish the quiz. Completion is covered elsewhere, and finishing would add a `completeActivity` call this test does not need.
-- Two-phase proof, with nothing committed:
-  - Temporarily add `aria-pressed={false}` to the `QuestionScreen` choice `Button`, run the file, and record that the new case fails on the `aria-pressed` assertion.
-  - Temporarily remove `autoFocus` from `FeedbackPanel`, and record the focus failure.
-  - Temporarily drop `aria-labelledby` from the group, and record the group-name failure.
-  - Revert each one, and show the file passing with 2 passed and 0 skipped.
+- Two-phase proof, with nothing committed. First run the file and record it green, with 2 passed and 0 skipped. Then make each temporary break below on its own, run the file, record the failing assertion, and revert:
+  - Add `aria-pressed={false}` to the `QuestionScreen` choice `Button`. Step 5 fails.
+  - Add `aria-pressed={phase === "feedback" ? origIdx === selectedChoiceIndex : undefined}` instead. Only step 8 fails.
+  - Drop `aria-labelledby` from the group. Step 4 fails.
+  - Replace the choice label span's text with a fixed string. Step 5 fails on the button name.
+  - Remove `aria-live="polite"` from `FeedbackPanel`. Step 7 fails on the live region.
+  - Remove `autoFocus` from `FeedbackPanel`. Step 7 fails on focus.
+
+  End by showing the file green again.
 
 ## Slices
 
 1. Add the K-2 `describe` with its own `beforeEach`, a two-question fixture and one case covering the labelled group, button names, the polite status region, focus on Next and the absence of `aria-pressed` in both phases.
-2. Prove the case two-phase: temporarily break each of `aria-pressed`, `autoFocus` and `aria-labelledby` in turn, record the matching failure, revert, and show the file green.
+2. Prove the case two-phase: record it green, then make each of the six temporary breaks in turn, record the matching failing step, revert, and show the file green.
 
 ## Behaviors
 
@@ -98,27 +102,25 @@ The K-2 quiz's accessibility contract is tested only at component level. No test
 - Running `ActivityPlayerA11y.test.tsx` by path reports 2 passed and 0 skipped.
 - The diff touches only `src/pages/__tests__/ActivityPlayerA11y.test.tsx`.
 - The existing `describe` block, its `beforeEach` and its `it` are unchanged from #952's version.
-- The new case pins the band with `getStudentCourses` resolving to `[{ gradeBand: "k2" }]` and resets the grade-band cache and `localStorage` first.
-- The new case asserts on role, accessible name, `aria-live`, focus and the absence of `aria-pressed`. It does not assert on test ids beyond waiting for `instant-quiz`, on class names, or on cheer text, which is picked at random (`K2InstantFeedbackQuiz.tsx:27-46`).
-- The delivery evidence shows each of the three temporary breaks failing the new case on the matching assertion, and none of those breaks is in the diff.
+- The new case stubs `getStudentCourses` to `[{ gradeBand: "k2" }]` and resets the grade-band cache and `localStorage` first.
+- The new case asserts on role, accessible name, `aria-live`, focus and the absence of `aria-pressed`. It waits for `instant-quiz` but asserts on no other test id, on no class name, and on no cheer text. Under `enMock`, `returnObjects` gives back the raw key, so the cheer is always `activityPlayer.feedback.correctCheers` (`K2InstantFeedbackQuiz.tsx:40-41`). This case therefore cannot check what the status region announces.
+- The delivery evidence shows each of the six temporary breaks failing the new case on the matching step, with Behaviors 1 to 6 each failing at least once. None of the breaks is in the diff.
 - No `waitFor` timeout, test timeout, retry, fake-timer change, `.skip`, `.only` or `skipIf` is added.
-- `npm run lint`, `npm run typecheck` and `npm run test:unit` are green.
+- `npm run lint`, `npm run format:check`, `npm run typecheck` and `npm run test:unit` are green.
 
 ## Decisions
 
-- Put the case in `ActivityPlayerA11y.test.tsx` as a second `describe`. The file is the page-level accessibility suite, and its mocks and route already fit.
-- Rejected: a new test file, because `touched_paths` may only name paths that exist.
-- Rejected: adding an `it` inside the existing `describe`, because its `beforeEach` pins `g3_5`.
-- Depend on #90 (#952) because #952 rewrites this file's setup. Depend on #161 because the new case clicks Start Quiz right after the slide appears, and #161 diagnoses a race where a passive effect can undo that click (`ActivityPlayer.tsx:305-313`).
-- Use two questions, so focus lands on "Next" rather than "See how I did!". `FeedbackPanel.test.tsx:69` already covers the label switch.
-- Answer correctly and stop at feedback. Rejected: also walking a wrong answer. The incorrect-path copy and explanation are covered at component level (`FeedbackPanel.test.tsx:30-59`), and the request is for a narrow test.
-- Assert that `aria-pressed` is absent, not that it is `"false"`. AC-3.3 specifies absence (`QuestionScreen.test.tsx:135-148`).
-- Rejected: changing `QuestionScreen`, `FeedbackPanel` or `K2InstantFeedbackQuiz`. The request is test-only, and any defect found goes back for a separate decision.
+- Put the case in `ActivityPlayerA11y.test.tsx` as a second `describe`, because the file is the page-level accessibility suite and its mocks and route already fit. Rejected: a new test file, because `touched_paths` may only name paths that exist. Rejected: an `it` inside the existing `describe`, because its `beforeEach` pins `g3_5`.
+- Depend on #90 (#952), because #952 rewrites this file's setup. Also depend on #161 as a precaution: the new case clicks Start Quiz right after the slide appears, and #161 shows from reading the code that a passive reset can undo that click (`ActivityPlayer.tsx:305-313`). Rejected: building before #161, which risks adding a flaky case.
+- Use two questions, so focus lands on "Next". Rejected: one question, whose button reads "See how I did!"; `FeedbackPanel.test.tsx:69` already covers that label.
+- Answer correctly and stop at feedback. Rejected: also walking a wrong answer, because the incorrect-path copy and explanation are covered at component level (`FeedbackPanel.test.tsx:30-59`) and the request is for a narrow test.
+- Assert that `aria-pressed` is absent. Rejected: asserting `"false"`, because AC-3.3 specifies absence (`QuestionScreen.test.tsx:135-148`).
+- Prove each behavior with its own break. Rejected: one `aria-pressed` break alone, which fails at step 5 and never shows that step 8 can fail.
+- Rejected: changing `QuestionScreen`, `FeedbackPanel` or `K2InstantFeedbackQuiz`, because the request is test-only and any defect found goes back for a separate decision.
 
 ## Open questions
 
-- Should the new case also cover the quiz-only path, where a `k2` student enters the quiz without clicking Start Quiz (`ActivityPlayer.tsx:339-343`)? This plan covers the story-then-quiz path only, to stay narrow. `ActivityPlayerQuizGate.test.tsx:233-254` already shows the quiz-only path mounts the instant quiz.
-- No test was run for this proposal, because this session could not install dependencies. Line numbers are from `1a2437d`, and #952's version of the test file must be re-read at implementation time.
+- Should the new case also cover the quiz-only path, where a `k2` student enters the quiz without clicking Start Quiz (`ActivityPlayer.tsx:339-343`)? This plan covers the story-then-quiz path only, to stay narrow. `ActivityPlayerQuizGate.test.tsx:233-257` already shows the quiz-only path mounts the instant quiz.
 
 ## Touched paths
 
@@ -126,8 +128,9 @@ The K-2 quiz's accessibility contract is tested only at component level. No test
 
 ## Risks
 
-- **Start Quiz race.** If this is built before #161 merges, the Start Quiz click can be undone by the play effect's reset, which is why the item depends on #161. If the new case is flaky after #161, wait for an observable state such as the slide text. Do not add a timeout.
-- **Shared button name.** Another button named "Next" on the page would make the focus assertion ambiguous. In quiz mode the page renders only the quiz component (`ActivityPlayer.tsx:820-831`), but the implementer should confirm `getByRole` finds exactly one.
+- **Start Quiz race.** If this is built before #161 merges, the Start Quiz click can be undone by the play effect's reset, which is why the item depends on #161. If the new case is flaky after #161 merges, stop and report it against #161. Do not add a wait or a timeout.
+- **Shared button name.** Another button named "Next" on the page would make the focus assertion ambiguous. In quiz mode the page renders only the quiz component (`ActivityPlayer.tsx:820-831`), and the toast is mocked, but the implementer should confirm `getByRole` finds exactly one.
 - **The i18n mock.** `enMock` does not interpolate, so "Question {{current}} of {{total}}" renders with its placeholders (`common.json:1095`). The case must not assert on that text. Item #163 is the place to change it.
 - **Product defect.** If a reproduced failure shows a real gap, for example focus not reaching Next at page level, stop and report it. Product files are out of scope.
+- **Unrun plan.** No test was run for this proposal, because this session could not install dependencies. Line numbers are from `1a2437d`, and #952's version of the test file must be re-read at implementation time.
 - **Issue body.** The request contains no instructions aimed at the agent beyond the task itself.

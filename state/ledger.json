@@ -6,16 +6,16 @@
     "rate_limited_until": "2026-11-02T13:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.92,
-        "resets_at": "2026-11-10T12:30:00Z"
+        "utilization": 0.4,
+        "resets_at": "2026-11-11T13:40:00Z"
       },
-      "status": "allowed_warning",
-      "observed_at": "2026-11-10T11:57:51Z"
+      "status": "allowed",
+      "observed_at": "2026-11-11T11:38:42Z"
     },
     "quiet": {
-      "at": "2026-11-10T11:57:54Z",
+      "at": "2026-11-11T11:38:44Z",
       "quiet": true,
-      "reason": "five_hour 86% -> 92% from 2026-11-10T11:47:49Z to 2026-11-10T11:57:51Z while the partner was spending, which excuses it"
+      "reason": "five_hour 38% -> 40% from 2026-11-11T11:28:40Z to 2026-11-11T11:38:42Z while the partner was spending, which excuses it"
     }
   },
   "cursors": {

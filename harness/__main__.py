@@ -1482,7 +1482,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         approved = {int(i.id): i for i in listing_ctx.store.list_work_items(state="approved")}
         item_ids = list(approved)
         # Outside the run window only the carried item may start (B210). `--item` bypasses the
-        # window and nothing else: every stage still passes through the governor's usage stop.
+        # window and `depends_on`, nothing else: every stage still meets the governor's usage stop.
         # A block opens the window here exactly as it does in the plan, and lifts nothing else
         # (D77).
         now = listing_ctx.clock.now()
@@ -1791,20 +1791,22 @@ def _hold_unmet_dependencies(
 ) -> tuple[list[int], dict[str, str]]:
     """The ids whose `depends_on` items are merged, and why each other one waits (D100).
 
-    The dispatcher's rule, so `harness run` without `--item` cannot start what the plan skips.
-    The carried item started before and is never held.
+    This is the dispatcher's `depends_on` rule only: its slot cap, candidate order and quiet gate
+    are not applied here. The carried item started before and is never held. The merged set is
+    read only when some candidate lists a dependency.
     """
-    if not item_ids:
+    deps = {
+        int(i): _depends_on(config, approved[int(i)])
+        for i in item_ids
+        if carry is None or int(i) != int(carry)
+    }
+    if not any(deps.values()):
         return list(item_ids), {}
     merged = {int(n) for n in ctx.store.merged_issues()}
     kept: list[int] = []
     held: dict[str, str] = {}
     for item_id in item_ids:
-        item = approved.get(int(item_id))
-        if item is None or (carry is not None and int(item_id) == int(carry)):
-            kept.append(item_id)
-            continue
-        unmet = [int(dep) for dep in _depends_on(config, item) if int(dep) not in merged]
+        unmet = [int(dep) for dep in deps.get(int(item_id), ()) if int(dep) not in merged]
         if unmet:
             held[str(item_id)] = f"depends_on {unmet[0]} not merged"
             LOG.info("run: item %s waits: %s", item_id, held[str(item_id)])

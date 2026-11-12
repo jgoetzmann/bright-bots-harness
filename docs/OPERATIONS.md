@@ -38,9 +38,9 @@ workflow run URL and the new state (B101).
 
 `harness tidy`, which every feedback run calls, closes the harness issue as completed and moves the
 item to `stage:done` once the newest delivery PR of an item at `stage:needs-review` or
-`stage:needs-human` has merged upstream (D86). The dispatcher's `depends_on` check waits on that
-label. A delivery PR closed without merging leaves the item where it is; `/harness stop` parks it
-at `stage:blocked`.
+`stage:needs-human` has merged upstream (D86). The `depends_on` check in the dispatcher and in
+`harness run` waits on that label. A delivery PR closed without merging leaves the item where it
+is; `/harness stop` parks it at `stage:blocked`.
 
 ```bash
 harness status --json     # the queue as this store sees it, and what Actions is doing
@@ -643,8 +643,9 @@ gates block it with nothing pushed (B136).
 
 A handoff follows a stop inside work that has started. Work refused before it starts is not
 started at all: `harness dispatch` skips suggested work the priority gate refuses, with the
-refusal as its reason, and `harness run` asks the priority gate and the usage stop before each
-clone and prints `item N waits: <reason>` for an item they refuse (D81).
+refusal as its reason, and `harness run` holds an item whose `depends_on` has not merged, asks
+the priority gate and the usage stop before each clone, and prints `item N waits: <reason>` for an
+item they refuse (D81, D100).
 
 Only one item is carried at a time. To look at it, or to resume it by hand:
 

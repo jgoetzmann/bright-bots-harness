@@ -2085,7 +2085,12 @@ Rejected: removing the `harness run` call from `feedback.yml`, which also resets
 items and builds what the weekday sweep owes; routing that step through `harness dispatch`, which
 moves a workflow change into a CODEOWNERS file for a rule the CLI can hold on its own.
 
-Accepted gap: `depends_on` is read from `proposals/` on the checkout, so a proposal merged after
-the workflow's checkout is not seen until the next run, as for the dispatcher.
+Accepted gaps:
+- `harness run` without `--item` applies only this rule of the plan. It still ignores
+  `MAX_CONCURRENT_ITEMS`, takes candidates in id order rather than the plan's class order, and
+  runs in `feedback.yml` without the `quiet` job `implement.yml` has. Routing it through
+  `_build_plan` would change what the weekday sweep builds, so it is left for its own decision.
+- `depends_on` is read from `proposals/` on the checkout and the merged set from `stage:done`, so a
+  dependency that merges after the step starts is seen one run later, as for the dispatcher.
 
 Allocates B565.

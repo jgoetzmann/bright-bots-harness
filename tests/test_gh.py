@@ -400,6 +400,18 @@ def test_B567_a_secondary_limit_is_named_with_its_retry_after(store, clock):
     assert "core limit" not in message, message
 
 
+@pytest.mark.parametrize("reset", ["\u00b2", "9" * 40, "-5", "soon"])
+def test_B567_an_unreadable_reset_header_still_raises_RateCeilingReached(store, clock, reset):
+    """B567: a reset value that is not a usable epoch is left out, never a traceback."""
+    headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "Retry-After": "\u00b3"}
+    opener = FakeOpener(http_error(ISSUE_URL, 403, payload={"message": "x"}, headers=headers))
+
+    with pytest.raises(RateCeilingReached) as caught:
+        _token_client(store, clock, opener).issue(816)
+
+    assert "resets" not in str(caught.value) and "retry after" not in str(caught.value)
+
+
 def test_B567_an_anonymous_read_still_names_the_address_cap(store, clock):
     """B567: without a token the 60/hour address cap is the limit, and the message says so."""
     body = {"message": "API rate limit exceeded for 203.0.113.9."}

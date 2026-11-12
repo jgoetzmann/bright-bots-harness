@@ -279,6 +279,13 @@ class Ledger:
     def clear_carry(self) -> None:
         self.window["carry"] = None
 
+    def carry_since(self) -> str | None:
+        """When the carried item was handed off, as the handoff stamped it."""
+        carry = self.window.get("carry")
+        if not isinstance(carry, dict) or not carry.get("since"):
+            return None
+        return str(carry["since"])
+
     def carry_issue(self) -> int | None:
         carry = self.window.get("carry")
         if not isinstance(carry, dict):

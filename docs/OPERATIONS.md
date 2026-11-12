@@ -635,13 +635,15 @@ reason), and the command exits 0. `HANDOFF.md` holds the reason, the branch, the
 the last gate results, the last 20 `DECISIONS.md` lines, the acceptance criteria not yet met, and
 the next command, `harness revise <id> --source continue`.
 
-A GitHub rate limit inside started work hands the item off too, from the run's own copy of the
-item, since the store cannot read it. The push is git, which the REST limit does not cover, so the
-branch, `HANDOFF.md` and the carry survive; the comment and the relabel fail, the item stays
-`stage:building`, and the command exits 1. The next run returns a carried item still
-`stage:building` to `stage:ready` before it continues it, rather than waiting for the three-hour
-stale reset. A carried item with no stored branch cannot resume, so it starts over and its carry
-is dropped (B566, B568). The error names the limit GitHub reported and when it resets (B567).
+A GitHub rate limit inside implement, continue or package hands the item off too, from the run's
+own copy of the item, since the store cannot read it. The push is git, which the REST limit does
+not cover, so the branch, `HANDOFF.md` and the carry survive; the comment and the relabel fail,
+the item keeps its `stage:building` or `stage:packaged` label, and the command exits 1. One inside
+deliver is not handed off, since the pull request may already be open. The next run returns a
+carried item nothing has updated since its handoff to `stage:ready` before it continues it,
+rather than waiting for the three-hour stale reset. A carried item with no stored branch cannot
+resume, so it starts over and its carry is dropped (B566, B568). The error names the limit GitHub
+reported and when it resets (B567).
 
 The carried item is the first thing the next run starts once the usage stop admits it; it is held
 to `SESSION_USAGE_STOP_PCT` like any other item (D89). A weekly run window does not hold it back; a

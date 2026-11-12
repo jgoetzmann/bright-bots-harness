@@ -1425,14 +1425,14 @@ def write_handoff(tmp_path: Path, item_id: int, *, reason: str = D3_STOP_REASON)
 
 
 def write_carry_ledger(tmp_path: Path, *, carry_issue: int | None = None,
-                       reason: str = D3_STOP_REASON) -> Path:
+                       reason: str = D3_STOP_REASON, since: str | None = None) -> Path:
     """A D3 ledger: the D2 window plus `usage` and `carry`."""
     path = write_ledger(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["window"]["usage"] = None
     payload["window"]["carry"] = (
         None if carry_issue is None
-        else {"issue": carry_issue, "since": iso_now(-120), "reason": reason}
+        else {"issue": carry_issue, "since": since or iso_now(-120), "reason": reason}
     )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
     return path
@@ -1861,21 +1861,31 @@ def test_B566_B568_a_handoff_github_refused_is_carried_and_the_next_run_resumes_
     assert item_state(tmp_path, item_id) == "approved"
 
 
-def test_B568_run_item_releases_the_carried_item_the_dispatcher_names(
-    tmp_path, monkeypatch, capsys
-):
-    """B568: the dispatcher starts the carry by id, so `run --item` releases a carried item
-    still `implementing` before its state check and continues it."""
-    monkeypatch.chdir(tmp_path)
-    write_d2_repo(tmp_path)
-    assert cli.main(["init"]) == 0
+def carried_in(tmp_path: Path, state: str, *, touched_after_carry: bool = False):
+    """An item with a stored branch in `state`, carried by a handoff stamped after (or, with
+    `touched_after_carry`, before) the item's last update."""
     item_id = make_item(tmp_path, state="approved")
     clone, base = make_clone_repo(tmp_path, item_id)
     set_item_fields(tmp_path, item_id, branch_name=D3_BRANCH, base_sha=base)
     store = open_store(tmp_path)
-    store.transition(item_id, "implementing", reason="test setup")
+    for step in {"implementing": ["implementing"], "packaged": ["implementing", "packaged"]}[state]:
+        store.transition(item_id, step, reason="test setup")
     store.close()
-    write_carry_ledger(tmp_path, carry_issue=item_id)
+    since = iso_now(-600) if touched_after_carry else iso_now(5)
+    write_carry_ledger(tmp_path, carry_issue=item_id, since=since)
+    return item_id, clone, base
+
+
+@pytest.mark.parametrize("state", ["implementing", "packaged"])
+def test_B568_run_item_releases_the_carried_item_the_dispatcher_names(
+    tmp_path, monkeypatch, capsys, state
+):
+    """B568: the dispatcher starts the carry by id, so `run --item` makes the relabel the
+    handoff could not, before its state check, and continues the item."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id, clone, base = carried_in(tmp_path, state)
     ran: list = []
     record_stages(monkeypatch, ran)
     lease_on(monkeypatch, clone, base)
@@ -1888,6 +1898,70 @@ def test_B568_run_item_releases_the_carried_item_the_dispatcher_names(
     assert rc == 0, captured
     assert json.loads(captured.out)["reset"] == [item_id], captured.out
     assert [(e[0], e[2].get("source")) for e in ran] == [("revise", "continue")], ran
+
+
+def test_B568_a_carried_item_touched_since_its_handoff_waits_for_the_reconcile(
+    tmp_path, monkeypatch, capsys
+):
+    """B568: an item updated after the carry was stamped is a resume that ended without a
+    handoff, so it is left to the three-hour reconcile (B147) instead of retried every run."""
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id, clone, base = carried_in(tmp_path, "implementing", touched_after_carry=True)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    assert rc == 0, capsys.readouterr()
+    assert ran == [], ran
+    assert item_state(tmp_path, item_id) == "implementing"
+
+
+def test_B566_a_refusal_in_package_hands_off_and_one_inside_deliver_does_not(
+    tmp_path, monkeypatch, capsys
+):
+    """B566: the run's copy carries the state the run last moved the item to, and deliver,
+    which may already have opened the pull request, hands nothing off."""
+    from harness.errors import RateCeilingReached
+
+    monkeypatch.chdir(tmp_path)
+    write_d2_repo(tmp_path)
+    assert cli.main(["init"]) == 0
+    item_id = make_item(tmp_path, state="approved")
+    write_carry_ledger(tmp_path)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    calls = record_fallbacks(monkeypatch, [])
+
+    def refused(*args, **kwargs):
+        raise RateCeilingReached(D3_CEILING)
+
+    monkeypatch.setattr(cli, "_package", refused)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    assert cli.main(["run"]) == cli.EXIT_ERROR
+    assert [c["fallback"].state for c in calls] == ["implementing"], calls
+
+    calls.clear()
+    monkeypatch.setattr(cli, "_package", lambda *a, **k: Path("packages") / "pkg")
+    record_stages(monkeypatch, ran)
+
+    def deliver_refused(*args, **kwargs):
+        raise RateCeilingReached(D3_CEILING)
+
+    import harness.gh as gh_mod
+    import harness.stages as stages_mod
+
+    monkeypatch.setitem(stages_mod.STAGES, "deliver", deliver_refused)
+    monkeypatch.setattr(gh_mod.GitHubClient, "can_write", property(lambda self: True))
+
+    assert cli.main(["run"]) == cli.EXIT_ERROR
+    assert calls == [], "a refusal inside deliver may follow the pull request: no handoff"
 
 
 def test_B568_a_carried_item_with_no_stored_branch_starts_over_and_drops_the_carry(

@@ -113,10 +113,13 @@ def _rate_limit_detail(headers: Any, body: str, authenticated: bool) -> str:
         counts = f"{remaining or '?'} of {limit} left" if limit else f"{remaining or '?'} left"
         parts.append(f"the {resource} limit ({counts})")
     reset = (_header(headers, "X-RateLimit-Reset") or "").strip()
-    if reset.isdigit():
-        parts.append(f"resets {iso(datetime.fromtimestamp(int(reset), tz=timezone.utc))}")
+    if reset.isascii() and reset.isdecimal():
+        try:
+            parts.append(f"resets {iso(datetime.fromtimestamp(int(reset), tz=timezone.utc))}")
+        except (OverflowError, OSError, ValueError):
+            pass
     retry = (_header(headers, "Retry-After") or "").strip()
-    if retry.isdigit():
+    if retry.isascii() and retry.isdecimal():
         parts.append(f"retry after {int(retry)}s")
     parts.append(
         "on the configured token" if authenticated

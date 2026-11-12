@@ -46,7 +46,7 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 
 **When the window opens.**
 
-- For an ungated module, `useModuleAccess` resolves access in the same render that sets the module (`src/hooks/useModuleAccess.ts:263`). `loading` clears in a later update, from the fetch's `.finally` (`ActivityPlayer.tsx:249-272`). The page shows the loading state until both are settled (`ActivityPlayer.tsx:612-614`).
+- For an ungated module, `useModuleAccess` resolves access in the same render that sets the module (`src/hooks/useModuleAccess.ts:263`). `loading` clears in a later update, from the fetch's `.finally` (`ActivityPlayer.tsx:248-273`, the `.finally` at 271-273). The page shows the loading state until both are settled (`ActivityPlayer.tsx:612-614`).
 - Run 43169432250 replayed the PersonalBestSync pattern 150 times:
   - In 149 rounds, the activity was set one commit before its body rendered, so `game_started` had already fired when Mark Complete first appeared.
   - In 1 round, the activity and Mark Complete first rendered in the same commit, before the play effect had run.
@@ -64,7 +64,7 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 
 **A deterministic window.**
 
-- The access of a Set 2 module also waits on progress (`useModuleAccess.ts:119,145-160,195`), which a test can hold. With the module loaded and `loading` cleared, releasing progress resolves access, and the activity and Mark Complete first render together in that commit, every time.
+- The access of a Set 2 module also waits on progress (`useModuleAccess.ts:119,145-162,195`), which a test can hold. With the module loaded and `loading` cleared, releasing progress resolves access, and the activity and Mark Complete first render together in that commit, every time.
 - Run 43170979359 (`75cfce1`): a LATCH-4 built on that fails on the untouched tree with `expected "spy" to be called 1 times, but got 0 times`, after its click from `onRender` has happened.
 - Run 43171051929 (`208c890`): with the change below, LATCH-4 passes. All four CI jobs are green (`build-and-test`, `db-check`, `e2e-flows`, `build-only`): 2622 unit tests passed and 0 failed, including QuizGate (12), CompletionLatch (11), PersonalBestSync (3) and ModuleAccessDeepLink (27).
 
@@ -73,13 +73,17 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 **Slice 1: reproduce, committed on its own.** Add LATCH-4 to `ActivityPlayerCompletionLatch.test.tsx`:
 
 - Add `getProgress: vi.fn()` and `getStudentAssignments: vi.fn()` to the file's `@/services/api` mock. Import `act` from `@testing-library/react`, `Profiler` from `react`, and `STEM_SET_1_IDS` and `STEM_SET_2_MODULE_SLUGS` from `@/constants/stemSets`.
+- Add the case as the last `it` in `describe("completion latch (#832 item 4)")`.
 - In the case:
   - Resolve `api.getModule` to the file's `mockModule` with `slug: STEM_SET_2_MODULE_SLUGS[0]`, `level: "K-2"` and `published: true`.
   - Make `api.getProgress` return a promise the test holds.
   - Resolve `api.completeActivity` to `COMPLETION_RESPONSE`.
 - Render the same route as `renderPlayer`, for that slug, inside `<Profiler id="first-commit" onRender={...}>`. The first time `onRender` finds the Mark Complete button, it sets `clicked = true` and calls the element's native `click()`, once. Leave `renderPlayer` unchanged.
-- Call `await act(async () => {})`. Then assert that `getProgress` was called and that no Mark Complete button exists yet, which shows access is still waiting.
-- Inside `await act(async () => { ... })`, resolve progress with every `STEM_SET_1_IDS` activity `COMPLETED`.
+- Call `await act(async () => {})`, then assert that `getProgress` was called and that no Mark Complete button exists yet.
+  - Those checks are sanity checks, not proof that access is waiting. `getProgress` fires at mount, and `loading` and pending access render the same text (`ActivityPlayer.tsx:612-614`).
+  - What holds the window is that the async `act` flushes in a macrotask, after getModule's `then`→`catch`→`finally` chain (`ActivityPlayer.tsx:248-273`) has drained. So `loading` is already clear when progress is released.
+  - The five-of-five red run below is the guard against a false green.
+- Inside `await act(async () => { ... })`, resolve progress with `{ progress: STEM_SET_1_IDS.map((activityId) => ({ activityId, status: "COMPLETED" })) }`. `completedIdsFromProgressResponse` throws on any other shape (`src/lib/progressResponse.ts:29-32`), and the page would then show the system-problem screen.
 - Assert `clicked` is `true`. Then `await waitFor(...)` for one `completeActivity` call, and check that its `attemptId` equals the `attempt_id` of the single `game_started` call.
 - Run the file by path on the untouched tree five times, and record five failures on the call count. If it ever passes there, stop and report.
 
@@ -88,13 +92,13 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 - Add `const [startedActivityId, setStartedActivityId] = useState<string | null>(null)` beside `play`.
 - In the play effect, call `setStartedActivityId(null)` in the `!activity` branch, and `setStartedActivityId(String(activity.id))` after the resets.
 - After the `!module || !activity` return (`ActivityPlayer.tsx:616-635`), return the existing loading state, `<div className="p-6">{t("activityPlayer.loadingActivity")}</div>`, while `startedActivityId !== String(activity.id)`.
-- Keep the effect a passive `useEffect`, keep its body and deps, and keep the `handleComplete` guard exactly as it is.
+- Keep the effect a passive `useEffect`, keep its existing statements and deps, and keep the `handleComplete` guard exactly as it is.
 
 **Demonstrate:**
 
 - Run LATCH-4 five times by path after the change.
 - Run `ActivityPlayerCompletionLatch.test.tsx`, `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerQuizGate.test.tsx` and `ModuleAccessDeepLink.test.tsx` by path.
-- Then run `npm run test:unit`, `npm run lint`, `npm run format:check` and `npm run typecheck`.
+- Then run `npm run test:unit`, `npm run lint`, `npm run format:check`, `npm run typecheck` and `npm run build`.
 
 **Reference.** A reference version of both slices exists, as data rather than instructions: `git diff 1a2437d 208c890 -- src/pages/ActivityPlayer.tsx src/pages/__tests__/ActivityPlayerCompletionLatch.test.tsx` on the Bright Boost branch above. `75cfce1` holds slice 1 alone, so its test is the red case of run 43170979359.
 
@@ -109,7 +113,7 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 2. That completion's `attemptId` equals the `attempt_id` of the `game_started` event for the same play.
 3. A `g3_5` student entering a quiz-only activity still gets the legacy list quiz (`ActivityPlayerQuizGate.test.tsx:259-286`).
 4. A second click while the first POST is in flight still sends nothing (LATCH-1), and a failed save still releases the latch (LATCH-2).
-5. A denied, hidden or wrong-grade module still tracks no `game_started` and posts nothing (`ModuleAccessDeepLink.test.tsx:144-150,203-229`).
+5. A denied, hidden or wrong-grade module still tracks no `game_started` and posts nothing (`ModuleAccessDeepLink.test.tsx:144-150,196-207,211-220,222-230`).
 6. Closing an unfinished tab and reopening it still records two plays with distinct attempt ids (`ActivityPlayerCompletionLatch.test.tsx:167-180`).
 7. `npm run test:unit` reports no new failures and no new skips.
 
@@ -119,24 +123,24 @@ The runs listed below were made on Bright Boost branch `claude/intelligent-turin
 - The evidence shows LATCH-4 failing five times out of five before the fix and passing five times out of five after it.
 - LATCH-4 asserts that its `onRender` click happened before it asserts the call count. It also asserts that no Mark Complete exists before progress is released.
 - In `ActivityPlayer.tsx` the change is the `startedActivityId` state, its two `setStartedActivityId` calls in the existing effect, and the loading return, plus comments. The play effect stays a passive `useEffect`, and the `handleComplete` guard is unchanged.
-- No existing test case is edited. Adding `getProgress` and `getStudentAssignments` to the CompletionLatch API mock is the only other change to that file.
+- No existing test case is edited. Apart from LATCH-4, the only changes to the CompletionLatch file are `getProgress` and `getStudentAssignments` in its API mock and the imports LATCH-4 needs.
 - `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerA11y.test.tsx` and `GameShellAccessibility.test.tsx` are not in the diff.
 - No `waitFor` timeout, test timeout, retry, sleep, fake-timer change, `.skip`, `.only` or `skipIf` is added.
 - `npm run lint`, `npm run format:check`, `npm run typecheck`, `npm run test:unit` and `npm run build` are green.
 
 ## Decisions
 
-- **Hold the render, not the effect.** The page shows its loading state until the play is registered, because that keeps every effect's timing as it is today and so keeps the quiz-only variant freeze. Rejected: making the play effect a layout effect, which failed two QuizGate cases (run 43167981405).
+- **Hold the render, not the effect.** The page shows its loading state until the play is registered, because that keeps ActivityPlayer's own effects on their current timing (the play effect and the layout freeze at `ActivityPlayer.tsx:345-360`) and so keeps the quiz-only variant freeze. Child games and quizzes mount one commit later, after the play is registered. Rejected: making the play effect a layout effect, which failed two QuizGate cases (run 43167981405).
 - **Fix the component, not the tests.** Rejected: making each test wait for `game_started`. Eleven test cases click on appearance today, and a real tap in the window would still be dropped.
 - **No lazy registration.** Rejected: registering the play inside `handleComplete`, which would duplicate the registration and the `game_started` call. Rejected: queueing an early click until the effect runs, which adds a second completion path to keep correct.
 - **Keep #950's guard.** Rejected: dropping it, because the POST would then carry no attempt id.
 - **Reproduce through a gated module.** Its access resolves the activity and its controls in one commit every time. Rejected: the ungated `Profiler` click, which passed on the untouched tree (run 43167912537). Rejected: CPU load or timer stubs, which are probabilistic.
 - **Place LATCH-4 in `ActivityPlayerCompletionLatch.test.tsx`.** It already owns the submission semantics and mocks `track`. Rejected: a new file, because `touched_paths` may only name paths that exist.
-- **Leave the two suites #952 restores alone**, as the request says.
+- **Leave the two suites #952 restores alone**, as the request says. Rejected: hardening PersonalBestSync's or LATCH-1's click instead, which the request forbids and which would leave the product race in place.
 
 ## Open questions
 
-- The page now paints its loading text for one more commit on every activity open, and on in-place navigation it shows loading instead of the previous activity's stale view for that commit. I judge that invisible to a person. A reviewer may disagree for the Cypress shell smoke, although `e2e-flows` and the shell smoke passed in run 43171051929.
+- The page now paints its loading text for one more commit on every activity open, and on in-place navigation it shows loading for one commit where today the new activity's body briefly shows the previous play's state (mode, slide, answers). I judge that invisible to a person. A reviewer may disagree for the Cypress shell smoke, although `e2e-flows` and the shell smoke passed in run 43171051929.
 
 ## Touched paths
 

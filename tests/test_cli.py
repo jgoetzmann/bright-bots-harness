@@ -3568,3 +3568,92 @@ def test_B553_a_triage_run_settles_what_it_left_out_of_its_ranking(tmp_path, mon
     assert cli.main(["--json", "discover", "--mode", "triage"]) == 0
     capsys.readouterr()
     assert ledger_window(tmp_path)["planning"]["items"] == [ranked]
+
+
+# --------------------------------------------------------------------------
+# B565 - `harness run` without `--item` honours `depends_on` like the dispatcher (D100)
+# --------------------------------------------------------------------------
+
+
+def write_depends_on(tmp_path: Path, item_id: int, *deps: int) -> Path:
+    """A committed proposal for `item_id` whose front matter lists `deps` as a block list."""
+    path = tmp_path / "proposals" / f"{item_id}-test-depends.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    block = "".join(f"  - {dep}\n" for dep in deps)
+    path.write_text(
+        f"---\nissue: {item_id}\ndepends_on:\n{block}estimated_turns: 10\n---\n\n# test\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return path
+
+
+def merged_item(tmp_path: Path, ref: str) -> int:
+    """An item walked through legal transitions to `merged`."""
+    store = open_store(tmp_path)
+    item_id = store.create_work_item(kind="issue", external_ref=ref, title=ref, via="requested")
+    for step in ("proposed", "approved", "implementing", "packaged", "shipped", "merged"):
+        store.transition(item_id, step, reason="test setup")
+    store.close()
+    return item_id
+
+
+def test_B565_run_holds_an_approved_item_whose_dependency_is_not_merged(
+    tmp_path, monkeypatch, capsys
+):
+    """B565 (D100): inside the window, an approved item whose proposal lists an unmerged
+    `depends_on` starts no stage and is reported as waiting, as `dispatcher.plan` skips it."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
+    write_depends_on(tmp_path, item_id, 999)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_everything(monkeypatch)  # a clone or a request here would be the bug
+    capsys.readouterr()
+
+    rc = cli.main(["--json", "run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert ran == [], f"an unmet dependency must start nothing: {ran}"
+    result = json.loads(captured.out)
+    assert result["waiting"] == {str(item_id): "depends_on 999 not merged"}, result
+    assert item_state(tmp_path, item_id) == "approved"
+
+
+def test_B565_run_starts_the_item_once_its_dependency_is_merged(tmp_path, monkeypatch, capsys):
+    """B565: the healthy half. The same item, its dependency merged, is implemented, so the
+    test above cannot pass on a build that never starts anything."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
+    dependency = merged_item(tmp_path, "issue:818")
+    write_depends_on(tmp_path, item_id, dependency)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    clone_dir = tmp_path / "runs" / f"item-{item_id}" / "clone"
+    clone_dir.mkdir(parents=True, exist_ok=True)
+    lease_on(monkeypatch, clone_dir, D3_BASE_SHA)
+    forbid_network(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert "waits: depends_on" not in captured.out, captured.out
+    assert [entry[1] for entry in ran if entry[0] == "implement"] == [item_id], ran
+
+
+def test_B565_run_prints_which_dependency_holds_each_item(tmp_path, monkeypatch, capsys):
+    """B565: the human-readable reply names the item and the dependency it waits on."""
+    item_id = windowed_repo(tmp_path, monkeypatch, INSIDE_THE_WINDOW)
+    write_depends_on(tmp_path, item_id, 999)
+    ran: list = []
+    record_stages(monkeypatch, ran)
+    forbid_everything(monkeypatch)
+    capsys.readouterr()
+
+    rc = cli.main(["run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    assert "no approved item is ready to run" in captured.out, captured.out
+    assert f"item {item_id} waits: depends_on 999 not merged" in captured.out, captured.out

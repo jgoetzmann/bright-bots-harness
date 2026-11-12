@@ -2144,3 +2144,23 @@ Accepted gaps:
   reset.
 
 Allocates B566-B568.
+
+## D102 / B569 - only an `issue:` or `self:` reference names an issue
+
+Problem: `WorkItem.issue_number` took the first run of digits anywhere in `external_ref`. A
+`/harness work` request's reference is `request:<sha256 prefix>`, so #161's `request:adc5fdcf2523`
+read as issue 5. Its branch became `harness/fix-5-...`, implement's collision re-check looked for
+upstream #5, and its commit ended `Refs: #5`, which links an unrelated pull request upstream. A
+`sub:<parent>:<i>` or `audit:<issue>:<n>` reference likewise read as a harness number cited as an
+upstream one.
+
+Decision: `issue_number` parses only `issue:<n>` and `self:<n>`, the two shapes that name an issue,
+and is `None` for every other reference. A request, sub-item or promoted finding is then named by
+its harness id in its branch, makes no `Refs:` line and skips the upstream collision re-check, as
+an item with no issue already did. Branches already stored, such as #161's, are kept, since revise
+and continue re-acquire the stored name.
+
+Rejected: guarding each of the three call sites by prefix, which leaves the property wrong for the
+next caller.
+
+Allocates B569.

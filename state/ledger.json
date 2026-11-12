@@ -13,9 +13,9 @@
       "observed_at": "2026-11-12T12:02:21Z"
     },
     "quiet": {
-      "at": "2026-11-12T12:02:21Z",
+      "at": "2026-11-12T16:38:53Z",
       "quiet": true,
-      "reason": "no window rose from 2026-11-12T11:52:18Z to 2026-11-12T12:02:21Z"
+      "reason": "forced: the operator asked for this run now"
     }
   },
   "cursors": {

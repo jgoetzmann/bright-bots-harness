@@ -1295,6 +1295,63 @@ def test_B212_handoff_on_a_clean_tree_commits_nothing(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
+# B566 - while GitHub refuses every REST call, the handoff still pushes over git and carries
+# --------------------------------------------------------------------------------------
+REFUSED_REST = ("get", "paginate", "issue", "issues", "issue_comments", "comment", "set_labels")
+
+
+def refuse_rest(gh) -> list[str]:
+    """Every REST call the fake client serves raises GitHub's rate limit; git pushes still go."""
+    from harness.errors import RateCeilingReached
+
+    refused: list[str] = []
+
+    def make(name):
+        def refuse(*args, **kwargs):
+            refused.append(name)
+            raise RateCeilingReached(f"github refused {name} with 403 rate limit: test")
+        return refuse
+
+    for name in REFUSED_REST:
+        setattr(gh, name, make(name))
+    return refused
+
+
+def test_B566_handoff_uses_the_fallback_and_still_pushes_and_carries(tmp_path):
+    """B566: the store cannot read the item, so the caller's copy names the branch; the push
+    to the fork, HANDOFF.md and the ledger's carry all happen without the REST API."""
+    import dataclasses
+
+    s = setup_handoff(tmp_path)
+    fallback = dataclasses.replace(s.store.get_work_item(ITEM), state="approved")
+    refused = refuse_rest(s.gh)
+
+    handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON, fallback=fallback)
+
+    assert refused, "the rig must refuse the store's reads"
+    pushed = s.gh.calls_named("push_branch")
+    assert len(pushed) == 1, f"expected one push_branch, got {s.gh.calls}"
+    assert pushed[0]["branch"] == BRANCH
+    assert pushed[0]["remote_repo"] == FORK
+    assert pushed[0]["force"] is False
+    assert NEXT_COMMAND in handoff_text(s)
+    assert s.ledger.carry_issue() == ITEM
+    assert [w["method"] for w in s.gh.sent] == ["git push"], f"only git went out: {s.gh.sent}"
+
+
+def test_B566_without_a_fallback_a_refused_read_still_raises(tmp_path):
+    """B566: a caller that passes no copy of the item gets GitHub's refusal, as before."""
+    from harness.errors import RateCeilingReached
+
+    s = setup_handoff(tmp_path)
+    refuse_rest(s.gh)
+
+    with pytest.raises(RateCeilingReached):
+        handoff_fn()(s.ctx, ITEM, reason=HANDOFF_REASON)
+    assert s.gh.calls_named("push_branch") == []
+
+
+# --------------------------------------------------------------------------------------
 # B213 - runs/item-N/HANDOFF.md says what stopped, where the work is, and how to resume
 # --------------------------------------------------------------------------------------
 def test_B213_handoff_md_records_the_reason_branch_base_and_next_command(tmp_path):

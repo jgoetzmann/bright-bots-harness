@@ -351,6 +351,66 @@ def test_B37_a_404_raises_GitHubError_and_not_RateCeilingReached(store, clock):
     assert not isinstance(caught.value, RateCeilingReached)
 
 
+# --- B567 ------------------------------------------------------------------------------------
+
+
+def _token_client(store, clock, opener):
+    from harness.gh import GitHubClient
+
+    return GitHubClient(REPO, store, clock, 100, token="ghp_" + "FAKE0" * 8, opener=opener)
+
+
+def test_B567_a_tokens_primary_limit_names_the_resource_counts_and_reset(store, clock):
+    """B567: an authenticated 403 says which limit GitHub reported and when it resets, and
+    does not blame the anonymous address cap."""
+    reset = datetime(2026, 9, 1, 12, 41, 7, tzinfo=timezone.utc)
+    headers = {
+        "X-RateLimit-Resource": "core",
+        "X-RateLimit-Limit": "5000",
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": str(int(reset.timestamp())),
+    }
+    body = {"message": "API rate limit exceeded for user ID 1."}
+    opener = FakeOpener(http_error(ISSUE_URL, 403, payload=body, headers=headers))
+
+    with pytest.raises(RateCeilingReached) as caught:
+        _token_client(store, clock, opener).issue(816)
+
+    message = str(caught.value)
+    assert "the core limit (0 of 5000 left)" in message, message
+    assert f"resets {iso(reset)}" in message, message
+    assert "on the configured token" in message, message
+    assert "unauthenticated" not in message, message
+
+
+def test_B567_a_secondary_limit_is_named_with_its_retry_after(store, clock):
+    """B567: GitHub's secondary limit is a different limit from the hourly one, so the message
+    names it and carries the wait GitHub asked for."""
+    body = {"message": "You have exceeded a secondary rate limit. Please wait a few minutes."}
+    opener = FakeOpener(
+        http_error(ISSUE_URL, 403, payload=body, headers={"Retry-After": "60"})
+    )
+
+    with pytest.raises(RateCeilingReached) as caught:
+        _token_client(store, clock, opener).issue(816)
+
+    message = str(caught.value)
+    assert "a secondary rate limit" in message, message
+    assert "retry after 60s" in message, message
+    assert "core limit" not in message, message
+
+
+def test_B567_an_anonymous_read_still_names_the_address_cap(store, clock):
+    """B567: without a token the 60/hour address cap is the limit, and the message says so."""
+    body = {"message": "API rate limit exceeded for 203.0.113.9."}
+    opener = FakeOpener(http_error(ISSUE_URL, 403, payload=body))
+
+    with pytest.raises(RateCeilingReached) as caught:
+        make_gh(store, clock, opener).issue(816)
+
+    assert "unauthenticated reads are capped at 60/hour per address" in str(caught.value)
+
+
 # --------------------------------------------------------------------------------------
 # create_label — the write behind `harness init --labels`
 # --------------------------------------------------------------------------------------

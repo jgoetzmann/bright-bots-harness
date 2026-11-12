@@ -14,7 +14,7 @@ from harness import commitmsg, gates, links, redact
 from harness.clock import iso
 from harness.clone import Lease
 from harness.context import Context
-from harness.errors import GitHubError, HarnessError, IllegalTransition
+from harness.errors import GitHubError, HarnessError, IllegalTransition, RateCeilingReached
 from harness.halt import check_halt
 from harness.redact import write_redacted
 from harness.stages.propose import parse_work_package, work_package_text
@@ -1301,15 +1301,16 @@ def build_handoff_body(
     return "\n".join(parts)
 
 
-def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
+def handoff(ctx: Context, item_id: int, *, reason: str, fallback: Any = None) -> Path:
     """Park a half-finished item and carry it into the next run (B212).
 
     The work in the clone is committed, pushed to the fork when there is a credential (never to
     upstream, never forced), and written up in ``runs/item-<id>/HANDOFF.md``; the item goes back
     to ``approved`` with the ledger carrying it. ``harness revise <id> --source continue`` is
     the other half. A branch holding a `.github/` change is withheld and the item blocked.
+    ``fallback`` is the caller's copy of the item, used while GitHub refuses reads (B566).
     """
-    item = ctx.store.get_work_item(item_id)
+    item = _item_or_fallback(ctx, item_id, fallback)
     if item is None:
         raise HarnessError(f"no work item {item_id}")
 
@@ -1367,7 +1368,10 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             ctx.gh.comment(self_repo, item_id, body[:MAX_COMMENT_CHARS])
         except HarnessError as exc:
             ctx.record_decision(f"handoff could not comment on {self_repo}#{item_id}: {exc}")
-    ctx.store.append_event(item_id, "warn", f"handoff: {reason}")
+    try:
+        ctx.store.append_event(item_id, "warn", f"handoff: {reason}")
+    except RateCeilingReached as exc:
+        ctx.record_decision(f"handoff could not record its event on item {item_id}: {exc}")
     if withheld:
         # Not carried: nothing a resume could pick up reached the fork, so `continue` would
         # re-acquire a branch that is missing or lacks this work. The item waits for a person,
@@ -1377,7 +1381,7 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             f"never publishes, so it was not pushed; {path} says what"
             + (f", and {run_dir / kept} keeps the withheld commits" if kept else "")
         )
-        current = ctx.store.get_work_item(item_id) or item
+        current = _item_or_fallback(ctx, item_id, item) or item
         if current.state in HANDOFF_FROM_STATES:
             try:
                 ctx.store.transition(
@@ -1394,7 +1398,7 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
     )
 
     # 4. Back to approved, and into the ledger's carry slot (B214).
-    current = ctx.store.get_work_item(item_id) or item
+    current = _item_or_fallback(ctx, item_id, item) or item
     if current.state in HANDOFF_FROM_STATES:
         try:
             ctx.store.transition(item_id, "approved", reason=f"handed off: {reason}")
@@ -1408,6 +1412,21 @@ def handoff(ctx: Context, item_id: int, *, reason: str) -> Path:
             ctx.record_decision(f"could not persist the ledger after the handoff: {exc}")
     log.info("handed off item %s: %s", item_id, reason)
     return path
+
+
+def _item_or_fallback(ctx: Context, item_id: int, fallback: Any) -> Any:
+    """The item as the store reads it, or ``fallback`` while GitHub refuses the read (B566).
+
+    Git still reaches the fork while the REST API is rate limited, so the handoff goes on with
+    the copy it was given; the store writes after it fail the same way and are recorded.
+    """
+    try:
+        return ctx.store.get_work_item(item_id)
+    except RateCeilingReached as exc:
+        if fallback is None:
+            raise
+        ctx.record_decision(f"handoff read item {item_id} from the run's own copy: {exc}")
+        return fallback
 
 
 def _commit_wip(ctx: Context, clone: Path, reason: str) -> bool:

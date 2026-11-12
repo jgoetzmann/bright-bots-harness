@@ -9,7 +9,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -95,6 +95,37 @@ def _header(headers: Any, name: str) -> str | None:
         return None
     value = headers.get(name)
     return None if value is None else str(value)
+
+
+def _rate_limit_detail(headers: Any, body: str, authenticated: bool) -> str:
+    """Which limit a rate-limit 403 reports, from GitHub's body and `X-RateLimit-*` headers.
+
+    A secondary limit and a token's primary limit reset differently, and only an anonymous read
+    meets the 60/hour address cap, so the message names the one GitHub reported (B567).
+    """
+    parts: list[str] = []
+    if "secondary rate limit" in (body or "").lower():
+        parts.append("a secondary rate limit")
+    else:
+        resource = (_header(headers, "X-RateLimit-Resource") or "").strip() or "core"
+        limit = (_header(headers, "X-RateLimit-Limit") or "").strip()
+        remaining = (_header(headers, "X-RateLimit-Remaining") or "").strip()
+        counts = f"{remaining or '?'} of {limit} left" if limit else f"{remaining or '?'} left"
+        parts.append(f"the {resource} limit ({counts})")
+    reset = (_header(headers, "X-RateLimit-Reset") or "").strip()
+    if reset.isascii() and reset.isdecimal():
+        try:
+            parts.append(f"resets {iso(datetime.fromtimestamp(int(reset), tz=timezone.utc))}")
+        except (OverflowError, OSError, ValueError):
+            pass
+    retry = (_header(headers, "Retry-After") or "").strip()
+    if retry.isascii() and retry.isdecimal():
+        parts.append(f"retry after {int(retry)}s")
+    parts.append(
+        "on the configured token" if authenticated
+        else "unauthenticated reads are capped at 60/hour per address"
+    )
+    return ", ".join(parts)
 
 
 def _next_link(headers: Any) -> str | None:
@@ -240,10 +271,8 @@ class GitHubReadOnly:
             body_says_rate_limit = "rate limit" in (body or "").lower()
             header_says_exhausted = remaining is not None and remaining.strip() == "0"
             if body_says_rate_limit or header_says_exhausted:
-                raise RateCeilingReached(
-                    f"github refused {url} with 403 rate limit; unauthenticated reads "
-                    "are capped at 60/hour per address"
-                )
+                detail = _rate_limit_detail(headers, body, bool(getattr(self, "can_write", False)))
+                raise RateCeilingReached(f"github refused {url} with 403 rate limit: {detail}")
         tail = (body or "").strip().replace("\n", " ")[:200]
         raise GitHubError(f"github returned {status} for {url}: {tail}", status=status)
 

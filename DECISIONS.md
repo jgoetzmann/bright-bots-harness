@@ -2094,3 +2094,53 @@ Accepted gaps:
   dependency that merges after the step starts is seen one run later, as for the dispatcher.
 
 Allocates B565.
+
+## D101 / B566-B568 - a GitHub rate limit mid-item hands the work off over git
+
+Problem: run 43260831505 built #161 with every post-change gate green, then GitHub answered
+`GET /repos/<self>/issues/161` with a rate-limit 403. `RateCeilingReached` is not one of the
+exceptions `cmd_run` hands off, and `deliver.handoff` reads the item from the store first, so the
+run exited 1 and the clone with the finished work went with the runner. The message blamed the
+60/hour unauthenticated cap on a request that carried the machine token, so the log could not say
+which limit had been hit.
+
+Decision:
+- `cmd_run` catches `RateCeilingReached` from implement, continue or package and hands the item
+  off, then re-raises, so the run still fails where a person sees it. A refusal before the stage
+  starts hands nothing off, and neither does one inside deliver, which opens the pull request
+  without looking for an existing one, so a resume after it opened could not finish.
+- `handoff` takes the run's own copy of the item as `fallback` and uses it while the store's
+  read is refused. Its state is where the run last moved the item. Its branch and base are the
+  lease's when a stage returned one, the stored ones for a resume, and for a fresh implement
+  `clone.branch_name_for`, the name `acquire` gives, with no base. The push to the fork is git,
+  which the REST limit does not cover, so the work, HANDOFF.md and the ledger's carry survive;
+  the issue comment and the relabel are attempted, fail, and are recorded (B566).
+- A run starts by making the relabel such a handoff could not: a carried item still
+  `implementing` or `packaged`, with a stored branch, that nothing has updated since the carry
+  was stamped, goes back to `approved` and resumes through `revise --source continue` instead of
+  waiting out the three-hour reconcile (B147). The runs that share a ledger are serialized, by
+  the `harness-ledger` concurrency group in Actions and by the single `local-loop` process
+  locally, so no live run holds that item. A resume that ended without a handoff updated the
+  item after the carry, so it still waits for the reconcile rather than retrying every run. A
+  carried item with no stored branch cannot resume, so when it starts over the run drops its
+  carry, which would otherwise hold the dispatcher's carry slot for good (B568).
+- A rate-limit 403 names the limit GitHub reported: a secondary limit, or the resource with its
+  remaining count, plus the reset time and `Retry-After` when sent. The 60/hour address cap is
+  named only for a client without a token (B567).
+
+Rejected: retrying the read after `Retry-After`, since the limit on this run lasted more than an
+hour; reading the item from the GitHub store's scratch mirror, which would put the store's mode
+above the store (I-16); pushing the work to a rescue branch with no carry, which leaves a fresh
+implement unable to push over the fork's branch without force.
+
+Accepted gaps:
+- A refusal inside deliver loses what the clone holds and leaves the item `packaged`, as before.
+- A refusal between `acquire` and implement's first `update_work_item` leaves a carry on an item
+  with no stored branch, and a branch on the fork holding nothing beyond its base. The next run
+  implements that item afresh and drops the carry.
+- A comment on the carried issue after its handoff counts as an update, so that item waits for
+  the reconcile.
+- A rate limit that persists into the next run fails it the same way; nothing waits for the
+  reset.
+
+Allocates B566-B568.

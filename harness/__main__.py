@@ -19,7 +19,7 @@ from harness import __version__, keywords, links, verify_pin
 from harness import config as config_mod
 from harness import ledger as ledger_mod
 from harness.clock import iso, parse_iso
-from harness.clone import Lease, sync_fork
+from harness.clone import Lease, branch_name_for, sync_fork
 from harness.config import in_run_window, is_daily_window, load_config, run_window_label
 from harness.context import build_context, ledger_path_for
 from harness.dispatcher import (
@@ -142,6 +142,9 @@ CONFIG_KEYS: tuple[tuple[str, str], ...] = (
 
 # An item left in a running state longer than this with no live run is reset (B147).
 STALE_RUNNING_HOURS = 3
+
+# Where a handoff from started work leaves a carried item whose relabel GitHub refused (B568).
+RELEASED_STATES = ("implementing", "packaged")
 
 # local-loop: HEARTBEAT cadence while sleeping between units.
 HEARTBEAT_SLICE_S = 10
@@ -507,12 +510,12 @@ def _package(ctx, item_id: int, lease: Lease) -> Path:
     return STAGES["package"](ctx, item_id, lease)
 
 
-def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
+def _hand_off(ctx, item_id: int, exc: HarnessError, *, fallback=None) -> dict:
     """Park the item, say so, and let the run end cleanly (B212)."""
     reason = str(exc) or exc.__class__.__name__
     record = {"item": int(item_id), "reason": reason, "handoff": None}
     try:
-        path = deliver_stage.handoff(ctx, item_id, reason=reason)
+        path = deliver_stage.handoff(ctx, item_id, reason=reason, fallback=fallback)
     except HarnessError as inner:
         LOG.warning("item %s could not be handed off: %s", item_id, inner)
         print(f"{reason}; item {item_id} could not be handed off: {inner}")
@@ -520,6 +523,50 @@ def _hand_off(ctx, item_id: int, exc: HarnessError) -> dict:
     record["handoff"] = str(path)
     print(f"{reason}; item {item_id} handed off, see {path}")
     return record
+
+
+def _release_carried(ctx, carry: int | None) -> bool:
+    """Make the relabel a refused handoff could not, so the carried item resumes (B568).
+
+    The runs that share a ledger are serialized, so no live run holds the item. Only an item
+    nothing has touched since the handoff stamped the carry is released, which leaves a resume
+    that ended without a handoff to the three-hour reconcile, and only one with a stored branch.
+    """
+    if carry is None:
+        return False
+    item = ctx.store.get_work_item(int(carry))
+    if item is None or item.state not in RELEASED_STATES or not item.branch_name:
+        return False
+    since = ctx.ledger.carry_since()
+    try:
+        untouched = since is not None and parse_iso(item.updated_at) <= parse_iso(since)
+    except (TypeError, ValueError):
+        untouched = False
+    if not untouched:
+        return False
+    ctx.store.transition(
+        int(carry), "approved", reason=f"carried item still {item.state} after its handoff (B568)"
+    )
+    LOG.info("run: carried item %s is back to approved to resume", carry)
+    return True
+
+
+def _known_item(item, lease: Lease | None, resumed: bool, state: str):
+    """The run's own copy of the item for a handoff GitHub will not serve, or ``None`` (B566).
+
+    Its branch and base are the clone's: the lease's when a stage returned one, else the stored
+    ones a resume re-acquires, else the branch implement gives a fresh clone and no base.
+    ``state`` is where the run last moved the item.
+    """
+    if item is None:
+        return None
+    if lease is not None and lease.branch:
+        branch, base = lease.branch, lease.base_sha
+    elif resumed:
+        branch, base = item.branch_name or "", item.base_sha
+    else:
+        branch, base = branch_name_for(item), None
+    return dataclasses.replace(item, branch_name=branch, base_sha=base, state=state)
 
 
 def _priority_refusal(ctx, config, item) -> str | None:
@@ -1470,6 +1517,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         LOG.info("run: reset %d stale running item(s): %s", len(reset_ids), reset_ids)
 
     carry = _carry_issue(listing_ctx.ledger)
+    if _release_carried(listing_ctx, carry):
+        reset_ids.append(int(carry))
     held: dict[str, str] = {}
     if args.item is not None:
         item = listing_ctx.store.get_work_item(args.item)
@@ -1546,6 +1595,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         for item_id in item_ids:
             ctx = _context(config, args, run_id=f"item-{item_id}")
+            # What a handoff needs when GitHub refuses reads mid-item (B566).
+            item = None
+            lease = None
+            started = False
+            resumed = False
+            state = "approved"
 
             try:
                 # implement, or continue where a handoff stopped (B215)
@@ -1571,6 +1626,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                     if stop is not None:
                         break
                     continue
+                started = True
+                state = "implementing"
+                if not resumed and carry is not None and int(carry) == int(item_id):
+                    # With no stored branch it cannot resume, so it starts over, and a carry
+                    # it can never use would hold the dispatcher's carry slot (B568).
+                    ctx.ledger.clear_carry()
                 if resumed:
                     LOG.debug("run: continue item %s", item_id)
                     lease = STAGES["revise"](ctx, item_id, source="continue")
@@ -1592,6 +1653,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     break
                 LOG.debug("run: package item %s", item_id)
                 package_dir = _package(ctx, item_id, lease)
+                state = "packaged"
 
                 ran.append(item_id)
                 packages.append(str(package_dir))
@@ -1604,6 +1666,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                         stopped_at_deadline = True
                         break
                     LOG.debug("run: deliver item %s", item_id)
+                    # Deliver opens the pull request without looking for one, so a refusal
+                    # after it opened could not be resumed: it is not handed off (B566).
+                    started = False
                     pr_url = STAGES["deliver"](ctx, item_id)
                     if pr_url:
                         delivered.append(pr_url)
@@ -1615,8 +1680,17 @@ def cmd_run(args: argparse.Namespace) -> int:
                 # without starting anything else.
                 if isinstance(exc, RateLimited):
                     rate_limited_until = exc.reset_at or "unknown"
-                handed_off = _hand_off(ctx, item_id, exc)
+                handed_off = _hand_off(
+                    ctx, item_id, exc, fallback=_known_item(item, lease, resumed, state)
+                )
                 break
+            except RateCeilingReached as exc:
+                # GitHub refuses every call until its limit resets, but git still reaches the
+                # fork: started work is handed off, and the run still fails, since no comment
+                # could say so on GitHub (B566).
+                if started:
+                    _hand_off(ctx, item_id, exc, fallback=_known_item(item, lease, resumed, state))
+                raise
             _save_ledger(ctx)
     finally:
         if ctx is not None:

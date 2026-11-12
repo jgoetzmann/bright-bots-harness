@@ -2469,7 +2469,7 @@ def test_B553_triage_leaves_out_a_suggestion_admission_refuses(tmp_path):
 
 
 # --------------------------------------------------------------------------------------
-# B569 - only an `issue:` or `self:` reference names an issue
+# B569 - only an `issue:` reference names an issue
 # --------------------------------------------------------------------------------------
 def _ref_item(ref: str):
     from harness.store import WorkItem
@@ -2486,16 +2486,17 @@ def _ref_item(ref: str):
     "ref, number",
     [
         ("issue:816", 816),
-        ("self:42", 42),
+        ("issue: 816 ", 816),
+        ("self:42", None),
         ("request:adc5fdcf2523", None),
         ("sub:4:2", None),
         ("audit:12:3", None),
         ("issue:", None),
     ],
 )
-def test_B569_only_an_issue_or_self_reference_names_an_issue(ref, number):
-    """B569: a request's hash and the harness numbers in `sub:` and `audit:` refs are not
-    issue numbers."""
+def test_B569_only_an_issue_reference_names_an_issue(ref, number):
+    """B569: a request's hash and the harness numbers in `self:`, `sub:` and `audit:` refs are
+    not upstream issue numbers."""
     assert _ref_item(ref).issue_number == number
 
 
@@ -2511,3 +2512,15 @@ def test_B569_a_request_items_branch_and_commit_cite_no_issue():
     assert "Refs:" not in implement_mod._commit_message(CREDIT_PKG, request, first=True)
     assert branch_name_for(upstream) == "harness/fix-816-fix-the-completion-race"
     assert "Refs: #816" in implement_mod._commit_message(CREDIT_PKG, upstream, first=True)
+
+
+@pytest.mark.parametrize("ref", ["request:adc5fdcf2523", "self:161", "sub:4:2", "audit:63:4"])
+def test_B569_an_item_with_no_upstream_issue_skips_the_collision_recheck(ref):
+    """B569: with no upstream issue there is nothing to collide on, so GitHub is not read."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the collision re-check read GitHub for an item with no issue")
+
+    ctx = SimpleNamespace(gh=SimpleNamespace(branches=refuse, pulls=refuse))
+
+    assert implement_mod._recheck_collision(ctx, _ref_item(ref)) is None

@@ -813,7 +813,7 @@ def _issue_body(ctx: Context, item: Any) -> tuple[str, int | None]:
         return str(issue.get("body") or "").strip() or "(the issue has an empty body)", None
 
     self_repo = str(getattr(ctx.config, "self_repo", "") or "")
-    self_number = number if ref.startswith("self:") else item.id
+    self_number = item.id
     if not self_repo or self_number is None:
         return "(no issue body available for this work item)", None
     try:

@@ -2145,22 +2145,31 @@ Accepted gaps:
 
 Allocates B566-B568.
 
-## D102 / B569 - only an `issue:` or `self:` reference names an issue
+## D102 / B569 - only an `issue:` reference names an issue
 
 Problem: `WorkItem.issue_number` took the first run of digits anywhere in `external_ref`. A
 `/harness work` request's reference is `request:<sha256 prefix>`, so #161's `request:adc5fdcf2523`
 read as issue 5. Its branch became `harness/fix-5-...`, implement's collision re-check looked for
 upstream #5, and its commit ended `Refs: #5`, which links an unrelated pull request upstream. A
-`sub:<parent>:<i>` or `audit:<issue>:<n>` reference likewise read as a harness number cited as an
-upstream one.
+`self:<n>`, `sub:<parent>:<i>` or `audit:<issue>:<n>` reference likewise read as a harness number
+cited as an upstream one: #90 (`audit:63:4`) shipped as `harness/fix-63-...`, and the open audit
+items #82 to #109 would have been named and checked against upstream #60, #61, #63 or #64.
 
-Decision: `issue_number` parses only `issue:<n>` and `self:<n>`, the two shapes that name an issue,
-and is `None` for every other reference. A request, sub-item or promoted finding is then named by
-its harness id in its branch, makes no `Refs:` line and skips the upstream collision re-check, as
-an item with no issue already did. Branches already stored, such as #161's, are kept, since revise
-and continue re-acquire the stored name.
+Decision: `issue_number` parses only `issue:<n>`, the one shape that names an upstream issue, and
+is `None` for every other reference. A request, sub-item, promoted finding or `self:` item is then
+named by its harness id in its branch, makes no `Refs:` line and skips the upstream collision
+re-check, as an item with no issue already did. The three readers that fetched a `self:` item's
+own issue read it by `item.id`, which equals the `self:` number for every such reference, since
+only the GitHub store's `self:{number}` fallback writes one. Branches already stored, such as
+#161's and #90's, are kept, since revise and continue re-acquire the stored name.
 
-Rejected: guarding each of the three call sites by prefix, which leaves the property wrong for the
-next caller.
+Rejected: guarding each call site by prefix, which leaves the property wrong for the next caller.
+
+Accepted gaps:
+- A shipped item that `/harness stop` blocks and `/harness go` re-approves is implemented afresh
+  under the new name, opening a second pull request beside its first; before this decision the
+  same path failed on the non-forced push over the old branch.
+- A sub-item of an `issue:` parent cites no issue in its commit and skips the collision re-check.
+  Its parent's issue could be resolved as `deliver._parent_product_issue` does.
 
 Allocates B569.

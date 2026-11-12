@@ -43,7 +43,7 @@ def _slugify(text: str) -> str:
 
 
 def branch_name_for(item: WorkItem) -> str:
-    """``harness/<type>-<issue>-<slug>`` — always under the ``harness/`` namespace (B45)."""
+    """``harness/<type>-<n>-<slug>``, ``n`` the upstream issue or else the item id (B569)."""
     type_ = "fix" if item.kind == "issue" else "chore"
     return f"harness/{type_}-{item.issue_number or item.id}-{_slugify(item.title)}"
 

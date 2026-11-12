@@ -2,20 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 132,
+    "calls": 133,
     "rate_limited_until": "2026-11-02T13:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.85,
-        "resets_at": "2026-11-12T20:10:00Z"
+        "utilization": 0.25,
+        "resets_at": "2026-11-13T01:10:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-11-12T19:21:37Z"
-    },
-    "carry": {
-      "issue": 161,
-      "since": "2026-11-12T19:24:40Z",
-      "reason": "session usage 85% >= 80%"
+      "observed_at": "2026-11-12T20:43:42Z"
     },
     "quiet": {
       "at": "2026-11-12T20:36:47Z",
@@ -910,6 +905,12 @@
     {
       "ts": "2026-11-12T19:21:37Z",
       "stage": "implement",
+      "issue": 161,
+      "run": ""
+    },
+    {
+      "ts": "2026-11-12T20:43:42Z",
+      "stage": "revise",
       "issue": 161,
       "run": ""
     }

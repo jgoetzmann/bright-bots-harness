@@ -282,9 +282,14 @@ class WorkItem:
 
     @property
     def issue_number(self) -> int | None:
-        """The number in an ``issue:<n>`` reference; None when the reference carries none."""
-        match = re.search(r"\d+", self.external_ref)
-        return int(match.group()) if match else None
+        """The upstream issue an ``issue:<n>`` reference names; None for any other kind.
+
+        A ``request:`` reference is a hash, and ``self:``, ``sub:`` and ``audit:`` ones carry
+        harness numbers, so none of them names an issue a branch, a commit or a collision check
+        may cite (B569).
+        """
+        match = re.fullmatch(r"issue:\s*(\d+)", self.external_ref.strip())
+        return int(match.group(1)) if match else None
 
 
 @dataclass(frozen=True)

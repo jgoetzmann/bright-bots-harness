@@ -143,7 +143,7 @@ def _issue_body(ctx: Context, item: Any) -> str:
             data = ctx.gh.issue(item.issue_number)
         else:
             self_repo = str(getattr(ctx.config, "self_repo", "") or "")
-            number = item.issue_number if ref.startswith("self:") else item.id
+            number = item.id
             if not self_repo or number is None:
                 return ""
             data = ctx.gh.get(f"/repos/{self_repo}/issues/{int(number)}")

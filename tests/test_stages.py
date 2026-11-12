@@ -2466,3 +2466,61 @@ def test_B553_triage_leaves_out_a_suggestion_admission_refuses(tmp_path):
     assert (asked, idea) == (1, 2)
 
     assert discover(rig.ctx, mode="triage", target=None, lens=None) == [asked]
+
+
+# --------------------------------------------------------------------------------------
+# B569 - only an `issue:` reference names an issue
+# --------------------------------------------------------------------------------------
+def _ref_item(ref: str):
+    from harness.store import WorkItem
+
+    return WorkItem(
+        id=161, kind="issue", external_ref=ref, title="Fix the completion race",
+        state="approved", parent_id=None, depends_on=None, tier_required=0, spec_path=None,
+        package_path=None, base_sha=None, branch_name=None, attempts=0, created_at="",
+        updated_at="",
+    )
+
+
+@pytest.mark.parametrize(
+    "ref, number",
+    [
+        ("issue:816", 816),
+        ("issue: 816 ", 816),
+        ("self:42", None),
+        ("request:adc5fdcf2523", None),
+        ("sub:4:2", None),
+        ("audit:12:3", None),
+        ("issue:", None),
+    ],
+)
+def test_B569_only_an_issue_reference_names_an_issue(ref, number):
+    """B569: a request's hash and the harness numbers in `self:`, `sub:` and `audit:` refs are
+    not upstream issue numbers."""
+    assert _ref_item(ref).issue_number == number
+
+
+def test_B569_a_request_items_branch_and_commit_cite_no_issue():
+    """B569: a free-text request is named by its harness id and its commit has no `Refs:`
+    line, where an upstream issue's names that issue."""
+    from harness.clone import branch_name_for
+
+    request = _ref_item("request:adc5fdcf2523")
+    upstream = _ref_item("issue:816")
+
+    assert branch_name_for(request) == "harness/fix-161-fix-the-completion-race"
+    assert "Refs:" not in implement_mod._commit_message(CREDIT_PKG, request, first=True)
+    assert branch_name_for(upstream) == "harness/fix-816-fix-the-completion-race"
+    assert "Refs: #816" in implement_mod._commit_message(CREDIT_PKG, upstream, first=True)
+
+
+@pytest.mark.parametrize("ref", ["request:adc5fdcf2523", "self:161", "sub:4:2", "audit:63:4"])
+def test_B569_an_item_with_no_upstream_issue_skips_the_collision_recheck(ref):
+    """B569: with no upstream issue there is nothing to collide on, so GitHub is not read."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the collision re-check read GitHub for an item with no issue")
+
+    ctx = SimpleNamespace(gh=SimpleNamespace(branches=refuse, pulls=refuse))
+
+    assert implement_mod._recheck_collision(ctx, _ref_item(ref)) is None

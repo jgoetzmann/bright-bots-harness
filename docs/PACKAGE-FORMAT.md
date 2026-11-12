@@ -108,9 +108,10 @@ is the tree validation checks (B104, B219). A path that does not exist fails val
 must name existing files even for a change that mostly adds new ones. `gate_expectation: known-red`
 requires a non-empty `baseline_red` naming gates already failing on the untouched tree; `implement`
 measures the baseline itself either way and judges the change by new failures against it.
-`depends_on` is read by the dispatcher, which will not start the item until every listed issue is
-`stage:done` (B107). The front matter is the only place the model's output becomes an instruction,
-which is why it is a closed schema.
+`depends_on` is read by the dispatcher and by `harness run` without `--item`. Neither starts the
+item, unless it is the carried one, until every listed issue is `stage:done` (B107, B565). The
+front matter is the only place the model's output becomes an instruction, which is why it is a
+closed schema.
 
 Under the sqlite store (local mode) the same file is written under `proposals/` and no PR is opened;
 `harness approve <id>` is the gate instead.

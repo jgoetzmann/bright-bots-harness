@@ -2060,3 +2060,37 @@ Accepted gaps:
   leaves the plan under review as it was.
 
 Allocates B560-B564.
+
+## D100 / B565 - `harness run` without `--item` waits on `depends_on` like the dispatcher
+
+Problem: items #162 and #163 were approved with `depends_on: [90, 161]`, neither merged. The
+01:30 UTC implement run followed the dispatcher's plan and started only #161. Two `feedback` runs
+inside the window then started #162 and then #163 from their "Reconcile stale harness:running
+items" step, which calls `harness run` with no `--item`. That path takes every approved item and
+checks the window, the priority gate, the governor and the delivery cap, but never `depends_on`,
+so the dependency rule held only for runs that went through `dispatcher.plan`.
+
+Decision:
+- `cmd_run` without `--item` drops every approved item whose proposal lists a `depends_on` issue
+  that is not in `store.merged_issues()`, reading the list with the same `_depends_on` the
+  dispatcher's inputs use. Each dropped item is reported under `waiting` as
+  `depends_on <n> not merged`, the dispatcher's wording, and a run that holds every item says
+  "no approved item is ready to run" rather than "nothing approved to run".
+- The carried item is not held, as `dispatcher.plan` starts the carry before it reads
+  `depends_on`: it started once, so its dependencies held then.
+- `harness run --item N` is unchanged. `implement.yml` passes only what the plan chose, and a
+  person naming an item bypasses the window the same way.
+
+Rejected: removing the `harness run` call from `feedback.yml`, which also resets stale running
+items and builds what the weekday sweep owes; routing that step through `harness dispatch`, which
+moves a workflow change into a CODEOWNERS file for a rule the CLI can hold on its own.
+
+Accepted gaps:
+- `harness run` without `--item` applies only this rule of the plan. It still ignores
+  `MAX_CONCURRENT_ITEMS`, takes candidates in id order rather than the plan's class order, and
+  runs in `feedback.yml` without the `quiet` job `implement.yml` has. Routing it through
+  `_build_plan` would change what the weekday sweep builds, so it is left for its own decision.
+- `depends_on` is read from `proposals/` on the checkout and the merged set from `stage:done`, so a
+  dependency that merges after the step starts is seen one run later, as for the dispatcher.
+
+Allocates B565.

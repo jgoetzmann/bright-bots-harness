@@ -449,7 +449,7 @@ instead of sending them, but the ranking call still runs. `discover.yml` takes t
 harness propose 4       # the work package -> a proposal pull request (gate 1)
 harness approve 4       # proposed -> approved by hand; normally the gate-1 merge does this
 harness approve --merged   # approve every proposed item whose proposal file is on main (gate 1)
-harness run --item 4    # implement, gates, package; bypasses the run window, not the usage stop
+harness run --item 4    # implement, gates, package; ignores window and depends_on, not usage stop
 harness package 4       # build the review package
 harness deliver 4       # push the branch to the fork and open the upstream PR (gate 2)
 harness revise 4 --source review --notes "..."    # one bounded revision cycle

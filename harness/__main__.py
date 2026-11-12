@@ -1470,6 +1470,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         LOG.info("run: reset %d stale running item(s): %s", len(reset_ids), reset_ids)
 
     carry = _carry_issue(listing_ctx.ledger)
+    held: dict[str, str] = {}
     if args.item is not None:
         item = listing_ctx.store.get_work_item(args.item)
         if item is None:
@@ -1478,9 +1479,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             raise HarnessError(f"item {args.item} is {item.state}; run requires state approved")
         item_ids = [args.item]
     else:
-        item_ids = [i.id for i in listing_ctx.store.list_work_items(state="approved")]
+        approved = {int(i.id): i for i in listing_ctx.store.list_work_items(state="approved")}
+        item_ids = list(approved)
         # Outside the run window only the carried item may start (B210). `--item` bypasses the
-        # window and nothing else: every stage still passes through the governor's usage stop.
+        # window and `depends_on`, nothing else: every stage still meets the governor's usage stop.
         # A block opens the window here exactly as it does in the plan, and lifts nothing else
         # (D77).
         now = listing_ctx.clock.now()
@@ -1507,8 +1509,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 )
                 return EXIT_OK
             LOG.info("run: outside the run window (%s); only carried item %s starts", window, carry)
+        item_ids, held = _hold_unmet_dependencies(listing_ctx, config, approved, item_ids, carry)
 
     if not item_ids:
+        lines = ["nothing approved to run"] if not held else ["no approved item is ready to run"]
+        lines.extend(f"  item {i} waits: {why}" for i, why in held.items())
         _emit(
             {
                 "ran": [],
@@ -1519,9 +1524,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "stopped_at_deadline": False,
                 "rate_limited_until": None,
                 "handed_off": None,
-                "waiting": {},
+                "waiting": held,
             },
-            "nothing approved to run",
+            "\n".join(lines),
             args,
         )
         return EXIT_OK
@@ -1533,7 +1538,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     stopped_at_deadline = False
     rate_limited_until: str | None = None
     handed_off: dict | None = None
-    waiting: dict[str, str] = {}
+    waiting: dict[str, str] = dict(held)
     # Branches this run delivered, counted against the cap before GitHub lists them (D88).
     opened: list[str] = []
     ctx = None
@@ -1779,6 +1784,35 @@ def _depends_on(config, item) -> tuple[int, ...]:
             continue
         return _front_matter_depends_on(text)
     return ()
+
+
+def _hold_unmet_dependencies(
+    ctx, config, approved: dict, item_ids: list, carry
+) -> tuple[list[int], dict[str, str]]:
+    """The ids whose `depends_on` items are merged, and why each other one waits (D100).
+
+    This is the dispatcher's `depends_on` rule only: its slot cap, candidate order and quiet gate
+    are not applied here. The carried item started before and is never held. The merged set is
+    read only when some candidate lists a dependency.
+    """
+    deps = {
+        int(i): _depends_on(config, approved[int(i)])
+        for i in item_ids
+        if carry is None or int(i) != int(carry)
+    }
+    if not any(deps.values()):
+        return list(item_ids), {}
+    merged = {int(n) for n in ctx.store.merged_issues()}
+    kept: list[int] = []
+    held: dict[str, str] = {}
+    for item_id in item_ids:
+        unmet = [int(dep) for dep in deps.get(int(item_id), ()) if int(dep) not in merged]
+        if unmet:
+            held[str(item_id)] = f"depends_on {unmet[0]} not merged"
+            LOG.info("run: item %s waits: %s", item_id, held[str(item_id)])
+            continue
+        kept.append(item_id)
+    return kept, held
 
 
 #: `_build_plan`'s default: ask the priority gate only when a suggested candidate exists.

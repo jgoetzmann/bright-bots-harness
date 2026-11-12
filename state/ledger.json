@@ -2,15 +2,15 @@
   "schema": 1,
   "window": {
     "period_start": "2026-09-15T20:00:00Z",
-    "calls": 125,
+    "calls": 127,
     "rate_limited_until": "2026-11-02T13:00:00Z",
     "usage": {
       "five_hour": {
-        "utilization": 0.4,
+        "utilization": 0.47,
         "resets_at": "2026-11-12T05:10:00Z"
       },
       "status": "allowed",
-      "observed_at": "2026-11-12T01:40:55Z"
+      "observed_at": "2026-11-12T02:09:00Z"
     },
     "owed": {
       "items": [
@@ -872,6 +872,18 @@
       "ts": "2026-11-06T02:02:55Z",
       "stage": "selfaudit",
       "issue": 90,
+      "run": ""
+    },
+    {
+      "ts": "2026-11-12T01:58:48Z",
+      "stage": "implement",
+      "issue": 161,
+      "run": ""
+    },
+    {
+      "ts": "2026-11-12T02:09:00Z",
+      "stage": "implement",
+      "issue": 161,
       "run": ""
     }
   ]

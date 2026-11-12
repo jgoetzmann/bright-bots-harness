@@ -24,97 +24,123 @@ Harness issue #161 (https://github.com/jgoetzmann/bright-bots-harness/issues/161
 - Fix it at the source, so a rendered completion control is always armed.
 - Keep #950's rule that nothing is posted without a registered attempt id.
 - Add no timeouts, retries or skips, and weaken no assertion.
-- Leave the two suites that #952 restores untouched.
+- Leave the two suites #952 restores untouched.
 
-Every observed failure is a CI `build-and-test` run that reported `expected "spy" to be called 1 times, but got 0 times`:
+The race has shown up in these CI `build-and-test` runs, each with `expected "spy" to be called 1 times, but got 0 times`:
 
-- #952 at head `7dc04f1` failed in `ActivityPlayerPersonalBestSync.test.tsx:126` (run 42147821426, attempt 1, Nov 6).
-- The re-run of that job on Nov 11 failed in `ActivityPlayerPersonalBestSync.test.tsx` and in `ActivityPlayerCompletionLatch.test.tsx` LATCH-1.
-- #953 at head `2bd2fd0` failed in LATCH-1 (run 42263231720, Nov 6). That branch carries none of #952's changes.
+- #952 at head `7dc04f1` failed in `ActivityPlayerPersonalBestSync.test.tsx:126` (run 42147821426, Nov 6).
+- The re-run of that job failed in `ActivityPlayerPersonalBestSync.test.tsx` and in `ActivityPlayerCompletionLatch.test.tsx` LATCH-1 (Nov 11).
+- #953 at head `2bd2fd0` failed in LATCH-1 (run 42263231720, Nov 6).
 
-Before #950, none of the 23 CI runs from Oct 1 to Nov 4 failed this way. Every `main` push since has been green. The harness's own gate run of `npm run test:unit` passed on #952's head before delivery.
+This revision replaces the plan that blocked on Nov 12. That build (implement run 43134912467) passed every gate on the untouched tree. After the change `npm run test:unit` failed, and it was still red after one diagnose cycle.
 
-This plan is checked against Bright Boost `main` at `1a2437d` (after #957).
+The runs listed below were made on Bright Boost branch `claude/intelligent-turing-327jmz` from base `1a2437d`, with `workflow_dispatch` of `ci-cd.yml`. They show why the first plan failed and that this one holds. This plan is checked against `1a2437d`.
 
 ## Diagnosis
 
-- `handleComplete` returns `false` unless `play.current` names the routed activity (`src/pages/ActivityPlayer.tsx:374-380`). #950 (`1afedce`) added that guard together with the `play` ref (`ActivityPlayer.tsx:193-197`). The guard ensures every POST carries the registered play's `attemptId` and `gradeBand` (`ActivityPlayer.tsx:388-391`).
-- `play.current` is assigned only in a passive `useEffect` keyed on `[activity]` (`ActivityPlayer.tsx:284-315`). React runs passive effects after the commit. So in the commit where `activity` first becomes non-null, the two Mark Complete buttons (`ActivityPlayer.tsx:669-674`, `908-913`) are already in the DOM while `play.current` is still `null`.
-- **Other completion paths are not exposed in practice.**
-  - The quiz renders nothing until its variant is frozen (`ActivityPlayer.tsx:816-818`), and a story quiz needs Start Quiz first (`ActivityPlayer.tsx:684`). The freeze is a `setState` in a layout effect (`ActivityPlayer.tsx:345-360`), so it forces a synchronous re-render. React flushes pending passive effects before that render, which registers the play before any quiz mounts.
-  - Games mount in the first commit, but they reach `onComplete` (`ActivityPlayer.tsx:863`, `871`, `878`) only after play.
-- A click inside that window takes the early return silently. Nothing is posted, no toast is shown, and the latch is untouched: `completingRef` is set only after the guard (`ActivityPlayer.tsx:383-384`).
-- **Tests that click as soon as the button exists:**
-  - `ActivityPlayerPersonalBestSync.test.tsx:123-126`, `156-159` and `174-177`.
-  - `ActivityPlayerCompletionLatch.test.tsx:117-123` (LATCH-1), `141-146` (LATCH-2) and `186-188` (LATCH-3).
-  - REPLAY-1 to REPLAY-5, through `completeWith` (`ActivityPlayerCompletionLatch.test.tsx:218-225`).
+**The guard and the effect.**
 
-  Whether the passive effect has run by the time `findByRole` resolves depends on scheduler timing. When a slow commit uses up React's scheduler time slice, React yields before running passive effects. RTL then waits only one `setTimeout(0)` before handing back to the test, and the test's click can land first. The failure DOM in the CI log is consistent with this: an idle Mark Complete button and no results screen.
-- **Assertions that rely on the passive effect having run.** These come from reading the code; no CI failure of them has been seen.
-  - `ActivityPlayerCompletionLatch.test.tsx:172-177` expects two `game_started` calls right after the second `findByRole`.
-  - `ModuleAccessDeepLink.test.tsx:175-179` expects `game_started` right after `findByText`.
-- **Start Quiz has the same exposure.** The effect resets the view state for a fresh play: `setMode("story")`, `setQuizVariant(null)` and the others (`ActivityPlayer.tsx:305-313`). A Start Quiz click (`ActivityPlayer.tsx:787-791`) that lands before the effect runs is undone.
-  - `ActivityPlayerQuizGate.test.tsx:112-117,222-225` click Start Quiz right after the first slide appears.
-  - `ActivityPlayerA11y.test.tsx:87-95` does too, but it is quarantined on `main` (`describe.skip`, line 68). It is one of the two suites #952 restores.
-- For a person the window is short. A tap that lands inside it is still dropped with no feedback, so this is the same defect.
-- The component already handles the same kind of timing elsewhere: the quiz variant is frozen in a `useLayoutEffect` (`ActivityPlayer.tsx:345-360`), so it is settled before the browser paints.
+- `handleComplete` returns `false` unless `play.current` names the routed activity (`src/pages/ActivityPlayer.tsx:374-380`). #950 (`1afedce`) added that guard together with the `play` ref (`ActivityPlayer.tsx:193-197`), so every POST carries the play's `attemptId` and `gradeBand` (`ActivityPlayer.tsx:388-391`).
+- `play.current` is assigned only in a passive `useEffect` keyed on `[activity]` (`ActivityPlayer.tsx:284-315`). That effect also tracks `game_started` and resets the view state: `setMode("story")`, `setQuizVariant(null)` and the others (`ActivityPlayer.tsx:305-313`).
+- A click that lands after the commit rendering Mark Complete (`ActivityPlayer.tsx:669-674`, `908-913`) but before that effect runs takes the early return silently. Nothing is posted and no toast is shown.
+
+**When the window opens.**
+
+- For an ungated module, `useModuleAccess` resolves access in the same render that sets the module (`src/hooks/useModuleAccess.ts:263`). `loading` clears in a later update, from the fetch's `.finally` (`ActivityPlayer.tsx:248-273`, the `.finally` at 271-273). The page shows the loading state until both are settled (`ActivityPlayer.tsx:612-614`).
+- Run 43169432250 replayed the PersonalBestSync pattern 150 times:
+  - In 149 rounds, the activity was set one commit before its body rendered, so `game_started` had already fired when Mark Complete first appeared.
+  - In 1 round, the activity and Mark Complete first rendered in the same commit, before the play effect had run.
+  - Every click reached the API, the found button was always still attached, and there was only ever one button element.
+- So the race needs both updates to land in one commit and the click to beat the passive flush. That is rare in isolation and more frequent on a busy runner.
+
+**Why the first plan failed.**
+
+- **Its reproduction did not reproduce.** The first LATCH-4 clicked from `Profiler` `onRender` on an ungated module. It passed on the untouched tree in run 43167912537, because the button normally appears after the play is registered.
+- **Its fix broke the quiz-only freeze.** Making the play effect a `useLayoutEffect` failed two cases in run 43167981405: `ActivityPlayerQuizGate.test.tsx` "#792 … (quiz-only=true)" and "quiz-only activity auto-enters with g3_5 legacy variant". In both, `data-testid="instant-quiz"` mounted and "Submit" was missing.
+  - For a quiz-only activity, the layout freeze (`ActivityPlayer.tsx:345-360`) first runs while the band is still pending, and the default band is `k2` (`src/hooks/useGradeBand.ts:18`).
+  - Today the passive reset sets the variant back to `null`, and the freeze runs again once the band has resolved.
+  - A layout-effect play runs that reset before the freeze, in the same commit, so the second freeze never happens.
+  - This was very likely the red gate of the Nov 12 build. Its log shows only `npm run test:unit` red after the change.
+
+**A deterministic window.**
+
+- The access of a Set 2 module also waits on progress (`useModuleAccess.ts:119,145-162,195`), which a test can hold. With the module loaded and `loading` cleared, releasing progress resolves access, and the activity and Mark Complete first render together in that commit, every time.
+- Run 43170979359 (`75cfce1`): a LATCH-4 built on that fails on the untouched tree with `expected "spy" to be called 1 times, but got 0 times`, after its click from `onRender` has happened.
+- Run 43171051929 (`208c890`): with the change below, LATCH-4 passes. All four CI jobs are green (`build-and-test`, `db-check`, `e2e-flows`, `build-only`): 2622 unit tests passed and 0 failed, including QuizGate (12), CompletionLatch (11), PersonalBestSync (3) and ModuleAccessDeepLink (27).
 
 ## Approach
 
-- **Reproduce first.** Add a LATCH-4 case to `ActivityPlayerCompletionLatch.test.tsx`, committed on its own before any product change. It clicks Mark Complete in the first commit that renders the button, before passive effects can run:
-  - Set `api.completeActivity.mockResolvedValue(COMPLETION_RESPONSE)` inside the case, since `vi.clearAllMocks()` (line 98) keeps earlier implementations.
-  - Render the case's own tree, the same route as `renderPlayer` (lines 78-95) inside `<Profiler id="first-commit" onRender={...}>` from `react`, without changing `renderPlayer`. React calls `onRender` during the commit's layout phase, after the subtree's layout effects and before its passive effects.
-  - In `onRender`, the first time `screen.queryByRole("button", { name: "Mark Complete" })` returns an element, set `clicked = true` and call that element's native `click()`, once. Do not use `fireEvent`, which wraps the call in `act`.
-  - Assert `expect(clicked).toBe(true)`, then `await waitFor(() => expect(api.completeActivity).toHaveBeenCalledTimes(1))`. Then assert that the call's `attemptId` equals the `attempt_id` of the single `game_started` call on the mocked `track`. A red result can then only come from the guard, not from a click that never happened.
-  - Run the file by path on the untouched tree five times, and record that LATCH-4 fails every time on the call count with `clicked` true. If it passes on the untouched tree, or fails on `clicked`, stop and report. Do not ship the fix without this proof.
-- **Fix.** Change the play-registration effect at `ActivityPlayer.tsx:284` from `useEffect` to `useLayoutEffect`. Keep its body, its `[activity]` deps, the guard at line 290 and the `eslint-disable` line. Layout effects run inside the commit, so by the time any event can reach a newly rendered control, `play.current` is set and the view resets are applied. `useLayoutEffect` is already imported (`ActivityPlayer.tsx:4`).
-- **Keep the guard** in `handleComplete` (`ActivityPlayer.tsx:374-380`) exactly as it is, so nothing posts without a registered attempt.
-- **Leave every existing case unchanged:** PersonalBestSync, the other LATCH and REPLAY cases, ModuleAccessDeepLink and QuizGate. They become deterministic without edits. `ActivityPlayerA11y.test.tsx` and `GameShellAccessibility.test.tsx` belong to #952 and stay out of this diff.
-- **Demonstrate:**
-  - Run LATCH-4 five times by path after the change and record five passes.
-  - Run `ActivityPlayerCompletionLatch.test.tsx`, `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerQuizGate.test.tsx` and `ModuleAccessDeepLink.test.tsx` by path.
-  - Then run `npm run test:unit`, `npm run lint`, `npm run format:check` and `npm run typecheck`. CI's `build-and-test` runs `format:check` (`.github/workflows/ci-cd.yml:61-62`), and a hand-written Profiler block is the likeliest thing to trip it.
+**Slice 1: reproduce, committed on its own.** Add LATCH-4 to `ActivityPlayerCompletionLatch.test.tsx`:
+
+- Add `getProgress: vi.fn()` and `getStudentAssignments: vi.fn()` to the file's `@/services/api` mock. Import `act` from `@testing-library/react`, `Profiler` from `react`, and `STEM_SET_1_IDS` and `STEM_SET_2_MODULE_SLUGS` from `@/constants/stemSets`.
+- Add the case as the last `it` in `describe("completion latch (#832 item 4)")`.
+- In the case:
+  - Resolve `api.getModule` to the file's `mockModule` with `slug: STEM_SET_2_MODULE_SLUGS[0]`, `level: "K-2"` and `published: true`.
+  - Make `api.getProgress` return a promise the test holds.
+  - Resolve `api.completeActivity` to `COMPLETION_RESPONSE`.
+- Render the same route as `renderPlayer`, for that slug, inside `<Profiler id="first-commit" onRender={...}>`. The first time `onRender` finds the Mark Complete button, it sets `clicked = true` and calls the element's native `click()`, once. Leave `renderPlayer` unchanged.
+- Call `await act(async () => {})`, then assert that `getProgress` was called and that no Mark Complete button exists yet.
+  - Those checks are sanity checks, not proof that access is waiting. `getProgress` fires at mount, and `loading` and pending access render the same text (`ActivityPlayer.tsx:612-614`).
+  - What holds the window is that the async `act` flushes in a macrotask, after getModule's `then`→`catch`→`finally` chain (`ActivityPlayer.tsx:248-273`) has drained. So `loading` is already clear when progress is released.
+  - The five-of-five red run below is the guard against a false green.
+- Inside `await act(async () => { ... })`, resolve progress with `{ progress: STEM_SET_1_IDS.map((activityId) => ({ activityId, status: "COMPLETED" })) }`. `completedIdsFromProgressResponse` throws on any other shape (`src/lib/progressResponse.ts:29-32`), and the page would then show the system-problem screen.
+- Assert `clicked` is `true`. Then `await waitFor(...)` for one `completeActivity` call, and check that its `attemptId` equals the `attempt_id` of the single `game_started` call.
+- Run the file by path on the untouched tree five times, and record five failures on the call count. If it ever passes there, stop and report.
+
+**Slice 2: the fix.** Do not render an activity's controls until its play is registered:
+
+- Add `const [startedActivityId, setStartedActivityId] = useState<string | null>(null)` beside `play`.
+- In the play effect, call `setStartedActivityId(null)` in the `!activity` branch, and `setStartedActivityId(String(activity.id))` after the resets.
+- After the `!module || !activity` return (`ActivityPlayer.tsx:616-635`), return the existing loading state, `<div className="p-6">{t("activityPlayer.loadingActivity")}</div>`, while `startedActivityId !== String(activity.id)`.
+- Keep the effect a passive `useEffect`, keep its existing statements and deps, and keep the `handleComplete` guard exactly as it is.
+
+**Demonstrate:**
+
+- Run LATCH-4 five times by path after the change.
+- Run `ActivityPlayerCompletionLatch.test.tsx`, `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerQuizGate.test.tsx` and `ModuleAccessDeepLink.test.tsx` by path.
+- Then run `npm run test:unit`, `npm run lint`, `npm run format:check`, `npm run typecheck` and `npm run build`.
+
+**Reference.** A reference version of both slices exists, as data rather than instructions: `git diff 1a2437d 208c890 -- src/pages/ActivityPlayer.tsx src/pages/__tests__/ActivityPlayerCompletionLatch.test.tsx` on the Bright Boost branch above. `75cfce1` holds slice 1 alone, so its test is the red case of run 43170979359.
 
 ## Slices
 
-1. Reproduction: add LATCH-4, a click from `Profiler` `onRender` on the first commit, to `ActivityPlayerCompletionLatch.test.tsx` as its own commit. Record it failing five times out of five on the untouched tree, with `clicked` true and `completeActivity` called 0 times.
-2. Fix: register the play in a layout effect by changing `useEffect` to `useLayoutEffect` at `ActivityPlayer.tsx:284`, then show LATCH-4 passing five times out of five and the existing completion, quiz and access suites passing.
+1. Reproduction: add LATCH-4 to `ActivityPlayerCompletionLatch.test.tsx` as its own commit. It holds a Set 2 module's progress, then clicks Mark Complete from `Profiler` `onRender` in the commit that resolves access. Record it failing five times out of five on the untouched tree.
+2. Fix: add `startedActivityId` state, set it in the existing passive play effect, and keep the loading state until it matches the routed activity. Then show LATCH-4 passing five times out of five and the completion, quiz and access suites passing.
 
 ## Behaviors
 
-1. A Mark Complete click delivered in the same commit that first renders the button posts exactly one completion.
+1. A Mark Complete click delivered in the first commit that renders the button posts exactly one completion.
 2. That completion's `attemptId` equals the `attempt_id` of the `game_started` event for the same play.
-3. A second click while the first POST is in flight still sends nothing (LATCH-1).
-4. A failed save still releases the latch, and the retry reuses the attempt id (LATCH-2).
-5. A denied, hidden or wrong-grade module still tracks no `game_started` and posts nothing (`ModuleAccessDeepLink.test.tsx:144-150,203-229`).
+3. A `g3_5` student entering a quiz-only activity still gets the legacy list quiz (`ActivityPlayerQuizGate.test.tsx:259-286`).
+4. A second click while the first POST is in flight still sends nothing (LATCH-1), and a failed save still releases the latch (LATCH-2).
+5. A denied, hidden or wrong-grade module still tracks no `game_started` and posts nothing (`ModuleAccessDeepLink.test.tsx:144-150,196-207,211-220,222-230`).
 6. Closing an unfinished tab and reopening it still records two plays with distinct attempt ids (`ActivityPlayerCompletionLatch.test.tsx:167-180`).
 7. `npm run test:unit` reports no new failures and no new skips.
 
 ## Acceptance criteria
 
-- Slice 1 is its own commit, so its patch adds LATCH-4 alone. A reviewer can check out that commit, run `npx vitest run --project unit src/pages/__tests__/ActivityPlayerCompletionLatch.test.tsx -t LATCH-4`, and see it fail with `expected "spy" to be called 1 times, but got 0 times`. The delivery PR body gives that command and the failing line.
-- The evidence shows LATCH-4 failing five times out of five before the product change and passing five times out of five after it.
-- LATCH-4 asserts that its `onRender` click happened before it asserts the call count. It sets its own `completeActivity` resolution and leaves `renderPlayer` unchanged.
-- In `ActivityPlayer.tsx` the only code change is `useEffect` to `useLayoutEffect` on the play-registration effect, plus a comment update if needed. The `handleComplete` guard is unchanged.
-- No existing test case is edited. `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerA11y.test.tsx` and `GameShellAccessibility.test.tsx` are not in the diff.
+- Slice 1 is its own commit. A reviewer can check it out, run `npx vitest run --project unit src/pages/__tests__/ActivityPlayerCompletionLatch.test.tsx -t LATCH-4`, and see `expected "spy" to be called 1 times, but got 0 times`. The delivery PR body gives that command.
+- The evidence shows LATCH-4 failing five times out of five before the fix and passing five times out of five after it.
+- LATCH-4 asserts that its `onRender` click happened before it asserts the call count. It also asserts that no Mark Complete exists before progress is released.
+- In `ActivityPlayer.tsx` the change is the `startedActivityId` state, its two `setStartedActivityId` calls in the existing effect, and the loading return, plus comments. The play effect stays a passive `useEffect`, and the `handleComplete` guard is unchanged.
+- No existing test case is edited. Apart from LATCH-4, the only changes to the CompletionLatch file are `getProgress` and `getStudentAssignments` in its API mock and the imports LATCH-4 needs.
+- `ActivityPlayerPersonalBestSync.test.tsx`, `ActivityPlayerA11y.test.tsx` and `GameShellAccessibility.test.tsx` are not in the diff.
 - No `waitFor` timeout, test timeout, retry, sleep, fake-timer change, `.skip`, `.only` or `skipIf` is added.
 - `npm run lint`, `npm run format:check`, `npm run typecheck`, `npm run test:unit` and `npm run build` are green.
 
 ## Decisions
 
-- Fix the component, not the tests, because the button is live before it is armed and that is a product defect the tests expose. Rejected: making each test wait for `game_started` before clicking. Eleven test cases click this way today (three in PersonalBestSync, LATCH-1 to LATCH-3, and REPLAY-1 to REPLAY-5), every future completion test would need to know about this hidden precondition, and a real tap in the window would still be dropped.
-- Use `useLayoutEffect` on the existing effect. Rejected: registering the play lazily inside `handleComplete`, which would duplicate the registration and the `game_started` call, while the view resets would still race Start Quiz. Rejected: writing `play.current` during render, because refs must not be written during render. Rejected: disabling the button until a "registered" state flips, which adds state and a render for something a layout effect already guarantees.
-- Keep #950's guard. Rejected: dropping it to make the race go away, because the POST would then carry no attempt id, which is what #950 exists to prevent.
-- Reproduce with `Profiler` `onRender`, because it runs at a fixed point in the commit. Rejected: CPU load or a `performance.now` stub, which are probabilistic. Rejected: `scheduler/unstable_mock`, which would mean reworking how React Testing Library drives React in this file.
-- Assert `clicked` before the call count. Rejected: asserting the count alone, because a click that never fired, or a query that threw inside `onRender`, would also give 0 calls (`docs/agents/rules/10-testing.md`: assert the property, not a proxy).
-- Put LATCH-4 in `ActivityPlayerCompletionLatch.test.tsx`, because it already owns the submission semantics and mocks `track` (lines 16-20). Rejected: a new test file, because `touched_paths` may only name paths that exist.
-- Leave the `[slug, lessonId, activityId]` reset effect (`ActivityPlayer.tsx:202-205`) passive, because on first mount it runs before the module can load and the play effect already resets `completingRef` itself (line 313). Rejected: moving it as well, which widens the change with no observed defect.
-- Leave the two suites #952 restores alone, because the request says so and they need no change. Rejected: folding their Start Quiz exposure into this diff.
+- **Hold the render, not the effect.** The page shows its loading state until the play is registered, because that keeps ActivityPlayer's own effects on their current timing (the play effect and the layout freeze at `ActivityPlayer.tsx:345-360`) and so keeps the quiz-only variant freeze. Child games and quizzes mount one commit later, after the play is registered. Rejected: making the play effect a layout effect, which failed two QuizGate cases (run 43167981405).
+- **Fix the component, not the tests.** Rejected: making each test wait for `game_started`. Eleven test cases click on appearance today, and a real tap in the window would still be dropped.
+- **No lazy registration.** Rejected: registering the play inside `handleComplete`, which would duplicate the registration and the `game_started` call. Rejected: queueing an early click until the effect runs, which adds a second completion path to keep correct.
+- **Keep #950's guard.** Rejected: dropping it, because the POST would then carry no attempt id.
+- **Reproduce through a gated module.** Its access resolves the activity and its controls in one commit every time. Rejected: the ungated `Profiler` click, which passed on the untouched tree (run 43167912537). Rejected: CPU load or timer stubs, which are probabilistic.
+- **Place LATCH-4 in `ActivityPlayerCompletionLatch.test.tsx`.** It already owns the submission semantics and mocks `track`. Rejected: a new file, because `touched_paths` may only name paths that exist.
+- **Leave the two suites #952 restores alone**, as the request says. Rejected: hardening PersonalBestSync's or LATCH-1's click instead, which the request forbids and which would leave the product race in place.
 
 ## Open questions
 
-- The reproduction assumes that, in the installed React 18.3.1, `Profiler` `onRender` fires during the layout phase of a commit started by a descendant's own state update. It also assumes `onRender` runs after that descendant's layout effects and before its passive effects, and that a native `click()` there reaches `onClick` synchronously. An independent review reached the same reading of React's commit order. Neither was checked against installed source or a run. The five-out-of-five red step is the check, and implementation stops if it does not hold.
-- No test or gate was run for this proposal, because this session could not install dependencies. Line numbers are from `1a2437d`.
+- The page now paints its loading text for one more commit on every activity open, and on in-place navigation it shows loading for one commit where today the new activity's body briefly shows the previous play's state (mode, slide, answers). I judge that invisible to a person. A reviewer may disagree for the Cypress shell smoke, although `e2e-flows` and the shell smoke passed in run 43171051929.
 
 ## Touched paths
 
@@ -123,14 +149,8 @@ This plan is checked against Bright Boost `main` at `1a2437d` (after #957).
 
 ## Risks
 
-- **Synchronous re-render.** The resets at `ActivityPlayer.tsx:305-313` now run in a layout effect, so on a fresh play they force a synchronous re-render before paint. That re-render first flushes any pending passive effects, which is also why the other suites become deterministic. On first mount the resets set initial values. On in-place navigation they clear the previous activity's state before it can be seen, which is the intent.
-- **Effect order with the quiz freeze.** Both effects are now layout effects, and the play effect runs first because it is declared first. Only quiz-only activities freeze in the first commit; Start Quiz freezes in its click handler (`ActivityPlayer.tsx:788-791`) and is unaffected.
-  - In that first commit, `setQuizVariant(null)` and then the freeze updater (`ActivityPlayer.tsx:330-332`) combine into the same frozen variant.
-  - Previously the quiz-only quiz was frozen, reset, then frozen again one task later, so it mounted, unmounted and mounted again. Now it mounts once.
-  - The band resolves in microtasks only (`src/lib/requestDeadline.ts:25-28`, `src/hooks/useGradeBand.ts:157-160`), so a pinned band is already set in that first commit.
-  - Look hardest at the quiz-only QuizGate cases: `ActivityPlayerQuizGate.test.tsx:129-168` with `quizOnly=true`, `233-257`, `259-286` and `348-380`.
-- **Analytics timing.** `game_started` moves from a passive effect into the commit, so it fires roughly one task earlier. `track` calls `posthog.capture` directly (`src/lib/analytics.ts:248-252`), and `docs/analytics.md:70,122` defines the event as firing once per play when the activity opens, with no dependence on paint.
-- **StrictMode.** The app renders under StrictMode (`src/bootstrap.tsx:34`), which replays effects only at mount, when `activity` is still null. The guard at `ActivityPlayer.tsx:290` covers any replay either way.
+- **A test that expects the body in the same commit as the activity.** Run 43171051929 found none in the unit suite, the Storybook project or `e2e-flows`. A suite added since `1a2437d` could. If one fails, stop and diagnose it. Do not add a wait.
+- **The `!activity` branch now sets state.** On mount `activity` is `null` and the value is already `null`, so React bails out. A module reload that clears and restores the same activity now re-registers its play before showing it, which is the intent.
+- **Clicking during a commit** is unusual in a test. A reviewer should confirm LATCH-4 clicks once, with native `click()`, and asserts `clicked`, the call count and the attempt id only.
 - **Flaky baseline.** The untouched tree's `npm run test:unit` can itself go red on this race on a busy runner. If the baseline gate is red, the evidence should name this race rather than treat the failure as new.
-- **Clicking during a commit** is unusual in a test. A reviewer should confirm that LATCH-4 clicks exactly once, with native `click()`, asserts `clicked`, and otherwise asserts only the POST count and the attempt id.
 - **Issue body.** The request contains no instructions aimed at the agent beyond the task itself.

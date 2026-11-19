@@ -54,9 +54,12 @@ type Config struct {
 	CLIs               map[string]CLI `json:"clis"`
 	// PlanGate has the bot write a plan for every item, as a draft pull request, and build
 	// nothing until an approver approves it (gate 1).
-	PlanGate  bool     `json:"plan_gate"`
-	Approvers []string `json:"approvers"`
-	PlansDir  string   `json:"plans_dir"`
+	PlanGate bool `json:"plan_gate"`
+	// BaselineChecks runs the checks on the base first: one already red there is reported and
+	// shown to the reviewer, but only the change's new failures block it.
+	BaselineChecks bool     `json:"baseline_checks"`
+	Approvers      []string `json:"approvers"`
+	PlansDir       string   `json:"plans_dir"`
 	// Upstream, when set, is fork mode: this repository is the queue, the bot builds in its fork
 	// of another repository and delivers there by pull request, which a person merges (gate 2).
 	Upstream *Upstream `json:"upstream"`
@@ -88,6 +91,21 @@ type Upstream struct {
 	// NoCIMinutes is how long a head may go without any check reporting before the bot stops
 	// waiting for CI on the fork, or marks a draft upstream pull request ready.
 	NoCIMinutes int `json:"no_ci_minutes"`
+	// RequiredChecks are the checks that count, on the fork and upstream; empty: every one.
+	RequiredChecks []string `json:"required_checks"`
+}
+
+// Counts says whether a check's result decides an upstream or fork pull request's CI.
+func (u *Upstream) Counts(name string) bool {
+	if len(u.RequiredChecks) == 0 {
+		return true
+	}
+	for _, n := range u.RequiredChecks {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // AutoOpen picks upstream issues for the queue: open ones carrying one of Labels, or assigned

@@ -58,6 +58,7 @@ case "$prompt" in
     echo "Resolved the conflict in hello.txt." ;;
   *"# Revise "*)
     echo "$prompt" > "$FAKE_DIR/revise-prompt"
+    if [ "$(cat "$FAKE_DIR/mode" 2>/dev/null)" = nochange ]; then echo "Nothing to change: the failure is a flake."; exit 0; fi
     echo fixed >> hello.txt
     echo "Fixed what was asked." ;;
   *"# A question"*)

@@ -198,6 +198,9 @@ func (c *Config) Validate() error {
 	}
 
 	for _, name := range PromptNames {
+		if name == "plan" && !c.PlanGate {
+			continue // an install upgraded from before the plan gate has no plan prompt
+		}
 		if _, err := os.Stat(filepath.Join(c.Root, Dir, "prompts", name+".md")); c.Root != "" && err != nil {
 			add("prompts/%s.md: missing", name)
 		}

@@ -83,6 +83,12 @@ func (b *Bot) record(p *job.Plan, r *job.Result) {
 				s.Parked = map[string]time.Time{}
 			}
 			s.Parked[p.Provider] = until
+			// Every provider on the same login is the same subscription, refused alike.
+			for _, other := range b.Cfg.Providers.Ordered() {
+				if p.Login == "secret" && other.Login == "secret" && other.Secret == p.Secret && other.CLI == p.CLI {
+					s.Parked[other.ID] = until
+				}
+			}
 		}
 		s.Prune(now)
 		return nil
@@ -168,6 +174,9 @@ func (b *Bot) deliverChange(p *job.Plan, r *job.Result, out string) error {
 		}
 		b.fail(p.Number, "the model job left no change to deliver")
 		return nil
+	}
+	if p.Action == sched.Revise && b.Cfg.Forked() {
+		b.draftUpstream(p.Number)
 	}
 	if p.Action == sched.Revise && p.PR != 0 && !b.Cfg.Forked() {
 		// The change on the pull request is about to be one no review has seen: auto-merge goes
@@ -556,6 +565,9 @@ func reviewText(r *job.Result) string {
 			mark := "✅ passed"
 			if !c.Passed {
 				mark = "❌ failed"
+				if r.RedOnBase(c.Name) {
+					mark = "❌ failed, and on the base too (not this change's)"
+				}
 			}
 			fmt.Fprintf(&b, "| %s | %s |\n", c.Name, mark)
 		}

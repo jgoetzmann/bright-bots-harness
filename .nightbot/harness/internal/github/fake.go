@@ -46,8 +46,11 @@ type Fake struct {
 	BranchHeads    map[string]string
 	Merged         []int
 	Synced         []string
-	// NoMerge makes MergePR refuse, as the upstream repository's client does.
+	// NoMerge makes MergePR and EnableAutoMerge refuse, as the upstream repository's client does.
 	NoMerge bool
+	// ChangedFiles is each pull request's changed paths, for PRFiles; ActionsOff turns Actions off.
+	ChangedFiles map[int][]string
+	ActionsOff   bool
 	// OnMerge and OnSync stand in for what GitHub does to the repository's git, in the tests.
 	OnMerge func(pr *PR, method string) error
 	OnSync  func(branch string) (string, error)
@@ -398,6 +401,9 @@ func (f *Fake) MarkReady(pr *PR) error {
 func (f *Fake) EnableAutoMerge(pr *PR, method, headSHA string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.NoMerge {
+		return ErrMergeForbidden
+	}
 	if p := f.PRs[pr.Number]; p != nil && p.Head.SHA != "" && headSHA != p.Head.SHA {
 		return fmt.Errorf("head is %s, not the expected %s", p.Head.SHA, headSHA)
 	}
@@ -693,3 +699,34 @@ func (f *Fake) ListOpenPRs() ([]*PR, error) {
 	}
 	return out, nil
 }
+
+func (f *Fake) MarkDraft(pr *PR) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p := f.PRs[pr.Number]; p != nil {
+		p.Draft = true
+	}
+	return nil
+}
+
+// PRFiles is the paths set in ChangedFiles, or for a pull request from a branch the fake wrote
+// files to through its API, those files.
+func (f *Fake) PRFiles(number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if files, ok := f.ChangedFiles[number]; ok {
+		return append([]string(nil), files...), nil
+	}
+	var out []string
+	if pr := f.PRs[number]; pr != nil {
+		for key := range f.Files {
+			if branch, path, _ := strings.Cut(key, ":"); branch == pr.Head.Ref {
+				out = append(out, path)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (f *Fake) ActionsEnabled() (bool, error) { return !f.ActionsOff, nil }

@@ -42,18 +42,25 @@ flowchart LR
    `plans/<number>-<slug>.md` (`plans_dir`), and the issue is labelled `bot:awaiting-approval`.
 3. **Gate 1.** An approver (`approvers`, or the operator) comments `/nightbot approve` on the
    plan's pull request or on the issue, or approves the pull request in a review. The plan as it
-   stands at that moment, edits a person pushed to it included, is what the build follows; the
-   pull request merges, so `plans/` keeps every approved plan. `/nightbot revise <what to change>`
-   has the plan rewritten instead, and `/nightbot reject` or closing the pull request turns the
-   work down (`human`).
+   stands at that moment, edits a person pushed to it included, is what the build follows (a
+   review's approval holds only for the commit it reviewed). The pull request then merges into
+   `plans/` if it changes the plan's file and nothing else and the branch's protection allows it
+   (an approving review satisfies a required review); otherwise it closes, and the approved plan
+   stays on its branch. `/nightbot revise <what to change>` has the plan rewritten instead, and
+   `/nightbot reject` or closing the pull request turns the work down (`human`).
 4. **Build.** The model works on `nightbot/<number>-<slug>`, cut from upstream's default branch,
-   with the approved plan in its prompt. The checks run, a fresh session reviews the change
+   with the approved plan in its prompt, and the upstream issue's text as the plan read it (what
+   anyone writes there after gate 1 never reaches a build). With `baseline_checks`, the checks run
+   on the base first, and one already red there neither blocks the change nor goes to the builder
+   to fix. The checks run, a fresh session reviews the change
    against the task and the plan, and the builder fixes what it finds. Deliver pushes the branch
    to the fork and opens a pull request there into the sandbox.
 5. **The sandbox.** The fork's branch named like upstream's default branch is the sandbox: upstream
    plus the bot's approved, CI-green changes, for people to try before they merge anything. The
    sweep merges the fork's pull request (`fork_merge_method`) once the fork's CI is green at the
-   head the review approved, or once no check has reported on that head for `no_ci_minutes`. A
+   head the review approved (at least one check passed, none failed or was cancelled; with
+   `upstream.required_checks`, only those count), or once no check has run on that head for
+   `no_ci_minutes`. A
    change that conflicts with the sandbox skips it and goes upstream anyway. Every sweep syncs the
    sandbox with upstream; one that no longer merges is reset to upstream (what it held is still
    on its branches and pull requests).
@@ -63,10 +70,14 @@ flowchart LR
    - a conflict with upstream's default branch queues a revision that merges it in (a real merge
      commit; the model resolves the conflicts);
    - red CI queues a fix with the failing jobs' logs, once for each head, up to `max_ci_fixes`;
-   - a trusted person's changes-requested review, `/nightbot revise <change>` comment or mention
-     queues a revision; `/nightbot stop` stops the item;
-   - once CI is green and it merges cleanly, it is marked ready, `reviewers` are asked, and it
-     says so.
+   - a changes-requested review, `/nightbot revise <change>` comment or mention from someone on
+     the trust list queues a revision (upstream's own collaborators count only if they are on the
+     list); `/nightbot stop` stops the item;
+   - before it pushes a revision, the pull request becomes a draft again; one its own review did
+     not approve goes to a person, and it says so there;
+   - once CI is green at the head its review approved and GitHub says it merges cleanly, it is
+     marked ready, `reviewers` are asked, and it says so. With no CI at all after `no_ci_minutes`
+     it does the same, saying that no CI ran.
 7. **Gate 2.** A person merges it upstream. The item closes here and the status issue counts it.
    A pull request a person closes unmerged hands the item to a person (`human`).
 
@@ -134,8 +145,9 @@ and `closed`.
    opens pull requests upstream and here, and comments) and `workflow` if upstream's changes touch
    `.github/` (the sandbox's sync carries them). The upstream repository and the fork must be
    public: the model job clones them without a token.
-4. `nightbot setup --repo-settings` keeps the fork from deleting a branch when it merges one into
-   the sandbox, which the upstream pull request still needs. `nightbot doctor` checks the fork's
-   parent, that setting, and that the token reads upstream.
+4. `nightbot setup --repo-settings`, run with the bot's own token (`NIGHTBOT_GITHUB_TOKEN`), keeps
+   the fork from deleting a branch when it merges one into the sandbox, which the upstream pull
+   request still needs. `nightbot doctor` checks the fork's parent, that setting, that Actions runs
+   on the fork, and that the token reads upstream.
 5. `install.sh --upstream OWNER/NAME --fork OWNER/NAME` writes the config above and adds the
    request template, `.github/ISSUE_TEMPLATE/nightbot-request.yml`.

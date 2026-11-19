@@ -107,6 +107,10 @@ type Item struct {
 	Since         time.Time `json:"since,omitzero"`     // when it entered its stage
 	HeadSeen      time.Time `json:"head_seen,omitzero"` // when the sweep first saw the head it waits on
 	HeadSeenSHA   string    `json:"head_seen_sha,omitempty"`
+	// UpstreamThread is the upstream issue's text as the plan read it.
+	UpstreamThread string `json:"upstream_thread,omitempty"`
+	// FeedbackAt is the newest upstream comment or review the sweep has read.
+	FeedbackAt time.Time `json:"feedback_at,omitzero"`
 }
 
 // Stages an item passes through in fork mode and with the plan gate, for the status issue.

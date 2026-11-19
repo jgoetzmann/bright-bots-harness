@@ -59,10 +59,14 @@ are the defences, and what they cannot rule out.
   merge, and a person merges every delivery pull request there (gate 2); before anything is built
   an approver approved its plan (gate 1). The bot merges only its plans here and approved,
   CI-green changes into its own fork's sandbox. Upstream it pushes nothing: its branches are on
-  the fork, and it opens pull requests from them. It reads an upstream issue's text even when its
-  author is off the trust list, fenced as data, because a trusted person linked it or a
-  maintainer put it in the pool, and because a person reads the plan made from it before anything
-  is built. Comments upstream count only from people on the trust list.
+  the fork, and it opens pull requests from them. A plan reads an upstream issue's text even when
+  its author is off the trust list, fenced as data, because a trusted person linked it or a
+  maintainer put it in the pool and a person reads the plan made from it; builds and revisions
+  read the copy the plan was made from, so nothing written there after gate 1 reaches them.
+  Commands and reviews upstream count only from people on `trust.txt`, never from upstream's own
+  collaborators. Approving a plan merges its pull request only when it changes the plan's file
+  alone. The model's CLI loads user settings only (`--setting-sources user`), so a checkout's own
+  `.claude/` hooks never run.
 
 ## What it cannot rule out
 

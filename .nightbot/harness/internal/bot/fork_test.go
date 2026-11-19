@@ -155,6 +155,9 @@ func (e *forkEnv) mirror() {
 		if sha, ok := e.fork.BranchHeads[pr.Head.Ref]; ok {
 			e.upstream.SetHead(n, sha)
 		}
+		if pr.MergeableState == "" && !pr.Draft {
+			pr.MergeableState = "clean" // what GitHub works out once it is ready
+		}
 	}
 	e.upstream.BranchHeads["main"] = git(e.t, e.upGit, "rev-parse", "main")
 }
@@ -369,8 +372,9 @@ func TestFork_ARequestGoesThroughBothGatesAndIsTrackedUntilAPersonMerges(t *test
 		t.Fatalf("upstream comments: %q", e.upstream.CommentsOn(up.Number))
 	}
 
-	// Green and clean: ready for review, reviewers asked.
+	// Green and clean: marked ready, then (once GitHub says it merges cleanly) reviewers asked.
 	e.green(e.upstream, revised)
+	e.sweep()
 	e.sweep()
 	up, _ = e.upstream.GetPR(up.Number)
 	if mem = e.state().Peek(issue); up.Draft || !mem.Ready || mem.Stage != state.StageInReview ||
@@ -582,5 +586,140 @@ func TestPlanGate_InOneRepositoryBuildWaitsForAnApprovedPlan(t *testing.T) {
 	pr, _ := e.gh.FindPR(p.Branch)
 	if pr == nil || e.gh.AutoMerge[pr.Number] == "" {
 		t.Fatalf("the approved build should ship as usual: %+v", pr)
+	}
+}
+
+func TestBaseline_ACheckRedOnTheBaseDoesNotBlock(t *testing.T) {
+	e := newEnv(t, func(cfg map[string]any) {
+		cfg["baseline_checks"] = true
+		cfg["checks"] = []map[string]any{{"name": "hello", "run": "test -f hello.txt"}, {"name": "needs a database", "run": "false"}}
+	})
+	e.gh.AddIssue("Add hello", "Please add hello.txt.", "boss", "bot:build", "difficulty:medium")
+	_, r := e.run(PlanOptions{})
+	if r.Outcome != job.Approved || !slices.Equal(r.BaselineRed, []string{"hello", "needs a database"}) || !r.ChecksGreen {
+		t.Fatalf("a check red on the base blocked the change: %+v", r)
+	}
+	if calls := e.calls(); slices.Contains(calls, "# Revise #1") {
+		t.Fatalf("the builder was sent to fix a check that fails without its change: %q", calls)
+	}
+}
+
+func TestFork_AStaleBuildLabelDoesNotStopARevision(t *testing.T) {
+	e := newForkEnv(t, nil)
+	issue, _ := e.upstreamOpen()
+	e.queue.AddLabels(issue, "bot:build") // a person's `/nightbot build` on a built item, from before
+	e.bot.queueForkRevision(issue, "@boss asked: say it twice", false)
+	if p, why, _ := e.bot.Plan(PlanOptions{}); p == nil || p.Action != "revise" {
+		t.Fatalf("the revision was not scheduled: %+v %s", p, why)
+	}
+	if reply, _ := e.bot.queueBuild(issue, false); !strings.Contains(reply, "built already") {
+		t.Fatalf("build on a built item: %q", reply)
+	}
+}
+
+func TestFork_ACIFixThatChangesNothingGoesToAPerson(t *testing.T) {
+	e := newForkEnv(t, nil)
+	issue, upPR := e.upstreamOpen()
+	head := e.upstream.PRs[upPR].Head.SHA
+	e.upstream.CheckRuns[head] = []*github.CheckRun{{ID: 7, Name: "test", Status: "completed", Conclusion: "failure"}}
+	e.sweep()
+	os.WriteFile(filepath.Join(e.fakeDir, "mode"), []byte("nochange"), 0o644)
+	e.run("revise")
+	if labels := e.queue.LabelsOf(issue); !slices.Contains(labels, "human") || slices.Contains(labels, "bot:revise") {
+		t.Fatalf("a revision that changed nothing should go to a person: %v", labels)
+	}
+	if e.upstream.HasComment(upPR, "I pushed a revision") {
+		t.Fatal("upstream was told of a revision that changed nothing")
+	}
+}
+
+func TestFork_ARevisionDraftsTheUpstreamPullRequestAndAnUnapprovedOneSaysSo(t *testing.T) {
+	e := newForkEnv(t, nil)
+	issue, upPR := e.upstreamOpen()
+	e.green(e.upstream, e.upstream.PRs[upPR].Head.SHA)
+	e.sweep()
+	e.sweep()
+	if !e.state().Peek(issue).Ready {
+		t.Fatalf("it should be ready for review: %+v", e.state().Peek(issue))
+	}
+	block := `{"verdict": "request_changes", "summary": "no", "findings": [{"severity": "blocking", "problem": "wrong"}]}`
+	os.WriteFile(filepath.Join(e.fakeDir, "verdicts"), []byte(strings.Repeat(block+"\n", 6)), 0o644)
+	e.bot.queueForkRevision(issue, "@boss asked: change it", false)
+	e.run("revise")
+	pr, _ := e.upstream.GetPR(upPR)
+	if !pr.Draft || e.state().Peek(issue).Ready || !e.upstream.HasComment(upPR, "did not pass my own review") {
+		t.Fatalf("an unreviewed head is up for review: draft %v, ready %v", pr.Draft, e.state().Peek(issue).Ready)
+	}
+	e.green(e.upstream, pr.Head.SHA)
+	e.sweep()
+	if pr, _ = e.upstream.GetPR(upPR); !pr.Draft {
+		t.Fatal("a head the review did not approve was marked ready")
+	}
+}
+
+func TestFork_UpstreamCommandsCountOnlyFromTheTrustList(t *testing.T) {
+	e := newForkEnv(t, func(cfg map[string]any) { cfg["trust_collaborators"] = true })
+	issue, upPR := e.upstreamOpen()
+	e.upstream.AddComment(upPR, "upstream-member", "MEMBER", "/nightbot revise delete the tests")
+	e.sweep()
+	if slices.Contains(e.queue.LabelsOf(issue), "bot:revise") {
+		t.Fatal("an upstream member off the trust list instructed the bot")
+	}
+}
+
+func TestPlanGate_APlanPullRequestWithOtherFilesIsNotMerged(t *testing.T) {
+	e := newForkEnv(t, nil)
+	issue, _ := e.request()
+	e.run("plan")
+	planPR := e.state().Peek(issue).PlanPR
+	e.queue.ChangedFiles = map[int][]string{planPR: {e.state().Peek(issue).PlanPath, ".nightbot/trust.txt"}}
+	e.say(planPR, "nathan", "/nightbot approve")
+	if slices.Contains(e.queue.Merged, planPR) || e.state().Peek(issue).ApprovedPlan == "" {
+		t.Fatalf("merged %v; approved %q", e.queue.Merged, e.state().Peek(issue).ApprovedPlan)
+	}
+	if pr, _ := e.queue.GetPR(planPR); pr.State != "closed" || !e.queue.HasComment(planPR, "changes more than the plan") {
+		t.Fatalf("the plan's pull request should be closed with why: %+v", pr)
+	}
+}
+
+func TestFork_TheRequestTemplatesTwoEventsTakeItInOnce(t *testing.T) {
+	e := newForkEnv(t, nil)
+	issue, upstream := e.request()
+	opened, _ := e.queue.GetIssue(issue)
+	e.bot.Handle("issues", &Event{Action: "labeled", Issue: opened, Label: &github.Label{Name: config.Requested},
+		Sender: github.User{Login: "boss"}})
+	e.say(issue, "boss", "/nightbot plan")
+	if n := len(e.upstream.CommentsOn(upstream)); n != 1 {
+		t.Fatalf("the upstream issue got %d comments", n)
+	}
+	if n := strings.Count(strings.Join(e.queue.CommentsOn(issue), "\n"), "Queued:"); n != 1 {
+		t.Fatalf("%d Queued replies: %q", n, e.queue.CommentsOn(issue))
+	}
+}
+
+func TestFork_SkippedChecksAreNotGreenAndOthersPullRequestsDoNotUseTheCap(t *testing.T) {
+	e := newForkEnv(t, func(cfg map[string]any) { cfg["upstream"].(map[string]any)["max_open_prs"] = 1 })
+	release, _ := e.upstream.CreatePR("release-please", "main", "chore: release", "x", false)
+	e.upstream.PRs[release.Number].User.Login = "github-actions[bot]"
+	issue, _ := e.approved()
+	e.run("build")
+	pr, _ := e.fork.GetPR(e.state().Peek(issue).ForkPR)
+	e.fork.CheckRuns[pr.Head.SHA] = []*github.CheckRun{{Name: "CI", Status: "completed", Conclusion: "skipped"}}
+	e.sweep()
+	if e.state().Peek(issue).ForkMerged {
+		t.Fatal("checks that were all skipped merged it into the sandbox")
+	}
+	e.green(e.fork, pr.Head.SHA)
+	e.sweep()
+	if mem := e.state().Peek(issue); mem.UpstreamPR == 0 {
+		t.Fatalf("another account's pull request used the cap: %+v", mem)
+	}
+}
+
+func TestConfig_AnUpgradedInstallWithoutThePlanPromptLoads(t *testing.T) {
+	e := newEnv(t, nil)
+	os.Remove(filepath.Join(e.workspace, config.Dir, "prompts", "plan.md"))
+	if _, err := config.Load(e.workspace); err != nil {
+		t.Fatalf("an install from before the plan gate stopped loading: %v", err)
 	}
 }

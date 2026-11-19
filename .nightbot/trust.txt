@@ -1,4 +1,7 @@
 # Who may command the night bot: one GitHub login a line. The operator in config.json
 # (jgoetzmann) always may. Everyone else's comments are left out of what the model reads, and their
-# commands do nothing. Approving a plan also needs the login in config.json "approvers".
+# commands do nothing, here and on brightboost (brightboost's own collaborators count only if they
+# are listed). A plan reads the brightboost issue it answers, whoever wrote it, as data; builds and
+# revisions read the copy the plan was made from. Approving a plan also needs the login in
+# config.json "approvers".
 BrightBoost-Tech

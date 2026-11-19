@@ -21,8 +21,12 @@ type PlanOptions struct {
 	Force bool   // outside the providers' hours
 }
 
-// threadLimit is how much of an item's text goes to the model.
-const threadLimit = 40000
+// threadLimit is how much of an item's text goes to the model, and upstreamThreadLimit how much
+// of an upstream issue's, which the state keeps a copy of.
+const (
+	threadLimit         = 40000
+	upstreamThreadLimit = 20000
+)
 
 // Plan picks the next item and provider, claims them and returns the plan, or nil and why not.
 func (b *Bot) Plan(opts PlanOptions) (*job.Plan, string, error) {
@@ -135,6 +139,12 @@ func (b *Bot) planFor(st *state.State, as *sched.Assignment) *job.Plan {
 		case sched.Build:
 			p.PlanText = mem.ApprovedPlan
 		}
+		if it.Action == sched.Build || it.Action == sched.Revise {
+			p.UpstreamThread = mem.UpstreamThread
+		}
+		if parent := st.Peek(mem.Issue); mem.Issue != 0 && parent != nil && parent.ApprovedPlan != "" && p.PlanText == "" {
+			p.PlanText = parent.ApprovedPlan // a pull request's revision or audit, in one repository
+		}
 	}
 	switch it.Action {
 	case sched.Ask:
@@ -172,12 +182,15 @@ func (b *Bot) fill(p *job.Plan) error {
 			}
 		}
 	}
-	if p.UpstreamIssue != 0 && b.Upstream != nil {
+	if p.UpstreamIssue != 0 && b.Upstream != nil && (p.Action == sched.Plan || p.Action == sched.Ask) {
 		upstream, err := b.upstreamThread(p.UpstreamIssue)
 		if err != nil {
 			return err
 		}
-		thread += "\n\n" + upstream
+		p.UpstreamThread = prompts.Truncate(upstream, upstreamThreadLimit)
+	}
+	if p.UpstreamThread != "" {
+		thread += "\n\n" + p.UpstreamThread
 	}
 	p.Thread = prompts.Truncate(thread, threadLimit)
 	switch p.Action {

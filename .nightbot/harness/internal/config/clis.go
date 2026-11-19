@@ -11,8 +11,10 @@ func BuiltinCLIs() map[string]CLI {
 		// subscription), or set secret_env to ANTHROPIC_API_KEY for an API key.
 		"claude": {
 			Install: "npm install -g @anthropic-ai/claude-code",
+			// --setting-sources user: the checkout's own .claude/ settings (hooks among them) never
+			// load, since in fork mode they are another repository's to write.
 			Argv: []string{"claude", "--print", "--output-format", "json", "--model", "{model}",
-				"--max-turns", "{max_turns}", "--strict-mcp-config",
+				"--max-turns", "{max_turns}", "--strict-mcp-config", "--setting-sources", "user",
 				"--append-system-prompt-file", "{system_file}"},
 			WriteArgs:  []string{"--permission-mode", "bypassPermissions", "--disallowedTools", deny},
 			ReadArgs:   []string{"--permission-mode", "bypassPermissions", "--disallowedTools", "Edit,Write,NotebookEdit," + deny},

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"nightbot/internal/config"
 	"nightbot/internal/github"
@@ -211,7 +212,7 @@ func (b *Bot) run(c Command, number int, isPR bool, commentID int64, author stri
 		}
 		return b.queueQuestion(number, isPR, commentID, author, c.Text)
 	case "approve":
-		return b.approve(number, author)
+		return b.approve(number, author, "")
 	case "reject":
 		return b.reject(number, author, c.Text)
 	case "plan":
@@ -269,7 +270,7 @@ func (b *Bot) run(c Command, number int, isPR bool, commentID int64, author stri
 	case "forget":
 		b.Store.Update(fmt.Sprintf("forget #%d", number), func(s *state.State) error {
 			if mem := s.Peek(number); mem != nil {
-				mem.Failures, mem.CIFixes, mem.Audits = 0, 0, 0
+				mem.Failures, mem.CIFixes, mem.Audits, mem.CIHead = 0, 0, 0, ""
 			}
 			return nil
 		})
@@ -326,14 +327,20 @@ func (b *Bot) help() string {
 			"| `" + p + " revise <change>` | rewrite a plan that waits for approval, or change the work once it is built |",
 		}
 	}
+	reviewRow := "| `" + p + " review [--force]` | an adversarial review of a pull request |"
+	rebuildRow := "| `" + p + " rebuild` | start this item over from the default branch |"
+	if b.Cfg.Forked() {
+		reviewRow = "| `" + p + " revise <change>` on my upstream pull request | revise it (I read it every ten minutes) |"
+		rebuildRow = "| `" + p + " rebuild` | start this item over from its approved plan |"
+	}
 	rows := append([]string{"| Command | What it does |", "|---|---|"}, gate...)
 	rows = append(rows,
 		"| `"+p+" build [--force]` | queue this issue (`--force`: start now, outside the providers' hours) |",
 		"| `"+p+" ask <question>`, or `@"+strings.TrimSuffix(b.Cfg.BotLogin, "[bot]")+" <question>` | a question, answered by the cheapest model free (a weak one first) |",
 		"| `"+p+" revise <change>`, or a mention on my pull request | change my pull request |",
-		"| `"+p+" review [--force]` | an adversarial review of a pull request |",
+		reviewRow,
 		"| `"+p+" stop` | stop work on this item |",
-		"| `"+p+" rebuild` | start this item over from the default branch |",
+		rebuildRow,
 		"| `"+p+" forget` | forget this item's failures |",
 		"| `"+p+" status` | what runs, the providers and the queue |",
 		"| `"+p+" halt` / `start` | stop or restart every new run |",
@@ -405,6 +412,20 @@ func (b *Bot) queueBuild(number int, force bool) (string, bool) {
 	if err != nil {
 		return "I could not read this issue: " + err.Error(), false
 	}
+	if b.Cfg.PlanGate {
+		st, _, err := b.Store.Load()
+		if err != nil {
+			return "I could not read my state: " + err.Error(), false
+		}
+		mem := st.Peek(number)
+		switch {
+		case mem == nil || mem.ApprovedPlan == "":
+			return b.queuePlan(number, false, "") // nothing is built before its plan is approved
+		case mem.ForkPR != 0 || mem.UpstreamPR != 0 || mem.PR != 0:
+			return fmt.Sprintf("It is built already; `%s revise <change>` changes the work, `%s rebuild` starts it over.",
+				b.Cfg.CommandPrefix, b.Cfg.CommandPrefix), false
+		}
+	}
 	if issue.HasLabel("human") {
 		return "This carries `human`, which keeps me off it; take the label off first.", false
 	}
@@ -446,6 +467,21 @@ func (b *Bot) stop(number int) string {
 	if b.Cfg.Forked() {
 		b.forkStop(number)
 	}
+	cancelled := b.cancelRuns(number)
+	again := ""
+	if b.Cfg.Forked() {
+		again = " It carries `human` now: take that off to let it carry on, and `" + b.Cfg.CommandPrefix +
+			" revise <change>` to change the work, or `rebuild` to start over from the approved plan."
+	}
+	if cancelled {
+		return "Stopped, and cancelled the run that held it." + again
+	}
+	return "Stopped: it is out of the queue." + again
+}
+
+// cancelRuns drops an item's claims and questions and cancels the runs that hold it, reporting
+// whether there was one.
+func (b *Bot) cancelRuns(number int) bool {
 	var cancel []int64
 	b.Store.Update(fmt.Sprintf("stop #%d", number), func(s *state.State) error {
 		cancel = nil
@@ -471,14 +507,7 @@ func (b *Bot) stop(number int) string {
 			b.logf("cancel run %d: %v", id, err)
 		}
 	}
-	again := ""
-	if b.Cfg.Forked() {
-		again = " It carries `human` now: take that off and comment `" + b.Cfg.CommandPrefix + " revise` or `build` to carry on."
-	}
-	if len(cancel) > 0 {
-		return "Stopped, and cancelled the run that held it." + again
-	}
-	return "Stopped: it is out of the queue." + again
+	return len(cancel) > 0
 }
 
 // rebuild starts an item over: its branch deleted (which closes its pull request), its memory
@@ -514,10 +543,17 @@ func (b *Bot) rebuild(number int, isPR bool) (string, bool) {
 		}
 	}
 	b.Store.Update(fmt.Sprintf("rebuild #%d", issue), func(s *state.State) error {
-		if mem := s.Peek(issue); mem != nil && mem.PR != 0 {
+		mem := s.Peek(issue)
+		if mem != nil && mem.PR != 0 {
 			delete(s.Items, state.Key(mem.PR))
 		}
 		delete(s.Items, state.Key(issue))
+		if mem != nil && mem.ApprovedPlan != "" { // the plan gate: the approval stands
+			m := s.Item(issue)
+			m.PlanPR, m.PlanBranch, m.PlanPath, m.Plan = mem.PlanPR, mem.PlanBranch, mem.PlanPath, mem.Plan
+			m.ApprovedPlan, m.ApprovedBy, m.ApprovedAt, m.Intake = mem.ApprovedPlan, mem.ApprovedBy, mem.ApprovedAt, mem.Intake
+			m.SetStage(state.StageApproved, b.now())
+		}
 		return nil
 	})
 	if issue != number {
@@ -546,7 +582,7 @@ func (b *Bot) onReview(ev *Event) error {
 		}); err != nil || handled {
 			return err
 		}
-		reply, start := b.approve(pr.Number, r.User.Login)
+		reply, start := b.approve(pr.Number, r.User.Login, r.CommitID)
 		b.say(pr.Number, b.mention(r.User.Login)+reply)
 		if start {
 			b.Kick()
@@ -593,6 +629,19 @@ func (b *Bot) onIssueEvent(ev *Event) error {
 			b.say(ev.Issue.Number, "This carries `human` too, which keeps me off it; take that off and I will build it.")
 			return nil
 		}
+		if b.Cfg.PlanGate {
+			if st, _, err := b.Store.Load(); err == nil {
+				if mem := st.Peek(ev.Issue.Number); mem == nil || mem.ApprovedPlan == "" {
+					b.GH.RemoveLabel(ev.Issue.Number, b.Cfg.Label("build"))
+					reply, start := b.queuePlan(ev.Issue.Number, false, "")
+					b.say(ev.Issue.Number, "Nothing is built before its plan is approved. "+reply)
+					if start {
+						b.Kick()
+					}
+					return nil
+				}
+			}
+		}
 		b.say(ev.Issue.Number, "Queued. "+b.position(ev.Issue.Number))
 		b.Kick()
 	case ev.Action == "labeled" && ev.Label != nil && !b.isBot(ev.Sender.Login) &&
@@ -636,6 +685,9 @@ func (b *Bot) onRequested(ev *Event) error {
 	if err != nil {
 		return err
 	}
+	if ev.Action == "labeled" && b.now().Sub(issue.CreatedAt) < 2*time.Minute {
+		return nil // the request template's own label: the opened event takes it in
+	}
 	if issue.HasLabel(b.Cfg.Label("plan")) || issue.HasLabel(b.Cfg.Label("awaiting-approval")) || issue.HasLabel("human") {
 		return nil
 	}
@@ -648,7 +700,9 @@ func (b *Bot) onRequested(ev *Event) error {
 		return nil
 	}
 	reply, start := b.intake(issue, config.Requested, "")
-	b.say(issue.Number, b.mention(ev.Sender.Login)+reply)
+	if reply != "" {
+		b.say(issue.Number, b.mention(ev.Sender.Login)+reply)
+	}
 	if start {
 		b.Kick()
 	}

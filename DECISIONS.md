@@ -17,7 +17,8 @@ which keeps both human gates and adds what the old harness lacked:
   with `/nightbot revise` until it is right.
 - **A sandbox before upstream.** An approved build goes through brightboost's own CI on the fork and
   merges into the fork's `main`, so people can try changes with a keyboard before anything reaches
-  brightboost, and upstream only ever sees changes that were green once already.
+  brightboost. Upstream sees a change only after it was green there, unless the fork reports no
+  CI at all for 30 minutes; `nightbot doctor` checks that Actions runs on the fork.
 - **The bot follows its upstream pull request to the end.** It merges `main` in on a conflict, fixes
   red CI, and revises on a changes-requested review or a `/nightbot revise` there, until a person
   merges or closes it. The old harness stopped at delivery.
@@ -39,3 +40,19 @@ the fixes. Two provider entries share the one subscription: `claude-day` (13:00â
 plans and answers questions, so a plan is up for approval the same day; `claude-night`
 (01:30â€“06:30 UTC) builds and revises, half an hour before the JackiOh night bot's hours. One run at
 a time across both.
+
+## D3. The gates block only what a change turns red
+
+`baseline_checks` runs brightboost's gates on the untouched base before every build and revision.
+A gate red there (`bash scripts/check-prisma-drift.sh` is, since it needs a Postgres the runner
+does not have) is shown to the reviewer and in the pull request, but blocks nothing and is never
+handed to the builder to "fix": the old harness blocked on new failures only, for the same reason.
+`scripts/check-prisma-drift.sh` is a forbidden path, so the bot cannot weaken a gate to pass it.
+
+## D4. Upstream is trusted no further than this repository
+
+Commands and reviews on the bot's upstream pull requests count only from people on `trust.txt`,
+never by brightboost's own author associations. A plan reads the brightboost issue's text, whoever
+wrote it, as fenced data, and a person reads the plan; builds and revisions read the copy the plan
+was made from, so nothing written there after gate 1 reaches them. The claude CLI loads user
+settings only, so brightboost's own `.claude/` hooks never run beside the model's login.

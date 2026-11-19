@@ -111,11 +111,13 @@ type Protection struct {
 
 // Review is a pull request review.
 type Review struct {
-	ID                int64  `json:"id"`
-	Body              string `json:"body"`
-	State             string `json:"state"`
-	User              User   `json:"user"`
-	AuthorAssociation string `json:"author_association"`
+	ID                int64     `json:"id"`
+	Body              string    `json:"body"`
+	State             string    `json:"state"`
+	User              User      `json:"user"`
+	AuthorAssociation string    `json:"author_association"`
+	CommitID          string    `json:"commit_id"` // the head it reviewed
+	SubmittedAt       time.Time `json:"submitted_at"`
 }
 
 // Run is a workflow run.
@@ -150,11 +152,14 @@ type CheckRun struct {
 // Failed says whether a finished check failed.
 func (c *CheckRun) Failed() bool {
 	switch c.Conclusion {
-	case "failure", "timed_out", "action_required", "startup_failure", "error":
+	case "failure", "timed_out", "action_required", "startup_failure", "error", "cancelled", "stale":
 		return true
 	}
 	return false
 }
+
+// Passed says whether a finished check ran and succeeded (skipped and neutral did not run it).
+func (c *CheckRun) Passed() bool { return c.Status == "completed" && c.Conclusion == "success" }
 
 // ReviewComment is a comment on a line of a pull request's diff.
 type ReviewComment struct {
@@ -253,6 +258,12 @@ type Client interface {
 	RequestReviewers(number int, logins []string) error
 	// ListOpenPRs is every open pull request.
 	ListOpenPRs() ([]*PR, error)
+	// MarkDraft makes a pull request a draft again, so nobody reviews a head being changed.
+	MarkDraft(pr *PR) error
+	// PRFiles is the paths a pull request changes.
+	PRFiles(number int) ([]string, error)
+	// ActionsEnabled says whether GitHub Actions runs in the repository.
+	ActionsEnabled() (bool, error)
 }
 
 // ErrMergeForbidden is a merge asked of a client that may not merge (the upstream repository's).

@@ -173,6 +173,9 @@ func (b *Bot) deliverForked(p *job.Plan, r *job.Result, head string) error {
 		b.GH.RemoveLabel(issue, b.Cfg.Label("build"))
 	} else {
 		b.GH.RemoveLabel(issue, b.Cfg.Label("revise"))
+		if p.Head != "" && head == p.Head {
+			return b.revisedNothing(p, r, mem)
+		}
 	}
 	var stage string
 	_, err = b.Store.Update(fmt.Sprintf("delivered #%d", issue), func(s *state.State) error {
@@ -214,6 +217,10 @@ func (b *Bot) deliverForked(p *job.Plan, r *job.Result, head string) error {
 		b.GH.AddLabels(issue, "human")
 		b.say(issue, fmt.Sprintf("%sNo review approved this after %d rounds, so it is yours now (`human`). The work is on `%s` in %s%s.\n\n%s%s",
 			b.operator(), r.Rounds, p.Branch, b.Cfg.Upstream.Fork, orNothing(" ("+link+")", link), reviewText(r), b.runLink(p)))
+		if mem.UpstreamPR != 0 {
+			b.sayUpstream(mem.UpstreamPR, "My last revision here did not pass my own review, so this is a draft again and "+
+				"a person looks at it before it is reviewed.")
+		}
 		return nil
 	}
 	if p.Action == sched.Build {
@@ -226,6 +233,46 @@ func (b *Bot) deliverForked(p *job.Plan, r *job.Result, head string) error {
 		b.sayUpstream(mem.UpstreamPR, "I pushed a revision; CI runs again.\n\n"+quoteBlock(prompts.Truncate(r.Report, 3000)))
 	}
 	return nil
+}
+
+// revisedNothing ends a revision that left the branch where it was: a CI fix that found nothing
+// to change would otherwise wait on the same red head for ever.
+func (b *Bot) revisedNothing(p *job.Plan, r *job.Result, mem *state.Item) error {
+	issue := p.Number
+	b.Store.Update(fmt.Sprintf("#%d revised nothing", issue), func(s *state.State) error {
+		m := s.Item(issue)
+		m.Notes, m.MergeMain, m.CIJobs, m.CIRepo = nil, false, nil, ""
+		m.SetStage(state.StageHuman, b.now())
+		m.Waiting = "a person: the revision changed nothing"
+		return nil
+	})
+	b.GH.AddLabels(issue, "human")
+	b.say(issue, fmt.Sprintf("%sThe revision changed nothing, so this is yours now (`human`). Its report:\n\n%s%s",
+		b.operator(), quoteBlock(r.Report), b.runLink(p)))
+	return nil
+}
+
+// draftUpstream makes the item's upstream pull request a draft before a revision is pushed to
+// it: nobody should review a head no review has approved. It is marked ready again once CI is
+// green at the head the bot's review approved.
+func (b *Bot) draftUpstream(issue int) {
+	st, _, err := b.Store.Load()
+	if err != nil {
+		return
+	}
+	mem := st.Peek(issue)
+	if mem == nil || mem.UpstreamPR == 0 {
+		return
+	}
+	if pr, err := b.Upstream.GetPR(mem.UpstreamPR); err == nil && pr.State == "open" && !pr.Draft {
+		if err := b.Upstream.MarkDraft(pr); err != nil {
+			b.logf("draft %s#%d: %v", b.Cfg.Upstream.Repo, pr.Number, err)
+		}
+	}
+	b.Store.Update(fmt.Sprintf("#%d revising upstream", issue), func(s *state.State) error {
+		s.Item(issue).Ready = false
+		return nil
+	})
 }
 
 func orNothing(s, unless string) string {
@@ -397,15 +444,18 @@ func (b *Bot) observe(n int, stage, waiting string) {
 	})
 }
 
-// ciState is a commit's checks, summed up.
+// ciState is a commit's checks that count (upstream.required_checks), summed up.
 type ciState struct {
-	total, done int
-	failed      []*github.CheckRun
+	total, done, passed int
+	failed              []*github.CheckRun
 }
 
-func (c ciState) none() bool    { return c.total == 0 }
+// none: no check ran, or every one that finished was skipped or neutral.
+func (c ciState) none() bool {
+	return c.total == 0 || (!c.pending() && c.passed == 0 && len(c.failed) == 0)
+}
 func (c ciState) pending() bool { return c.done < c.total }
-func (c ciState) green() bool   { return c.total > 0 && !c.pending() && len(c.failed) == 0 }
+func (c ciState) green() bool   { return c.passed > 0 && !c.pending() && len(c.failed) == 0 }
 
 func (c ciState) progress() string { return fmt.Sprintf("%d of %d checks done", c.done, c.total) }
 
@@ -426,14 +476,21 @@ func (b *Bot) ciOf(client github.Client, sha string) (ciState, error) {
 	if err != nil {
 		return ciState{}, err
 	}
-	c := ciState{total: len(runs)}
+	var c ciState
 	for _, r := range runs {
+		if !b.Cfg.Upstream.Counts(r.Name) {
+			continue
+		}
+		c.total++
 		if r.Status != "completed" {
 			continue
 		}
 		c.done++
-		if r.Failed() {
+		switch {
+		case r.Failed():
 			c.failed = append(c.failed, r)
+		case r.Passed():
+			c.passed++
 		}
 	}
 	return c, nil
@@ -553,7 +610,7 @@ func (b *Bot) openUpstream() {
 	for _, n := range itemNumbers(st) {
 		mem := st.Peek(n)
 		if mem.UpstreamPR == 0 && mem.ApprovedHead != "" && (mem.ForkMerged || mem.ForkSkipped != "") &&
-			mem.Stage != state.StageHuman && st.Running[state.Key(n)] == nil {
+			st.Running[state.Key(n)] == nil {
 			ready = append(ready, n)
 		}
 	}
@@ -577,21 +634,28 @@ func (b *Bot) openUpstream() {
 			b.observe(n, state.StageHeld, fmt.Sprintf("an upstream slot: %d of %d of the bot's pull requests are open there", open, max))
 			continue
 		}
-		body := b.upstreamBody(n, mem)
 		head := b.forkOwner() + ":" + mem.Branch
-		pr, err := b.Upstream.CreatePR(head, b.Cfg.Upstream.DefaultBranch, issue.Title, body, true)
+		pr, err := b.Upstream.FindPR(head) // one opened before its number was recorded
+		if err == nil && pr == nil {
+			pr, err = b.Upstream.CreatePR(head, b.Cfg.Upstream.DefaultBranch, issue.Title, b.upstreamBody(n, mem), true)
+			if err == nil {
+				open++
+			}
+		}
 		if err != nil {
 			b.observe(n, state.StageHeld, "opening the upstream pull request failed: "+err.Error())
 			continue
 		}
-		open++
-		b.Store.Update(fmt.Sprintf("#%d upstream", n), func(s *state.State) error {
+		if _, err := b.Store.Update(fmt.Sprintf("#%d upstream", n), func(s *state.State) error {
 			m := s.Item(n)
 			m.UpstreamPR, m.Ready, m.HeadSeenSHA = pr.Number, false, ""
 			m.SetStage(state.StageUpstream, b.now())
 			m.Waiting = "upstream CI"
 			return nil
-		})
+		}); err != nil {
+			b.logf("record %s#%d for #%d: %v (the next sweep finds it again)", b.Cfg.Upstream.Repo, pr.Number, n, err)
+			continue
+		}
 		b.say(n, fmt.Sprintf("Opened upstream: [%s#%d](%s). It is a draft until its CI is green and it merges cleanly; then "+
 			"it asks for review, and a person merges it (gate 2).", b.Cfg.Upstream.Repo, pr.Number, b.upstreamPRURL(pr.Number)))
 	}
@@ -605,7 +669,7 @@ func (b *Bot) openUpstreamPRs() (int, error) {
 	}
 	n := 0
 	for _, pr := range prs {
-		if b.isBot(pr.User.Login) {
+		if strings.EqualFold(pr.User.Login, b.Cfg.BotLogin) { // not github-actions[bot]'s release pull requests
 			n++
 		}
 	}
@@ -682,45 +746,68 @@ func (b *Bot) trackUpstream(n int, mem *state.Item, held bool) {
 		b.logf("sweep: checks on %s: %v", pr.Head.SHA, err)
 		return
 	}
+	noCI := ""
 	switch {
 	case len(ci.failed) > 0:
 		b.queueCIFix(n, mem, "upstream", pr.Head.SHA, ci)
+		return
 	case ci.pending():
 		b.observe(n, state.StageUpstream, "upstream CI: "+ci.progress())
-	case ci.none():
-		if pr.Draft && !b.noCIYet(n, pr.Head.SHA) {
-			b.Upstream.MarkReady(pr) // its CI may run on ready pull requests only
-			b.observe(n, state.StageUpstream, fmt.Sprintf("upstream CI: none ran on the draft in %d minutes, so it is marked ready", b.Cfg.Upstream.NoCIMinutes))
-			return
-		}
+		return
+	case ci.none() && b.noCIYet(n, pr.Head.SHA):
 		b.observe(n, state.StageUpstream, fmt.Sprintf("upstream CI to report on %.12s", pr.Head.SHA))
-	case !mem.Ready:
-		if pr.Draft {
-			if err := b.Upstream.MarkReady(pr); err != nil {
-				b.observe(n, state.StageUpstream, "marking it ready failed: "+err.Error())
-				return
-			}
-		}
-		for _, login := range b.Cfg.Upstream.Reviewers { // one at a time: GitHub refuses the lot for one it cannot ask
-			if !b.isBot(login) {
-				if err := b.Upstream.RequestReviewers(pr.Number, []string{login}); err != nil {
-					b.logf("request review from %s on #%d: %v", login, pr.Number, err)
-				}
-			}
-		}
-		b.Store.Update(fmt.Sprintf("#%d in review", n), func(s *state.State) error {
-			m := s.Item(n)
-			m.Ready = true
-			m.SetStage(state.StageInReview, b.now())
-			m.Waiting = "a person's review and merge (gate 2)"
-			return nil
-		})
-		b.sayUpstream(pr.Number, fmt.Sprintf("CI is green and this merges cleanly: it is ready for review. Request changes, or "+
-			"comment `%s revise <what to change>`, and I revise it.", b.Cfg.CommandPrefix))
-		b.say(n, fmt.Sprintf("%s is green and ready for review. A person merges it (gate 2).", link))
-	default:
-		b.observe(n, state.StageInReview, "a person's review and merge (gate 2)")
+		return
+	case ci.none() && pr.Draft:
+		b.Upstream.MarkReady(pr) // its CI may run on ready pull requests only
+		b.observe(n, state.StageUpstream, fmt.Sprintf("upstream CI: none ran on the draft in %d minutes, so it is marked ready",
+			b.Cfg.Upstream.NoCIMinutes))
+		return
+	case ci.none():
+		noCI = fmt.Sprintf("No CI has reported on it in %d minutes (its workflows may wait for a maintainer to approve them). ",
+			b.Cfg.Upstream.NoCIMinutes)
 	}
+	if mem.ApprovedHead == "" || pr.Head.SHA != mem.ApprovedHead {
+		b.observe(n, state.StageUpstream, fmt.Sprintf("its head %.12s is not the one the bot's review approved", pr.Head.SHA))
+		return
+	}
+	if mem.Ready {
+		b.observe(n, state.StageInReview, "a person's review and merge (gate 2)")
+		return
+	}
+	if pr.Draft {
+		if err := b.Upstream.MarkReady(pr); err != nil {
+			b.observe(n, state.StageUpstream, "marking it ready failed: "+err.Error())
+		} else {
+			b.observe(n, state.StageUpstream, "GitHub to say whether it merges cleanly")
+		}
+		return
+	}
+	switch pr.MergeableState {
+	case "", "unknown", "draft":
+		b.observe(n, state.StageUpstream, "GitHub to say whether it merges cleanly")
+		return
+	}
+	for _, login := range b.Cfg.Upstream.Reviewers { // one at a time: GitHub refuses the lot for one it cannot ask
+		if !b.isBot(login) {
+			if err := b.Upstream.RequestReviewers(pr.Number, []string{login}); err != nil {
+				b.logf("request review from %s on #%d: %v", login, pr.Number, err)
+			}
+		}
+	}
+	b.Store.Update(fmt.Sprintf("#%d in review", n), func(s *state.State) error {
+		m := s.Item(n)
+		m.Ready = true
+		m.SetStage(state.StageInReview, b.now())
+		m.Waiting = "a person's review and merge (gate 2)"
+		return nil
+	})
+	status := "CI is green and this merges cleanly"
+	if noCI != "" {
+		status = "This merges cleanly"
+	}
+	b.sayUpstream(pr.Number, fmt.Sprintf("%s%s: it is ready for review. Request changes, or comment `%s revise <what to change>`, "+
+		"and I revise it.", noCI, status, b.Cfg.CommandPrefix))
+	b.say(n, fmt.Sprintf("%s is ready for review. %sA person merges it (gate 2).", link, noCI))
 }
 
 // upstreamFeedback reads what trusted people said on the upstream pull request since the last
@@ -737,67 +824,75 @@ func (b *Bot) upstreamFeedback(n int, pr *github.PR, link string) bool {
 		b.logf("sweep: reviews on %s: %v", link, err)
 		return false
 	}
-	st, _, err := b.Store.Load()
-	if err != nil {
+	// What counts upstream is the trust list alone: upstream's own author associations say who
+	// the upstream repository trusts, not who may instruct this bot.
+	type said struct {
+		id               int64
+		login, body, how string
+		at               time.Time
+		changesRequested bool
+		reviewID         int64
+	}
+	var all []said
+	for _, c := range comments {
+		all = append(all, said{id: c.ID, login: c.User.Login, body: c.Body, how: "a comment", at: c.CreatedAt})
+	}
+	for _, r := range reviews {
+		all = append(all, said{id: -r.ID, login: r.User.Login, body: r.Body, how: "a review", at: r.SubmittedAt,
+			changesRequested: strings.EqualFold(r.State, "changes_requested"), reviewID: r.ID})
+	}
+	// Claimed in one compare-and-set before anything is done, so overlapping sweeps act once;
+	// FeedbackAt keeps an old comment from being read again once its id leaves Handled.
+	var claimed []said
+	if _, err := b.Store.Update(fmt.Sprintf("read %s", link), func(s *state.State) error {
+		claimed = nil
+		mem := s.Item(n)
+		for _, x := range all {
+			if s.WasHandled(x.id) || (!x.at.IsZero() && !mem.FeedbackAt.IsZero() && !x.at.After(mem.FeedbackAt)) {
+				continue
+			}
+			s.MarkHandled(x.id)
+			claimed = append(claimed, x)
+			if x.at.After(mem.FeedbackAt) {
+				mem.FeedbackAt = x.at
+			}
+		}
+		return nil
+	}); err != nil {
 		return false
 	}
-	var seen []int64
 	var notes []string
 	stop, other := false, false
-	read := func(id int64, login, association, body, how string) {
-		if st.WasHandled(id) {
-			return
-		}
-		seen = append(seen, id)
-		if b.isBot(login) || strings.Contains(body, Marker) || !b.Trusted(login, association) {
-			return
+	for _, x := range claimed {
+		if b.isBot(x.login) || strings.Contains(x.body, Marker) || !b.Trusted(x.login, "") {
+			continue
 		}
 		before := len(notes) + btoi(stop)
-		defer func() {
-			if id > 0 && len(notes)+btoi(stop) > before {
-				b.Upstream.AddReaction(id, "eyes", false)
+		if x.changesRequested {
+			text := firstNonEmpty(x.body, "(no summary)")
+			if inline, err := b.Upstream.ListReviewComments(pr.Number); err == nil {
+				for _, c := range inline {
+					if c.ReviewID == x.reviewID {
+						text += fmt.Sprintf("\n\n`%s:%d`: %s", c.Path, c.Line, c.Body)
+					}
+				}
 			}
-		}()
-		for _, c := range ParseCommands(body, b.Cfg.CommandPrefix, b.Cfg.BotLogin) {
+			notes = append(notes, fmt.Sprintf("@%s requested changes in a review on the upstream pull request: %s", x.login, text))
+			continue
+		}
+		for _, c := range ParseCommands(x.body, b.Cfg.CommandPrefix, b.Cfg.BotLogin) {
 			switch c.Verb {
 			case "revise", "mention", "build":
-				notes = append(notes, fmt.Sprintf("@%s asked on the upstream pull request (%s): %s", login, how, c.Text))
+				notes = append(notes, fmt.Sprintf("@%s asked on the upstream pull request (%s): %s", x.login, x.how, c.Text))
 			case "stop":
 				stop = true
 			default:
 				other = true
 			}
 		}
-	}
-	for _, c := range comments {
-		read(c.ID, c.User.Login, c.AuthorAssociation, c.Body, "a comment")
-	}
-	for _, r := range reviews {
-		if st.WasHandled(-r.ID) {
-			continue
+		if x.id > 0 && len(notes)+btoi(stop) > before {
+			b.Upstream.AddReaction(x.id, "eyes", false)
 		}
-		if !strings.EqualFold(r.State, "changes_requested") || b.isBot(r.User.Login) || !b.Trusted(r.User.Login, r.AuthorAssociation) {
-			read(-r.ID, r.User.Login, r.AuthorAssociation, r.Body, "a review")
-			continue
-		}
-		seen = append(seen, -r.ID)
-		text := firstNonEmpty(r.Body, "(no summary)")
-		if inline, err := b.Upstream.ListReviewComments(pr.Number); err == nil {
-			for _, c := range inline {
-				if c.ReviewID == r.ID {
-					text += fmt.Sprintf("\n\n`%s:%d`: %s", c.Path, c.Line, c.Body)
-				}
-			}
-		}
-		notes = append(notes, fmt.Sprintf("@%s requested changes in a review on the upstream pull request: %s", r.User.Login, text))
-	}
-	if len(seen) > 0 {
-		b.Store.Update(fmt.Sprintf("read %s", link), func(s *state.State) error {
-			for _, id := range seen {
-				s.MarkHandled(id)
-			}
-			return nil
-		})
 	}
 	switch {
 	case stop:
@@ -840,9 +935,6 @@ func (b *Bot) queueForkRevision(n int, note string, mergeMain bool) {
 // queueCIFix queues a fix for red CI on the fork or upstream, once for each head, up to
 // max_ci_fixes, then hands the item to a person.
 func (b *Bot) queueCIFix(n int, mem *state.Item, repo, sha string, ci ciState) {
-	if mem.CIHead == sha {
-		return
-	}
 	var jobs []int64
 	for _, f := range ci.failed {
 		if f.ID != 0 {
@@ -856,6 +948,10 @@ func (b *Bot) queueCIFix(n int, mem *state.Item, repo, sha string, ci ciState) {
 	fixes := 0
 	b.Store.Update(fmt.Sprintf("CI failed on #%d", n), func(s *state.State) error {
 		m := s.Item(n)
+		if m.CIHead == sha { // queued already for this head, by this sweep or an overlapping one
+			fixes = -1
+			return nil
+		}
 		m.CIFixes++
 		fixes = m.CIFixes
 		m.CIHead = sha
@@ -870,6 +966,9 @@ func (b *Bot) queueCIFix(n int, mem *state.Item, repo, sha string, ci ciState) {
 		}
 		return nil
 	})
+	if fixes < 0 {
+		return
+	}
 	if fixes > b.Cfg.MaxCIFixes {
 		b.GH.AddLabels(n, "human")
 		b.say(n, fmt.Sprintf("%sCI failed on %s again after %d fixes (%s), so this is yours now (`human`).", b.operator(), where,
@@ -1049,6 +1148,8 @@ func (b *Bot) forkDoctor(ok func(bool, string)) {
 	if err == nil {
 		ok(!info.DeleteBranchOnMerge, fmt.Sprintf("%s keeps a branch when it merges (a merge into the sandbox must not delete the branch upstream's pull request needs)", u.Fork))
 	}
+	enabled, err := b.Fork.ActionsEnabled()
+	ok(err == nil && enabled, fmt.Sprintf("Actions runs on %s, so %s's CI checks the bot's changes there", u.Fork, u.Repo))
 	_, err = b.Upstream.Repository()
 	ok(err == nil, "the bot's token reads "+u.Repo)
 	_, err = b.Fork.BranchSHA(u.DefaultBranch)

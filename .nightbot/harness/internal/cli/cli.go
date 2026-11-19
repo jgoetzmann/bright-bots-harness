@@ -26,7 +26,8 @@ const usage = `nightbot: a night bot harness for GitHub Actions
 Run in the repository (or below it). Commands:
 
   validate                 check .nightbot/ and the workflows, offline
-  setup [--repo-settings]  labels and the state branch (with --repo-settings: auto-merge, branch protection)
+  setup [--repo-settings]  labels and the state branch (with --repo-settings: auto-merge and branch
+                           protection, or in fork mode the fork's settings)
   doctor                   say what is still missing
   event                    answer the GitHub event in GITHUB_EVENT_PATH (nightbot-events.yml)
   sweep                    release lost claims, start runs for free lanes, redraw the status issue
@@ -34,11 +35,11 @@ Run in the repository (or below it). Commands:
   install --plan FILE      install the plan's CLI on a GitHub-hosted runner
   work --plan FILE --out DIR [--product DIR]        the model job: no GitHub writes
   deliver --plan FILE --out DIR [--work-status S] [--product DIR]   push, open pull requests, comment
+  status                   print the status
+  providers [--offline]    print the providers and whether each can start work
 
 In fork mode (config.json "upstream"), --product is the clone of the upstream repository the
 model works in and deliver pushes from: origin the upstream repository, "fork" the bot's fork.
-  status                   print the status
-  providers [--offline]    print the providers and whether each can start work
 
 Environment: NIGHTBOT_GITHUB_TOKEN (the bot's token), GITHUB_TOKEN (the run's), NIGHTBOT_SECRETS_SET
 (names of the provider secrets that are set), NIGHTBOT_MODEL_SECRET (the model job's one login),

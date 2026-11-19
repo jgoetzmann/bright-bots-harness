@@ -260,7 +260,11 @@ func escape(s string) string { return strings.ReplaceAll(s, "|", "\\|") }
 // deletes merged branches and protects the default branch with the required checks: with
 // merge_queue, through a ruleset that also sends every merge through a merge queue.
 func (b *Bot) Setup(repoSettings bool) error {
-	for _, l := range b.Labels() {
+	labels := b.Labels()
+	if b.Cfg.PlanGate {
+		labels = append(labels, b.gateLabels()...)
+	}
+	for _, l := range labels {
 		if err := b.GH.EnsureLabel(l[0], l[1], l[2]); err != nil {
 			return fmt.Errorf("label %s: %w", l[0], err)
 		}

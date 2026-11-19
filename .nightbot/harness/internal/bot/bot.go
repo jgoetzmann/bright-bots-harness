@@ -290,6 +290,13 @@ func (b *Bot) Labels() [][3]string {
 		{"difficulty:hard", "d93f0b", "Only a strong model may build and approve it"},
 		{"priority:high", "b60205", "The night bot takes it first"},
 		{"priority:low", "c2e0c6", "The night bot takes it last"},
+	}
+}
+
+// gateLabels are the plan gate's labels.
+func (b *Bot) gateLabels() [][3]string {
+	l := b.Cfg.Label
+	return [][3]string{
 		{l("plan"), "0e8a16", "Queued for the night bot to plan"},
 		{l("awaiting-approval"), "fbca04", "The night bot's plan waits for an approver (gate 1)"},
 		{l("plan-pr"), "c5def5", "A plan the night bot wrote"},

@@ -364,6 +364,9 @@ func (c *REST) MarkReady(pr *PR) error {
 }
 
 func (c *REST) EnableAutoMerge(pr *PR, method, headSHA string) error {
+	if c.NoMerge {
+		return ErrMergeForbidden
+	}
 	vars := map[string]any{"id": pr.NodeID, "head": headSHA}
 	if method != "" {
 		vars["method"] = strings.ToUpper(method)
@@ -617,7 +620,7 @@ func (c *REST) Checks(sha string) ([]*CheckRun, error) {
 			TargetURL string `json:"target_url"`
 		} `json:"statuses"`
 	}
-	if _, err := c.do(http.MethodGet, c.repo("/commits/%s/status", sha), nil, &combined); err != nil {
+	if _, err := c.do(http.MethodGet, c.repo("/commits/%s/status?per_page=100", sha), nil, &combined); err != nil {
 		return nil, err
 	}
 	for _, s := range combined.Statuses {
@@ -649,4 +652,31 @@ func (c *REST) RequestReviewers(number int, logins []string) error {
 
 func (c *REST) ListOpenPRs() ([]*PR, error) {
 	return list[*PR](c, c.repo("/pulls?state=open&per_page=100"), 10)
+}
+
+func (c *REST) MarkDraft(pr *PR) error {
+	if pr.Draft {
+		return nil
+	}
+	return c.graphql(`mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { clientMutationId } }`,
+		map[string]any{"id": pr.NodeID})
+}
+
+func (c *REST) PRFiles(number int) ([]string, error) {
+	files, err := list[*struct {
+		Filename string `json:"filename"`
+	}](c, c.repo("/pulls/%d/files?per_page=100", number), 30)
+	var names []string
+	for _, f := range files {
+		names = append(names, f.Filename)
+	}
+	return names, err
+}
+
+func (c *REST) ActionsEnabled() (bool, error) {
+	var out struct {
+		Enabled bool `json:"enabled"`
+	}
+	_, err := c.do(http.MethodGet, c.repo("/actions/permissions"), nil, &out)
+	return out.Enabled, err
 }

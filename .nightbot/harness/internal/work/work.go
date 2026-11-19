@@ -309,6 +309,7 @@ func (w *Worker) fetchPR() string {
 
 func (w *Worker) build() {
 	base := w.checkout(w.Plan.Continue)
+	w.baseline(base)
 	carry := ""
 	if w.Plan.Continue {
 		carry = "The branch already holds earlier work on this item (an earlier run was cut off). Read `git log " +
@@ -361,6 +362,7 @@ func (w *Worker) revise() {
 		base = merged
 		w.result.Base = merged
 	}
+	w.baseline(base)
 	request := w.Plan.Request
 	if logs := w.ciLogs(); logs != "" {
 		request += "\n\n## The failing CI jobs (the end of each log)\n\n" + logs
@@ -464,7 +466,7 @@ func (w *Worker) audit() {
 		w.note("The checks did not run: this pull request comes from outside the trust list, so none of its code runs here.")
 	} else {
 		w.result.Checks = w.runChecks()
-		w.result.ChecksGreen = allGreen(w.result.Checks)
+		w.result.ChecksGreen = w.green(w.result.Checks)
 	}
 	v, ok := w.review(base, head, 1, 1, nil)
 	if !ok {
@@ -570,11 +572,12 @@ func (w *Worker) hasChange(base string) bool {
 // reports false when the run must stop.
 func (w *Worker) checksAndFix(base string) bool {
 	w.result.Checks = w.runChecks()
-	w.result.ChecksGreen = allGreen(w.result.Checks)
+	w.result.ChecksGreen = w.green(w.result.Checks)
 	for pass := 1; !w.result.ChecksGreen && pass <= w.Cfg.FixPasses; pass++ {
 		prompt := w.render("fix", map[string]string{
-			"request":  "Make the failing checks below pass without weakening them.",
-			"checks":   prompts.Fence("checks", checksText(w.result.Checks)),
+			"request": "Make the failing checks below pass without weakening them. A check marked as red on the base " +
+				"too fails without this change: leave it alone.",
+			"checks":   prompts.Fence("checks", w.checksText(w.result.Checks)),
 			"findings": "(none: only the checks)"})
 		head := w.Repo.MustGit("rev-parse", "HEAD")
 		o, ok := w.call("fix", true, prompt)
@@ -586,10 +589,39 @@ func (w *Worker) checksAndFix(base string) bool {
 			return false
 		}
 		w.result.Checks = w.runChecks()
-		w.result.ChecksGreen = allGreen(w.result.Checks)
+		w.result.ChecksGreen = w.green(w.result.Checks)
 	}
 	return true
 }
+
+// baseline runs the checks on the base, with baseline_checks, and records the ones red there:
+// they fail without the change, so they never block it.
+func (w *Worker) baseline(base string) {
+	if !w.Cfg.BaselineChecks || len(w.Cfg.Checks) == 0 {
+		return
+	}
+	head := w.Repo.MustGit("rev-parse", "HEAD")
+	w.Repo.MustGit("checkout", "-q", "--detach", base)
+	for _, c := range w.runChecks() {
+		if !c.Passed {
+			w.result.BaselineRed = append(w.result.BaselineRed, c.Name)
+		}
+	}
+	w.Repo.MustGit("checkout", "-q", "-B", w.Plan.Branch, head)
+	fmt.Fprintf(w.Log, "nightbot: red on the base: %v\n", w.result.BaselineRed)
+}
+
+// green says whether the checks pass, a check red on the base aside.
+func (w *Worker) green(checks []job.CheckResult) bool {
+	for _, c := range checks {
+		if !c.Passed && !w.result.RedOnBase(c.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func (w *Worker) checksText(checks []job.CheckResult) string { return checksText(checks, w.result) }
 
 // reviewLoop reviews the change in a fresh session and fixes what it finds until it approves
 // or the rounds run out.
@@ -617,7 +649,7 @@ func (w *Worker) reviewLoop(base string) {
 		prompt := w.render("fix", map[string]string{
 			"request":  "Address every blocking finding of the review below.",
 			"findings": prompts.Fence("review", findingsText(findings)),
-			"checks":   prompts.Fence("checks", checksText(w.result.Checks))})
+			"checks":   prompts.Fence("checks", w.checksText(w.result.Checks))})
 		head := w.Repo.MustGit("rev-parse", "HEAD")
 		o, ok := w.call("fix", true, prompt)
 		w.commit(head, fmt.Sprintf("Address review round %d (#%d)", round, w.Plan.Number))
@@ -648,7 +680,7 @@ func (w *Worker) review(base, head string, round, rounds int, previous []job.Fin
 	prompt := w.render("review", map[string]string{
 		"round": fmt.Sprint(round), "rounds": fmt.Sprint(rounds), "base_sha": base, "where": where,
 		"report":   prompts.Fence("the builder's report", w.result.Report),
-		"checks":   prompts.Fence("checks", checksText(w.result.Checks)),
+		"checks":   prompts.Fence("checks", w.checksText(w.result.Checks)),
 		"previous": earlier,
 		"diff":     prompts.Fence("the change", "```diff\n"+stat+"\n\n"+prompts.Truncate(diff, w.Cfg.MaxDiffChars)+"\n```")})
 	o, ok := w.call("review", false, prompt)
@@ -733,16 +765,7 @@ func runCheck(ctx context.Context, command, dir string, env []string) (string, e
 	return out.String(), err
 }
 
-func allGreen(checks []job.CheckResult) bool {
-	for _, c := range checks {
-		if !c.Passed {
-			return false
-		}
-	}
-	return true
-}
-
-func checksText(checks []job.CheckResult) string {
+func checksText(checks []job.CheckResult, r *job.Result) string {
 	if len(checks) == 0 {
 		return "No checks are configured."
 	}
@@ -751,6 +774,9 @@ func checksText(checks []job.CheckResult) string {
 		state := "passed"
 		if !c.Passed {
 			state = "FAILED"
+			if r.RedOnBase(c.Name) {
+				state = "FAILED, and red on the base too (not this change's)"
+			}
 		}
 		fmt.Fprintf(&b, "### %s: %s\n", c.Name, state)
 		if c.Output != "" {

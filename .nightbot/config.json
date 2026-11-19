@@ -10,6 +10,7 @@
   "status_issue_title": "Harness status",
 
   "plan_gate": true,
+  "baseline_checks": true,
   "approvers": ["jgoetzmann", "BrightBoost-Tech"],
   "upstream": {
     "repo": "Bright-Bots-Initiative/brightboost",
@@ -53,7 +54,8 @@
     ".devcontainer/",
     ".vscode/",
     ".idea/",
-    ".husky/"
+    ".husky/",
+    "scripts/check-prisma-drift.sh"
   ],
   "review_paths": [],
 

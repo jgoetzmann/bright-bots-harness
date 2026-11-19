@@ -85,6 +85,8 @@ func Queue(cfg *config.Config, st *state.State, issues []*github.Issue) []*Item 
 			}
 		}
 		switch {
+		case cfg.Forked() && !issue.IsPR() && issue.HasLabel(cfg.Label("revise")) && mem != nil && mem.Branch != "":
+			item.Action = Revise // in fork mode the issue here carries the work on the fork's branch
 		case cfg.PlanGate && !issue.IsPR() && issue.HasLabel(cfg.Label("plan")):
 			item.Action = Plan
 		case !issue.IsPR() && issue.HasLabel(cfg.Label("build")):
@@ -101,8 +103,6 @@ func Queue(cfg *config.Config, st *state.State, issues []*github.Issue) []*Item 
 		case issue.IsPR() && issue.HasLabel(cfg.Label("revise")) && issue.HasLabel(cfg.Label("pr")) &&
 			strings.EqualFold(issue.User.Login, cfg.BotLogin):
 			item.Action = Revise
-		case cfg.Forked() && !issue.IsPR() && issue.HasLabel(cfg.Label("revise")) && mem != nil && mem.Branch != "":
-			item.Action = Revise // in fork mode the issue here carries the work on the fork's branch
 		case issue.IsPR() && issue.HasLabel(cfg.Label("review")) && !cfg.Forked():
 			item.Action = Review
 			if mem != nil {

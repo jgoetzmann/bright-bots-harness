@@ -12,6 +12,7 @@
       "secret": "CLAUDE_CODE_OAUTH_TOKEN",
       "runs_on": "ubuntu-latest",
       "lanes": 1,
+      "actions": ["build", "revise"],
       "schedule": { "mode": "window", "start": "01:30", "end": "06:30" },
       "limits": { "five_hour_minutes": 280 },
       "note": "Builds and revisions, in the hours before the JackiOh night bot's on the shared subscription."

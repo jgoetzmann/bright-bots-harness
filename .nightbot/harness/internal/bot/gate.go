@@ -50,9 +50,17 @@ func (b *Bot) intake(issue *github.Issue, how, text string) (string, bool) {
 			return fmt.Sprintf("%s#%d is already #%d here; I left this one alone.", b.Cfg.Upstream.Repo, upstream, other), false
 		}
 	}
-	first := upstream != 0 && st.LinkedTo(upstream) != issue.Number
+	// Decided inside the compare-and-set, so two handlers of one request (the template's
+	// `opened` and `labeled` events arrive together) take it in once.
+	first, already, approved := false, false, false
 	if _, err := b.Store.Update(fmt.Sprintf("intake #%d", issue.Number), func(s *state.State) error {
 		mem := s.Item(issue.Number)
+		already = mem.Stage == state.StagePlanning || mem.Stage == state.StageApproval
+		approved = mem.ApprovedPlan != ""
+		if already || approved {
+			return nil
+		}
+		first = upstream != 0 && s.LinkedTo(upstream) != issue.Number
 		if mem.Intake == "" {
 			mem.Intake = how
 		}
@@ -65,6 +73,12 @@ func (b *Bot) intake(issue *github.Issue, how, text string) (string, bool) {
 		return nil
 	}); err != nil {
 		return "I could not queue it: " + err.Error(), false
+	}
+	switch {
+	case approved:
+		return "Its plan is approved already; `" + b.Cfg.CommandPrefix + " revise <change>` changes the work.", false
+	case already:
+		return "", false // queued already: nothing more to say
 	}
 	labels := []string{b.Cfg.Label("plan")}
 	if !issue.HasLabel(config.Requested) && !issue.HasLabel(config.AutoOpened) {
@@ -103,7 +117,11 @@ func (b *Bot) queuePlan(number int, isPR bool, text string) (string, bool) {
 				mem.ApprovedBy, b.Cfg.CommandPrefix, b.Cfg.CommandPrefix), false
 		}
 	}
-	return b.intake(issue, config.Requested, text)
+	reply, start := b.intake(issue, config.Requested, text)
+	if reply == "" {
+		reply = "It is queued to plan already, or its plan waits for approval."
+	}
+	return reply, start
 }
 
 // planItem is the item a plan command names: the issue itself, or the issue a plan's pull
@@ -134,8 +152,17 @@ func (b *Bot) deliverPlan(p *job.Plan, r *job.Result) error {
 	}
 	issue := p.Number
 	branch, path := b.planBranch(issue), b.planPath(issue, p.Title)
-	if mem := st.Peek(issue); mem != nil && mem.PlanPath != "" {
-		path = mem.PlanPath
+	if mem := st.Peek(issue); mem != nil {
+		if mem.Stage == state.StageClosed || mem.ApprovedPlan != "" {
+			b.logf("#%d was turned down or approved while it was planned; the new plan is dropped", issue)
+			return nil
+		}
+		if mem.PlanPath != "" {
+			path = mem.PlanPath
+		}
+	}
+	if current, err := b.GH.GetIssue(issue); err == nil && (current.HasLabel("human") || current.State != "open") {
+		return nil
 	}
 	exists, err := b.GH.BranchExists(branch)
 	if err != nil {
@@ -178,6 +205,7 @@ func (b *Bot) deliverPlan(p *job.Plan, r *job.Result) error {
 	if _, err := b.Store.Update(fmt.Sprintf("plan of #%d", issue), func(s *state.State) error {
 		mem := s.Item(issue)
 		mem.PlanPR, mem.PlanBranch, mem.PlanPath, mem.Plan = pr.Number, branch, path, doc
+		mem.UpstreamThread = p.UpstreamThread
 		mem.ApprovedPlan, mem.ApprovedBy, mem.Notes = "", "", nil
 		mem.LastProvider = p.Provider
 		mem.SetStage(state.StageApproval, b.now())
@@ -220,7 +248,7 @@ func (b *Bot) planBody(issue int, doc string) string {
 
 // approve is gate 1: the plan as it stands on its pull request becomes the plan the build
 // follows, the pull request merges, and the item is queued to build.
-func (b *Bot) approve(number int, author string) (string, bool) {
+func (b *Bot) approve(number int, author, reviewed string) (string, bool) {
 	if !b.Cfg.PlanGate {
 		return "There is no plan gate here: `" + b.Cfg.CommandPrefix + " build` builds.", false
 	}
@@ -248,12 +276,29 @@ func (b *Bot) approve(number int, author string) (string, bool) {
 	if pr.State != "open" {
 		return fmt.Sprintf("The plan's pull request #%d is closed; `%s plan` writes a new one.", pr.Number, b.Cfg.CommandPrefix), false
 	}
+	if reviewed != "" && reviewed != pr.Head.SHA {
+		return fmt.Sprintf("The plan changed after your review (you reviewed %.12s; it is at %.12s now): review it again.",
+			reviewed, pr.Head.SHA), false
+	}
 	text, _, err := b.GH.GetFile(pr.Head.SHA, mem.PlanPath)
 	if err != nil {
 		return "I could not read the plan at the pull request's head: " + err.Error(), false
 	}
+	why := ""
 	if _, err := b.Store.Update(fmt.Sprintf("approve #%d", issue), func(s *state.State) error {
 		m := s.Item(issue)
+		// Read again inside the compare-and-set: a rewrite or another approval may have won.
+		switch {
+		case m.PlanPR != mem.PlanPR:
+			why = "The plan moved to another pull request meanwhile; approve that one."
+		case m.ApprovedPlan != "":
+			why = "It was approved meanwhile, by " + m.ApprovedBy + "."
+		case m.Stage != state.StageApproval:
+			why = "The plan is being rewritten; approve it once the new one is up."
+		}
+		if why != "" {
+			return nil
+		}
 		m.ApprovedPlan, m.ApprovedBy, m.ApprovedAt = string(text), "@"+author, b.now()
 		m.Failures = 0
 		m.SetStage(state.StageApproved, b.now())
@@ -262,22 +307,12 @@ func (b *Bot) approve(number int, author string) (string, bool) {
 	}); err != nil {
 		return "I could not record the approval: " + err.Error(), false
 	}
+	if why != "" {
+		return why, false
+	}
 	b.GH.RemoveLabel(issue, b.Cfg.Label("awaiting-approval"))
 	b.GH.AddLabels(issue, b.Cfg.Label("build"))
-	merged := ""
-	if err := b.GH.MarkReady(pr); err != nil {
-		b.logf("ready #%d: %v", pr.Number, err)
-	}
-	err = b.GH.MergePR(pr.Number, b.Cfg.MergeMethod, pr.Head.SHA)
-	if err != nil {
-		b.Sleep(3 * time.Second) // GitHub may not have taken the draft's change to ready yet
-		err = b.GH.MergePR(pr.Number, b.Cfg.MergeMethod, pr.Head.SHA)
-	}
-	if err != nil {
-		b.GH.ClosePR(pr.Number)
-		merged = fmt.Sprintf("\n\nI could not merge the plan's pull request (%v), so I closed it: the approved plan stays on "+
-			"`%s`, and the build follows it all the same.", err, mem.PlanBranch)
-	}
+	merged := b.mergePlan(pr, mem)
 	reply := fmt.Sprintf("Approved by @%s (gate 1), as the plan stands at %.12s. %s%s", author, pr.Head.SHA, b.position(issue), merged)
 	if number != issue {
 		b.say(issue, fmt.Sprintf("@%s approved the plan in #%d; queued to build. %s", author, pr.Number, b.position(issue)))
@@ -285,8 +320,36 @@ func (b *Bot) approve(number int, author string) (string, bool) {
 	return reply, true
 }
 
+// mergePlan merges an approved plan's pull request into plans/, when it changes the plan's file
+// and nothing else (anything else on the branch is a person's to merge) and the branch's
+// protection lets it; otherwise it closes it. It returns what to add to the reply.
+func (b *Bot) mergePlan(pr *github.PR, mem *state.Item) string {
+	files, err := b.GH.PRFiles(pr.Number)
+	if err == nil && (len(files) != 1 || files[0] != mem.PlanPath) {
+		err = fmt.Errorf("it changes more than the plan: %s", strings.Join(files, ", "))
+	}
+	if err == nil {
+		if e := b.GH.MarkReady(pr); e != nil {
+			b.logf("ready #%d: %v", pr.Number, e)
+		}
+		if err = b.GH.MergePR(pr.Number, b.Cfg.MergeMethod, pr.Head.SHA); err != nil {
+			b.Sleep(3 * time.Second) // GitHub may not have taken the draft's change to ready yet
+			err = b.GH.MergePR(pr.Number, b.Cfg.MergeMethod, pr.Head.SHA)
+		}
+	}
+	if err == nil {
+		return fmt.Sprintf(" The plan is merged into `%s/`.", b.Cfg.PlansDir)
+	}
+	b.GH.ClosePR(pr.Number)
+	return fmt.Sprintf("\n\nThe plan's pull request is closed rather than merged (%v); the approved plan is kept on `%s`, "+
+		"and the build follows it all the same.", err, mem.PlanBranch)
+}
+
 // reject turns an item's plan down: the plan's pull request closes and the item is a person's.
 func (b *Bot) reject(number int, author, why string) (string, bool) {
+	if !b.Cfg.PlanGate {
+		return "There is no plan gate here: `" + b.Cfg.CommandPrefix + " stop` stops the work.", false
+	}
 	if !b.Cfg.Approver(author) {
 		return fmt.Sprintf("Only %s may turn a plan down.", b.Cfg.ApproverList()), false
 	}
@@ -310,6 +373,7 @@ func (b *Bot) reject(number int, author, why string) (string, bool) {
 
 // turnDown ends an item whose plan was turned down, by a command or by closing its pull request.
 func (b *Bot) turnDown(issue, planPR int, by, why string) {
+	b.cancelRuns(issue) // a rewrite of the plan in progress must not put it back up
 	for _, name := range []string{"plan", "awaiting-approval", "build"} {
 		b.GH.RemoveLabel(issue, b.Cfg.Label(name))
 	}

@@ -51,14 +51,17 @@ type Plan struct {
 	PlanText string `json:"plan_text,omitempty"`
 	// Upstream and Fork are set in fork mode: the work job clones Upstream, with the fork as the
 	// remote "fork" that holds the bot's branches.
-	Upstream      string    `json:"upstream,omitempty"`
-	Fork          string    `json:"fork,omitempty"`
-	UpstreamIssue int       `json:"upstream_issue,omitempty"`
-	CIRepo        string    `json:"ci_repo,omitempty"` // fork or upstream: where CIJobs ran
-	CIJobs        []int64   `json:"ci_jobs,omitempty"`
-	RunID         int64     `json:"run_id,omitempty"`
-	RunURL        string    `json:"run_url,omitempty"`
-	Created       time.Time `json:"created"`
+	Upstream      string `json:"upstream,omitempty"`
+	Fork          string `json:"fork,omitempty"`
+	UpstreamIssue int    `json:"upstream_issue,omitempty"`
+	// UpstreamThread is the upstream issue's text: read live for a plan, and for a build or a
+	// revision the copy the plan was made from, so nothing written after gate 1 reaches them.
+	UpstreamThread string    `json:"upstream_thread,omitempty"`
+	CIRepo         string    `json:"ci_repo,omitempty"` // fork or upstream: where CIJobs ran
+	CIJobs         []int64   `json:"ci_jobs,omitempty"`
+	RunID          int64     `json:"run_id,omitempty"`
+	RunURL         string    `json:"run_url,omitempty"`
+	Created        time.Time `json:"created"`
 }
 
 // Result is what the model job did.
@@ -70,6 +73,7 @@ type Result struct {
 	Rounds      int           `json:"rounds"`
 	Checks      []CheckResult `json:"checks,omitempty"`
 	ChecksGreen bool          `json:"checks_green"`
+	BaselineRed []string      `json:"baseline_red,omitempty"` // checks red on the base: not the change's
 	Report      string        `json:"report,omitempty"`
 	Answer      string        `json:"answer,omitempty"`
 	Plan        string        `json:"plan,omitempty"`
@@ -99,6 +103,16 @@ const (
 	Reviewed    = "reviewed"     // an audit's verdict
 	Planned     = "planned"      // a plan written for a person to approve
 )
+
+// RedOnBase says whether a check was red on the base already.
+func (r *Result) RedOnBase(name string) bool {
+	for _, n := range r.BaselineRed {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
 
 // Call is one model call, for the record.
 type Call struct {

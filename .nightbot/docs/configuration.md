@@ -42,6 +42,7 @@ fields are errors, so a typo never silently does nothing.
 | `plan_gate` | `false` | plan every item first, as a draft pull request, and build nothing until an approver approves it ([`fork-mode.md`](fork-mode.md)) |
 | `approvers` | `[]` | who may approve a plan; each must be on `trust.txt`. Empty: the operator |
 | `plans_dir` | `plans` | where plans are written in this repository |
+| `baseline_checks` | `false` | run the checks on the base first: one already red there is shown, but only new failures block a change or go to the builder |
 | `upstream` | `null` | fork mode: the bot builds on its fork of another repository and delivers there (below) |
 
 ### `upstream` (fork mode)
@@ -55,6 +56,7 @@ fields are errors, so a typo never silently does nothing.
 | `max_open_prs` | `2` | the bot's pull requests open upstream at once (its earlier ones count); ready work waits in the fork |
 | `reviewers` | `[]` | asked to review an upstream pull request once its CI is green |
 | `auto_open` | `{"labels": [], "assigned": false, "max_open": 2}` | upstream issues the bot takes up by itself: open ones with one of `labels`, or assigned to the bot, at most `max_open` of its own open here |
+| `required_checks` | `[]` | the fork's and upstream's checks that count; empty: every check run and status |
 | `no_ci_minutes` | `30` | how long a head goes with no check reporting before the bot stops waiting for the fork's CI, or marks a draft upstream pull request ready so its CI runs |
 
 Path patterns are globs from the repository root: `*` and `?` stay in one directory, `**` crosses

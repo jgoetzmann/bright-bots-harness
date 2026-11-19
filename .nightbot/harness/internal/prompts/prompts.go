@@ -23,6 +23,9 @@ func Load(cfg *config.Config) (Templates, error) {
 	t := Templates{}
 	for _, name := range config.PromptNames {
 		text, err := os.ReadFile(filepath.Join(cfg.Root, config.Dir, "prompts", name+".md"))
+		if name == "plan" && !cfg.PlanGate && err != nil {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

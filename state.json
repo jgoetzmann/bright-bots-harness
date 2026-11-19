@@ -6,9 +6,17 @@
       "stage": "planning",
       "waiting": "a plan run",
       "since": "2026-11-19T22:09:39.801096878Z"
+    },
+    "175": {
+      "intake": "auto-opened",
+      "upstream_issue": 766,
+      "stage": "planning",
+      "waiting": "a plan run",
+      "since": "2026-11-19T22:09:43.210165639Z"
     }
   },
   "linked": {
-    "642": 174
+    "642": 174,
+    "766": 175
   }
 }

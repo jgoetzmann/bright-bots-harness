@@ -1,4 +1,14 @@
 {
+  "running": {
+    "174": {
+      "number": 174,
+      "action": "plan",
+      "provider": "claude-day",
+      "model": "claude-opus-5-5",
+      "run_id": 44625921597,
+      "started": "2026-11-19T22:09:56.854655407Z"
+    }
+  },
   "items": {
     "174": {
       "intake": "auto-opened",
@@ -15,6 +25,9 @@
       "since": "2026-11-19T22:09:43.210165639Z"
     }
   },
+  "secrets": [
+    "CLAUDE_CODE_OAUTH_TOKEN"
+  ],
   "linked": {
     "642": 174,
     "766": 175

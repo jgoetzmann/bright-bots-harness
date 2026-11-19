@@ -1,1 +1,14 @@
-{}
+{
+  "items": {
+    "174": {
+      "intake": "auto-opened",
+      "upstream_issue": 642,
+      "stage": "planning",
+      "waiting": "a plan run",
+      "since": "2026-11-19T22:09:39.801096878Z"
+    }
+  },
+  "linked": {
+    "642": 174
+  }
+}

@@ -1,14 +1,4 @@
 {
-  "running": {
-    "174": {
-      "number": 174,
-      "action": "plan",
-      "provider": "claude-day",
-      "model": "claude-opus-5-5",
-      "run_id": 44625921597,
-      "started": "2026-11-19T22:09:56.854655407Z"
-    }
-  },
   "usage": {
     "claude-day": [
       {

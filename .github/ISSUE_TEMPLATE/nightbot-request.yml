@@ -1,0 +1,18 @@
+# A request for the night bot (.nightbot/docs/fork-mode.md). It is labelled `requested`; from
+# someone on the trust list it is queued to be planned at once, and nothing is built until an
+# approver approves the plan.
+name: Request work from the night bot
+description: The bot writes a plan for an approver to approve, then builds it and opens a pull request.
+labels: ["requested"]
+body:
+  - type: input
+    id: upstream
+    attributes:
+      label: The issue to work on
+      description: The link to the issue in Bright-Bots-Initiative/brightboost.
+      placeholder: https://github.com/Bright-Bots-Initiative/brightboost/issues/123
+  - type: textarea
+    id: what
+    attributes:
+      label: Anything the plan should know
+      description: Scope, constraints, what done looks like. Optional when the issue says it all.

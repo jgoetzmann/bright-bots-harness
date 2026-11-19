@@ -1,157 +1,123 @@
 # bright-bots-harness
 
-An automated harness that takes work on
-[`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost)
-from discovery to a reviewable pull request, and then stops. It runs on GitHub Actions as the
-machine account `jgoetzmann-bot`, which owns the fork it pushes to; its work queue is GitHub
-issues in this repository. A person decides twice: whether a piece of work starts, and whether
-the result ships. Both decisions are pull request merges. Python 3.13, standard library only.
+The night bot for [`Bright-Bots-Initiative/brightboost`](https://github.com/Bright-Bots-Initiative/brightboost).
+It takes an issue there to a reviewed, CI-green pull request, with a person deciding twice:
+whether the plan is built, and whether the result merges. It is an install of
+[Night-Bot-Scaffolding](https://github.com/Jlore-Studios/Night-Bot-Scaffolding) in **fork mode**:
+this repository holds the queue, the plans and the status issue; the bot builds on its fork
+[`jgoetzmann-bot/brightboost`](https://github.com/jgoetzmann-bot/brightboost) and delivers upstream.
+One Go binary, standard library only, run by GitHub Actions as the account `jgoetzmann-bot`.
 
 ## The flow
 
+```mermaid
+flowchart LR
+  R["requested<br/>an issue here from the template,<br/>linking a brightboost issue"] --> P
+  A["auto-opened<br/>up to two at a time from<br/>brightboost's harness-ok pool"] --> P
+  P["plan<br/>draft pull request here"] --> G1{"gate 1<br/>Jack or Nathan:<br/>/nightbot approve"}
+  G1 -- "revise" --> P
+  G1 --> B["build: Opus 5.5 (xhigh)<br/>gates → self-review → fix"]
+  B --> F["pull request on the fork<br/>brightboost's CI there"]
+  F -- "green" --> S["auto-merged into the fork's main<br/>(the sandbox)"]
+  S --> U["draft pull request on brightboost<br/>at most two open"]
+  U -- "conflict / red CI / review" --> V["revise"]
+  V --> U
+  U -- "green" --> G2{"gate 2<br/>a person merges"}
+```
+
 | Step | What happens | Where you see it |
 |---|---|---|
-| `discover` | Takes a product-repository issue (assigned to the machine account, picked by triage, or named by number in directed mode) and opens a work item for it | An issue here, labelled `stage:queued` |
-| `propose` | Reads the code at a pinned commit and writes a work package: diagnosis with file and line citations, approach, slices, behaviors, acceptance criteria, open questions, touched paths, risks | A PR here adding `proposals/<id>-<slug>.md` |
-| Gate 1 | Merging that PR is approval: the push to `proposals/**` runs `harness approve`. Closing it unmerged rejects the work | The PR here |
-| `implement` | Branch on the fork under `harness/`; the product's gate sequence runs on the untouched tree as a baseline and again after the change, then a self-audit call reviews the diff against the approved package | Commits on `jgoetzmann-bot/brightboost` |
-| `package` | Assembles the review package: gate output with exit codes, patches, a git bundle, the base commit | `runs/item-N/package/`, uploaded as the run's artifact |
-| `deliver` | Opens the pull request upstream, with the gate evidence in its body | A PR on the product repository from `jgoetzmann-bot:harness/…` |
-| Gate 2 | A person reviews and merges upstream. The harness never merges anything | The PR on the product repository |
+| Intake | An issue here labelled `requested` (a person opened it from the request template with a brightboost issue link) or `auto-opened` (the bot took up a brightboost issue labelled `harness-ok`, or assigned to `jgoetzmann-bot`, while fewer than two of its own are open). The bot comments on the brightboost issue to say where it is taken up | An issue here; a comment on the brightboost issue |
+| Plan | Opus 5.5 reads the code and the issue and writes a plan: diagnosis with `path:line` citations, approach, steps, tests, acceptance criteria, touched paths, risks, open questions | A draft pull request here adding `plans/<n>-<slug>.md` |
+| Gate 1 | Jack or Nathan comments `/nightbot approve` on the plan's pull request (or approves it in a review). `/nightbot revise <what to change>` has it rewritten; `/nightbot reject` or closing it turns the work down. Nothing is built before this | The plan's pull request |
+| Build | Opus 5.5 at xhigh effort builds on `nightbot/<n>-<slug>`, cut from brightboost's `main`, following the approved plan. Brightboost's gates run (`npm ci`, `npx prisma generate`, lint, typecheck, the backend typecheck, the prisma drift check, `test:unit`, `build`); the builder fixes red ones. A fresh, read-only session reviews the diff adversarially against the issue and the plan; the builder fixes what it finds, up to four rounds (six for `difficulty:hard`) | Commits on the fork |
+| The fork | A pull request on the fork into its `main`. When brightboost's own CI is green there, at the head the review approved, the bot merges it: the fork's `main` is a sandbox holding brightboost plus every approved, green change, for trying games with a keyboard before anything merges upstream | A pull request on `jgoetzmann-bot/brightboost` |
+| Upstream | A draft pull request on brightboost from the fork's branch, while fewer than two of the bot's pull requests are open there (the old harness's still-open ones count); until then the change waits in the fork. Every ten minutes the bot checks it: a conflict with `main` gets `main` merged in (the model resolves it), red CI gets fixed from the failing jobs' logs, and a changes-requested review or `/nightbot revise` from Jack or Nathan gets a revision. Once CI is green and it merges cleanly, it is marked ready and asks Jack and Nathan for review | A pull request on `Bright-Bots-Initiative/brightboost` |
+| Gate 2 | A person merges it upstream. The bot never merges there: its upstream client refuses to | The upstream pull request |
 
-Between the gates, work is bounded by a subscription session-usage stop, a run window, per-stage
-turn ceilings, one item at a time, a revise cap, a pinned gate sequence and no new implementation
-while two of its delivery pull requests are open upstream. A run of `implement.yml` or
-`discover.yml` also starts only while nobody else is using the subscription.
+## The tracker
 
-## What it will and will not do
-
-- **It never merges.** No merge, approve or dismiss endpoint exists in the code (I-12).
-- **One GitHub credential.** A classic PAT with `public_repo`, `notifications` and `workflow`, on
-  a machine account that owns the fork and holds only the Triage role on the product repository.
-  `workflow` lets the fork fast-forward past upstream's own CI changes (D67); the harness itself
-  refuses to push a commit of its own that touches `.github/` (I-15). `harness doctor` reads the
-  token's scopes before every spending run and warns if they drift. The only other secret is the
-  subscription token the `claude` CLI authenticates with.
-- **One door for that credential.** `harness/gh.py` is the only module that sends an
-  `Authorization` header or reads the token, and the `gh` CLI is never invoked (I-11). Below
-  `PERMISSION_TIER=2` no request carries a token; 0 and 2 are the only accepted tiers.
-- **It stops on a committed file.** Every spending workflow checks for `.harness/HALT` on the
-  default branch first, before checkout, `doctor` or the dispatcher, and exits 0 having spent
-  nothing. `.harness/` is outside the harness's write roots, so it cannot remove its own kill
-  switch.
-- **Everything it writes is redacted.** Transcripts, logs, package and proposal files, ledger
-  writes and every request to GitHub pass `redact.redact()` first (I-13).
-- **Gates are never widened.** The product's sequence (`npx prisma generate`, `npm run lint`,
-  `npm run typecheck`, the backend typecheck, `bash scripts/check-prisma-drift.sh`,
-  `npm run test:unit`, `npm run build`) is the only definition of "it works". A red gate the
-  harness cannot fix becomes a blocked item. `gates.py`, `packager.py`, `redact.py` and every
-  file under `prompts/` are hashed into `.harness/PIN`; on a mismatch `harness doctor` fails, so
-  `implement.yml` stops before spending and the container refuses to start.
-- **Commands come from a list you control.** A `/harness` command is honoured only from a handle
-  in `.harness/trust.txt` that GitHub also confirms, either by an `author_association` of OWNER,
-  MEMBER or COLLABORATOR or by a `vouch:<id>` on that line matching the commenter's account id
-  (D68). Anyone else's comment is ignored.
-- **Upstream, it changes only what it opened.** Triage would let it label or close anybody's
-  thread there. Every write that can close, label, edit or request review on a product thread
-  reads who opened it first and refuses one the machine account did not (D88).
-- **Two open pull requests at most.** While `MAX_OPEN_DELIVERIES` (two) of its delivery pull
-  requests are open upstream, no new item starts implementing; revising one that is open still
-  runs. A delivery a person runs by hand with `harness deliver` waits the same way (D90).
-- **It waits for a quiet subscription.** Before `implement.yml` or `discover.yml` starts
-  anything, `harness quiet` reads the subscription's usage twice, ten minutes apart, and starts
-  nothing unless it held still. The JackiOh night bot shares the subscription, so a rise during
-  one of its builds counts as that bot. Otherwise it keeps sampling for up to two hours, in a job
-  of its own before the one that spends, and then gives up for that run (D93).
-
-It will not push to the product repository, file an issue there other than a delivery's tracking
-issue, change a thread there that somebody else opened, publish a change under `.github/`
-anywhere, move the fork's default branch except to fast-forward it from upstream, write a file
-outside its own roots, or ask you for any access beyond `public_repo`, `notifications` and
-`workflow` on its own account and the Triage role on the product repository.
-[docs/SAFETY.md](docs/SAFETY.md) states each guarantee with the command that checks it.
-
-## The repositories
-
-| Repository | What it is | What the harness does there |
-|---|---|---|
-| `jgoetzmann/bright-bots-harness` | This one: the code, the docs and the work queue | Opens and labels issues, opens proposal PRs into `proposals/`, commits the ledger to the `harness-state` branch |
-| `jgoetzmann-bot/brightboost` | The machine account's fork | Pushes the branches it creates, under `harness/`; fast-forwards the default branch from upstream. At tier 2 it is also the clone source |
-| `Bright-Bots-Initiative/brightboost` | The product | Reads and clones it, opens pull requests into it from the fork, and files a tracking issue for a delivery with none. It labels those issues and requests review on those pull requests, as Triage allows. No branch, and on anybody else's thread nothing but a comment |
-
-## Steering it
-
-Write `/harness <verb>` (or `/harness-<verb>`) on its own line in a comment on any harness issue
-or PR; several may go in one comment, one per line. The verbs are `work`, `ask`, `status`,
-`audit`, `promote`, `revise`, `rebase`, `stop`, `go`, `split`, `halt`, `resume` and `block`.
-[docs/COMMANDS.md](docs/COMMANDS.md) says what each does, where it applies, and which aliases it
-accepts.
-
-Who may give which is set by level in [`.harness/trust.txt`](.harness/trust.txt): level 3
-(operator) adds `block`, `halt`, `resume` and `reject`, level 2 (maintainer) `audit`, `go`,
-`promote`, `rebase`, `revise`, `split`, `stop` and `work`, level 1 (asker) `ask` and `status`,
-level 0 nothing. A listed commenter whose level is too low gets a reply naming the level the verb
-needs. To add somebody, commit the line that `harness trust line` prints.
-
-Append `--force` to start something now instead of at the next run window. It is for level 3
-only and lifts only the calendar: halts, the usage stop, the turn caps and both gates still apply.
-
-A command is acted on once; editing the comment does not re-trigger it. Comments on this
-repository wake `feedback.yml` within minutes. The product repository sends the harness no
-events, so commands there are found by `harness sweep` on `feedback.yml`'s schedule
-(`41 */3 * * 1-5`): up to three hours on a weekday, and not until Monday for a comment
-left on Saturday. Running `feedback.yml` from the Actions tab skips the wait.
+The pinned **Harness status** issue is rewritten every ten minutes: what is running, each item's
+stage (`planning`, `awaiting approval`, `fork CI`, `held in the fork`, `upstream CI`, `in review`,
+`revising`, …) and what it waits on, links to its plan, fork and upstream pull requests, how long it
+has been in its stage, how many changes merged upstream in the last 7 and 30 days, the queue, and the
+last runs. `/nightbot status` on any issue prints the same.
 
 ## Giving it work
 
-Comment `/harness work <what you want>` on the pinned
-[inbox issue](https://github.com/jgoetzmann/bright-bots-harness/issues/19). A pasted
-product-repository issue link tracks that issue; a sentence becomes an item of its own. On a
-product issue, `@jgoetzmann-bot /harness work` does the same. Maintainers can also label product
-issues `harness-ok`, the pool triage draws from when nothing anybody asked for is outstanding.
-[docs/FOR-MAINTAINERS.md](docs/FOR-MAINTAINERS.md) covers assigning the bot, the pool and what
-makes a good request.
+Open an issue with **Request work from the night bot** and paste the brightboost issue's link. From
+Jack or Nathan it is queued to plan at once; anyone else's waits for one of them to comment
+`/nightbot plan`. The bot also takes up brightboost issues labelled `harness-ok` (and ones assigned
+to `jgoetzmann-bot`) by itself, two at a time.
 
-The dispatcher starts new items only inside `RUN_WINDOW_START` to `RUN_WINDOW_END` (daily 01:30
-to 06:30 UTC in `.harness/config.json`, half an hour before the JackiOh night bot's hours on the
-shared subscription), and `implement.yml`'s crons follow that window. An item the window opened
-stays startable after it until it starts, and `resume.yml` brings a run back, a held planning
-run included, once a usage stop, a rate limit or a busy subscription has cleared (D95).
-`harness run --item N` and `--force` start work outside it; neither bypasses the usage stop.
-`discover.yml` is not window-gated. A run of either then waits for a quiet subscription, which
-`--force` and `implement.yml`'s `issue` input skip, and an `implement.yml` run whose window closes
-during the wait starts nothing. `feedback.yml` never waits: it answers your comments, and its
-weekday sweeps also build what is approved.
-
-To lend it time you are not using, `/harness block <n>` (level 3) suspends the run window for the
-next `n` five-hour subscription sessions, at most six. It expires by itself, `/harness block 0`
-cancels it, and it lifts the calendar only: the usage stop, both kill switches and the two human
-gates still apply.
-
-## What is in here
-
-| Path | What it holds |
+| Command | What it does |
 |---|---|
-| `harness/` | The package. `harness --help` lists the subcommands |
-| `tests/` | The suite. Every behavior B1–B87, B99–B150, B200–B236, B238–B239, B241–B242, B244, B247, B250–B251, B253, B255–B271, B273–B274, B276–B280, B282–B283, B286–B288, B290, B292–B315, B320–B332, B340–B359, B385–B388, B390 and B394–B569 is cited by a test that names it |
-| `prompts/` | What the model is asked, verbatim. Hashed into `.harness/PIN` with `gates.py`, `packager.py` and `redact.py` |
-| `.github/workflows/` | `discover`, `implement`, `feedback`, `resume`, `ack`, `watchdog`, `heartbeat`, `ops`, `selftest` |
-| `proposals/` | Merged work packages. A merge into here is gate 1 |
-| `.harness/` | `HALT`, `PIN`, `trust.txt`, `config.json`; outside the harness's write roots ([README](.harness/README.md)) |
-| `local/` | The `bb` container for local mode |
-| `docs/` | The documents below |
+| `/nightbot plan [link]` | plan this issue (for the brightboost issue the link names) |
+| `/nightbot approve` | approve the plan: gate 1 (Jack or Nathan) |
+| `/nightbot reject [why]` | turn the plan down |
+| `/nightbot revise <change>` | rewrite a plan waiting for approval; once built, revise the work (also on the upstream pull request) |
+| `/nightbot ask <question>` | a question about brightboost's code |
+| `/nightbot stop` / `rebuild` | stop an item / start it over from its approved plan |
+| `/nightbot status` / `help` | the tracker / every command |
+| `/nightbot halt` / `start` | stop starting runs / start again |
 
-## Where to go next
+[`.nightbot/README.md`](.nightbot/README.md) is the operating guide and
+[`.nightbot/docs/fork-mode.md`](.nightbot/docs/fork-mode.md) the whole flow.
 
-`harness init` then `harness doctor` is the entry point. Under `BACKEND=fake` every stage replays
-fixtures and spends nothing.
+## Hours and the subscription
 
-| Document | When to read it |
+The Claude subscription is shared with the JackiOh night bot. Builds and revisions start only from
+01:30 to 06:30 UTC (`claude-night`), before JackiOh's hours; plans and questions run from 13:00 to
+23:00 UTC (`claude-day`), so a plan written in the day is up for approval before that night's
+window. Both are Opus 5.5 (`claude-opus-5-5`) at xhigh effort, one run at a time, and a usage-limit
+refusal parks the subscription until the reset it names. `/nightbot build --force` from Jack starts
+a build outside the window. The hours are in [`.nightbot/providers.json`](.nightbot/providers.json).
+
+## Stopping it
+
+| To stop | Do |
 |---|---|
-| [docs/FOR-MAINTAINERS.md](docs/FOR-MAINTAINERS.md) | Start here. No terminal needed: how to give it work, your two moves, how to stop it |
-| [docs/COMMANDS.md](docs/COMMANDS.md) | Every comment verb and CLI subcommand, with examples, levels and latency |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Reading the state, a failed run, a stuck item, a diverged fork, a leaked secret, stopping everything, usage governance |
-| [docs/SAFETY.md](docs/SAFETY.md) | The tiers and the invariants, each with the command that checks it. Read before raising the tier |
-| [docs/PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md) | What a work package, a review package and a delivery PR contain, and how to reconstruct a run |
-| [docs/LOCAL-MODE.md](docs/LOCAL-MODE.md) | Running the harness in the `bb` container |
-| [DECISIONS.md](DECISIONS.md) | Why something is the way it is |
+| every new run | `/nightbot halt` (undo: `/nightbot start`) |
+| everything, in a way no comment can undo | commit `.nightbot/HALT` |
+| one item | `/nightbot stop`, or label it `human` |
+
+## Setting it up (once)
+
+1. **Secrets.** `CLAUDE_CODE_OAUTH_TOKEN` (already set), and the bot's token: the workflows read
+   `NIGHTBOT_GITHUB_TOKEN`, or the existing `HARNESS_GITHUB_TOKEN` when that is unset. It is
+   `jgoetzmann-bot`'s classic token with `public_repo` and `workflow`.
+2. **The fork.** Enable Actions on `jgoetzmann-bot/brightboost` (Actions → "I understand my
+   workflows, go ahead and enable them"), so brightboost's CI runs on the bot's pull requests there.
+3. **Labels, the state branch and the fork's settings**, with `jgoetzmann-bot`'s token (it owns
+   the fork and can write here):
+
+   ```bash
+   cd .nightbot/harness
+   export NIGHTBOT_GITHUB_TOKEN=...   # jgoetzmann-bot's token, the same as the HARNESS_GITHUB_TOKEN secret
+   go run ./cmd/nightbot setup --repo-settings
+   go run ./cmd/nightbot doctor
+   ```
+
+   `setup --repo-settings` makes the fork keep a branch when it merges one into the sandbox, since
+   the upstream pull request still needs it; `doctor` says what is still missing.
+4. **This repository is public**, so allow `pull_request_target` for
+   `.github/workflows/nightbot-events.yml` alone in Settings → Actions → General: from 2026-12-02
+   GitHub blocks it unless a policy allows it, and without it the bot never hears a plan's pull
+   request close.
+5. **Pin the status issue** once the first sweep opens it.
+
+## Where things are
+
+| Path | What |
+|---|---|
+| `.nightbot/config.json` | the repositories, the gates, the approvers, the caps |
+| `.nightbot/providers.json` | the model, its effort and its hours |
+| `.nightbot/trust.txt` | who may command the bot (`jgoetzmann` is the operator) |
+| `.nightbot/prompts/` | what the model is asked, verbatim |
+| `.nightbot/harness/` | the harness: Go, standard library only, with its tests |
+| `.github/workflows/nightbot-*.yml` | events (every command, label and the ten-minute sweep), runs (plan → work → deliver), selftest |
+| `.github/ISSUE_TEMPLATE/nightbot-request.yml` | the request template |
+| `plans/` | every approved plan |
+| [`DECISIONS.md`](DECISIONS.md) | why it is the way it is |
+
+The Python harness this replaced is in the history up to `ce13f23`.

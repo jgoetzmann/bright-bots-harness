@@ -4,23 +4,17 @@
 
 ## Why
 
-<!-- The issue or decision this serves. Link it. -->
+<!-- The issue this serves. Link it. -->
 
 ## Kind
 
-- [ ] Proposal (`proposals/<id>-<slug>.md`): merging it approves the work (gate 1)
-- [ ] Harness code
-- [ ] Governance: `.harness/`, `.github/`, `prompts/`, `harness/gates.py`, `harness/packager.py`,
-      `harness/redact.py`, `harness/verify_pin.py`, `harness/trust.py` or `harness/keywords.py`
-      (CODEOWNERS review required)
+- [ ] A plan the bot wrote (`plans/<n>-<slug>.md`): approve it with `/nightbot approve`, not by merging
+- [ ] The harness (`.nightbot/harness/`), its prompts or its configuration
+- [ ] Workflows or repository settings (`.github/`)
 - [ ] Documentation only
 
 ## Checklist
 
-- [ ] `selftest` is green on both `ubuntu-latest` and `windows-latest`
-- [ ] No secret, token, `.env` content or private data appears in the diff
-- [ ] If a pinned file changed (`harness/gates.py`, `harness/packager.py`, `harness/redact.py` or
-      `prompts/**`), `.harness/PIN` was regenerated with `python -m harness.verify_pin --write`, and
-      the reason is recorded in `DECISIONS.md`
-- [ ] `.harness/config.json` changes touch operational knobs only
-- [ ] New `.harness/trust.txt` lines are the ones `harness trust line <login> --level N` prints
+- [ ] `nightbot-selftest` is green (`gofmt`, `go vet`, `go test ./...`, `nightbot validate`)
+- [ ] No secret, token or private data appears in the diff
+- [ ] New `.nightbot/trust.txt` lines are people who may command the bot; approvers are also in `config.json` `approvers`

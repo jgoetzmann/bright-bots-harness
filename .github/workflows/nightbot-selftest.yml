@@ -1,0 +1,39 @@
+# Holds the night bot's harness and configuration to their tests whenever they change: the Go
+# suite, and `nightbot validate` over .nightbot/ and the two bot workflows. Make it a required
+# check if people other than you change .nightbot/.
+name: nightbot-selftest
+
+on:
+  pull_request:
+    paths: [".nightbot/**", ".github/workflows/nightbot-*.yml", ".github/actions/nightbot/**"]
+  push:
+    branches: [main]
+    paths: [".nightbot/**", ".github/workflows/nightbot-*.yml", ".github/actions/nightbot/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .nightbot/harness/go.mod
+          cache: false
+      - name: gofmt, vet and the tests
+        working-directory: .nightbot/harness
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+      - name: Validate the configuration
+        working-directory: .nightbot/harness
+        run: go run ./cmd/nightbot validate
+      - name: The machine scripts' tests
+        working-directory: .nightbot/machine/starter
+        run: python3 -B -m unittest
+      - name: shellcheck the machine scripts
+        run: shellcheck -x .nightbot/machine/*/*.sh

@@ -1,29 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/python\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_edit_check.py\" 2>/dev/null || true",
-            "timeout": 30,
-            "statusMessage": "Checking style and the pin"
-          }
-        ]
-      }
-    ]
-  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git show:*)",
-      "Bash(gh run view:*)",
-      "Bash(gh run list:*)",
-      "Bash(gh workflow list:*)"
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(gofmt -l:*)",
+      "Bash(go run ./cmd/nightbot validate:*)"
     ]
   }
 }

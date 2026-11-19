@@ -1,0 +1,67 @@
+{
+  "repo": "jgoetzmann/bright-bots-harness",
+  "default_branch": "main",
+  "bot_login": "jgoetzmann-bot",
+  "operator": "jgoetzmann",
+  "timezone": "UTC",
+  "command_prefix": "/nightbot",
+  "trust_collaborators": false,
+  "triage": false,
+  "status_issue_title": "Harness status",
+
+  "plan_gate": true,
+  "approvers": ["jgoetzmann", "BrightBoost-Tech"],
+  "upstream": {
+    "repo": "Bright-Bots-Initiative/brightboost",
+    "fork": "jgoetzmann-bot/brightboost",
+    "default_branch": "main",
+    "fork_merge_method": "merge",
+    "max_open_prs": 2,
+    "reviewers": ["jgoetzmann", "BrightBoost-Tech"],
+    "auto_open": { "labels": ["harness-ok"], "assigned": true, "max_open": 2 },
+    "no_ci_minutes": 30
+  },
+
+  "ci_workflow": "CI",
+  "required_checks": [],
+  "auto_merge": false,
+  "merge_method": "squash",
+  "merge_queue": false,
+
+  "checks": [
+    { "name": "install", "run": "h=$(cat package-lock.json backend/package-lock.json | sha256sum); [ \"$(cat node_modules/.nightbot-locks 2>/dev/null)\" = \"$h\" ] || { HUSKY=0 npm ci --no-audit --no-fund && (cd backend && HUSKY=0 npm ci --no-audit --no-fund) && echo \"$h\" > node_modules/.nightbot-locks; }", "timeout_minutes": 20 },
+    { "name": "npx prisma generate", "run": "npx prisma generate", "timeout_minutes": 10 },
+    { "name": "npm run lint", "run": "npm run lint", "timeout_minutes": 15 },
+    { "name": "npm run typecheck", "run": "npm run typecheck", "timeout_minutes": 15 },
+    { "name": "backend: npm run typecheck", "run": "cd backend && npm run typecheck", "timeout_minutes": 15 },
+    { "name": "bash scripts/check-prisma-drift.sh", "run": "bash scripts/check-prisma-drift.sh", "timeout_minutes": 10 },
+    { "name": "npm run test:unit", "run": "npm run test:unit", "timeout_minutes": 30 },
+    { "name": "npm run build", "run": "npm run build", "timeout_minutes": 20 }
+  ],
+  "fix_passes": 3,
+  "review_rounds": { "medium": 4, "hard": 6 },
+  "max_ci_fixes": 3,
+  "max_failures": 3,
+
+  "forbidden_paths": [
+    ".nightbot/",
+    ".github/",
+    ".claude/",
+    ".mcp.json",
+    ".gitmodules",
+    ".gitattributes",
+    ".devcontainer/",
+    ".vscode/",
+    ".idea/",
+    ".husky/"
+  ],
+  "review_paths": [],
+
+  "max_turns": { "build": 300, "fix": 200, "review": 100, "ask": 40, "triage": 30, "plan": 150 },
+  "call_timeout_minutes": 120,
+  "job_budget_minutes": 300,
+  "park_minutes": 60,
+  "max_diff_chars": 60000,
+
+  "clis": {}
+}

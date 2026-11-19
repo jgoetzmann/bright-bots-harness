@@ -1,0 +1,34 @@
+name: nightbot harness
+description: Restore the nightbot binary for this version of .nightbot/harness, or build it, and put it on PATH.
+inputs:
+  save:
+    description: >-
+      Save a freshly built binary to the cache. The model job passes "false": a binary it built
+      sat beside a model for the whole job, so it must never reach the jobs that hold the bot's token.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - id: cache
+      if: inputs.save == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/nightbot-bin
+        key: nightbot-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nightbot/harness/**') }}
+    - id: restore
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/nightbot-bin
+        key: nightbot-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nightbot/harness/**') }}
+    - if: steps.cache.outputs.cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: .nightbot/harness/go.mod
+        cache: false
+    - if: steps.cache.outputs.cache-hit != 'true' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: .nightbot/harness
+      run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/nightbot-bin/nightbot" ./cmd/nightbot
+    - shell: bash
+      run: echo "$RUNNER_TEMP/nightbot-bin" >> "$GITHUB_PATH"

@@ -1,0 +1,239 @@
+# One night bot run (.nightbot/README.md): plan -> work -> deliver, one item on one provider.
+# In fork mode (config.json "upstream") the work and deliver jobs clone the upstream repository,
+# with the bot's fork as the remote "fork": the model works there and deliver pushes to the fork.
+#
+#   plan     the bot's token, no model: picks the item and the provider, claims them, writes plan.json.
+#   work     one model login and a read-only token: the model builds, the checks run, a fresh
+#            session reviews, the model fixes; it leaves result.json and a git bundle. It runs
+#            where the provider's runs_on says: GitHub's runners, or a machine of your own
+#            (.nightbot/machine/).
+#   deliver  the bot's token, no model: verifies the bundle (no forbidden path, fast-forward
+#            only), pushes, opens or updates the pull request, turns on auto-merge when the
+#            review approved, and starts the next run.
+#
+# Runs go in parallel, plan jobs included: a claim is a compare-and-set write of the state file,
+# so two runs never claim the same item. (A concurrency group would cancel all but one waiting run.)
+name: nightbot-run
+run-name: "${{ inputs.item && format('nightbot-run #{0}', inputs.item) || 'nightbot-run' }}"
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      item:
+        description: "Issue or pull request number (blank: the planner picks)"
+        required: false
+        default: ""
+      mode:
+        description: "What to do"
+        type: choice
+        options: [auto, plan, build, revise, review, ask, triage]
+        default: auto
+      force:
+        description: "Run even outside the providers' hours"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Record GitHub writes instead of sending them"
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  NIGHTBOT_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the state file
+      issues: write
+      pull-requests: write
+      actions: read
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      number: ${{ steps.plan.outputs.number }}
+      provider: ${{ steps.plan.outputs.provider }}
+      runs_on: ${{ steps.plan.outputs.runs_on }}
+      secret: ${{ steps.plan.outputs.secret }}
+      hosted: ${{ steps.plan.outputs.hosted }}
+      product: ${{ steps.plan.outputs.product }}
+      fork: ${{ steps.plan.outputs.fork }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }} # one version of the harness and its config for all three jobs
+          persist-credentials: false
+
+      - name: The bot's token from a GitHub App, when one is set up
+        id: app
+        if: vars.NIGHTBOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.NIGHTBOT_APP_ID }}
+          private-key: ${{ secrets.NIGHTBOT_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/nightbot
+
+      - name: Plan
+        id: plan
+        env:
+          NIGHTBOT_GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.NIGHTBOT_GITHUB_TOKEN || secrets.HARNESS_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          # One line a provider secret, as in nightbot-events.yml.
+          NIGHTBOT_SECRETS_SET: >-
+            ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'CLAUDE_CODE_OAUTH_TOKEN' || '' }}
+            ${{ secrets.GEMINI_API_KEY != '' && 'GEMINI_API_KEY' || '' }}
+          INPUT_ITEM: ${{ inputs.item }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          args=(--out "$RUNNER_TEMP/plan/plan.json" --mode "${INPUT_MODE:-auto}")
+          if [ -n "$INPUT_ITEM" ]; then args+=(--item "$INPUT_ITEM"); fi
+          if [ "$INPUT_FORCE" = true ]; then args+=(--force); fi
+          nightbot plan "${args[@]}"
+
+      - if: steps.plan.outputs.action != 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan/plan.json
+          retention-days: 14
+
+  work:
+    needs: plan
+    if: needs.plan.outputs.action != '' && needs.plan.outputs.action != 'none'
+    runs-on: ${{ needs.plan.outputs.runs_on }}
+    timeout-minutes: 330 # config.json job_budget_minutes (300) plus room for setup
+    permissions:
+      contents: read # the model may read; it writes nothing to GitHub
+      actions: read # a CI fix reads the failed jobs' logs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }} # one version of the harness and its config for all three jobs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/nightbot
+        with:
+          save: "false" # restore only: nothing this job builds may reach the jobs with the bot's token
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan
+
+      # On a machine of your own, the job's temporary files go in RUNNER_TEMP, which the runner
+      # empties after every job, not in the /tmp every provider's jobs share.
+      - name: Keep the job's temporary files with the job
+        if: needs.plan.outputs.hosted != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
+
+      - name: Clone the product (fork mode)
+        if: needs.plan.outputs.product != ''
+        env:
+          PRODUCT: ${{ needs.plan.outputs.product }}
+          FORK: ${{ needs.plan.outputs.fork }}
+        run: |
+          git clone -q --no-tags "$GITHUB_SERVER_URL/$PRODUCT.git" "$RUNNER_TEMP/product"
+          git -C "$RUNNER_TEMP/product" remote add fork "$GITHUB_SERVER_URL/$FORK.git"
+          echo "NIGHTBOT_PRODUCT=$RUNNER_TEMP/product" >> "$GITHUB_ENV"
+
+      - if: needs.plan.outputs.hosted == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Your repository's toolchain: add the setup steps your checks (config.json "checks") need
+      # here, e.g. actions/setup-python or actions/setup-go, and install your dependencies. A
+      # machine of your own installs them once instead (.nightbot/machine/common/extra-setup.sh).
+      # In fork mode the product's clone is $NIGHTBOT_PRODUCT.
+
+      - name: Install the model CLI
+        if: needs.plan.outputs.hosted == 'true'
+        run: nightbot install --plan "$RUNNER_TEMP/plan/plan.json"
+
+      - name: Build, check and review
+        env:
+          # The chosen provider's login alone; the plan names the secret, never holds it.
+          NIGHTBOT_MODEL_SECRET: ${{ needs.plan.outputs.secret != '' && secrets[needs.plan.outputs.secret] || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        # exec: no shell stays behind holding the secret in its environment. The harness makes its
+        # own process unreadable to the model's, which run as the same user.
+        run: exec nightbot work --plan "$RUNNER_TEMP/plan/plan.json" --out "$RUNNER_TEMP/out" ${NIGHTBOT_PRODUCT:+--product "$NIGHTBOT_PRODUCT"}
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: work
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: ignore
+
+  deliver:
+    needs: [plan, work]
+    # Not when the run was cancelled (/nightbot stop, or a person): the sweep releases its claim.
+    if: ${{ !cancelled() && needs.plan.outputs.action != '' && needs.plan.outputs.action != 'none' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # the push (with the run's token only when no bot token is set)
+      issues: write
+      pull-requests: write
+      actions: write # start the next run
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }} # one version of the harness and its config for all three jobs
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The bot's token from a GitHub App, when one is set up
+        id: app
+        if: vars.NIGHTBOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.NIGHTBOT_APP_ID }}
+          private-key: ${{ secrets.NIGHTBOT_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/nightbot
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: ${{ runner.temp }}/plan
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: work
+          path: ${{ runner.temp }}/out
+
+      - name: Clone the product (fork mode)
+        if: needs.plan.outputs.product != ''
+        env:
+          PRODUCT: ${{ needs.plan.outputs.product }}
+          FORK: ${{ needs.plan.outputs.fork }}
+        run: |
+          git clone -q --no-tags "$GITHUB_SERVER_URL/$PRODUCT.git" "$RUNNER_TEMP/product"
+          git -C "$RUNNER_TEMP/product" remote add fork "$GITHUB_SERVER_URL/$FORK.git"
+          echo "NIGHTBOT_PRODUCT=$RUNNER_TEMP/product" >> "$GITHUB_ENV"
+
+      - name: Deliver
+        env:
+          NIGHTBOT_GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.NIGHTBOT_GITHUB_TOKEN || secrets.HARNESS_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          NIGHTBOT_SECRETS_SET: >-
+            ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'CLAUDE_CODE_OAUTH_TOKEN' || '' }}
+            ${{ secrets.GEMINI_API_KEY != '' && 'GEMINI_API_KEY' || '' }}
+          WORK_STATUS: ${{ needs.work.result }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          nightbot deliver --plan "$RUNNER_TEMP/plan/plan.json" --out "$RUNNER_TEMP/out" --work-status "$WORK_STATUS" \
+            ${NIGHTBOT_PRODUCT:+--product "$NIGHTBOT_PRODUCT"}

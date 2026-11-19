@@ -12,6 +12,11 @@
       "status": "allowed",
       "observed_at": "2026-11-19T12:20:40Z"
     },
+    "halt": {
+      "by": "jgoetzmann",
+      "reason": "",
+      "at": "2026-11-19T20:37:59Z"
+    },
     "quiet": {
       "at": "2026-11-19T12:20:40Z",
       "quiet": true,
@@ -19,7 +24,7 @@
     }
   },
   "cursors": {
-    "notifications_last_seen": "2026-11-19T12:09:48Z",
+    "notifications_last_seen": "2026-11-19T20:37:53Z",
     "seen_comment_ids": [
       "IC_kwDOULOSYs8AAAABTQOYjg",
       "IC_kwDOULOSYs8AAAABTbQDoQ",
@@ -66,11 +71,12 @@
       "IC_kwDOULOSYs8AAAABl8GTUw",
       "IC_kwDOOiDENs8AAAABmq_gQA",
       "IC_kwDOOiDENs8AAAABm50TMw",
-      "IC_kwDOULOSYs8AAAABoREC0Q"
+      "IC_kwDOULOSYs8AAAABoREC0Q",
+      "IC_kwDOULOSYs8AAAABooQiEg"
     ],
     "keyword_denied": {
       "jgoetzmann": 3,
-      "github-actions[bot]": 449
+      "github-actions[bot]": 451
     },
     "ask_calls": {
       "date": "2026-09-09",

@@ -51,6 +51,7 @@ type Fake struct {
 	// ChangedFiles is each pull request's changed paths, for PRFiles; ActionsOff turns Actions off.
 	ChangedFiles map[int][]string
 	ActionsOff   bool
+	Pinned       []int
 	// OnMerge and OnSync stand in for what GitHub does to the repository's git, in the tests.
 	OnMerge func(pr *PR, method string) error
 	OnSync  func(branch string) (string, error)
@@ -730,3 +731,17 @@ func (f *Fake) PRFiles(number int) ([]string, error) {
 }
 
 func (f *Fake) ActionsEnabled() (bool, error) { return !f.ActionsOff, nil }
+
+func (f *Fake) EnableActions() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ActionsOff = false
+	return nil
+}
+
+func (f *Fake) PinIssue(issue *Issue) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Pinned = append(f.Pinned, issue.Number)
+	return nil
+}

@@ -680,3 +680,31 @@ func (c *REST) ActionsEnabled() (bool, error) {
 	_, err := c.do(http.MethodGet, c.repo("/actions/permissions"), nil, &out)
 	return out.Enabled, err
 }
+
+func (c *REST) EnableActions() error {
+	if _, err := c.do(http.MethodPut, c.repo("/actions/permissions"), map[string]any{"enabled": true, "allowed_actions": "all"}, nil); err != nil {
+		return err
+	}
+	var out struct {
+		Workflows []struct {
+			ID    int64  `json:"id"`
+			State string `json:"state"`
+		} `json:"workflows"`
+	}
+	if _, err := c.do(http.MethodGet, c.repo("/actions/workflows?per_page=100"), nil, &out); err != nil {
+		return err
+	}
+	for _, w := range out.Workflows {
+		if w.State == "disabled_fork" || w.State == "disabled_inactivity" {
+			if _, err := c.do(http.MethodPut, c.repo("/actions/workflows/%d/enable", w.ID), nil, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *REST) PinIssue(issue *Issue) error {
+	return c.graphql(`mutation($id: ID!) { pinIssue(input: {issueId: $id}) { clientMutationId } }`,
+		map[string]any{"id": issue.NodeID})
+}

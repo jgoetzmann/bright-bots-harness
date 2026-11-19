@@ -83,28 +83,19 @@ a build outside the window. The hours are in [`.nightbot/providers.json`](.night
 
 ## Setting it up (once)
 
-1. **Secrets.** `CLAUDE_CODE_OAUTH_TOKEN` (already set), and the bot's token: the workflows read
-   `NIGHTBOT_GITHUB_TOKEN`, or the existing `HARNESS_GITHUB_TOKEN` when that is unset. It is
-   `jgoetzmann-bot`'s classic token with `public_repo` and `workflow`.
-2. **The fork.** Enable Actions on `jgoetzmann-bot/brightboost` (Actions → "I understand my
-   workflows, go ahead and enable them"), so brightboost's CI runs on the bot's pull requests there.
-3. **Labels, the state branch and the fork's settings**, with `jgoetzmann-bot`'s token (it owns
-   the fork and can write here):
+The secrets are already set: `CLAUDE_CODE_OAUTH_TOKEN`, and `HARNESS_GITHUB_TOKEN` (the bot's
+classic token, `public_repo` and `workflow`), which the workflows read when `NIGHTBOT_GITHUB_TOKEN`
+is unset.
 
-   ```bash
-   cd .nightbot/harness
-   export NIGHTBOT_GITHUB_TOKEN=...   # jgoetzmann-bot's token, the same as the HARNESS_GITHUB_TOKEN secret
-   go run ./cmd/nightbot setup --repo-settings
-   go run ./cmd/nightbot doctor
-   ```
+1. **Run `nightbot-setup`** from the Actions tab. With the bot's token from the secrets it makes
+   the labels and the state branch, keeps the fork from deleting a branch when it merges one into
+   the sandbox (the upstream pull request still needs it), turns Actions on in the fork, and prints
+   `nightbot doctor`: what is still missing.
+2. **Allow `pull_request_target`** for `.github/workflows/nightbot-events.yml` alone in Settings →
+   Actions → General. This repository is public, and from 2026-12-02 GitHub blocks that event
+   unless a policy allows it; without it the bot never hears a plan's pull request close.
 
-   `setup --repo-settings` makes the fork keep a branch when it merges one into the sandbox, since
-   the upstream pull request still needs it; `doctor` says what is still missing.
-4. **This repository is public**, so allow `pull_request_target` for
-   `.github/workflows/nightbot-events.yml` alone in Settings → Actions → General: from 2026-12-02
-   GitHub blocks it unless a policy allows it, and without it the bot never hears a plan's pull
-   request close.
-5. **Pin the status issue** once the first sweep opens it.
+The status issue opens, pinned, on the first sweep.
 
 ## Where things are
 

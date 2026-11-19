@@ -125,8 +125,8 @@ and `closed`.
 
 ## Setting it up
 
-1. Fork the upstream repository with the bot's account, and enable Actions on the fork so the
-   upstream repository's own CI runs on the fork's pull requests.
+1. Fork the upstream repository with the bot's account. Setup (step 4) turns Actions on there, so
+   the upstream repository's own CI runs on the fork's pull requests.
 2. In `config.json`: `"plan_gate": true`, `"approvers"`, and
 
    ```json
@@ -145,9 +145,10 @@ and `closed`.
    opens pull requests upstream and here, and comments) and `workflow` if upstream's changes touch
    `.github/` (the sandbox's sync carries them). The upstream repository and the fork must be
    public: the model job clones them without a token.
-4. `nightbot setup --repo-settings`, run with the bot's own token (`NIGHTBOT_GITHUB_TOKEN`), keeps
-   the fork from deleting a branch when it merges one into the sandbox, which the upstream pull
-   request still needs. `nightbot doctor` checks the fork's parent, that setting, that Actions runs
+4. `nightbot setup --repo-settings`, run with the bot's own token (`NIGHTBOT_GITHUB_TOKEN`; the
+   `nightbot-setup` workflow does it with the token from the secrets), keeps the fork from
+   deleting a branch when it merges one into the sandbox, which the upstream pull request still
+   needs, and turns Actions on in the fork. `nightbot doctor` checks the fork's parent, that setting, that Actions runs
    on the fork, and that the token reads upstream.
 5. `install.sh --upstream OWNER/NAME --fork OWNER/NAME` writes the config above and adds the
    request template, `.github/ISSUE_TEMPLATE/nightbot-request.yml`.

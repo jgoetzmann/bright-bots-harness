@@ -723,3 +723,19 @@ func TestConfig_AnUpgradedInstallWithoutThePlanPromptLoads(t *testing.T) {
 		t.Fatalf("an install from before the plan gate stopped loading: %v", err)
 	}
 }
+
+func TestFork_SetupTurnsOnTheForksActionsAndTheStatusIssueIsPinned(t *testing.T) {
+	e := newForkEnv(t, nil)
+	e.fork.ActionsOff = true
+	if err := e.bot.Setup(true); err != nil {
+		t.Fatal(err)
+	}
+	if e.fork.ActionsOff || e.fork.Repo["delete_branch_on_merge"] != false {
+		t.Fatalf("the fork's settings: actions off %v, repo %v", e.fork.ActionsOff, e.fork.Repo)
+	}
+	e.sweep()
+	status, _ := e.queue.ListIssues("bot:status", "open")
+	if len(status) != 1 || !slices.Contains(e.queue.Pinned, status[0].Number) {
+		t.Fatalf("the status issue should be pinned: %v %v", status, e.queue.Pinned)
+	}
+}

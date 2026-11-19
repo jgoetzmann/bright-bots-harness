@@ -16,6 +16,7 @@ var ErrNotFound = errors.New("github: not found")
 // Issue is an issue or a pull request, as the issues API lists both.
 type Issue struct {
 	Number int    `json:"number"`
+	NodeID string `json:"node_id"`
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	State  string `json:"state"`
@@ -264,6 +265,10 @@ type Client interface {
 	PRFiles(number int) ([]string, error)
 	// ActionsEnabled says whether GitHub Actions runs in the repository.
 	ActionsEnabled() (bool, error)
+	// EnableActions turns GitHub Actions on, and every workflow GitHub left disabled in a fork.
+	EnableActions() error
+	// PinIssue pins an issue to the top of the repository's issue list.
+	PinIssue(issue *Issue) error
 }
 
 // ErrMergeForbidden is a merge asked of a client that may not merge (the upstream repository's).

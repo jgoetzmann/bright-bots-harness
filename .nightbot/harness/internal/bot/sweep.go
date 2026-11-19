@@ -130,7 +130,12 @@ func (b *Bot) UpdateStatus() error {
 		return err
 	}
 	if len(issues) == 0 {
-		_, err := b.GH.CreateIssue(b.Cfg.StatusIssueTitle, body, []string{b.Cfg.Label("status")})
+		issue, err := b.GH.CreateIssue(b.Cfg.StatusIssueTitle, body, []string{b.Cfg.Label("status")})
+		if err == nil {
+			if err := b.GH.PinIssue(issue); err != nil {
+				b.logf("pin the status issue: %v", err)
+			}
+		}
 		return err
 	}
 	if strings.TrimSpace(issues[0].Body) == strings.TrimSpace(body) {
@@ -283,9 +288,13 @@ func (b *Bot) Setup(repoSettings bool) error {
 	}
 	if b.Cfg.Forked() {
 		// Nothing merges here but plans, and upstream is a person's: only the fork has settings
-		// to change. A merge into the sandbox must keep the branch upstream's pull request needs.
+		// to change. A merge into the sandbox must keep the branch upstream's pull request needs,
+		// and upstream's CI must run there, which GitHub leaves off in a new fork.
 		if err := b.Fork.UpdateRepo(map[string]any{"delete_branch_on_merge": false}); err != nil {
 			return fmt.Errorf("the fork's settings: %w", err)
+		}
+		if err := b.Fork.EnableActions(); err != nil {
+			return fmt.Errorf("turning Actions on in the fork: %w", err)
 		}
 		return nil
 	}

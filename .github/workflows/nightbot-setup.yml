@@ -1,0 +1,46 @@
+# Sets the night bot up with the bot's own token from the repository's secrets, so nobody has to
+# handle it: the labels and the state branch, and with repo_settings the repository's settings
+# (in fork mode, the fork's: it keeps branches on merge, and Actions runs there). Then it prints
+# `nightbot doctor`. Run it from the Actions tab once after installing, and again whenever doctor
+# should be asked.
+name: nightbot-setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_settings:
+        description: "Also change the repository's settings (in fork mode, the fork's)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: The bot's token from a GitHub App, when one is set up
+        id: app
+        if: vars.NIGHTBOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.NIGHTBOT_APP_ID }}
+          private-key: ${{ secrets.NIGHTBOT_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/nightbot
+
+      - name: Set up, then ask doctor
+        env:
+          NIGHTBOT_GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.NIGHTBOT_GITHUB_TOKEN || secrets.HARNESS_GITHUB_TOKEN }}
+          NIGHTBOT_SECRETS_SET: >-
+            ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'CLAUDE_CODE_OAUTH_TOKEN' || '' }}
+            ${{ secrets.GEMINI_API_KEY != '' && 'GEMINI_API_KEY' || '' }}
+          REPO_SETTINGS: ${{ inputs.repo_settings }}
+        run: |
+          if [ "$REPO_SETTINGS" = true ]; then nightbot setup --repo-settings; else nightbot setup; fi

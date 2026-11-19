@@ -1,38 +1,16 @@
-# Environments / secrets
+# Secrets
 .env
 .env.*
-!.env.example
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
+# Go and the harness's scratch
+/.nightbot/harness/nightbot
+*.test
 
-# Node
+# Node (a local clone of the product)
 node_modules/
-dist/
-build/
-*.log
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-.fullsend/
-runs/
-HALT
-# .harness/HALT is the committed kill switch; only the root HALT is scratch.
-!.harness/HALT
-harness.db
-*.egg-info/
-
-# Local mode working state and the container env file
-bb-work/
-local/.env
-
-# Written by `harness setup`
-/HUMAN.md

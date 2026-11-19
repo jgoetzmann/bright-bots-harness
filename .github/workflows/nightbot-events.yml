@@ -1,0 +1,89 @@
+# The night bot's ears (.nightbot/README.md): comment commands, labels, assignment, reviews and
+# CI results on its pull requests and on their entries in a merge queue. No model runs here: work is queued, and a run of
+# nightbot-run.yml is started when a provider has a lane free. Every ten minutes a sweep releases
+# runs that died without delivering, starts runs for free lanes (GitHub drops some scheduled runs)
+# and rewrites the "Night bot status" issue.
+name: nightbot-events
+
+on:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch: {}
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, labeled, assigned] # opened: a request from the issue template (with the plan gate)
+  # _target: this repository's workflow and secrets, never code from the pull request; the job
+  # checks out the default branch and reads only the event's payload. `pull_request` would not do:
+  # it runs nothing while a pull request has a merge conflict and delivers `closed` unreliably.
+  # From 2026-12-02 GitHub blocks `_target` in public repositories unless an Actions event policy
+  # allows it: allow it for this file alone (.nightbot/README.md, Setting it up).
+  pull_request_target:
+    types: [labeled, closed]
+  workflow_run:
+    workflows: ["CI"] # your CI workflow's name: config.json "ci_workflow"
+    types: [completed]
+
+# No concurrency group: a group keeps one pending run and cancels the rest, which would drop a
+# person's command. The state file is compare-and-set and label changes are idempotent.
+
+permissions: {}
+
+jobs:
+  event:
+    # A cheap filter, so most comments start nothing: the harness decides the rest, including the
+    # trust list. Narrow '@' to your bot's login if your repository mentions people a lot.
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'
+          && (startsWith(github.event.workflow_run.head_branch, 'nightbot/')
+              || startsWith(github.event.workflow_run.head_branch, 'gh-readonly-queue/')))
+      || (github.event_name == 'pull_request_target' && github.event.action == 'closed'
+          && startsWith(github.event.pull_request.head.ref, 'nightbot/'))
+      || (!endsWith(github.actor, '[bot]') && github.actor != 'jgoetzmann-bot' && (
+          ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment')
+            && (contains(github.event.comment.body, '/nightbot') || contains(github.event.comment.body, '@')))
+          || github.event_name == 'pull_request_review'
+          || github.event_name == 'issues' || github.event_name == 'pull_request_target'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the state file on the state branch
+      issues: write
+      pull-requests: write
+      actions: write # start and cancel runs of nightbot-run.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: The bot's token from a GitHub App, when one is set up
+        id: app
+        if: vars.NIGHTBOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.NIGHTBOT_APP_ID }}
+          private-key: ${{ secrets.NIGHTBOT_APP_PRIVATE_KEY }}
+
+      - uses: ./.github/actions/nightbot
+
+      - name: Answer the event, or sweep
+        env:
+          NIGHTBOT_GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.NIGHTBOT_GITHUB_TOKEN || secrets.HARNESS_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          # Which provider secrets are set, never their values. One line a provider secret in
+          # .nightbot/providers.json; `nightbot validate` fails on a missing one.
+          NIGHTBOT_SECRETS_SET: >-
+            ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'CLAUDE_CODE_OAUTH_TOKEN' || '' }}
+            ${{ secrets.GEMINI_API_KEY != '' && 'GEMINI_API_KEY' || '' }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            nightbot sweep
+          else
+            nightbot event
+          fi

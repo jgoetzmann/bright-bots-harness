@@ -9,6 +9,14 @@
       "started": "2026-11-19T22:09:56.854655407Z"
     }
   },
+  "usage": {
+    "claude-day": [
+      {
+        "at": "2026-11-19T22:17:22.353370601Z",
+        "minutes": 6.826963119566667
+      }
+    ]
+  },
   "items": {
     "174": {
       "intake": "auto-opened",
@@ -25,6 +33,18 @@
       "since": "2026-11-19T22:09:43.210165639Z"
     }
   },
+  "history": [
+    {
+      "at": "2026-11-19T22:17:22.353370601Z",
+      "number": 174,
+      "action": "plan",
+      "provider": "claude-day",
+      "model": "claude-opus-5-5",
+      "outcome": "planned",
+      "minutes": 6.826963119566667,
+      "run_url": "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/44625921597"
+    }
+  ],
   "secrets": [
     "CLAUDE_CODE_OAUTH_TOKEN"
   ],

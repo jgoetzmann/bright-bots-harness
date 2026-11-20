@@ -71,7 +71,8 @@
     }
   ],
   "handled": [
-    -5997570274
+    -5997570274,
+    -5997571929
   ],
   "secrets": [
     "CLAUDE_CODE_OAUTH_TOKEN"

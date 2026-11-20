@@ -67,6 +67,9 @@
       "run_url": "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/44627214631"
     }
   ],
+  "handled": [
+    -5997570274
+  ],
   "secrets": [
     "CLAUDE_CODE_OAUTH_TOKEN"
   ],

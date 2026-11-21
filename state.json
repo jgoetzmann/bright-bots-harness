@@ -1,8 +1,4 @@
 {
-  "parked": {
-    "claude-day": "2026-11-21T03:00:00Z",
-    "claude-night": "2026-11-21T03:00:00Z"
-  },
   "usage": {
     "claude-day": [
       {

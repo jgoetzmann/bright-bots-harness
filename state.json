@@ -1,14 +1,4 @@
 {
-  "running": {
-    "174": {
-      "number": 174,
-      "action": "build",
-      "provider": "claude-night",
-      "model": "claude-opus-5-5",
-      "run_id": 45096748505,
-      "started": "2026-11-23T01:49:58.109670087Z"
-    }
-  },
   "usage": {
     "claude-day": [
       {

@@ -28,6 +28,10 @@
       {
         "at": "2026-11-23T02:18:04.452025396Z",
         "minutes": 18.7709560047
+      },
+      {
+        "at": "2026-11-23T02:36:07.39510061Z",
+        "minutes": 7.588741101149999
       }
     ]
   },
@@ -117,6 +121,16 @@
       "outcome": "approved",
       "minutes": 18.7709560047,
       "run_url": "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/45096748505"
+    },
+    {
+      "at": "2026-11-23T02:36:07.39510061Z",
+      "number": 175,
+      "action": "build",
+      "provider": "claude-night",
+      "model": "claude-opus-5-5",
+      "outcome": "approved",
+      "minutes": 7.588741101149999,
+      "run_url": "https://github.com/jgoetzmann/bright-bots-harness/actions/runs/45099425661"
     }
   ],
   "handled": [
